@@ -31,14 +31,29 @@
 
 ## Docker
 镜像内会把 `config/sample_config.json` 复制为默认配置文件 `/app/config/config.json`，并默认开启管理登录（`admin/admin`）。
+容器启动时会将默认配置复制到 `/app/data/config.json`（可挂载持久化卷）。
+镜像包含 Caddy，并在检测到 `/app/data/Caddyfile` 时启动 TLS 入口（默认 443）。
+证书与 ACME 状态保存在 `/app/data/caddy`，需随 `/app/data` 一起持久化。
+
+ACI 部署与持久化：见 [aci_persist_vol.md](aci_persist_vol.md)
 
 构建：
 - `docker build -t aoai-proxy:latest .`
 
-运行（端口映射 + 挂载自定义配置）：
-- `docker run --rm -p 3000:3000 -v $(pwd)/config/config.json:/app/config/config.json aoai-proxy:latest`
+运行（端口映射 + 持久化数据卷）：
+- `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:latest`
 
 说明：容器里仍使用 `DefaultAzureCredential`，请按你的运行环境提供 AAD 凭据（环境变量/托管身份等）。
+
+## Caddy TLS（入口端口 443）
+可在管理页的「域名与 TLS（Caddy）」中配置域名/邮箱/端口。保存后服务会自动生成 Caddyfile，并尝试热重载 Caddy。
+
+1. 在管理页配置并保存（会写入 `server.caddy` 并生成 Caddyfile）。
+2. 启动 Caddy：
+   - `caddy run --config /app/data/Caddyfile --adapter caddyfile`
+
+注意：ACME 证书签发通常需要 80/443 可达用于校验（HTTP-01/TLS-ALPN-01）。
+如果你的环境只开放 3001，请改用 DNS-01 验证并配置对应的 DNS 提供商凭据。
 
 ## 上游（Foundry v1）要点
 - Foundry v1 的数据面路径前缀是 `/openai/v1`（例如：`POST {endpoint}/openai/v1/chat/completions`）。

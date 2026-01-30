@@ -10,6 +10,14 @@ const DEFAULTS = {
       enabled: false,
       username: "admin",
       password: "change-me"
+    },
+    caddy: {
+      enabled: false,
+      domain: "",
+      email: "",
+      httpsPort: 443,
+      upstreamHost: "127.0.0.1",
+      upstreamPort: 3000
     }
   },
   auth: {
@@ -60,6 +68,32 @@ function validateConfig(cfg) {
   }
   if (!cfg.server.adminPath || typeof cfg.server.adminPath !== "string") {
     throw new Error("server.adminPath must be a string");
+  }
+  if (cfg.server.caddy != null) {
+    if (typeof cfg.server.caddy !== "object") {
+      throw new Error("server.caddy must be an object");
+    }
+    const { enabled, domain, email, httpsPort, upstreamHost, upstreamPort } = cfg.server.caddy;
+    if (enabled != null && typeof enabled !== "boolean") {
+      throw new Error("server.caddy.enabled must be a boolean");
+    }
+    if (enabled) {
+      if (!domain || typeof domain !== "string") {
+        throw new Error("server.caddy.domain must be a non-empty string when enabled");
+      }
+      if (!email || typeof email !== "string") {
+        throw new Error("server.caddy.email must be a non-empty string when enabled");
+      }
+    }
+    if (httpsPort != null && (typeof httpsPort !== "number" || httpsPort <= 0 || httpsPort > 65535)) {
+      throw new Error("server.caddy.httpsPort must be a valid port number");
+    }
+    if (upstreamPort != null && (typeof upstreamPort !== "number" || upstreamPort <= 0 || upstreamPort > 65535)) {
+      throw new Error("server.caddy.upstreamPort must be a valid port number");
+    }
+    if (upstreamHost != null && typeof upstreamHost !== "string") {
+      throw new Error("server.caddy.upstreamHost must be a string");
+    }
   }
   if (cfg.server.adminAuth != null) {
     if (typeof cfg.server.adminAuth !== "object") {

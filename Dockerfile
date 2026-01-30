@@ -14,10 +14,17 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
 COPY public ./public
+COPY docker/start.sh /app/start.sh
 
-# Default config inside image (can be overridden by mounting /app/config/config.json)
+# Default config inside image (copied to /app/data/config.json on first run)
 COPY config/sample_config.json ./config/config.json
-ENV CONFIG_PATH=/app/config/config.json
+ENV CONFIG_PATH=/app/data/config.json
 
-EXPOSE 3000
-CMD ["node", "src/server.js"]
+# Persistent data dir (mount a volume to /app/data)
+RUN mkdir -p /app/data
+
+RUN apk add --no-cache caddy \
+	&& chmod +x /app/start.sh
+
+EXPOSE 3000 443
+CMD ["/app/start.sh"]

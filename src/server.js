@@ -7,6 +7,7 @@ import { getConfig, reloadConfig, saveConfig, getConfigPath } from "./config.js"
 import { initAuth, getBearerToken } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
+import { writeCaddyfile, reloadCaddy } from "./caddy.js";
 
 const app = fastify({
   logger: {
@@ -148,6 +149,8 @@ app.put("/admin/api/config", async (req, reply) => {
   try {
     const saved = saveConfig(nextConfig);
     attachAuth(saved);
+    writeCaddyfile(saved);
+    const reloadResult = await reloadCaddy(saved);
     reply.send({ ok: true, config: saved });
   } catch (error) {
     reply.code(400).send({ error: error.message });
@@ -158,6 +161,8 @@ app.post("/admin/api/reload", async (req, reply) => {
   try {
     const config = reloadConfig();
     attachAuth(config);
+    writeCaddyfile(config);
+    await reloadCaddy(config);
     reply.send({ ok: true, config });
   } catch (error) {
     reply.code(400).send({ error: error.message });
@@ -192,6 +197,8 @@ app.get("/admin", async (req, reply) => {
 async function start() {
   const config = reloadConfig();
   attachAuth(config);
+  writeCaddyfile(config);
+  await reloadCaddy(config);
   const { host, port } = config.server;
   await app.listen({ host, port });
   app.log.info({ configPath: getConfigPath() }, "config loaded");

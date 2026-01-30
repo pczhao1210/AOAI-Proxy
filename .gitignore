@@ -24,6 +24,8 @@ dist/
 # Local runtime artifacts
 .tmp/
 tmp/
+data/
+Caddyfile
 
 # Local config (use config/sample_config.json instead)
 config/config.json

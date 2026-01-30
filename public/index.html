@@ -85,6 +85,17 @@
     th, td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; }
     th { color: var(--muted); font-weight: 500; }
     code { background: #0b1220; padding: 2px 6px; border-radius: 6px; }
+    .field { display: flex; flex-direction: column; gap: 6px; min-width: 200px; flex: 1; }
+    .inline { display: inline-flex; gap: 8px; align-items: center; }
+    .preview {
+      white-space: pre-wrap;
+      background: #0b1220;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
   </style>
 </head>
 <body>
@@ -121,6 +132,47 @@
           <div class="muted" id="statTimestamp"></div>
         </div>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>域名与 TLS（Caddy）</h2>
+      <p>配置独立 Caddy 进程的域名与证书邮箱，并生成 Caddyfile。</p>
+      <div class="row">
+        <label class="inline">
+          <input type="checkbox" id="caddyEnabled" />
+          <span>启用 Caddyfile 生成</span>
+        </label>
+      </div>
+      <div class="row" style="margin-top: 12px;">
+        <div class="field">
+          <label for="caddyDomain" class="muted">域名</label>
+          <input id="caddyDomain" placeholder="proxy.example.com" />
+        </div>
+        <div class="field">
+          <label for="caddyEmail" class="muted">证书邮箱</label>
+          <input id="caddyEmail" placeholder="admin@example.com" />
+        </div>
+      </div>
+      <div class="row" style="margin-top: 12px;">
+        <div class="field">
+          <label for="caddyHttpsPort" class="muted">TLS 入口端口</label>
+          <input id="caddyHttpsPort" type="number" min="1" max="65535" value="443" />
+        </div>
+        <div class="field">
+          <label for="caddyUpstreamHost" class="muted">上游地址</label>
+          <input id="caddyUpstreamHost" value="127.0.0.1" />
+        </div>
+        <div class="field">
+          <label for="caddyUpstreamPort" class="muted">上游端口</label>
+          <input id="caddyUpstreamPort" type="number" min="1" max="65535" value="3000" />
+        </div>
+      </div>
+      <div class="row" style="margin-top: 12px;">
+        <button id="applyCaddyBtn">应用并保存</button>
+        <button id="refreshCaddyBtn" class="secondary">从配置加载</button>
+        <div id="caddyMsg" class="muted" style="margin-left: 8px;"></div>
+      </div>
+      <div class="preview" id="caddyPreview" style="margin-top: 12px;"></div>
     </section>
 
     <section class="card">
@@ -168,6 +220,14 @@
     const modelRows = document.getElementById("modelRows");
     const payloadArea = document.getElementById("payloadArea");
     const responseArea = document.getElementById("responseArea");
+    const caddyEnabled = document.getElementById("caddyEnabled");
+    const caddyDomain = document.getElementById("caddyDomain");
+    const caddyEmail = document.getElementById("caddyEmail");
+    const caddyHttpsPort = document.getElementById("caddyHttpsPort");
+    const caddyUpstreamHost = document.getElementById("caddyUpstreamHost");
+    const caddyUpstreamPort = document.getElementById("caddyUpstreamPort");
+    const caddyPreview = document.getElementById("caddyPreview");
+    const caddyMsg = document.getElementById("caddyMsg");
 
     payloadArea.value = JSON.stringify({
       model: "gpt-5-mini",
@@ -180,6 +240,7 @@
       const json = await res.json();
       configArea.value = JSON.stringify(json, null, 2);
       configMsg.textContent = "已加载";
+      hydrateCaddyForm(json);
     }
 
     async function saveConfig() {
@@ -194,6 +255,7 @@
         if (json.ok) {
           configMsg.textContent = "保存成功";
           configArea.value = JSON.stringify(json.config, null, 2);
+          hydrateCaddyForm(json.config);
         } else {
           configMsg.textContent = "保存失败: " + (json.error || "未知错误");
         }
@@ -208,8 +270,62 @@
       if (json.ok) {
         configArea.value = JSON.stringify(json.config, null, 2);
         configMsg.textContent = "重载成功";
+        hydrateCaddyForm(json.config);
       } else {
         configMsg.textContent = "重载失败: " + (json.error || "未知错误");
+      }
+    }
+
+    function buildCaddyConfigFromForm() {
+      return {
+        enabled: !!caddyEnabled.checked,
+        domain: caddyDomain.value.trim(),
+        email: caddyEmail.value.trim(),
+        httpsPort: Number(caddyHttpsPort.value || 443),
+        upstreamHost: caddyUpstreamHost.value.trim() || "127.0.0.1",
+        upstreamPort: Number(caddyUpstreamPort.value || 3000)
+      };
+    }
+
+    function renderCaddyPreview() {
+      const cfg = buildCaddyConfigFromForm();
+      if (!cfg.enabled) {
+        caddyPreview.textContent = "Caddyfile 未启用生成";
+        return;
+      }
+      const hostPort = `${cfg.domain}:${cfg.httpsPort}`;
+      const upstream = `${cfg.upstreamHost}:${cfg.upstreamPort}`;
+      caddyPreview.textContent = `{
+  email ${cfg.email}
+}
+
+${hostPort} {
+  reverse_proxy ${upstream}
+}
+`;
+    }
+
+    function hydrateCaddyForm(config) {
+      const cfg = config?.server?.caddy || {};
+      caddyEnabled.checked = !!cfg.enabled;
+      caddyDomain.value = cfg.domain || "";
+      caddyEmail.value = cfg.email || "";
+      caddyHttpsPort.value = cfg.httpsPort ?? 443;
+      caddyUpstreamHost.value = cfg.upstreamHost || "127.0.0.1";
+      caddyUpstreamPort.value = cfg.upstreamPort ?? 3000;
+      renderCaddyPreview();
+    }
+
+    async function applyCaddyAndSave() {
+      try {
+        const next = JSON.parse(configArea.value);
+        next.server = next.server || {};
+        next.server.caddy = buildCaddyConfigFromForm();
+        configArea.value = JSON.stringify(next, null, 2);
+        await saveConfig();
+        caddyMsg.textContent = "已保存并尝试热重载 Caddy";
+      } catch {
+        caddyMsg.textContent = "应用失败: JSON 无效";
       }
     }
 
@@ -305,6 +421,12 @@
     document.getElementById("verifyBtn").onclick = verifyAad;
     document.getElementById("sendBtn").onclick = sendRequest;
     document.getElementById("refreshStatsBtn").onclick = loadStats;
+    document.getElementById("applyCaddyBtn").onclick = applyCaddyAndSave;
+    document.getElementById("refreshCaddyBtn").onclick = loadConfig;
+    [caddyEnabled, caddyDomain, caddyEmail, caddyHttpsPort, caddyUpstreamHost, caddyUpstreamPort].forEach((el) => {
+      el.addEventListener("input", renderCaddyPreview);
+      el.addEventListener("change", renderCaddyPreview);
+    });
 
     loadConfig();
     loadStats();

@@ -7,6 +7,14 @@
       "enabled": true,
       "username": "admin",
       "password": "admin"
+    },
+    "caddy": {
+      "enabled": false,
+      "domain": "proxy.example.com",
+      "email": "admin@example.com",
+      "httpsPort": 443,
+      "upstreamHost": "127.0.0.1",
+      "upstreamPort": 3000
     }
   },
   "auth": {
