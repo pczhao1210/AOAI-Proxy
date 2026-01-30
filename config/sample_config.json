@@ -1,0 +1,54 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3000,
+    "adminPath": "/admin",
+    "adminAuth": {
+      "enabled": true,
+      "username": "admin",
+      "password": "admin"
+    }
+  },
+  "auth": {
+    "mode": "servicePrincipal",
+    "tenantId": "",
+    "clientId": "",
+    "clientSecret": "",
+    "managedIdentityClientId": "",
+    "scope": "https://cognitiveservices.azure.com/.default"
+  },
+  "apiKeys": [
+    {
+      "id": "default",
+      "key": "CHANGEME",
+      "status": "active"
+    }
+  ],
+  "upstreams": [
+    {
+      "name": "foundry",
+      "baseUrl": "https://YOUR-RESOURCE-NAME.openai.azure.com/",
+      "routes": {
+        "chat/completions": "/openai/v1/chat/completions",
+        "responses": "/openai/v1/responses",
+        "images/generations": "/openai/v1/images/generations"
+      }
+    }
+  ],
+  "models": [
+    {
+      "id": "gpt-5-mini",
+      "upstream": "foundry",
+      "targetModel": "gpt-5-mini",
+      "routes": {}
+    },
+    {
+      "id": "gpt-5.2-codex",
+      "upstream": "foundry",
+      "targetModel": "gpt-5.2-codex",
+      "routes": {
+        "*": "responses"
+      }
+    }
+  ]
+}

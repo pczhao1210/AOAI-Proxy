@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Env files
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Build / coverage
+coverage/
+dist/
+
+# Local runtime artifacts
+.tmp/
+tmp/
+
+# Local config (use config/sample_config.json instead)
+config/config.json
+config/config.local.json

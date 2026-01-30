@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log*
+*.log
+.git
+.gitignore
+.vscode
+.idea
+.env
+.env.*
+coverage
+dist
+
+# Don’t bake local config into image
+config/config.json

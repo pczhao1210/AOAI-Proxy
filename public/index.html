@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AOAI Proxy Admin</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #0b1220;
+      --panel: #111827;
+      --card: #0f172a;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #22c55e;
+      --danger: #ef4444;
+      --border: #1f2937;
+      --shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 600px at 20% -10%, #1f2937 0%, #0b1220 50%, #070b14 100%);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    header {
+      padding: 28px 32px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(8px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    header h1 { margin: 0; font-size: 22px; }
+    header p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    main { padding: 24px 32px 48px; display: grid; gap: 20px; }
+    .grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+    .card h2 { margin: 0 0 10px; font-size: 16px; }
+    .card p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+    textarea, input, select {
+      width: 100%;
+      background: #0b1220;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+    }
+    textarea { min-height: 220px; resize: vertical; }
+    button {
+      background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+      border: none;
+      color: #0b1220;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-right: 8px;
+    }
+    button.secondary { background: #1f2937; color: var(--text); border: 1px solid var(--border); }
+    button.danger { background: #ef4444; color: #0b1220; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .stat {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 12px;
+      border-radius: 12px;
+      background: #0b1220;
+      border: 1px solid var(--border);
+    }
+    .stat strong { font-size: 18px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; }
+    th { color: var(--muted); font-weight: 500; }
+    code { background: #0b1220; padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AOAI Foundry Proxy Admin</h1>
+    <p>配置代理、验证 AAD、查看模型调用统计与测试 OpenAI 兼容端点</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>配置管理</h2>
+      <p>编辑 JSON 配置并保存，或重载磁盘配置。</p>
+      <textarea id="configArea"></textarea>
+      <div class="row" style="margin-top: 12px;">
+        <button id="loadBtn">加载</button>
+        <button id="saveBtn">保存</button>
+        <button id="reloadBtn" class="secondary">重载</button>
+      </div>
+      <div id="configMsg" class="muted" style="margin-top: 8px;"></div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>AAD 验证</h2>
+        <p>验证服务主体或系统分配身份是否可获取 Bearer Token。</p>
+        <button id="verifyBtn">验证 AAD</button>
+        <div id="verifyMsg" class="muted" style="margin-top: 8px;"></div>
+      </div>
+      <div class="card">
+        <h2>统计总览</h2>
+        <div class="row" id="statTotals"></div>
+        <div class="row" style="margin-top: 10px; align-items: center;">
+          <button id="refreshStatsBtn" class="secondary">刷新统计</button>
+          <div class="muted" id="statTimestamp"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>模型统计</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>模型</th>
+            <th>请求数</th>
+            <th>错误数</th>
+            <th>Prompt Tokens</th>
+            <th>Completion Tokens</th>
+            <th>Total Tokens</th>
+          </tr>
+        </thead>
+        <tbody id="modelRows"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>端点测试</h2>
+      <p>选择端点并输入 JSON 请求体，使用 API Key 调用代理。</p>
+      <div class="row">
+        <select id="endpointSelect">
+          <option value="/v1/chat/completions">/v1/chat/completions</option>
+          <option value="/v1/responses">/v1/responses</option>
+          <option value="/v1/images/generations">/v1/images/generations</option>
+        </select>
+        <input id="apiKeyInput" placeholder="API Key" />
+      </div>
+      <textarea id="payloadArea"></textarea>
+      <div class="row" style="margin-top: 12px;">
+        <button id="sendBtn">发送请求</button>
+      </div>
+      <pre id="responseArea" class="muted" style="margin-top: 12px; white-space: pre-wrap;"></pre>
+    </section>
+  </main>
+
+  <script>
+    const configArea = document.getElementById("configArea");
+    const configMsg = document.getElementById("configMsg");
+    const verifyMsg = document.getElementById("verifyMsg");
+    const statTotals = document.getElementById("statTotals");
+    const statTimestamp = document.getElementById("statTimestamp");
+    const modelRows = document.getElementById("modelRows");
+    const payloadArea = document.getElementById("payloadArea");
+    const responseArea = document.getElementById("responseArea");
+
+    payloadArea.value = JSON.stringify({
+      model: "gpt-5-mini",
+      messages: [{ role: "user", content: "你好" }],
+      stream: false
+    }, null, 2);
+
+    async function loadConfig() {
+      const res = await fetch("/admin/api/config");
+      const json = await res.json();
+      configArea.value = JSON.stringify(json, null, 2);
+      configMsg.textContent = "已加载";
+    }
+
+    async function saveConfig() {
+      try {
+        const next = JSON.parse(configArea.value);
+        const res = await fetch("/admin/api/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(next)
+        });
+        const json = await res.json();
+        if (json.ok) {
+          configMsg.textContent = "保存成功";
+          configArea.value = JSON.stringify(json.config, null, 2);
+        } else {
+          configMsg.textContent = "保存失败: " + (json.error || "未知错误");
+        }
+      } catch (e) {
+        configMsg.textContent = "保存失败: JSON 无效";
+      }
+    }
+
+    async function reloadConfig() {
+      const res = await fetch("/admin/api/reload", { method: "POST" });
+      const json = await res.json();
+      if (json.ok) {
+        configArea.value = JSON.stringify(json.config, null, 2);
+        configMsg.textContent = "重载成功";
+      } else {
+        configMsg.textContent = "重载失败: " + (json.error || "未知错误");
+      }
+    }
+
+    async function verifyAad() {
+      verifyMsg.textContent = "验证中...";
+      const res = await fetch("/admin/api/verify-aad", { method: "POST" });
+      const json = await res.json();
+      if (json.ok) {
+        verifyMsg.textContent = "验证成功: " + json.tokenPreview;
+      } else {
+        verifyMsg.textContent = "验证失败: " + (json.error || "未知错误");
+      }
+    }
+
+    function renderStats(stats) {
+      statTotals.innerHTML = "";
+      const totals = stats.totals || {};
+      const items = [
+        { label: "请求", value: totals.requests || 0 },
+        { label: "错误", value: totals.errors || 0 },
+        { label: "Prompt Tokens", value: totals.promptTokens || 0 },
+        { label: "Completion Tokens", value: totals.completionTokens || 0 },
+        { label: "Total Tokens", value: totals.totalTokens || 0 }
+      ];
+      items.forEach((item) => {
+        const div = document.createElement("div");
+        div.className = "stat";
+        div.innerHTML = `<span class="muted">${item.label}</span><strong>${item.value}</strong>`;
+        statTotals.appendChild(div);
+      });
+      statTimestamp.textContent = `开始于: ${stats.startedAt}`;
+
+      modelRows.innerHTML = "";
+      const perModel = stats.perModel || {};
+      Object.entries(perModel).forEach(([model, s]) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${model}</td>
+          <td>${s.requests || 0}</td>
+          <td>${s.errors || 0}</td>
+          <td>${s.promptTokens || 0}</td>
+          <td>${s.completionTokens || 0}</td>
+          <td>${s.totalTokens || 0}</td>
+        `;
+        modelRows.appendChild(tr);
+      });
+    }
+
+    async function loadStats() {
+      const res = await fetch("/admin/api/stats");
+      const json = await res.json();
+      renderStats(json);
+    }
+
+    async function sendRequest() {
+      responseArea.textContent = "请求中...";
+      const endpoint = document.getElementById("endpointSelect").value;
+      let payload;
+      try {
+        payload = JSON.parse(payloadArea.value);
+      } catch {
+        responseArea.textContent = "请求体 JSON 无效";
+        return;
+      }
+      const apiKey = document.getElementById("apiKeyInput").value;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": apiKey ? `Bearer ${apiKey}` : ""
+        },
+        body: JSON.stringify(payload)
+      });
+      if (payload.stream) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let text = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          text += decoder.decode(value);
+          responseArea.textContent = text;
+        }
+        return;
+      }
+      const json = await res.json().catch(() => ({}));
+      responseArea.textContent = JSON.stringify(json, null, 2);
+    }
+
+    document.getElementById("loadBtn").onclick = loadConfig;
+    document.getElementById("saveBtn").onclick = saveConfig;
+    document.getElementById("reloadBtn").onclick = reloadConfig;
+    document.getElementById("verifyBtn").onclick = verifyAad;
+    document.getElementById("sendBtn").onclick = sendRequest;
+    document.getElementById("refreshStatsBtn").onclick = loadStats;
+
+    loadConfig();
+    loadStats();
+  </script>
+</body>
+</html>
