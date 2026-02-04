@@ -1,5 +1,13 @@
 # AOAI Foundry Proxy
 
+> OpenAI-compatible reverse proxy for Azure AI Foundry / Azure OpenAI with SSE streaming, Caddy TLS, and ACI-friendly persistence.
+
+## Keywords
+OpenAI proxy, Azure AI Foundry, Azure OpenAI, SSE streaming, Caddy TLS, ACME, ACI, Fastify
+
+## Suggested Topics (add in GitHub repository settings)
+`openai` `azure` `azure-openai` `azure-ai` `proxy` `caddy` `acme` `sse` `fastify` `aci`
+
 ## Overview
 - OpenAI-compatible reverse proxy (chat/completions, responses, images)
 - Client → Proxy uses API Key
