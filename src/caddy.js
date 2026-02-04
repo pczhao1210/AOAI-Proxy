@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 
+// Default Caddyfile path
 const DEFAULT_CADDYFILE = "Caddyfile";
 
 export function getCaddyfilePath() {
@@ -9,6 +10,7 @@ export function getCaddyfilePath() {
   return path.resolve(process.cwd(), envPath);
 }
 
+// Render Caddyfile based on server.caddy
 export function renderCaddyfile(config) {
   const caddy = config?.server?.caddy;
   if (!caddy?.enabled) return null;
@@ -32,6 +34,7 @@ ${hostPort} {
 `;
 }
 
+// Write Caddyfile to disk
 export function writeCaddyfile(config) {
   const content = renderCaddyfile(config);
   if (!content) {
@@ -42,6 +45,7 @@ export function writeCaddyfile(config) {
   return { written: true, path: targetPath };
 }
 
+// Reload Caddy if enabled and Caddyfile exists
 export async function reloadCaddy(config) {
   const content = renderCaddyfile(config);
   if (!content) {

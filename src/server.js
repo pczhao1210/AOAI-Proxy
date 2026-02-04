@@ -9,12 +9,14 @@ import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
 import { writeCaddyfile, reloadCaddy } from "./caddy.js";
 
+// Fastify server entry
 const app = fastify({
   logger: {
     level: process.env.LOG_LEVEL || "info"
   }
 });
 
+// Check if a request targets the admin area
 function isAdminRoute(url, adminPath) {
   if (!url) return false;
   const normalized = (adminPath || "/admin").replace(/\/+$/, "");
@@ -23,6 +25,7 @@ function isAdminRoute(url, adminPath) {
   return normalizedUrl === normalized || normalizedUrl.startsWith(`${normalized}/`);
 }
 
+// Extract API key from Authorization or x-api-key
 function extractApiKey(headers) {
   const auth = headers.authorization || headers.Authorization;
   if (auth && typeof auth === "string" && auth.toLowerCase().startsWith("bearer ")) {
@@ -35,6 +38,7 @@ function extractApiKey(headers) {
   return null;
 }
 
+// Validate API key against active keys
 function verifyApiKey(config, key) {
   if (!key) return false;
   const activeKeys = config.apiKeys.filter((k) => k.status !== "disabled");
@@ -67,6 +71,7 @@ function parseBasicAuthHeader(headerValue) {
   };
 }
 
+// Validate admin Basic Auth when enabled
 function verifyAdminBasicAuth(config, headers) {
   const authCfg = config?.server?.adminAuth;
   if (!authCfg?.enabled) return true;

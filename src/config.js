@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+// Default config values
 const DEFAULTS = {
   server: {
     host: "0.0.0.0",
@@ -62,6 +63,7 @@ function normalizeConfig(raw) {
   return merged;
 }
 
+// Validate config structure and types
 function validateConfig(cfg) {
   if (!cfg.server || !cfg.server.port) {
     throw new Error("server.port is required");

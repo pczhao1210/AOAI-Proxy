@@ -1,5 +1,7 @@
 # AOAI Foundry Proxy
 
+[English](README.en.md)
+
 ## 概述
 - OpenAI 兼容反向代理（chat/completions、responses、images）
 - Client→Proxy 使用 API Key
@@ -97,10 +99,10 @@ ACI 部署与持久化：见 [aci_persist_vol.md](aci_persist_vol.md)
 
 ## curl 示例
 列出模型：
-- `curl -sS http://127.0.0.1:3000/v1/models -H 'authorization: Bearer 19881210' | jq .`
+- `curl -sS http://127.0.0.1:3000/v1/models -H 'authorization: Bearer CHANGEME' | jq .`
 
 调用 chat：
-- `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer 19881210' -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`
+- `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer CHANGEME' -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`
 
 ### 推荐配置形态
 - `upstreams[].baseUrl`：

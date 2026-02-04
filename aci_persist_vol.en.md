@@ -1,19 +1,17 @@
-# ACI 持久化（Azure Files）
+# ACI Persistence (Azure Files)
 
-[English](aci_persist_vol.en.md)
+This document explains how to create an Azure Files share and mount it to `/app/data` in ACI for persistent config and Caddyfile storage.
 
-本文档说明如何创建 Azure Files 共享，并在 ACI 中挂载到 `/app/data` 以实现配置与 Caddyfile 持久化。
+## Variables
+Replace the following variables as needed:
+- Resource group: `<rg>`
+- Region: `<region>` (e.g., `japaneast`)
+- Storage account: `<storage>` (globally unique, lowercase)
+- File share: `<share>`
+- Container name: `<aciName>`
+- DNS label (optional): `<dnsLabel>` (unique, lowercase)
 
-## 前置变量
-请按需替换以下变量：
-- 资源组：`<rg>`
-- 区域：`<region>`（如 `japaneast`）
-- 存储账号名：`<storage>`（全局唯一、小写）
-- 文件共享名：`<share>`
-- 容器名：`<aciName>`
-- DNS 标签（可选）：`<dnsLabel>`（唯一、小写）
-
-建议先在本机设置环境变量：
+Recommended environment variables:
 
 ```bash
 export RG=<rg>
@@ -24,13 +22,13 @@ export ACI_NAME=<aciName>
 export DNS_LABEL=<dnsLabel>
 ```
 
-## 1) 创建资源组
+## 1) Create resource group
 
 ```bash
 az group create -n "$RG" -l "$REGION"
 ```
 
-## 2) 创建存储账号
+## 2) Create storage account
 
 ```bash
 az storage account create \
@@ -41,9 +39,9 @@ az storage account create \
   --kind StorageV2
 ```
 
-## 3) 创建 Azure Files 共享
+## 3) Create Azure Files share
 
-使用 AAD（RBAC）创建共享：
+Use AAD (RBAC) to create the share:
 
 ```bash
 az storage share create \
@@ -52,13 +50,13 @@ az storage share create \
   --auth-mode login
 ```
 
-> 需要已 `az login`，并具有 Storage File Data SMB Share Contributor（或更高）权限。
+> You must be logged in (`az login`) and have Storage File Data SMB Share Contributor (or higher).
 
-## 4) 获取存储账号密钥（仅当允许 Key Based Auth）
+## 4) Get storage account key (only if Key Based Auth is allowed)
 
-> ACI 的 Azure Files 挂载目前仍需账号密钥。若存储账号禁止 Key Based Auth，需要临时启用 Shared Key access 或使用支持 AAD 挂载的替代部署方案。
+> ACI Azure Files mount currently requires the account key. If the storage account disables Key Based Auth, temporarily enable Shared Key access or use an alternative deployment.
 
-> 若出现 `InvalidApiVersionParameter`（如 `2025-06-01` 无效），请先升级 Azure CLI，或设置环境变量 `AZURE_STORAGE_API_VERSION=2025-04-01` 再执行命令。
+> If you see `InvalidApiVersionParameter` (e.g., `2025-06-01`), upgrade Azure CLI or set `AZURE_STORAGE_API_VERSION=2025-04-01` and retry.
 
 ```bash
 STORAGE_KEY=$(az storage account keys list \
@@ -69,9 +67,9 @@ STORAGE_KEY=$(az storage account keys list \
 echo "$STORAGE_KEY"
 ```
 
-## 5) 创建 ACI 并挂载 Azure Files
+## 5) Create ACI and mount Azure Files
 
-下面命令会把 Azure Files 共享挂载到 `/app/data`，与应用的持久化路径对齐。
+The following command mounts the share to `/app/data` for persistence:
 
 ```bash
 az container create \
@@ -91,17 +89,17 @@ az container create \
   --os-type Linux
 ```
 
-> 如果镜像来自公开仓库，可移除 `--registry-*` 参数。
+> If your image is public, remove the `--registry-*` arguments.
 
-## 6) 验证挂载是否生效
+## 6) Verify mount
 
-查看容器日志：
+Check container logs:
 
 ```bash
 az container logs -g "$RG" -n "$ACI_NAME"
 ```
 
-验证文件共享内容：
+List files in the share:
 
 ```bash
 az storage file list \
@@ -110,13 +108,13 @@ az storage file list \
   --output table
 ```
 
-正常情况下会看到 `config.json`（首次启动会自动生成）。后续在管理页面保存配置时，文件会写入该共享，从而实现持久化。
+You should see `config.json` (created on first start). Admin saves will update files in the share.
 
-ACME 证书与 Caddy 状态保存在 `/app/data/caddy`，请确保该目录也被挂载到 Azure Files 共享中。
+ACME certificates and Caddy state are stored in `/app/data/caddy` and must also be persisted.
 
-## 附：在 Linux VM 上挂载 Azure Files（SMB）
+## Appendix: Mount Azure Files on Linux VM (SMB)
 
-> 请勿在脚本中硬编码账号密钥；推荐使用 `/etc/smbcredentials/<storage>.cred` 管理。
+> Do not hardcode keys in scripts. Use `/etc/smbcredentials/<storage>.cred`.
 
 ```bash
 sudo mkdir -p /media/aoaiproxy
@@ -132,30 +130,28 @@ sudo mount -t cifs //<storage>.file.core.windows.net/<share> /media/aoaiproxy \
   -o credentials=/etc/smbcredentials/<storage>.cred,dir_mode=0755,file_mode=0755,serverino,nosharesock,mfsymlinks,actimeo=30
 ```
 
-## 7) 更新或重启
+## 7) Restart or re-create
 
 ```bash
 az container restart -g "$RG" -n "$ACI_NAME"
 ```
 
-如果你的 Azure CLI 版本不支持 `az container update`，请删除后重建：
+If your Azure CLI does not support `az container update`, delete and re-create:
 
 ```bash
 az container delete -g "$RG" -n "$ACI_NAME" -y
-# 然后使用上面的 az container create 命令重建
+# Then re-run the az container create command above
 ```
 
-重启后配置与 Caddyfile 仍会保留在 Azure Files 中。
+Persistence remains intact after restarts.
 
-## 8) 启用 ACI Managed Identity 并授予权限
+## 8) Enable ACI Managed Identity and grant permissions
 
-本项目使用 `DefaultAzureCredential` 获取 AAD Token。建议为 ACI 启用 **系统分配托管身份**，并授予：
-- Azure Files 共享访问（RBAC）
-- Azure OpenAI / Foundry 资源访问（RBAC）
+This project uses `DefaultAzureCredential`. Enable **system-assigned identity** and grant:
+- Azure Files access (RBAC)
+- Azure OpenAI / Foundry access (RBAC)
 
-### 8.1 启用系统分配托管身份
-
-创建 ACI 时启用：
+### 8.1 Enable system-assigned identity
 
 ```bash
 az container create \
@@ -176,16 +172,14 @@ az container create \
   --os-type Linux
 ```
 
-获取托管身份主体 ID：
+Get principal ID:
 
 ```bash
 ACI_PRINCIPAL_ID=$(az container show -g "$RG" -n "$ACI_NAME" --query identity.principalId -o tsv)
 echo "$ACI_PRINCIPAL_ID"
 ```
 
-### 8.2 授权访问 Azure Files 共享
-
-为存储账号授予 RBAC 权限（至少 `Storage File Data SMB Share Contributor`）：
+### 8.2 Grant Azure Files RBAC
 
 ```bash
 STORAGE_ID=$(az storage account show -g "$RG" -n "$STORAGE" --query id -o tsv)
@@ -197,13 +191,9 @@ az role assignment create \
   --scope "$STORAGE_ID"
 ```
 
-> 说明：ACI 的 Azure Files **挂载**目前仍需账号密钥；RBAC 主要用于运行期访问存储账号（如需 API 访问）。
+> Note: ACI Azure Files mount still needs the account key; RBAC is for runtime access.
 
-### 8.3 授权访问 Azure OpenAI / Foundry 资源
-
-对订阅级别授予访问权限（覆盖该订阅内的 AOAI/Foundry 资源）。常用角色：
-- `Cognitive Services User`（建议）
-- 或 `Cognitive Services Contributor`
+### 8.3 Grant AOAI/Foundry access at subscription scope
 
 ```bash
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
@@ -215,4 +205,4 @@ az role assignment create \
   --scope "/subscriptions/$SUBSCRIPTION_ID"
 ```
 
-完成后，容器内的 `DefaultAzureCredential` 会使用托管身份获取上游访问令牌。
+After this, `DefaultAzureCredential` will use the managed identity to acquire upstream tokens.

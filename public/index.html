@@ -34,6 +34,18 @@
       top: 0;
       z-index: 10;
     }
+    header .actions {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .header-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
     header h1 { margin: 0; font-size: 22px; }
     header p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
     main { padding: 24px 32px 48px; display: grid; gap: 20px; }
@@ -100,92 +112,100 @@
 </head>
 <body>
   <header>
-    <h1>AOAI Foundry Proxy Admin</h1>
-    <p>配置代理、验证 AAD、查看模型调用统计与测试 OpenAI 兼容端点</p>
+    <div class="header-row">
+      <div>
+        <h1 data-i18n="app.title">AOAI Foundry Proxy Admin</h1>
+        <p data-i18n="app.subtitle">配置代理、验证 AAD、查看模型调用统计与测试 OpenAI 兼容端点</p>
+      </div>
+      <div class="actions">
+        <button class="secondary" id="langZh" data-i18n="lang.zh">中文</button>
+        <button class="secondary" id="langEn" data-i18n="lang.en">English</button>
+      </div>
+    </div>
   </header>
 
   <main>
     <section class="card">
-      <h2>配置管理</h2>
-      <p>编辑 JSON 配置并保存，或重载磁盘配置。</p>
+      <h2 data-i18n="section.config.title">配置管理</h2>
+      <p data-i18n="section.config.desc">编辑 JSON 配置并保存，或重载磁盘配置。</p>
       <textarea id="configArea"></textarea>
       <div class="row" style="margin-top: 12px;">
-        <button id="loadBtn">加载</button>
-        <button id="saveBtn">保存</button>
-        <button id="reloadBtn" class="secondary">重载</button>
+        <button id="loadBtn" data-i18n="btn.load">加载</button>
+        <button id="saveBtn" data-i18n="btn.save">保存</button>
+        <button id="reloadBtn" class="secondary" data-i18n="btn.reload">重载</button>
       </div>
       <div id="configMsg" class="muted" style="margin-top: 8px;"></div>
     </section>
 
     <section class="grid">
       <div class="card">
-        <h2>AAD 验证</h2>
-        <p>验证服务主体或系统分配身份是否可获取 Bearer Token。</p>
-        <button id="verifyBtn">验证 AAD</button>
+        <h2 data-i18n="section.aad.title">AAD 验证</h2>
+        <p data-i18n="section.aad.desc">验证服务主体或系统分配身份是否可获取 Bearer Token。</p>
+        <button id="verifyBtn" data-i18n="btn.verifyAad">验证 AAD</button>
         <div id="verifyMsg" class="muted" style="margin-top: 8px;"></div>
       </div>
       <div class="card">
-        <h2>统计总览</h2>
+        <h2 data-i18n="section.stats.title">统计总览</h2>
         <div class="row" id="statTotals"></div>
         <div class="row" style="margin-top: 10px; align-items: center;">
-          <button id="refreshStatsBtn" class="secondary">刷新统计</button>
+          <button id="refreshStatsBtn" class="secondary" data-i18n="btn.refreshStats">刷新统计</button>
           <div class="muted" id="statTimestamp"></div>
         </div>
       </div>
     </section>
 
     <section class="card">
-      <h2>域名与 TLS（Caddy）</h2>
-      <p>配置独立 Caddy 进程的域名与证书邮箱，并生成 Caddyfile。</p>
+      <h2 data-i18n="section.caddy.title">域名与 TLS（Caddy）</h2>
+      <p data-i18n="section.caddy.desc">配置独立 Caddy 进程的域名与证书邮箱，并生成 Caddyfile。</p>
       <div class="row">
         <label class="inline">
           <input type="checkbox" id="caddyEnabled" />
-          <span>启用 Caddyfile 生成</span>
+          <span data-i18n="caddy.enable">启用 Caddyfile 生成</span>
         </label>
       </div>
       <div class="row" style="margin-top: 12px;">
         <div class="field">
-          <label for="caddyDomain" class="muted">域名</label>
+          <label for="caddyDomain" class="muted" data-i18n="caddy.domain">域名</label>
           <input id="caddyDomain" placeholder="proxy.example.com" />
         </div>
         <div class="field">
-          <label for="caddyEmail" class="muted">证书邮箱</label>
+          <label for="caddyEmail" class="muted" data-i18n="caddy.email">证书邮箱</label>
           <input id="caddyEmail" placeholder="admin@example.com" />
         </div>
       </div>
       <div class="row" style="margin-top: 12px;">
         <div class="field">
-          <label for="caddyHttpsPort" class="muted">TLS 入口端口</label>
+          <label for="caddyHttpsPort" class="muted" data-i18n="caddy.httpsPort">TLS 入口端口</label>
           <input id="caddyHttpsPort" type="number" min="1" max="65535" value="443" />
         </div>
         <div class="field">
-          <label for="caddyUpstreamHost" class="muted">上游地址</label>
+          <label for="caddyUpstreamHost" class="muted" data-i18n="caddy.upstreamHost">上游地址</label>
           <input id="caddyUpstreamHost" value="127.0.0.1" />
         </div>
         <div class="field">
-          <label for="caddyUpstreamPort" class="muted">上游端口</label>
+          <label for="caddyUpstreamPort" class="muted" data-i18n="caddy.upstreamPort">上游端口</label>
           <input id="caddyUpstreamPort" type="number" min="1" max="65535" value="3000" />
         </div>
       </div>
       <div class="row" style="margin-top: 12px;">
-        <button id="applyCaddyBtn">应用并保存</button>
-        <button id="refreshCaddyBtn" class="secondary">从配置加载</button>
+        <button id="applyCaddyBtn" data-i18n="btn.caddy.apply">应用并保存</button>
+        <button id="refreshCaddyBtn" class="secondary" data-i18n="btn.caddy.refresh">从配置加载</button>
         <div id="caddyMsg" class="muted" style="margin-left: 8px;"></div>
       </div>
       <div class="preview" id="caddyPreview" style="margin-top: 12px;"></div>
     </section>
 
     <section class="card">
-      <h2>模型统计</h2>
+      <h2 data-i18n="section.models.title">模型统计</h2>
       <table>
         <thead>
           <tr>
-            <th>模型</th>
-            <th>请求数</th>
-            <th>错误数</th>
-            <th>Prompt Tokens</th>
-            <th>Completion Tokens</th>
-            <th>Total Tokens</th>
+            <th data-i18n="table.model">模型</th>
+            <th data-i18n="table.requests">请求数</th>
+            <th data-i18n="table.errors">错误数</th>
+            <th data-i18n="table.promptTokens">Prompt Tokens</th>
+            <th data-i18n="table.completionTokens">Completion Tokens</th>
+            <th data-i18n="table.totalTokens">Total Tokens</th>
           </tr>
         </thead>
         <tbody id="modelRows"></tbody>
@@ -193,25 +213,27 @@
     </section>
 
     <section class="card">
-      <h2>端点测试</h2>
-      <p>选择端点并输入 JSON 请求体，使用 API Key 调用代理。</p>
+      <h2 data-i18n="section.test.title">端点测试</h2>
+      <p data-i18n="section.test.desc">选择端点并输入 JSON 请求体，使用 API Key 调用代理。</p>
       <div class="row">
         <select id="endpointSelect">
           <option value="/v1/chat/completions">/v1/chat/completions</option>
           <option value="/v1/responses">/v1/responses</option>
           <option value="/v1/images/generations">/v1/images/generations</option>
         </select>
-        <input id="apiKeyInput" placeholder="API Key" />
+        <input id="apiKeyInput" data-i18n-placeholder="placeholder.apiKey" placeholder="API Key" />
       </div>
       <textarea id="payloadArea"></textarea>
       <div class="row" style="margin-top: 12px;">
-        <button id="sendBtn">发送请求</button>
+        <button id="sendBtn" data-i18n="btn.send">发送请求</button>
       </div>
       <pre id="responseArea" class="muted" style="margin-top: 12px; white-space: pre-wrap;"></pre>
     </section>
   </main>
 
+  <script src="i18n.js"></script>
   <script>
+    const { setLanguage, t, getStoredLang, applyI18n } = window.I18N;
     const configArea = document.getElementById("configArea");
     const configMsg = document.getElementById("configMsg");
     const verifyMsg = document.getElementById("verifyMsg");
@@ -229,17 +251,19 @@
     const caddyPreview = document.getElementById("caddyPreview");
     const caddyMsg = document.getElementById("caddyMsg");
 
-    payloadArea.value = JSON.stringify({
-      model: "gpt-5-mini",
-      messages: [{ role: "user", content: "你好" }],
-      stream: false
-    }, null, 2);
+    function resetPayloadSample() {
+      payloadArea.value = JSON.stringify({
+        model: "gpt-5-mini",
+        messages: [{ role: "user", content: t("payload.greeting") }],
+        stream: false
+      }, null, 2);
+    }
 
     async function loadConfig() {
       const res = await fetch("/admin/api/config");
       const json = await res.json();
       configArea.value = JSON.stringify(json, null, 2);
-      configMsg.textContent = "已加载";
+      configMsg.textContent = t("msg.loaded");
       hydrateCaddyForm(json);
     }
 
@@ -253,14 +277,14 @@
         });
         const json = await res.json();
         if (json.ok) {
-          configMsg.textContent = "保存成功";
+          configMsg.textContent = t("msg.saved");
           configArea.value = JSON.stringify(json.config, null, 2);
           hydrateCaddyForm(json.config);
         } else {
-          configMsg.textContent = "保存失败: " + (json.error || "未知错误");
+          configMsg.textContent = `${t("msg.saveFailed")}: ${json.error || "Unknown"}`;
         }
       } catch (e) {
-        configMsg.textContent = "保存失败: JSON 无效";
+        configMsg.textContent = `${t("msg.saveFailed")}: ${t("msg.invalidJson")}`;
       }
     }
 
@@ -269,10 +293,10 @@
       const json = await res.json();
       if (json.ok) {
         configArea.value = JSON.stringify(json.config, null, 2);
-        configMsg.textContent = "重载成功";
+        configMsg.textContent = t("msg.reloadSuccess");
         hydrateCaddyForm(json.config);
       } else {
-        configMsg.textContent = "重载失败: " + (json.error || "未知错误");
+        configMsg.textContent = `${t("msg.reloadFailed")}: ${json.error || "Unknown"}`;
       }
     }
 
@@ -290,7 +314,7 @@
     function renderCaddyPreview() {
       const cfg = buildCaddyConfigFromForm();
       if (!cfg.enabled) {
-        caddyPreview.textContent = "Caddyfile 未启用生成";
+        caddyPreview.textContent = t("caddy.preview.disabled");
         return;
       }
       const hostPort = `${cfg.domain}:${cfg.httpsPort}`;
@@ -323,20 +347,20 @@ ${hostPort} {
         next.server.caddy = buildCaddyConfigFromForm();
         configArea.value = JSON.stringify(next, null, 2);
         await saveConfig();
-        caddyMsg.textContent = "已保存并尝试热重载 Caddy";
+        caddyMsg.textContent = t("caddy.msg.saved");
       } catch {
-        caddyMsg.textContent = "应用失败: JSON 无效";
+        caddyMsg.textContent = t("caddy.msg.invalid");
       }
     }
 
     async function verifyAad() {
-      verifyMsg.textContent = "验证中...";
+      verifyMsg.textContent = t("msg.verifyPending");
       const res = await fetch("/admin/api/verify-aad", { method: "POST" });
       const json = await res.json();
       if (json.ok) {
-        verifyMsg.textContent = "验证成功: " + json.tokenPreview;
+        verifyMsg.textContent = t("msg.verifyOk") + json.tokenPreview;
       } else {
-        verifyMsg.textContent = "验证失败: " + (json.error || "未知错误");
+        verifyMsg.textContent = t("msg.verifyFail") + (json.error || "Unknown");
       }
     }
 
@@ -356,7 +380,7 @@ ${hostPort} {
         div.innerHTML = `<span class="muted">${item.label}</span><strong>${item.value}</strong>`;
         statTotals.appendChild(div);
       });
-      statTimestamp.textContent = `开始于: ${stats.startedAt}`;
+      statTimestamp.textContent = `${t("msg.startedAt")}${stats.startedAt}`;
 
       modelRows.innerHTML = "";
       const perModel = stats.perModel || {};
@@ -381,13 +405,13 @@ ${hostPort} {
     }
 
     async function sendRequest() {
-      responseArea.textContent = "请求中...";
+      responseArea.textContent = t("msg.requesting");
       const endpoint = document.getElementById("endpointSelect").value;
       let payload;
       try {
         payload = JSON.parse(payloadArea.value);
       } catch {
-        responseArea.textContent = "请求体 JSON 无效";
+        responseArea.textContent = t("msg.invalidPayload");
         return;
       }
       const apiKey = document.getElementById("apiKeyInput").value;
@@ -423,11 +447,21 @@ ${hostPort} {
     document.getElementById("refreshStatsBtn").onclick = loadStats;
     document.getElementById("applyCaddyBtn").onclick = applyCaddyAndSave;
     document.getElementById("refreshCaddyBtn").onclick = loadConfig;
+    document.getElementById("langZh").onclick = () => {
+      setLanguage("zh-CN");
+      resetPayloadSample();
+    };
+    document.getElementById("langEn").onclick = () => {
+      setLanguage("en");
+      resetPayloadSample();
+    };
     [caddyEnabled, caddyDomain, caddyEmail, caddyHttpsPort, caddyUpstreamHost, caddyUpstreamPort].forEach((el) => {
       el.addEventListener("input", renderCaddyPreview);
       el.addEventListener("change", renderCaddyPreview);
     });
 
+    setLanguage(getStoredLang());
+    resetPayloadSample();
     loadConfig();
     loadStats();
   </script>
