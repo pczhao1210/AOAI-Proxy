@@ -190,9 +190,37 @@
       <div class="row" style="margin-top: 12px;">
         <button id="applyCaddyBtn" data-i18n="btn.caddy.apply">应用并保存</button>
         <button id="refreshCaddyBtn" class="secondary" data-i18n="btn.caddy.refresh">从配置加载</button>
+        <button id="restartServiceBtn" class="danger" data-i18n="btn.caddy.restart">重启服务</button>
         <div id="caddyMsg" class="muted" style="margin-left: 8px;"></div>
       </div>
       <div class="preview" id="caddyPreview" style="margin-top: 12px;"></div>
+      <div class="card" style="margin-top: 12px;">
+        <h3 data-i18n="caddy.status.title">Caddy 状态</h3>
+        <div class="row">
+          <div class="field">
+            <span class="muted" data-i18n="caddy.status.state">状态</span>
+            <strong id="caddyState"></strong>
+          </div>
+          <div class="field">
+            <span class="muted" data-i18n="caddy.status.message">信息</span>
+            <span id="caddyStateMsg" class="muted"></span>
+          </div>
+        </div>
+        <div class="row" style="margin-top: 8px;">
+          <div class="field">
+            <span class="muted" data-i18n="caddy.status.lastWrite">Caddyfile 更新时间</span>
+            <span id="caddyLastWrite" class="muted"></span>
+          </div>
+          <div class="field">
+            <span class="muted" data-i18n="caddy.status.lastReload">Reload 时间</span>
+            <span id="caddyLastReload" class="muted"></span>
+          </div>
+          <div class="field">
+            <span class="muted" data-i18n="caddy.status.lastError">错误信息</span>
+            <span id="caddyLastError" class="muted"></span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="card">
@@ -250,6 +278,11 @@
     const caddyUpstreamPort = document.getElementById("caddyUpstreamPort");
     const caddyPreview = document.getElementById("caddyPreview");
     const caddyMsg = document.getElementById("caddyMsg");
+    const caddyState = document.getElementById("caddyState");
+    const caddyStateMsg = document.getElementById("caddyStateMsg");
+    const caddyLastWrite = document.getElementById("caddyLastWrite");
+    const caddyLastReload = document.getElementById("caddyLastReload");
+    const caddyLastError = document.getElementById("caddyLastError");
 
     function resetPayloadSample() {
       payloadArea.value = JSON.stringify({
@@ -348,9 +381,45 @@ ${hostPort} {
         configArea.value = JSON.stringify(next, null, 2);
         await saveConfig();
         caddyMsg.textContent = t("caddy.msg.saved");
+        await loadCaddyStatus();
       } catch {
         caddyMsg.textContent = t("caddy.msg.invalid");
       }
+    }
+
+    async function loadCaddyStatus() {
+      const res = await fetch("/admin/api/caddy/status");
+      const json = await res.json();
+      if (!json.ok) return;
+      const status = json.status || {};
+      const stateKey = `caddy.state.${status.state || "disabled"}`;
+      caddyState.textContent = t(stateKey);
+      caddyStateMsg.textContent = status.message || "";
+      caddyLastWrite.textContent = status.lastWriteAt || "";
+      caddyLastReload.textContent = status.lastReloadAt || "";
+      caddyLastError.textContent = status.lastError || "";
+      return status;
+    }
+
+    async function restartService() {
+      caddyMsg.textContent = t("caddy.state.restart-requested");
+      await fetch("/admin/api/restart", { method: "POST" });
+      startCaddyStatusPolling();
+    }
+
+    function startCaddyStatusPolling() {
+      const start = Date.now();
+      const interval = setInterval(async () => {
+        const status = await loadCaddyStatus();
+        const state = status?.state;
+        if (state === "running" || state === "error") {
+          clearInterval(interval);
+          return;
+        }
+        if (Date.now() - start > 60000) {
+          clearInterval(interval);
+        }
+      }, 2000);
     }
 
     async function verifyAad() {
@@ -447,6 +516,7 @@ ${hostPort} {
     document.getElementById("refreshStatsBtn").onclick = loadStats;
     document.getElementById("applyCaddyBtn").onclick = applyCaddyAndSave;
     document.getElementById("refreshCaddyBtn").onclick = loadConfig;
+    document.getElementById("restartServiceBtn").onclick = restartService;
     document.getElementById("langZh").onclick = () => {
       setLanguage("zh-CN");
       resetPayloadSample();
@@ -464,6 +534,7 @@ ${hostPort} {
     resetPayloadSample();
     loadConfig();
     loadStats();
+    loadCaddyStatus();
   </script>
 </body>
 </html>

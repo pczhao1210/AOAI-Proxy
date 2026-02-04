@@ -8,6 +8,15 @@ export CONFIG_PATH
 
 # Persist Caddy data (certs, account, locks)
 export CADDY_DATA_DIR=${CADDY_DATA_DIR:-$DATA_DIR/caddy}
+# Ensure Caddy uses persistent data dir
+export XDG_DATA_HOME=${XDG_DATA_HOME:-$CADDY_DATA_DIR}
+# Caddy binary path
+export CADDY_BIN=${CADDY_BIN:-/usr/sbin/caddy}
+
+if [ ! -x "$CADDY_BIN" ]; then
+  CADDY_BIN=$(command -v caddy || echo "$CADDY_BIN")
+  export CADDY_BIN
+fi
 
 mkdir -p "$DATA_DIR"
 mkdir -p "$CADDY_DATA_DIR"
@@ -42,7 +51,7 @@ for i in 1 2 3 4 5; do
 done
 
 if [ -f "$CADDYFILE_PATH" ]; then
-  caddy run --config "$CADDYFILE_PATH" --adapter caddyfile &
+  "$CADDY_BIN" run --config "$CADDYFILE_PATH" --adapter caddyfile &
   CADDY_PID=$!
   wait $NODE_PID $CADDY_PID
 else

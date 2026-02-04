@@ -54,6 +54,8 @@ ACI 部署与持久化：见 [aci_persist_vol.md](aci_persist_vol.md)
 2. 启动 Caddy：
    - `caddy run --config /app/data/Caddyfile --adapter caddyfile`
 
+如遇到 `spawn caddy ENOENT`，请确认容器内已安装 Caddy，或设置 `CADDY_BIN=/usr/sbin/caddy`。
+
 注意：ACME 证书签发通常需要 80/443 可达用于校验（HTTP-01/TLS-ALPN-01）。
 如果你的环境只开放 3001，请改用 DNS-01 验证并配置对应的 DNS 提供商凭据。
 

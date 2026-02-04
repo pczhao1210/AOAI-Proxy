@@ -7,7 +7,7 @@ import { getConfig, reloadConfig, saveConfig, getConfigPath } from "./config.js"
 import { initAuth, getBearerToken } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
-import { writeCaddyfile, reloadCaddy } from "./caddy.js";
+import { writeCaddyfile, reloadCaddy, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 
 // Fastify server entry
 const app = fastify({
@@ -186,6 +186,18 @@ app.post("/admin/api/verify-aad", async (req, reply) => {
 
 app.get("/admin/api/stats", async () => {
   return getStats();
+});
+
+app.get("/admin/api/caddy/status", async () => {
+  return { ok: true, status: getCaddyStatus() };
+});
+
+app.post("/admin/api/restart", async (req, reply) => {
+  setCaddyStatus({ state: "restart-requested", message: "restart requested", lastError: null });
+  reply.send({ ok: true });
+  setTimeout(() => {
+    process.exit(0);
+  }, 500);
 });
 
 const publicRoot = path.resolve(process.cwd(), "public");

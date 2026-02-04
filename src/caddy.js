@@ -4,10 +4,36 @@ import { execFile } from "node:child_process";
 
 // Default Caddyfile path
 const DEFAULT_CADDYFILE = "Caddyfile";
+const DEFAULT_CADDY_BIN = "/usr/sbin/caddy";
+
+let caddyStatus = {
+  enabled: false,
+  state: "disabled",
+  message: "",
+  lastWriteAt: null,
+  lastReloadAt: null,
+  lastError: null
+};
+
+function setStatus(patch) {
+  caddyStatus = { ...caddyStatus, ...patch };
+}
+
+export function getCaddyStatus() {
+  return caddyStatus;
+}
+
+export function setCaddyStatus(patch) {
+  setStatus(patch);
+}
 
 export function getCaddyfilePath() {
   const envPath = process.env.CADDYFILE_PATH || DEFAULT_CADDYFILE;
   return path.resolve(process.cwd(), envPath);
+}
+
+function getCaddyBin() {
+  return process.env.CADDY_BIN || DEFAULT_CADDY_BIN;
 }
 
 // Render Caddyfile based on server.caddy
@@ -29,6 +55,10 @@ export function renderCaddyfile(config) {
 }
 
 ${hostPort} {
+  log {
+    output stdout
+    level INFO
+  }
   reverse_proxy ${upstream}
 }
 `;
@@ -38,10 +68,18 @@ ${hostPort} {
 export function writeCaddyfile(config) {
   const content = renderCaddyfile(config);
   if (!content) {
+    setStatus({ enabled: false, state: "disabled", message: "disabled", lastError: null });
     return { written: false, reason: "disabled" };
   }
   const targetPath = getCaddyfilePath();
   fs.writeFileSync(targetPath, content, "utf8");
+  setStatus({
+    enabled: true,
+    state: "configured",
+    message: "caddyfile written",
+    lastWriteAt: new Date().toISOString(),
+    lastError: null
+  });
   return { written: true, path: targetPath };
 }
 
@@ -49,16 +87,34 @@ export function writeCaddyfile(config) {
 export async function reloadCaddy(config) {
   const content = renderCaddyfile(config);
   if (!content) {
+    setStatus({ enabled: false, state: "disabled", message: "disabled", lastError: null });
     return { reloaded: false, reason: "disabled" };
   }
   const targetPath = getCaddyfilePath();
   return new Promise((resolve) => {
-    execFile("caddy", ["reload", "--config", targetPath, "--adapter", "caddyfile"], (error, stdout, stderr) => {
+    execFile(getCaddyBin(), ["reload", "--config", targetPath, "--adapter", "caddyfile"], (error, stdout, stderr) => {
       if (error) {
-        resolve({ reloaded: false, error: stderr || error.message });
+        const message = String(stderr || error.message || "reload failed");
+        const needsRestart = /connect|dial|refused|no such file|admin/i.test(message);
+        setStatus({
+          enabled: true,
+          state: needsRestart ? "restart-needed" : "error",
+          message,
+          lastReloadAt: new Date().toISOString(),
+          lastError: message
+        });
+        resolve({ reloaded: false, error: message });
         return;
       }
-      resolve({ reloaded: true, output: stdout?.trim() });
+      const output = stdout?.trim() || "reloaded";
+      setStatus({
+        enabled: true,
+        state: "running",
+        message: output,
+        lastReloadAt: new Date().toISOString(),
+        lastError: null
+      });
+      resolve({ reloaded: true, output });
     });
   });
 }
