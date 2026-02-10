@@ -251,6 +251,34 @@
         </select>
         <input id="apiKeyInput" data-i18n-placeholder="placeholder.apiKey" placeholder="API Key" />
       </div>
+      <div class="row" style="margin-top: 10px; align-items: center;">
+        <label class="inline">
+          <input type="checkbox" id="compressEnabled" />
+          <span data-i18n="compress.enable">启用图片压缩</span>
+        </label>
+        <div class="field" style="min-width: 240px; flex: 0 0 260px;">
+          <label for="compressPreset" class="muted" data-i18n="compress.preset">压缩预设</label>
+          <select id="compressPreset">
+            <option value="light" data-i18n="compress.preset.light">轻度（1600px / 0.85）</option>
+            <option value="standard" data-i18n="compress.preset.standard">标准（1280px / 0.8）</option>
+            <option value="strong" data-i18n="compress.preset.strong">强力（1024px / 0.7）</option>
+          </select>
+        </div>
+      </div>
+      <div class="row" style="margin-top: 10px; align-items: center;">
+        <div class="field" style="min-width: 260px; flex: 0 0 320px;">
+          <label for="imageFileInput" class="muted" data-i18n="compress.file.label">图片文件</label>
+          <input id="imageFileInput" type="file" accept="image/*" />
+        </div>
+        <button id="insertDataUrlBtn" class="secondary" data-i18n="compress.placeholder.dataUrl">插入 __IMAGE_DATA_URL__</button>
+        <button id="insertBase64Btn" class="secondary" data-i18n="compress.placeholder.base64">插入 __IMAGE_BASE64__</button>
+        <button id="applyCompressConfigBtn" class="secondary" data-i18n="compress.apply">应用到配置并保存</button>
+      </div>
+      <div class="muted" id="imageFileInfo" style="margin-top: 6px;"></div>
+      <div class="muted" id="placeholderNote" data-i18n="compress.placeholder.note" style="margin-top: 6px;"></div>
+      <div class="muted" id="compressNote" data-i18n="compress.note" style="margin-top: 6px;"></div>
+      <div class="muted" id="compressStats" style="margin-top: 6px;"></div>
+      <div class="muted" id="payloadNote" style="margin-top: 6px;"></div>
       <textarea id="payloadArea"></textarea>
       <div class="row" style="margin-top: 12px;">
         <button id="sendBtn" data-i18n="btn.send">发送请求</button>
@@ -270,6 +298,13 @@
     const modelRows = document.getElementById("modelRows");
     const payloadArea = document.getElementById("payloadArea");
     const responseArea = document.getElementById("responseArea");
+    const compressEnabled = document.getElementById("compressEnabled");
+    const compressPreset = document.getElementById("compressPreset");
+    const compressStats = document.getElementById("compressStats");
+    const imageFileInput = document.getElementById("imageFileInput");
+    const imageFileInfo = document.getElementById("imageFileInfo");
+    const payloadNote = document.getElementById("payloadNote");
+    const applyCompressConfigBtn = document.getElementById("applyCompressConfigBtn");
     const caddyEnabled = document.getElementById("caddyEnabled");
     const caddyDomain = document.getElementById("caddyDomain");
     const caddyEmail = document.getElementById("caddyEmail");
@@ -292,12 +327,37 @@
       }, null, 2);
     }
 
+    let lastLoadedConfigText = "";
+
+    function setLoadedConfigText() {
+      lastLoadedConfigText = configArea.value || "";
+    }
+
+    function isConfigDirty() {
+      return (configArea.value || "") !== (lastLoadedConfigText || "");
+    }
+
+    function pickPresetFromConfig(cfg) {
+      const maxSize = Number.isFinite(cfg?.maxSize) ? cfg.maxSize : 1600;
+      if (maxSize >= 1500) return "light";
+      if (maxSize >= 1200) return "standard";
+      return "strong";
+    }
+
+    function hydrateCompressionFromConfig(config) {
+      const cfg = config?.server?.imageCompression || {};
+      compressEnabled.checked = cfg.enabled !== false;
+      compressPreset.value = pickPresetFromConfig(cfg);
+    }
+
     async function loadConfig() {
       const res = await fetch("/admin/api/config");
       const json = await res.json();
       configArea.value = JSON.stringify(json, null, 2);
       configMsg.textContent = t("msg.loaded");
       hydrateCaddyForm(json);
+      hydrateCompressionFromConfig(json);
+      setLoadedConfigText();
     }
 
     async function saveConfig() {
@@ -313,6 +373,8 @@
           configMsg.textContent = t("msg.saved");
           configArea.value = JSON.stringify(json.config, null, 2);
           hydrateCaddyForm(json.config);
+          hydrateCompressionFromConfig(json.config);
+          setLoadedConfigText();
         } else {
           configMsg.textContent = `${t("msg.saveFailed")}: ${json.error || "Unknown"}`;
         }
@@ -328,6 +390,8 @@
         configArea.value = JSON.stringify(json.config, null, 2);
         configMsg.textContent = t("msg.reloadSuccess");
         hydrateCaddyForm(json.config);
+        hydrateCompressionFromConfig(json.config);
+        setLoadedConfigText();
       } else {
         configMsg.textContent = `${t("msg.reloadFailed")}: ${json.error || "Unknown"}`;
       }
@@ -362,6 +426,210 @@ ${hostPort} {
 `;
     }
 
+    const compressionPresets = {
+      light: { maxSize: 1600, quality: 0.85 },
+      standard: { maxSize: 1280, quality: 0.8 },
+      strong: { maxSize: 1024, quality: 0.7 }
+    };
+
+    function isDataUrl(value) {
+      return typeof value === "string" && /^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(value);
+    }
+
+    function detectBase64Mime(value) {
+      if (value.startsWith("/9j/")) return "image/jpeg";
+      if (value.startsWith("iVBOR")) return "image/png";
+      if (value.startsWith("UklGR")) return "image/webp";
+      return null;
+    }
+
+    function collectImageTargets(value, results, parent, key) {
+      if (typeof value === "string") {
+        if (isDataUrl(value)) {
+          results.push({ parent, key, value, type: "dataUrl" });
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => collectImageTargets(item, results, value, index));
+        return;
+      }
+      if (value && typeof value === "object") {
+        Object.entries(value).forEach(([k, v]) => {
+          if (typeof v === "string" && k === "image_base64" && !isDataUrl(v)) {
+            const mime = detectBase64Mime(v);
+            if (mime) {
+              results.push({ parent: value, key: k, value: v, type: "base64", mime });
+              return;
+            }
+          }
+          collectImageTargets(v, results, value, k);
+        });
+      }
+    }
+
+    function estimateDataUrlBytes(dataUrl) {
+      const base64 = dataUrl.split(",")[1] || "";
+      return Math.floor((base64.length * 3) / 4);
+    }
+
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+      const units = ["B", "KB", "MB", "GB"];
+      let idx = 0;
+      let val = bytes;
+      while (val >= 1024 && idx < units.length - 1) {
+        val /= 1024;
+        idx += 1;
+      }
+      return `${val.toFixed(val >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+    }
+
+    function updatePayloadAreaSafely(payload) {
+      const json = JSON.stringify(payload, null, 2);
+      if (json.length > 200000) {
+        payloadNote.textContent = t("payload.tooLarge");
+        return;
+      }
+      payloadNote.textContent = "";
+      payloadArea.value = json;
+    }
+
+    function loadImage(dataUrl) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = dataUrl;
+      });
+    }
+
+    async function compressDataUrl(dataUrl, preset) {
+      const img = await loadImage(dataUrl);
+      const maxSize = preset.maxSize;
+      const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+      const targetW = Math.max(1, Math.round(img.width * scale));
+      const targetH = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      return canvas.toDataURL("image/jpeg", preset.quality);
+    }
+
+    async function compressPayloadImages(payload) {
+      const targets = [];
+      collectImageTargets(payload, targets, null, null);
+      if (!targets.length) {
+        compressStats.textContent = t("compress.stats.none");
+        return payload;
+      }
+
+      const preset = compressionPresets[compressPreset.value] || compressionPresets.standard;
+      let before = 0;
+      let after = 0;
+      let count = 0;
+
+      for (const target of targets) {
+        let dataUrl = target.type === "base64" ? `data:${target.mime};base64,${target.value}` : target.value;
+        before += estimateDataUrlBytes(dataUrl);
+        try {
+          const compressed = await compressDataUrl(dataUrl, preset);
+          after += estimateDataUrlBytes(compressed);
+          count += 1;
+          if (target.type === "base64") {
+            target.parent[target.key] = compressed.split(",")[1];
+          } else {
+            target.parent[target.key] = compressed;
+          }
+        } catch {
+          // Skip compression failures and keep original
+        }
+      }
+
+      compressStats.textContent = `${t("compress.stats")}: ${count}, ${formatBytes(before)} -> ${formatBytes(after)}`;
+      return payload;
+    }
+
+    function insertPlaceholder(text) {
+      const template = {
+        model: "gpt-5-mini",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: t("payload.greeting") },
+              { type: "image_url", image_url: { url: text } }
+            ]
+          }
+        ],
+        stream: false
+      };
+      payloadArea.value = JSON.stringify(template, null, 2);
+      payloadArea.focus();
+    }
+
+    function replacePlaceholders(value, dataUrl, base64, meta) {
+      if (typeof value === "string") {
+        if (value === "__IMAGE_DATA_URL__") {
+          meta.replaced += 1;
+          return dataUrl;
+        }
+        if (value === "__IMAGE_BASE64__") {
+          meta.replaced += 1;
+          return base64;
+        }
+        return value;
+      }
+      if (Array.isArray(value)) {
+        return value.map((item) => replacePlaceholders(item, dataUrl, base64, meta));
+      }
+      if (value && typeof value === "object") {
+        const out = Array.isArray(value) ? [] : { ...value };
+        Object.entries(value).forEach(([k, v]) => {
+          out[k] = replacePlaceholders(v, dataUrl, base64, meta);
+        });
+        return out;
+      }
+      return value;
+    }
+
+    async function maybeInjectImageFromFile(payload) {
+      const file = imageFileInput.files?.[0];
+      if (!file) {
+        imageFileInfo.textContent = t("compress.file.none");
+        return payload;
+      }
+      imageFileInfo.textContent = `${t("compress.file.selected")}: ${file.name} (${formatBytes(file.size)})`;
+      const preset = compressionPresets[compressPreset.value] || compressionPresets.standard;
+      const originalDataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      let dataUrl = originalDataUrl;
+      if (compressEnabled.checked) {
+        try {
+          dataUrl = await compressDataUrl(originalDataUrl, preset);
+        } catch {
+          dataUrl = originalDataUrl;
+        }
+      }
+      const base64 = dataUrl.split(",")[1] || "";
+      const meta = { replaced: 0 };
+      const next = replacePlaceholders(payload, dataUrl, base64, meta);
+      if (meta.replaced === 0) {
+        compressStats.textContent = t("compress.placeholder.missing");
+        return next;
+      }
+      const beforeBytes = estimateDataUrlBytes(originalDataUrl);
+      const afterBytes = estimateDataUrlBytes(dataUrl);
+      compressStats.textContent = `${t("compress.stats")}: ${meta.replaced}, ${formatBytes(beforeBytes)} -> ${formatBytes(afterBytes)}`;
+      return next;
+    }
+
     function hydrateCaddyForm(config) {
       const cfg = config?.server?.caddy || {};
       caddyEnabled.checked = !!cfg.enabled;
@@ -384,6 +652,28 @@ ${hostPort} {
         await loadCaddyStatus();
       } catch {
         caddyMsg.textContent = t("caddy.msg.invalid");
+      }
+    }
+
+    async function applyCompressionToConfig() {
+      try {
+        if (isConfigDirty() && !window.confirm(t("compress.apply.confirm"))) {
+          return;
+        }
+        const next = JSON.parse(configArea.value);
+        next.server = next.server || {};
+        const preset = compressionPresets[compressPreset.value] || compressionPresets.standard;
+        next.server.imageCompression = {
+          enabled: !!compressEnabled.checked,
+          maxSize: preset.maxSize,
+          quality: preset.quality,
+          format: "jpeg"
+        };
+        configArea.value = JSON.stringify(next, null, 2);
+        await saveConfig();
+        compressStats.textContent = t("compress.apply.ok");
+      } catch {
+        compressStats.textContent = t("compress.apply.invalid");
       }
     }
 
@@ -483,6 +773,14 @@ ${hostPort} {
         responseArea.textContent = t("msg.invalidPayload");
         return;
       }
+      payload = await maybeInjectImageFromFile(payload);
+      if (compressEnabled.checked && !imageFileInput.files?.length) {
+        payload = await compressPayloadImages(payload);
+      }
+      if (!compressEnabled.checked) {
+        compressStats.textContent = "";
+      }
+      updatePayloadAreaSafely(payload);
       const apiKey = document.getElementById("apiKeyInput").value;
       const res = await fetch(endpoint, {
         method: "POST",
@@ -517,6 +815,15 @@ ${hostPort} {
     document.getElementById("applyCaddyBtn").onclick = applyCaddyAndSave;
     document.getElementById("refreshCaddyBtn").onclick = loadConfig;
     document.getElementById("restartServiceBtn").onclick = restartService;
+    document.getElementById("insertDataUrlBtn").onclick = () => insertPlaceholder("__IMAGE_DATA_URL__");
+    document.getElementById("insertBase64Btn").onclick = () => insertPlaceholder("__IMAGE_BASE64__");
+    applyCompressConfigBtn.onclick = applyCompressionToConfig;
+    imageFileInput.onchange = () => {
+      const file = imageFileInput.files?.[0];
+      imageFileInfo.textContent = file
+        ? `${t("compress.file.selected")}: ${file.name} (${formatBytes(file.size)})`
+        : t("compress.file.none");
+    };
     document.getElementById("langZh").onclick = () => {
       setLanguage("zh-CN");
       resetPayloadSample();

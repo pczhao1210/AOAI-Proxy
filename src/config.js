@@ -19,6 +19,12 @@ const DEFAULTS = {
       httpsPort: 443,
       upstreamHost: "127.0.0.1",
       upstreamPort: 3000
+    },
+    imageCompression: {
+      enabled: true,
+      maxSize: 1600,
+      quality: 0.85,
+      format: "jpeg"
     }
   },
   auth: {
@@ -112,6 +118,27 @@ function validateConfig(cfg) {
       if (!password || typeof password !== "string") {
         throw new Error("server.adminAuth.password must be a non-empty string when enabled");
       }
+    }
+  }
+  if (cfg.server.imageCompression != null) {
+    if (typeof cfg.server.imageCompression !== "object") {
+      throw new Error("server.imageCompression must be an object");
+    }
+    const { enabled, maxSize, quality, format } = cfg.server.imageCompression;
+    if (enabled != null && typeof enabled !== "boolean") {
+      throw new Error("server.imageCompression.enabled must be a boolean");
+    }
+    if (maxSize != null && (typeof maxSize !== "number" || maxSize <= 0)) {
+      throw new Error("server.imageCompression.maxSize must be a positive number");
+    }
+    if (quality != null && (typeof quality !== "number" || quality <= 0 || quality > 1)) {
+      throw new Error("server.imageCompression.quality must be between 0 and 1");
+    }
+    if (format != null && typeof format !== "string") {
+      throw new Error("server.imageCompression.format must be a string");
+    }
+    if (format && !["jpeg", "webp"].includes(format)) {
+      throw new Error("server.imageCompression.format must be jpeg or webp");
     }
   }
   if (!cfg.auth || !cfg.auth.scope) {

@@ -51,6 +51,21 @@ Run (ports + persistent volume):
 
 Note: The container uses `DefaultAzureCredential`. Provide AAD credentials via env or managed identity.
 
+For large image payloads, adjust body limit (bytes):
+- `BODY_LIMIT=52428800` (default 50MB)
+
+## Image Compression (All Traffic)
+The server compresses image data before forwarding (only `data:image/*` or `image_base64` fields). Configure via:
+
+```json
+"imageCompression": {
+  "enabled": true,
+  "maxSize": 1600,
+  "quality": 0.85,
+  "format": "jpeg"
+}
+```
+
 ## Caddy TLS (Port 443)
 Use “Domain & TLS (Caddy)” in the admin UI to configure domain/email/port. Saving generates the Caddyfile and attempts reload.
 
@@ -109,3 +124,34 @@ Call chat:
 
 ## ACI Persistence
 See [aci_persist_vol.en.md](aci_persist_vol.en.md)
+
+## ACI Image Update
+Per the official guidance, update by re-running `az container create` with the same name. If `az container update` is unavailable, follow this approach:
+
+1. Maintain your deployment parameters (YAML or script).
+2. Update the image (prefer digest).
+3. Re-run `az container create` with the same name to redeploy.
+
+Example (replace placeholders):
+
+```bash
+az container create \
+  -g <resource-group> \
+  -n <container-name> \
+  --image <registry>/<image>@sha256:<digest> \
+  --registry-login-server <registry> \
+  --registry-username <username> \
+  --registry-password <password> \
+  --cpu 1 --memory 2 \
+  --ports 3000 443 \
+  --dns-name-label <dns-label> \
+  --azure-file-volume-account-name <storage-account> \
+  --azure-file-volume-account-key <storage-key> \
+  --azure-file-volume-share-name <share> \
+  --azure-file-volume-mount-path /app/data \
+  --os-type Linux
+```
+
+## Update History
+- 2026-02-10: Image compression for all traffic, admin placeholder injection, ACI update notes
+- 2026-02-04: Caddy status panel and hot reload, ACME stdout logs, i18n support

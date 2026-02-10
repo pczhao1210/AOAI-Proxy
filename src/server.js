@@ -10,10 +10,15 @@ import { getStats } from "./stats.js";
 import { writeCaddyfile, reloadCaddy, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 
 // Fastify server entry
+const defaultBodyLimit = 50 * 1024 * 1024;
+const bodyLimitEnv = Number(process.env.BODY_LIMIT || process.env.SERVER_BODY_LIMIT);
+const bodyLimit = Number.isFinite(bodyLimitEnv) && bodyLimitEnv > 0 ? bodyLimitEnv : defaultBodyLimit;
+
 const app = fastify({
   logger: {
     level: process.env.LOG_LEVEL || "info"
-  }
+  },
+  bodyLimit
 });
 
 // Check if a request targets the admin area

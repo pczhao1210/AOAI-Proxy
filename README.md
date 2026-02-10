@@ -55,6 +55,21 @@ ACI 部署与持久化：见 [aci_persist_vol.md](aci_persist_vol.md)
 
 说明：容器里仍使用 `DefaultAzureCredential`，请按你的运行环境提供 AAD 凭据（环境变量/托管身份等）。
 
+大尺寸图片请求可通过环境变量调整请求体限制（字节）：
+- `BODY_LIMIT=52428800`（默认 50MB）
+
+## 图片压缩（全量流量）
+服务端会在转发前压缩请求中的图片数据（仅处理 `data:image/*` 或 `image_base64` 字段）。可在配置中调整：
+
+```json
+"imageCompression": {
+   "enabled": true,
+   "maxSize": 1600,
+   "quality": 0.85,
+   "format": "jpeg"
+}
+```
+
 ## Caddy TLS（入口端口 443）
 可在管理页的「域名与 TLS（Caddy）」中配置域名/邮箱/端口。保存后服务会自动生成 Caddyfile，并尝试热重载 Caddy。
 
@@ -66,6 +81,33 @@ ACI 部署与持久化：见 [aci_persist_vol.md](aci_persist_vol.md)
 
 注意：ACME 证书签发通常需要 80/443 可达用于校验（HTTP-01/TLS-ALPN-01）。
 如果你的环境只开放 3001，请改用 DNS-01 验证并配置对应的 DNS 提供商凭据。
+
+## ACI 更新镜像
+参考官方文档：通过重新执行 `az container create`（同名）进行更新。若你的 CLI 不支持 `az container update`，请按以下方式更新：
+
+1. 导出或维护一份容器创建参数（推荐使用 YAML 或脚本）。
+2. 修改镜像（建议使用 digest）。
+3. 重新执行 `az container create`（同名），容器会重建并拉取新镜像。
+
+示例（请替换占位符）：
+
+```bash
+az container create \
+   -g <resource-group> \
+   -n <container-name> \
+   --image <registry>/<image>@sha256:<digest> \
+   --registry-login-server <registry> \
+   --registry-username <username> \
+   --registry-password <password> \
+   --cpu 1 --memory 2 \
+   --ports 3000 443 \
+   --dns-name-label <dns-label> \
+   --azure-file-volume-account-name <storage-account> \
+   --azure-file-volume-account-key <storage-key> \
+   --azure-file-volume-share-name <share> \
+   --azure-file-volume-mount-path /app/data \
+   --os-type Linux
+```
 
 ## 上游（Foundry v1）要点
 - Foundry v1 的数据面路径前缀是 `/openai/v1`（例如：`POST {endpoint}/openai/v1/chat/completions`）。
@@ -122,3 +164,8 @@ ACI 部署与持久化：见 [aci_persist_vol.md](aci_persist_vol.md)
    - `chat/completions`: `/openai/v1/chat/completions`
    - `responses`: `/openai/v1/responses`
    - `images/generations`: `/openai/v1/images/generations`
+
+
+### 更新历史
+- 2026-02-10: 全量流量图片压缩、管理页压缩占位符、ACI 更新说明
+- 2026-02-04: Caddy 状态面板与热重载、ACME 日志输出、i18n 支持

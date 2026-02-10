@@ -15,6 +15,12 @@
       "httpsPort": 443,
       "upstreamHost": "127.0.0.1",
       "upstreamPort": 3000
+    },
+    "imageCompression": {
+      "enabled": true,
+      "maxSize": 1600,
+      "quality": 0.85,
+      "format": "jpeg"
     }
   },
   "auth": {
