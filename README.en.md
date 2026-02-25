@@ -37,6 +37,12 @@ OpenAI proxy, Azure AI Foundry, Azure OpenAI, SSE streaming, Caddy TLS, ACME, AC
 ### Admin Login (HTTP Basic)
 Controlled by `server.adminAuth`. When enabled, protects `/admin` and `/admin/api/*`.
 
+## Stats Notes
+- Stats are in-memory only; restart resets counters.
+- `usage` is taken from upstream responses: non-stream JSON `usage`, and stream `data:` events that carry `usage` or `response.usage`.
+- If upstream returns `prompt_tokens_details.cached_tokens` or `input_tokens_details.cached_tokens`, they are tracked as Cached Tokens.
+- The proxy strips `stream_options` to avoid Foundry v1 `unknown_parameter` errors.
+
 ## Docker
 The image copies `config/sample_config.json` to `/app/config/config.json` and enables admin login by default (`admin/admin`).
 On startup, the default config is copied to `/app/data/config.json` (mount this path to persist).
@@ -153,5 +159,6 @@ az container create \
 ```
 
 ## Update History
+- 2026-02-25: Cached Tokens stats, Responses streaming usage capture, stream_options stripped by default
 - 2026-02-10: Image compression for all traffic, admin placeholder injection, ACI update notes
 - 2026-02-04: Caddy status panel and hot reload, ACME stdout logs, i18n support

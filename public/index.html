@@ -728,12 +728,12 @@ ${hostPort} {
       statTotals.innerHTML = "";
       const totals = stats.totals || {};
       const items = [
-        { label: "请求", value: totals.requests || 0 },
-        { label: "错误", value: totals.errors || 0 },
-        { label: "Prompt Tokens", value: totals.promptTokens || 0 },
-        { label: "Cached Tokens", value: totals.cachedTokens || 0 },
-        { label: "Completion Tokens", value: totals.completionTokens || 0 },
-        { label: "Total Tokens", value: totals.totalTokens || 0 }
+        { label: t("table.requests"), value: totals.requests || 0 },
+        { label: t("table.errors"), value: totals.errors || 0 },
+        { label: t("table.promptTokens"), value: totals.promptTokens || 0 },
+        { label: t("table.cachedTokens"), value: totals.cachedTokens || 0 },
+        { label: t("table.completionTokens"), value: totals.completionTokens || 0 },
+        { label: t("table.totalTokens"), value: totals.totalTokens || 0 }
       ];
       items.forEach((item) => {
         const div = document.createElement("div");
@@ -830,10 +830,16 @@ ${hostPort} {
     document.getElementById("langZh").onclick = () => {
       setLanguage("zh-CN");
       resetPayloadSample();
+      loadStats();
+      loadCaddyStatus();
+      renderCaddyPreview();
     };
     document.getElementById("langEn").onclick = () => {
       setLanguage("en");
       resetPayloadSample();
+      loadStats();
+      loadCaddyStatus();
+      renderCaddyPreview();
     };
     [caddyEnabled, caddyDomain, caddyEmail, caddyHttpsPort, caddyUpstreamHost, caddyUpstreamPort].forEach((el) => {
       el.addEventListener("input", renderCaddyPreview);

@@ -39,6 +39,12 @@ OpenAI proxy, Azure AI Foundry, Azure OpenAI, SSE streaming, Caddy TLS, ACME, AC
 ### 管理登录（HTTP Basic）
 通过 `server.adminAuth` 配置；启用后保护范围：`/admin` 及 `/admin/api/*`。
 
+## 统计说明
+- 统计为内存累计，服务重启会清零。
+- `usage` 来自上游响应：非流式 JSON 的 `usage`，以及流式 `data:` 事件中的 `usage` 或 `response.usage`。
+- 若上游返回 `prompt_tokens_details.cached_tokens` 或 `input_tokens_details.cached_tokens`，会统计为 Cached Tokens。
+- 代理会剔除请求中的 `stream_options` 以避免 Foundry v1 `unknown_parameter`。
+
 ## Docker
 镜像内会把 `config/sample_config.json` 复制为默认配置文件 `/app/config/config.json`，并默认开启管理登录（`admin/admin`）。
 容器启动时会将默认配置复制到 `/app/data/config.json`（可挂载持久化卷）。
@@ -167,5 +173,6 @@ az container create \
 
 
 ### 更新历史
+- 2026-02-25: Cached Tokens 统计、Responses 流式 usage 统计完善、默认剔除 stream_options
 - 2026-02-10: 全量流量图片压缩、管理页压缩占位符、ACI 更新说明
 - 2026-02-04: Caddy 状态面板与热重载、ACME 日志输出、i18n 支持
