@@ -5,7 +5,8 @@ const stats = {
     errors: 0,
     promptTokens: 0,
     completionTokens: 0,
-    totalTokens: 0
+    totalTokens: 0,
+    cachedTokens: 0
   },
   perModel: {}
 };
@@ -17,7 +18,8 @@ function getModelStats(model) {
       errors: 0,
       promptTokens: 0,
       completionTokens: 0,
-      totalTokens: 0
+      totalTokens: 0,
+      cachedTokens: 0
     };
   }
   return stats.perModel[model];
@@ -38,13 +40,19 @@ export function recordUsage(model, usage) {
   const prompt = usage.prompt_tokens || usage.input_tokens || 0;
   const completion = usage.completion_tokens || usage.output_tokens || 0;
   const total = usage.total_tokens || usage.total || prompt + completion;
+  const cached = usage.prompt_tokens_details?.cached_tokens
+    ?? usage.input_tokens_details?.cached_tokens
+    ?? usage.cached_tokens
+    ?? 0;
   stats.totals.promptTokens += prompt;
   stats.totals.completionTokens += completion;
   stats.totals.totalTokens += total;
+  stats.totals.cachedTokens += cached;
   const modelStats = getModelStats(model);
   modelStats.promptTokens += prompt;
   modelStats.completionTokens += completion;
   modelStats.totalTokens += total;
+  modelStats.cachedTokens += cached;
 }
 
 export function getStats() {

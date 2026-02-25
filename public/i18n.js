@@ -51,6 +51,7 @@
       "table.requests": "请求数",
       "table.errors": "错误数",
       "table.promptTokens": "Prompt Tokens",
+      "table.cachedTokens": "Cached Tokens",
       "table.completionTokens": "Completion Tokens",
       "table.totalTokens": "Total Tokens",
 
@@ -145,6 +146,7 @@
       "table.requests": "Requests",
       "table.errors": "Errors",
       "table.promptTokens": "Prompt Tokens",
+      "table.cachedTokens": "Cached Tokens",
       "table.completionTokens": "Completion Tokens",
       "table.totalTokens": "Total Tokens",
 

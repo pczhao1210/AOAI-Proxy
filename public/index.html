@@ -232,6 +232,7 @@
             <th data-i18n="table.requests">请求数</th>
             <th data-i18n="table.errors">错误数</th>
             <th data-i18n="table.promptTokens">Prompt Tokens</th>
+            <th data-i18n="table.cachedTokens">Cached Tokens</th>
             <th data-i18n="table.completionTokens">Completion Tokens</th>
             <th data-i18n="table.totalTokens">Total Tokens</th>
           </tr>
@@ -730,6 +731,7 @@ ${hostPort} {
         { label: "请求", value: totals.requests || 0 },
         { label: "错误", value: totals.errors || 0 },
         { label: "Prompt Tokens", value: totals.promptTokens || 0 },
+        { label: "Cached Tokens", value: totals.cachedTokens || 0 },
         { label: "Completion Tokens", value: totals.completionTokens || 0 },
         { label: "Total Tokens", value: totals.totalTokens || 0 }
       ];
@@ -750,6 +752,7 @@ ${hostPort} {
           <td>${s.requests || 0}</td>
           <td>${s.errors || 0}</td>
           <td>${s.promptTokens || 0}</td>
+          <td>${s.cachedTokens || 0}</td>
           <td>${s.completionTokens || 0}</td>
           <td>${s.totalTokens || 0}</td>
         `;

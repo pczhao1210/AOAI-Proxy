@@ -730,6 +730,7 @@ export async function proxyRequest({
       reply.raw.writeHead(upstreamResponse.status, Object.fromEntries(upstreamResponse.headers));
       const nodeStream = Readable.fromWeb(upstreamResponse.body);
       let buffer = "";
+      let usageRecorded = false;
       nodeStream.on("data", (chunk) => {
         const text = chunk.toString("utf8");
         buffer += text;
@@ -742,8 +743,10 @@ export async function proxyRequest({
             if (payload && payload !== "[DONE]") {
               try {
                 const json = JSON.parse(payload);
-                if (json.usage) {
-                  recordUsage(model.id, json.usage);
+                const usage = json.usage || json.response?.usage;
+                if (!usageRecorded && usage) {
+                  recordUsage(model.id, usage);
+                  usageRecorded = true;
                 }
               } catch {
                 // ignore parse errors
@@ -855,6 +858,8 @@ export async function proxyRequest({
                 writeSse(reply.raw, chunkObj);
               }
             } else if (t === "response.completed" || t === "response.output_text.done") {
+              const usage = evt?.response?.usage;
+              if (usage) recordUsage(model.id, usage);
               const doneChunk = {
                 id: streamId,
                 object: "chat.completion.chunk",
