@@ -21,6 +21,16 @@
       "maxSize": 1600,
       "quality": 0.85,
       "format": "jpeg"
+    },
+    "upstream": {
+      "connectTimeoutMs": 5000,
+      "requestTimeoutMs": 120000,
+      "firstByteTimeoutMs": 30000,
+      "idleTimeoutMs": 45000,
+      "maxRetries": 2,
+      "retryBaseMs": 400,
+      "retryMaxMs": 5000,
+      "retryStatuses": [408, 409, 425, 429, 500, 502, 503, 504]
     }
   },
   "auth": {

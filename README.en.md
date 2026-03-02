@@ -81,6 +81,31 @@ Use “Domain & TLS (Caddy)” in the admin UI to configure domain/email/port. S
 
 Note: ACME validation typically needs 80/443 reachable (HTTP-01/TLS-ALPN-01). If only 3001 is available, use DNS-01.
 
+### Caddy Active Health Check + Auth (401/503 Troubleshooting)
+If `reverse_proxy` active health checks are enabled (for example `health_uri /healthz`), and `/healthz` is protected by proxy auth, you may see:
+- `status code out of tolerances`, `status_code: 401`, `host: 127.0.0.1:3000`
+- `no upstreams available`
+
+Why this happens:
+- Caddy health checks do not include your proxy API key by default.
+- If `/healthz` requires API key auth, health checks return 401, and Caddy marks the upstream unhealthy, resulting in 503 to clients.
+
+Workarounds (pick one):
+1. Add auth header for health checks in Caddyfile (recommended):
+```caddyfile
+reverse_proxy 127.0.0.1:3000 {
+  health_uri /healthz
+  health_interval 30s
+  health_headers {
+    Authorization "Bearer <YOUR_PROXY_API_KEY>"
+  }
+}
+```
+2. Remove `health_uri` temporarily (disable active health checks) to avoid false unhealthy marking from 401.
+
+Note:
+- Saving config in admin regenerates Caddyfile. If you patch Caddyfile manually, verify your health-check settings again after the next save.
+
 ## Foundry v1 Notes
 - Data plane path is `/openai/v1/*` (e.g., `POST {endpoint}/openai/v1/chat/completions`).
 - `api-version` is optional; default is `v1`.
@@ -159,6 +184,7 @@ az container create \
 ```
 
 ## Update History
+- 2026-03-02: Caddy connection reuse/protocol tuning; added 401/503 troubleshooting for `health_uri + auth`
 - 2026-02-25: Cached Tokens stats, Responses streaming usage capture, stream_options stripped by default
 - 2026-02-10: Image compression for all traffic, admin placeholder injection, ACI update notes
 - 2026-02-04: Caddy status panel and hot reload, ACME stdout logs, i18n support

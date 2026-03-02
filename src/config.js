@@ -25,6 +25,16 @@ const DEFAULTS = {
       maxSize: 1600,
       quality: 0.85,
       format: "jpeg"
+    },
+    upstream: {
+      connectTimeoutMs: 5000,
+      requestTimeoutMs: 120000,
+      firstByteTimeoutMs: 30000,
+      idleTimeoutMs: 45000,
+      maxRetries: 2,
+      retryBaseMs: 400,
+      retryMaxMs: 5000,
+      retryStatuses: [408, 409, 425, 429, 500, 502, 503, 504]
     }
   },
   auth: {
@@ -139,6 +149,49 @@ function validateConfig(cfg) {
     }
     if (format && !["jpeg", "webp"].includes(format)) {
       throw new Error("server.imageCompression.format must be jpeg or webp");
+    }
+  }
+  if (cfg.server.upstream != null) {
+    if (typeof cfg.server.upstream !== "object") {
+      throw new Error("server.upstream must be an object");
+    }
+    const {
+      connectTimeoutMs,
+      requestTimeoutMs,
+      firstByteTimeoutMs,
+      idleTimeoutMs,
+      maxRetries,
+      retryBaseMs,
+      retryMaxMs,
+      retryStatuses
+    } = cfg.server.upstream;
+    const positiveInt = (v) => Number.isInteger(v) && v > 0;
+    const nonNegativeInt = (v) => Number.isInteger(v) && v >= 0;
+    if (connectTimeoutMs != null && !positiveInt(connectTimeoutMs)) {
+      throw new Error("server.upstream.connectTimeoutMs must be a positive integer");
+    }
+    if (requestTimeoutMs != null && !positiveInt(requestTimeoutMs)) {
+      throw new Error("server.upstream.requestTimeoutMs must be a positive integer");
+    }
+    if (firstByteTimeoutMs != null && !positiveInt(firstByteTimeoutMs)) {
+      throw new Error("server.upstream.firstByteTimeoutMs must be a positive integer");
+    }
+    if (idleTimeoutMs != null && !positiveInt(idleTimeoutMs)) {
+      throw new Error("server.upstream.idleTimeoutMs must be a positive integer");
+    }
+    if (maxRetries != null && !nonNegativeInt(maxRetries)) {
+      throw new Error("server.upstream.maxRetries must be a non-negative integer");
+    }
+    if (retryBaseMs != null && !positiveInt(retryBaseMs)) {
+      throw new Error("server.upstream.retryBaseMs must be a positive integer");
+    }
+    if (retryMaxMs != null && !positiveInt(retryMaxMs)) {
+      throw new Error("server.upstream.retryMaxMs must be a positive integer");
+    }
+    if (retryStatuses != null) {
+      if (!Array.isArray(retryStatuses) || retryStatuses.some((s) => !Number.isInteger(s) || s < 100 || s > 599)) {
+        throw new Error("server.upstream.retryStatuses must be an array of HTTP status codes");
+      }
     }
   }
   if (!cfg.auth || !cfg.auth.scope) {

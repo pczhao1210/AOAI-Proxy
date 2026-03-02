@@ -16,7 +16,7 @@ const bodyLimit = Number.isFinite(bodyLimitEnv) && bodyLimitEnv > 0 ? bodyLimitE
 
 const app = fastify({
   logger: {
-    level: process.env.LOG_LEVEL || "info"
+    level: process.env.LOG_LEVEL || "warn"
   },
   bodyLimit
 });
@@ -107,10 +107,40 @@ function attachAuth(config) {
   initAuth(config);
 }
 
+function emitStartupLog(stage, fields = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    event: `startup.${stage}`,
+    ...fields
+  };
+  try {
+    console.log(JSON.stringify(payload));
+  } catch {
+    console.log(`[${payload.ts}] startup.${stage}`);
+  }
+}
+
+function emitStartupError(stage, error, fields = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    event: `startup.${stage}`,
+    message: error?.message || String(error),
+    ...fields
+  };
+  try {
+    console.error(JSON.stringify(payload));
+  } catch {
+    console.error(`[${payload.ts}] startup.${stage}: ${payload.message}`);
+  }
+}
+
 app.addHook("preHandler", async (req, reply) => {
   const config = getConfig();
   const rawUrl = req.raw?.url || req.url;
   const pathOnly = (rawUrl || "").split("?")[0];
+  if (pathOnly === "/healthz") {
+    return;
+  }
   if (pathOnly === "/favicon.ico") {
     return reply.code(204).send();
   }
@@ -217,16 +247,40 @@ app.get("/admin", async (req, reply) => {
 });
 
 async function start() {
+  emitStartupLog("init", {
+    pid: process.pid,
+    node: process.version,
+    cwd: process.cwd(),
+    configPath: getConfigPath(),
+    bodyLimit,
+    logLevel: process.env.LOG_LEVEL || "warn"
+  });
   const config = reloadConfig();
   attachAuth(config);
-  writeCaddyfile(config);
-  await reloadCaddy(config);
+  const caddyfileWrite = writeCaddyfile(config);
+  const caddyReload = await reloadCaddy(config);
   const { host, port } = config.server;
+  emitStartupLog("config_loaded", {
+    host,
+    port,
+    adminPath: config.server?.adminPath,
+    adminAuthEnabled: !!config.server?.adminAuth?.enabled,
+    caddyEnabled: !!config.server?.caddy?.enabled,
+    models: Array.isArray(config.models) ? config.models.length : 0,
+    upstreams: Array.isArray(config.upstreams) ? config.upstreams.length : 0,
+    caddyfileWrite,
+    caddyReload
+  });
   await app.listen({ host, port });
+  emitStartupLog("ready", {
+    host,
+    port
+  });
   app.log.info({ configPath: getConfigPath() }, "config loaded");
 }
 
 start().catch((error) => {
+  emitStartupError("fatal", error, { configPath: getConfigPath() });
   app.log.error(error);
   process.exit(1);
 });

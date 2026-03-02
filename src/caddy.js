@@ -52,6 +52,12 @@ export function renderCaddyfile(config) {
 
   return `{
   email ${email}
+  servers :80 {
+    protocols h1
+  }
+  servers {
+    protocols h1 h2 h3
+  }
 }
 
 ${hostPort} {
@@ -59,7 +65,21 @@ ${hostPort} {
     output stdout
     level INFO
   }
-  reverse_proxy ${upstream}
+  encode zstd gzip
+  reverse_proxy ${upstream} {
+    flush_interval -1
+    health_uri /healthz
+    health_interval 30s
+    fail_duration 30s
+    transport http {
+      dial_timeout 5s
+      response_header_timeout 120s
+      keepalive 120s
+      keepalive_idle_conns 256
+      keepalive_idle_conns_per_host 128
+      versions 2 1.1
+    }
+  }
 }
 `;
 }

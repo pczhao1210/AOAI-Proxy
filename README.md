@@ -88,6 +88,31 @@ ACI 部署与持久化：见 [aci_persist_vol.md](aci_persist_vol.md)
 注意：ACME 证书签发通常需要 80/443 可达用于校验（HTTP-01/TLS-ALPN-01）。
 如果你的环境只开放 3001，请改用 DNS-01 验证并配置对应的 DNS 提供商凭据。
 
+### Caddy 主动健康检查 + 鉴权（401/503 排障）
+如果你启用了 `reverse_proxy` 的主动健康检查（例如 `health_uri /healthz`），同时 `/healthz` 受代理 API Key 保护，可能看到：
+- `status code out of tolerances`、`status_code: 401`、`host: 127.0.0.1:3000`
+- `no upstreams available`
+
+原因：
+- Caddy 的健康检查默认不会携带你的代理 API Key。
+- 当 `/healthz` 需要鉴权时，健康检查会返回 401；Caddy 会把上游标记为 unhealthy，客户端随后收到 503。
+
+可选处理方式（任选其一）：
+1. 在 Caddyfile 为健康检查补充鉴权头（推荐）：
+```caddyfile
+reverse_proxy 127.0.0.1:3000 {
+  health_uri /healthz
+  health_interval 30s
+  health_headers {
+    Authorization "Bearer <YOUR_PROXY_API_KEY>"
+  }
+}
+```
+2. 临时移除 `health_uri`（关闭主动健康检查），避免因 401 被误判为上游不可用。
+
+说明：
+- 管理页保存配置会重新生成 Caddyfile。若你手工改过 Caddyfile，下一次保存后请再次确认健康检查相关配置。
+
 ## ACI 更新镜像
 参考官方文档：通过重新执行 `az container create`（同名）进行更新。若你的 CLI 不支持 `az container update`，请按以下方式更新：
 
@@ -173,6 +198,7 @@ az container create \
 
 
 ### 更新历史
+- 2026-03-02: Caddy 连接复用/协议优化；新增 `health_uri + 鉴权` 场景的 401/503 排障说明
 - 2026-02-25: Cached Tokens 统计、Responses 流式 usage 统计完善、默认剔除 stream_options
 - 2026-02-10: 全量流量图片压缩、管理页压缩占位符、ACI 更新说明
 - 2026-02-04: Caddy 状态面板与热重载、ACME 日志输出、i18n 支持
