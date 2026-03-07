@@ -5,12 +5,12 @@ export function resolveUpstreamPolicy(config) {
     : [408, 409, 425, 429, 500, 502, 503, 504];
   return {
     connectTimeoutMs: Number.isFinite(cfg.connectTimeoutMs) ? cfg.connectTimeoutMs : 5000,
-    requestTimeoutMs: Number.isFinite(cfg.requestTimeoutMs) ? cfg.requestTimeoutMs : 120000,
-    firstByteTimeoutMs: Number.isFinite(cfg.firstByteTimeoutMs) ? cfg.firstByteTimeoutMs : 30000,
-    idleTimeoutMs: Number.isFinite(cfg.idleTimeoutMs) ? cfg.idleTimeoutMs : 45000,
-    maxRetries: Number.isFinite(cfg.maxRetries) ? cfg.maxRetries : 2,
-    retryBaseMs: Number.isFinite(cfg.retryBaseMs) ? cfg.retryBaseMs : 400,
-    retryMaxMs: Number.isFinite(cfg.retryMaxMs) ? cfg.retryMaxMs : 5000,
+    requestTimeoutMs: Number.isFinite(cfg.requestTimeoutMs) ? cfg.requestTimeoutMs : 600000,
+    firstByteTimeoutMs: Number.isFinite(cfg.firstByteTimeoutMs) ? cfg.firstByteTimeoutMs : 90000,
+    idleTimeoutMs: Number.isFinite(cfg.idleTimeoutMs) ? cfg.idleTimeoutMs : 600000,
+    maxRetries: Number.isFinite(cfg.maxRetries) ? cfg.maxRetries : 1,
+    retryBaseMs: Number.isFinite(cfg.retryBaseMs) ? cfg.retryBaseMs : 800,
+    retryMaxMs: Number.isFinite(cfg.retryMaxMs) ? cfg.retryMaxMs : 8000,
     retryStatuses: new Set(retryStatuses)
   };
 }

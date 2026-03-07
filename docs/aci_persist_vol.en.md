@@ -1,6 +1,19 @@
-# ACI Persistence (Azure Files)
+# ACI Persistence (Azure Files + Blob Config Option)
 
-This document explains how to create an Azure Files share and mount it to `/app/data` in ACI for persistent config and Caddyfile storage.
+This document explains how to keep Azure Files mounted at `/app/data` while optionally adding Blob SDK-based config persistence for deployments that want managed identity access to configuration storage.
+
+## Persistence Modes
+
+Two deployment modes are now supported:
+
+- `azureFile`: keep the Azure Files mount at `/app/data` for config, Caddyfile, and Caddy state
+- `blob`: use Blob SDK + managed identity for config reads and writes at the application layer
+
+Important constraints:
+
+- `blob` mode does not replace Azure Files volume semantics
+- ACI native Azure Files mounting still requires the storage account key
+- If you need fully keyless auth and still require `/app/data` mount semantics, move to ACA, AKS, or a VM-based deployment
 
 ## Variables
 Replace the following variables as needed:
@@ -67,9 +80,11 @@ STORAGE_KEY=$(az storage account keys list \
 echo "$STORAGE_KEY"
 ```
 
-## 5) Create ACI and mount Azure Files
+## 5) Create ACI and choose a persistence mode
 
-The following command mounts the share to `/app/data` for persistence:
+### 5.1 `azureFile` mode
+
+The following command keeps the Azure Files mount and explicitly sets `PERSISTENCE_MODE=azureFile`.
 
 ```bash
 az container create \
@@ -82,6 +97,11 @@ az container create \
   --cpu 1 --memory 2 \
   --ports 3000 443 \
   --dns-name-label "$DNS_LABEL" \
+  --environment-variables \
+    PERSISTENCE_MODE=azureFile \
+    AZURE_STORAGE_ACCOUNT_URL="https://$STORAGE.blob.core.windows.net" \
+    CONFIG_BLOB_CONTAINER=aoai-proxy-config \
+    CONFIG_BLOB_NAME=config/config.json \
   --azure-file-volume-account-name "$STORAGE" \
   --azure-file-volume-account-key "$STORAGE_KEY" \
   --azure-file-volume-share-name "$SHARE" \
@@ -90,6 +110,30 @@ az container create \
 ```
 
 > If your image is public, remove the `--registry-*` arguments.
+
+### 5.2 `blob` mode
+
+If you want to keep ACI but store config through Blob SDK, deploy with blob-specific environment variables instead of the Azure Files mount.
+
+```bash
+az container create \
+  -g "$RG" \
+  -n "$ACI_NAME" \
+  --image <image> \
+  --registry-login-server <registry-login-server> \
+  --registry-username <registry-username> \
+  --registry-password <registry-password> \
+  --assign-identity \
+  --cpu 1 --memory 2 \
+  --ports 3000 443 \
+  --dns-name-label "$DNS_LABEL" \
+  --environment-variables \
+    PERSISTENCE_MODE=blob \
+    AZURE_STORAGE_ACCOUNT_URL="https://$STORAGE.blob.core.windows.net" \
+    CONFIG_BLOB_CONTAINER=aoai-proxy-config \
+    CONFIG_BLOB_NAME=config/config.json \
+  --os-type Linux
+```
 
 ## 6) Verify mount
 
@@ -108,7 +152,9 @@ az storage file list \
   --output table
 ```
 
-You should see `config.json` (created on first start). Admin saves will update files in the share.
+In `azureFile` mode, you should see `config.json` created in the share on first start. Admin saves update files in the share.
+
+In `blob` mode, admin saves upload the latest config to Blob, and the next startup restores from Blob first.
 
 ACME certificates and Caddy state are stored in `/app/data/caddy` and must also be persisted.
 
@@ -148,8 +194,9 @@ Persistence remains intact after restarts.
 ## 8) Enable ACI Managed Identity and grant permissions
 
 This project uses `DefaultAzureCredential`. Enable **system-assigned identity** and grant:
-- Azure Files access (RBAC)
-- Azure OpenAI / Foundry access (RBAC)
+- Azure Files access for `azureFile` mode
+- Blob write access for `blob` mode
+- Azure OpenAI / Foundry access
 
 ### 8.1 Enable system-assigned identity
 
@@ -179,7 +226,7 @@ ACI_PRINCIPAL_ID=$(az container show -g "$RG" -n "$ACI_NAME" --query identity.pr
 echo "$ACI_PRINCIPAL_ID"
 ```
 
-### 8.2 Grant Azure Files RBAC
+### 8.2 `azureFile` mode: grant Azure Files RBAC
 
 ```bash
 STORAGE_ID=$(az storage account show -g "$RG" -n "$STORAGE" --query id -o tsv)
@@ -193,16 +240,32 @@ az role assignment create \
 
 > Note: ACI Azure Files mount still needs the account key; RBAC is for runtime access.
 
-### 8.3 Grant AOAI/Foundry access at subscription scope
+### 8.3 `blob` mode: grant Blob write access
+
+Prefer container-level or storage-account-level scope instead of subscription-wide assignments:
 
 ```bash
-SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+BLOB_SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/$STORAGE/blobServices/default/containers/aoai-proxy-config"
 
 az role assignment create \
   --assignee-object-id "$ACI_PRINCIPAL_ID" \
   --assignee-principal-type ServicePrincipal \
-  --role "Cognitive Services User" \
-  --scope "/subscriptions/$SUBSCRIPTION_ID"
+  --role "Storage Blob Data Contributor" \
+  --scope "$BLOB_SCOPE"
+```
+
+### 8.4 Grant Azure OpenAI / Foundry access
+
+Prefer resource-level scope instead of subscription-level scope:
+
+```bash
+AOAI_SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG/providers/Microsoft.CognitiveServices/accounts/<aoai-account-name>"
+
+az role assignment create \
+  --assignee-object-id "$ACI_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Cognitive Services OpenAI User" \
+  --scope "$AOAI_SCOPE"
 ```
 
 After this, `DefaultAzureCredential` will use the managed identity to acquire upstream tokens.

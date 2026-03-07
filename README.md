@@ -1,204 +1,244 @@
 # AOAI Foundry Proxy
 
-> OpenAI-compatible reverse proxy for Azure AI Foundry / Azure OpenAI with SSE streaming, Caddy TLS, and ACI-friendly persistence.
+> OpenAI-compatible reverse proxy for Azure AI Foundry / Azure OpenAI with SSE streaming, configurable Caddy TLS, and deployment-selectable persistence.
 
-[English](README.en.md)
+[English](README.md) | [简体中文](docs/README.zh-CN.md) | [Docs Index](docs/README.md)
 
-## 关键词 / Keywords
-OpenAI proxy, Azure AI Foundry, Azure OpenAI, SSE streaming, Caddy TLS, ACME, ACI, Fastify
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Fmaster%2Finfra%2Fazuredeploy.json)
 
-## 推荐 Topics（在 GitHub 仓库设置中添加）
-`openai` `azure` `azure-openai` `azure-ai` `proxy` `caddy` `acme` `sse` `fastify` `aci`
+## Overview
 
-## 概述
-- OpenAI 兼容反向代理（chat/completions、responses、images）
-- Client→Proxy 使用 API Key
-- Proxy→Foundry 使用 AAD Bearer Token（DefaultAzureCredential）
-- 静态管理页用于配置与统计
+- OpenAI-compatible proxy for `chat/completions`, `responses`, `images/generations`, and `models`
+- Client -> Proxy uses API key auth via `Authorization: Bearer` or `x-api-key`
+- Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens from `DefaultAzureCredential`
+- Static admin page for config editing, AAD verification, and model usage stats
+- Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
 
-## 端点
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-- `POST /v1/images/generations`
-- `GET /v1/models`
+## Deployment Assets
 
-## 本地运行
-1. 复制示例配置并修改：
-   - `cp config/sample_config.json config/config.json`
-2. 编辑 `config/config.json`：
-   - 将 `upstreams[].baseUrl` 替换为真实 Foundry/AOAI 资源域名
-   - 将 `models[].targetModel` 设置为 deployment identifier
-   - 按需修改 `apiKeys`、`server.adminAuth`
-3. 启动服务：
-   - `npm install`
-   - `npm run start`
+- Bicep template: [infra/main.bicep](infra/main.bicep)
+- ARM template for portal deployment: [infra/azuredeploy.json](infra/azuredeploy.json)
+- Example parameters: [infra/parameters/dev.json](infra/parameters/dev.json), [infra/parameters/prod.json](infra/parameters/prod.json)
 
-## 管理页面
-- 打开 `/admin`，在页面中编辑并保存配置
+The Deploy to Azure button targets the ARM JSON template because the portal button flow does not deploy remote Bicep files directly.
 
-### 管理登录（HTTP Basic）
-通过 `server.adminAuth` 配置；启用后保护范围：`/admin` 及 `/admin/api/*`。
+## Persistence Modes
 
-## 统计说明
-- 统计为内存累计，服务重启会清零。
-- `usage` 来自上游响应：非流式 JSON 的 `usage`，以及流式 `data:` 事件中的 `usage` 或 `response.usage`。
-- 若上游返回 `prompt_tokens_details.cached_tokens` 或 `input_tokens_details.cached_tokens`，会统计为 Cached Tokens。
-- 代理会剔除请求中的 `stream_options` 以避免 Foundry v1 `unknown_parameter`。
+This repo now supports deployment-time persistence selection.
 
-## Docker
-镜像内会把 `config/sample_config.json` 复制为默认配置文件 `/app/config/config.json`，并默认开启管理登录（`admin/admin`）。
-容器启动时会将默认配置复制到 `/app/data/config.json`（可挂载持久化卷）。
-镜像包含 Caddy，并在检测到 `/app/data/Caddyfile` 时启动 TLS 入口（默认 443）。
-证书与 ACME 状态保存在 `/app/data/caddy`，需随 `/app/data` 一起持久化。
+### `azureFile`
 
-ACI 部署与持久化：见 [aci_persist_vol.md](aci_persist_vol.md)
+- Keeps the current ACI + Azure Files mount to `/app/data`
+- Best fit when you need filesystem-style persistence for config, Caddyfile, and Caddy state
+- Still requires storage account key for the ACI mount itself
 
-构建：
-- `docker build -t aoai-proxy:latest .`
+### `blob`
 
-运行（端口映射 + 持久化数据卷）：
-- `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:latest`
+- Keeps config persistence at the application layer through Blob SDK
+- Uses `DefaultAzureCredential` and managed identity to read and write the config blob
+- Does not replace Azure Files mount semantics for `/app/data`
 
-说明：容器里仍使用 `DefaultAzureCredential`，请按你的运行环境提供 AAD 凭据（环境变量/托管身份等）。
+### Deployment Constraint
 
-大尺寸图片请求可通过环境变量调整请求体限制（字节）：
-- `BODY_LIMIT=52428800`（默认 50MB）
+ACI native Azure Files mounting still depends on shared key authentication. Managed identity can be used for Blob SDK operations, but it does not convert Azure Files volume mounting into an AAD-only flow. If you must disable key-based auth and still need `/app/data` mount semantics, move to another platform such as ACA, AKS, or a VM-based deployment.
 
-## 图片压缩（全量流量）
-服务端会在转发前压缩请求中的图片数据（仅处理 `data:image/*` 或 `image_base64` 字段）。可在配置中调整：
+## Timeout Model
+
+The proxy now uses a more conservative long-response baseline that is better suited for tool-calling and MCP-style workflows.
 
 ```json
-"imageCompression": {
-   "enabled": true,
-   "maxSize": 1600,
-   "quality": 0.85,
-   "format": "jpeg"
-}
-```
-
-## Caddy TLS（入口端口 443）
-可在管理页的「域名与 TLS（Caddy）」中配置域名/邮箱/端口。保存后服务会自动生成 Caddyfile，并尝试热重载 Caddy。
-
-1. 在管理页配置并保存（会写入 `server.caddy` 并生成 Caddyfile）。
-2. 启动 Caddy：
-   - `caddy run --config /app/data/Caddyfile --adapter caddyfile`
-
-如遇到 `spawn caddy ENOENT`，请确认容器内已安装 Caddy，或设置 `CADDY_BIN=/usr/sbin/caddy`。
-
-注意：ACME 证书签发通常需要 80/443 可达用于校验（HTTP-01/TLS-ALPN-01）。
-如果你的环境只开放 3001，请改用 DNS-01 验证并配置对应的 DNS 提供商凭据。
-
-### Caddy 主动健康检查 + 鉴权（401/503 排障）
-如果你启用了 `reverse_proxy` 的主动健康检查（例如 `health_uri /healthz`），同时 `/healthz` 受代理 API Key 保护，可能看到：
-- `status code out of tolerances`、`status_code: 401`、`host: 127.0.0.1:3000`
-- `no upstreams available`
-
-原因：
-- Caddy 的健康检查默认不会携带你的代理 API Key。
-- 当 `/healthz` 需要鉴权时，健康检查会返回 401；Caddy 会把上游标记为 unhealthy，客户端随后收到 503。
-
-可选处理方式（任选其一）：
-1. 在 Caddyfile 为健康检查补充鉴权头（推荐）：
-```caddyfile
-reverse_proxy 127.0.0.1:3000 {
-  health_uri /healthz
-  health_interval 30s
-  health_headers {
-    Authorization "Bearer <YOUR_PROXY_API_KEY>"
+"server": {
+  "upstream": {
+    "connectTimeoutMs": 5000,
+    "requestTimeoutMs": 600000,
+    "firstByteTimeoutMs": 90000,
+    "idleTimeoutMs": 600000,
+    "maxRetries": 1,
+    "retryBaseMs": 800,
+    "retryMaxMs": 8000,
+    "pool": {
+      "connections": 32,
+      "keepAliveTimeoutMs": 30000,
+      "keepAliveMaxTimeoutMs": 120000,
+      "headersTimeoutMs": 60000,
+      "bodyTimeoutMs": 0,
+      "pipelining": 1
+    }
+  },
+  "caddy": {
+    "transport": {
+      "dialTimeoutMs": 5000,
+      "responseHeaderTimeoutMs": 45000,
+      "keepAliveTimeoutMs": 120000
+    }
   }
 }
 ```
-2. 临时移除 `health_uri`（关闭主动健康检查），避免因 401 被误判为上游不可用。
 
-说明：
-- 管理页保存配置会重新生成 Caddyfile。若你手工改过 Caddyfile，下一次保存后请再次确认健康检查相关配置。
+Guidance:
 
-## ACI 更新镜像
-参考官方文档：通过重新执行 `az container create`（同名）进行更新。若你的 CLI 不支持 `az container update`，请按以下方式更新：
+- Keep `server.caddy.transport.dialTimeoutMs` aligned with `server.upstream.connectTimeoutMs`
+- Keep `server.caddy.transport.responseHeaderTimeoutMs` greater than or equal to `server.upstream.firstByteTimeoutMs`
+- Keep `server.upstream.idleTimeoutMs` long enough for SSE streams that pause between events
+- Tune `server.upstream.pool` first for latency-sensitive, low-concurrency deployments before changing retry budgets
+- For MCP or tool-calling flows, prefer longer `firstByteTimeoutMs` and `idleTimeoutMs`, but keep `maxRetries` low to avoid replaying side-effecting tool calls
 
-1. 导出或维护一份容器创建参数（推荐使用 YAML 或脚本）。
-2. 修改镜像（建议使用 digest）。
-3. 重新执行 `az container create`（同名），容器会重建并拉取新镜像。
+## Local Run
 
-示例（请替换占位符）：
+1. Copy the sample config:
+   - `cp config/sample_config.json config/config.json`
+2. Edit `config/config.json`:
+   - Replace `upstreams[].baseUrl` with your Foundry or Azure OpenAI endpoint
+   - Set `models[].targetModel` to the deployment identifier
+   - Replace the default API key and admin credentials
+3. Install dependencies and start:
+   - `npm install`
+   - `npm run start`
+
+## Environment Variables
+
+### General
+
+- `CONFIG_PATH`: local cached config path, default `./config/config.json`
+- `BODY_LIMIT`: request body limit in bytes, default `52428800`
+- `CADDY_BIN`: optional Caddy binary path override
+
+### Optional Upstream Pool Overrides
+
+Config file values under `server.upstream.pool` are primary. These environment variables can still override them when needed:
+
+- `UPSTREAM_MAX_CONNECTIONS`
+- `UPSTREAM_KEEPALIVE_TIMEOUT_MS`
+- `UPSTREAM_KEEPALIVE_MAX_TIMEOUT_MS`
+- `UPSTREAM_HEADERS_TIMEOUT_MS`
+- `UPSTREAM_BODY_TIMEOUT_MS`
+- `UPSTREAM_PIPELINING`
+
+### Persistence Selection
+
+- `PERSISTENCE_MODE=azureFile|blob`
+- `AZURE_STORAGE_ACCOUNT_URL=https://<storage>.blob.core.windows.net`
+- `CONFIG_BLOB_CONTAINER=<container-name>`
+- `CONFIG_BLOB_NAME=config/config.json`
+
+In `blob` mode, the app reads from Blob first and falls back to the local cached config if the blob is not present yet.
+
+## Admin Page
+
+Open `/admin` to manage config.
+
+The admin page now exposes:
+
+- Caddy dial timeout
+- Caddy response header timeout
+- Caddy keepalive timeout
+- Runtime persistence summary so you can see whether the deployment is using `azureFile` or `blob`
+
+### Admin Login
+
+Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin/api/*` with HTTP Basic auth.
+
+## Stats Notes
+
+- Stats are in-memory only; restart resets counters
+- `usage` is collected from non-stream JSON responses and streaming SSE usage events
+- Cached token fields from upstream are counted when present
+- The proxy strips `stream_options` to avoid Foundry v1 `unknown_parameter` errors
+
+## Docker
+
+Build:
+
+- `docker build -t aoai-proxy:latest .`
+
+Run with Azure Files-style local persistence:
+
+- `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:latest`
+
+Run with Blob-backed config persistence:
 
 ```bash
-az container create \
-   -g <resource-group> \
-   -n <container-name> \
-   --image <registry>/<image>@sha256:<digest> \
-   --registry-login-server <registry> \
-   --registry-username <username> \
-   --registry-password <password> \
-   --cpu 1 --memory 2 \
-   --ports 3000 443 \
-   --dns-name-label <dns-label> \
-   --azure-file-volume-account-name <storage-account> \
-   --azure-file-volume-account-key <storage-key> \
-   --azure-file-volume-share-name <share> \
-   --azure-file-volume-mount-path /app/data \
-   --os-type Linux
+docker run --rm -p 3000:3000 -p 443:443 \
+  -e PERSISTENCE_MODE=blob \
+  -e AZURE_STORAGE_ACCOUNT_URL=https://<storage>.blob.core.windows.net \
+  -e CONFIG_BLOB_CONTAINER=aoai-proxy-config \
+  -e CONFIG_BLOB_NAME=config/config.json \
+  aoai-proxy:latest
 ```
 
-## 上游（Foundry v1）要点
-- Foundry v1 的数据面路径前缀是 `/openai/v1`（例如：`POST {endpoint}/openai/v1/chat/completions`）。
-- `api-version` 是可选的；不指定时默认为 `v1`。
-- 请求体里的 `model` 字段是“模型部署标识符（deployment identifier）”，不是模型家族名；本项目用 `models[].targetModel` 表示要转发到的 deployment。
+The container still uses `DefaultAzureCredential`, so provide service principal credentials for local development or a managed identity in Azure.
 
-## 模型级路由覆盖（models[].routes）
-有些客户端只会调用 `POST /v1/chat/completions`，但部分模型/后端可能只支持 `responses`。可以在模型配置里用 `routes` 覆盖“后端实际使用的路由”。
+## Azure Deployment
 
-支持两种写法：
-- **映射到另一个 routeKey**：值为 `responses` / `chat/completions` / `images/generations`
-- **直接指定后端路径**：值以 `/` 开头（可包含 `{deployment}`）
+### Deploy with Bicep
 
-示例（客户端打 chat，但后端走 responses）：
+```bash
+az deployment group create \
+  --resource-group <rg> \
+  --template-file infra/main.bicep \
+  --parameters @infra/parameters/dev.json
+```
+
+### Deploy with ARM JSON
+
+```bash
+az deployment group create \
+  --resource-group <rg> \
+  --template-file infra/azuredeploy.json \
+  --parameters @infra/parameters/prod.json
+```
+
+The templates provision:
+
+- A container group with system-assigned managed identity
+- A storage account
+- Azure Files share when `persistenceMode=azureFile`
+- Blob container when `persistenceMode=blob`
+- RBAC assignment for `Storage Blob Data Contributor` when blob mode is enabled
+- RBAC assignment for `Cognitive Services OpenAI User` on the target Azure OpenAI resource
+
+## ACI Persistence and RBAC
+
+- Azure Files walkthrough: [docs/aci_persist_vol.en.md](docs/aci_persist_vol.en.md)
+- Chinese version: [docs/aci_persist_vol.md](docs/aci_persist_vol.md)
+
+## Caddy TLS
+
+Use the admin page to configure domain, email, upstream, and transport timeouts. Saving config regenerates the Caddyfile and attempts a hot reload.
+
+If active health checks are enabled and `/healthz` is API-key protected, add a health header in Caddy or disable `health_uri` to avoid false 401/503 failures.
+
+## Foundry v1 Notes
+
+- Data plane path is `/openai/v1/*`
+- `api-version` is optional; default behavior is v1
+- Request `model` must be the deployment identifier
+
+## Model Route Overrides
+
+Use `models[].routes` when the client-facing route and backend-supported route differ.
 
 ```json
 {
-   "models": [
-      {
-         "id": "my-model",
-         "upstream": "foundry",
-         "targetModel": "my-deployment",
-         "routes": {
-            "chat/completions": "responses"
-         }
+  "models": [
+    {
+      "id": "my-model",
+      "upstream": "foundry",
+      "targetModel": "my-deployment",
+      "routes": {
+        "chat/completions": "responses"
       }
-   ]
+    }
+  ]
 }
 ```
 
-说明：这里仅影响“后端请求的 URL 路由选择”，不会自动把 `chat/completions` 的请求体转换成 `responses` 的请求体字段。
+## curl Examples
 
-### 推荐配置形态
-- `upstreams[].baseUrl`：
-   - `https://<your-resource-name>.openai.azure.com/`
-   - 或 `https://<your-resource-name>.services.ai.azure.com/`
-- `upstreams[].routes`：
-   - `chat/completions`: `/openai/v1/chat/completions`
-   - `responses`: `/openai/v1/responses`
-   - `images/generations`: `/openai/v1/images/generations`
+List models:
 
-## curl 示例
-列出模型：
 - `curl -sS http://127.0.0.1:3000/v1/models -H 'authorization: Bearer CHANGEME' | jq .`
 
-调用 chat：
+Chat request:
+
 - `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer CHANGEME' -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`
-
-### 推荐配置形态
-- `upstreams[].baseUrl`：
-   - `https://<your-resource-name>.openai.azure.com/`
-   - 或 `https://<your-resource-name>.services.ai.azure.com/`
-- `upstreams[].routes`：
-   - `chat/completions`: `/openai/v1/chat/completions`
-   - `responses`: `/openai/v1/responses`
-   - `images/generations`: `/openai/v1/images/generations`
-
-
-### 更新历史
-- 2026-03-02: Caddy 连接复用/协议优化；新增 `health_uri + 鉴权` 场景的 401/503 排障说明
-- 2026-02-25: Cached Tokens 统计、Responses 流式 usage 统计完善、默认剔除 stream_options
-- 2026-02-10: 全量流量图片压缩、管理页压缩占位符、ACI 更新说明
-- 2026-02-04: Caddy 状态面板与热重载、ACME 日志输出、i18n 支持

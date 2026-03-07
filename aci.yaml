@@ -11,7 +11,15 @@ properties:
     properties:
       configMap:
         keyValuePairs: {}
-      environmentVariables: []
+      environmentVariables:
+      - name: PERSISTENCE_MODE
+        value: azureFile
+      - name: AZURE_STORAGE_ACCOUNT_URL
+        value: https://stor4docker.blob.core.windows.net
+      - name: CONFIG_BLOB_CONTAINER
+        value: aoai-proxy-config
+      - name: CONFIG_BLOB_NAME
+        value: config/config.json
       image: alexmcr.azurecr.io/aoai-proxy@sha256:db4d8bc12865edd8b16e15a6b63f4dfb73ad2fff43bc199b717ab575b4016a60
       ports:
       - port: 3000

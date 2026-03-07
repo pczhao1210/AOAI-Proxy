@@ -41,15 +41,32 @@ function isMeaninglessValue(value) {
 function pruneMeaningless(value) {
   if (isMeaninglessValue(value)) return undefined;
   if (Array.isArray(value)) {
-    return value.map((v) => pruneMeaningless(v)).filter((v) => v !== undefined);
+    let changed = false;
+    const out = [];
+    for (const item of value) {
+      const pruned = pruneMeaningless(item);
+      if (pruned === undefined) {
+        changed = true;
+        continue;
+      }
+      if (pruned !== item) changed = true;
+      out.push(pruned);
+    }
+    return changed ? out : value;
   }
   if (typeof value === "object") {
+    let changed = false;
     const out = {};
     for (const [k, v] of Object.entries(value)) {
       const pruned = pruneMeaningless(v);
-      if (pruned !== undefined) out[k] = pruned;
+      if (pruned === undefined) {
+        changed = true;
+        continue;
+      }
+      if (pruned !== v) changed = true;
+      out[k] = pruned;
     }
-    return out;
+    return changed ? out : value;
   }
   return value;
 }

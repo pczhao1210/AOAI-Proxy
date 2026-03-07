@@ -30,3 +30,8 @@ Caddyfile
 # Local config (use config/sample_config.json instead)
 config/config.json
 config/config.local.json
+
+# custom agents and skills
+.agents/
+.github/
+

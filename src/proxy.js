@@ -109,10 +109,12 @@ export async function proxyRequest({
     nextBody = responsesToChatRequest(body, deployment);
     if (isStream) nextBody.stream = true;
   } else {
-    nextBody = {
-      ...body,
-      model: deployment
-    };
+    nextBody = body.model === deployment
+      ? body
+      : {
+        ...body,
+        model: deployment
+      };
   }
 
   if (nextBody && typeof nextBody === "object" && "stream_options" in nextBody) {

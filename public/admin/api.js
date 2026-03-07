@@ -17,6 +17,11 @@ export async function reloadConfigApi() {
   return res.json();
 }
 
+export async function getRuntimeApi() {
+  const res = await fetch("/admin/api/runtime");
+  return res.json();
+}
+
 export async function verifyAadApi() {
   const res = await fetch("/admin/api/verify-aad", { method: "POST" });
   return res.json();

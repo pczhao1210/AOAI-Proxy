@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "value": "japaneast"
+    },
+    "containerGroupName": {
+      "value": "aoai-proxy-dev"
+    },
+    "image": {
+      "value": "alexmcr.azurecr.io/aoai-proxy:latest"
+    },
+    "dnsNameLabel": {
+      "value": "aoai-proxy-dev"
+    },
+    "persistenceMode": {
+      "value": "azureFile"
+    },
+    "storageAccountName": {
+      "value": "staoaiproxydev"
+    },
+    "fileShareName": {
+      "value": "aoaiproxy"
+    },
+    "blobContainerName": {
+      "value": "aoai-proxy-config"
+    },
+    "configBlobName": {
+      "value": "config/config.json"
+    },
+    "cognitiveServicesAccountName": {
+      "value": "replace-with-your-aoai-account"
+    },
+    "acrLoginServer": {
+      "value": "alexmcr.azurecr.io"
+    },
+    "acrUsername": {
+      "value": "replace-with-acr-username"
+    },
+    "acrPassword": {
+      "value": "replace-with-acr-password"
+    }
+  }
+}

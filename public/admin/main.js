@@ -2,6 +2,7 @@ import {
   getConfigApi,
   saveConfigApi,
   reloadConfigApi,
+  getRuntimeApi,
   verifyAadApi,
   getStatsApi,
   getCaddyStatusApi,
@@ -12,6 +13,7 @@ import {
     const { setLanguage, t, getStoredLang, applyI18n } = window.I18N;
     const configArea = document.getElementById("configArea");
     const configMsg = document.getElementById("configMsg");
+    const runtimeInfo = document.getElementById("runtimeInfo");
     const verifyMsg = document.getElementById("verifyMsg");
     const statTotals = document.getElementById("statTotals");
     const statTimestamp = document.getElementById("statTimestamp");
@@ -31,6 +33,9 @@ import {
     const caddyHttpsPort = document.getElementById("caddyHttpsPort");
     const caddyUpstreamHost = document.getElementById("caddyUpstreamHost");
     const caddyUpstreamPort = document.getElementById("caddyUpstreamPort");
+    const caddyDialTimeoutMs = document.getElementById("caddyDialTimeoutMs");
+    const caddyResponseHeaderTimeoutMs = document.getElementById("caddyResponseHeaderTimeoutMs");
+    const caddyKeepAliveTimeoutMs = document.getElementById("caddyKeepAliveTimeoutMs");
     const caddyPreview = document.getElementById("caddyPreview");
     const caddyMsg = document.getElementById("caddyMsg");
     const caddyState = document.getElementById("caddyState");
@@ -149,8 +154,18 @@ import {
         email: caddyEmail.value.trim(),
         httpsPort: Number(caddyHttpsPort.value || 443),
         upstreamHost: caddyUpstreamHost.value.trim() || "127.0.0.1",
-        upstreamPort: Number(caddyUpstreamPort.value || 3000)
+        upstreamPort: Number(caddyUpstreamPort.value || 3000),
+        transport: {
+          dialTimeoutMs: Number(caddyDialTimeoutMs.value || 5000),
+          responseHeaderTimeoutMs: Number(caddyResponseHeaderTimeoutMs.value || 45000),
+          keepAliveTimeoutMs: Number(caddyKeepAliveTimeoutMs.value || 120000)
+        }
       };
+    }
+
+    function msToCaddyDuration(ms, fallbackMs) {
+      const value = Number.isFinite(ms) && ms > 0 ? ms : fallbackMs;
+      return `${Math.max(1, Math.ceil(value / 1000))}s`;
     }
 
     function renderCaddyPreview() {
@@ -161,6 +176,9 @@ import {
       }
       const hostPort = `${cfg.domain}:${cfg.httpsPort}`;
       const upstream = `${cfg.upstreamHost}:${cfg.upstreamPort}`;
+      const dialTimeout = msToCaddyDuration(cfg.transport?.dialTimeoutMs, 5000);
+      const responseHeaderTimeout = msToCaddyDuration(cfg.transport?.responseHeaderTimeoutMs, 45000);
+      const keepAliveTimeout = msToCaddyDuration(cfg.transport?.keepAliveTimeoutMs, 120000);
       caddyPreview.textContent = `{
   email ${cfg.email}
   servers :80 {
@@ -179,9 +197,9 @@ ${hostPort} {
     health_interval 30s
     fail_duration 30s
     transport http {
-      dial_timeout 5s
-      response_header_timeout 120s
-      keepalive 120s
+      dial_timeout ${dialTimeout}
+      response_header_timeout ${responseHeaderTimeout}
+      keepalive ${keepAliveTimeout}
       keepalive_idle_conns 256
       keepalive_idle_conns_per_host 128
       versions 2 1.1
@@ -403,7 +421,21 @@ ${hostPort} {
       caddyHttpsPort.value = cfg.httpsPort ?? 443;
       caddyUpstreamHost.value = cfg.upstreamHost || "127.0.0.1";
       caddyUpstreamPort.value = cfg.upstreamPort ?? 3000;
+      caddyDialTimeoutMs.value = cfg.transport?.dialTimeoutMs ?? config?.server?.upstream?.connectTimeoutMs ?? 5000;
+      caddyResponseHeaderTimeoutMs.value = cfg.transport?.responseHeaderTimeoutMs ?? config?.server?.upstream?.firstByteTimeoutMs ?? 45000;
+      caddyKeepAliveTimeoutMs.value = cfg.transport?.keepAliveTimeoutMs ?? 120000;
       renderCaddyPreview();
+    }
+
+    async function loadRuntimeInfo() {
+      const json = await getRuntimeApi();
+      if (!json.ok) return;
+      const runtime = json.runtime || {};
+      const mode = runtime.mode || "azureFile";
+      const path = runtime.configPath || "";
+      const blobContainer = runtime.blobContainerName || "";
+      const blobName = runtime.configBlobName || "";
+      runtimeInfo.textContent = `${t("runtime.persistence")}: ${mode}\n${t("runtime.configPath")}: ${path}${blobContainer ? `\n${t("runtime.blobContainer")}: ${blobContainer}` : ""}${blobName ? `\n${t("runtime.blobName")}: ${blobName}` : ""}`;
     }
 
     async function applyCaddyAndSave() {
@@ -587,6 +619,7 @@ ${hostPort} {
       resetPayloadSample();
       loadStats();
       loadCaddyStatus();
+      loadRuntimeInfo();
       renderCaddyPreview();
     };
     document.getElementById("langEn").onclick = () => {
@@ -595,9 +628,20 @@ ${hostPort} {
       resetPayloadSample();
       loadStats();
       loadCaddyStatus();
+      loadRuntimeInfo();
       renderCaddyPreview();
     };
-    [caddyEnabled, caddyDomain, caddyEmail, caddyHttpsPort, caddyUpstreamHost, caddyUpstreamPort].forEach((el) => {
+    [
+      caddyEnabled,
+      caddyDomain,
+      caddyEmail,
+      caddyHttpsPort,
+      caddyUpstreamHost,
+      caddyUpstreamPort,
+      caddyDialTimeoutMs,
+      caddyResponseHeaderTimeoutMs,
+      caddyKeepAliveTimeoutMs
+    ].forEach((el) => {
       el.addEventListener("input", renderCaddyPreview);
       el.addEventListener("change", renderCaddyPreview);
     });
@@ -607,3 +651,4 @@ ${hostPort} {
     loadConfig();
     loadStats();
     loadCaddyStatus();
+    loadRuntimeInfo();

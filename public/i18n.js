@@ -27,6 +27,9 @@
       "caddy.httpsPort": "TLS 入口端口",
       "caddy.upstreamHost": "上游地址",
       "caddy.upstreamPort": "上游端口",
+      "caddy.dialTimeoutMs": "连接超时（毫秒）",
+      "caddy.responseHeaderTimeoutMs": "首包头超时（毫秒）",
+      "caddy.keepAliveTimeoutMs": "Keepalive（毫秒）",
       "btn.caddy.apply": "应用并保存",
       "btn.caddy.refresh": "从配置加载",
       "btn.caddy.restart": "重启服务",
@@ -92,6 +95,10 @@
       "msg.requesting": "请求中...",
       "msg.invalidPayload": "请求体 JSON 无效",
       "msg.startedAt": "开始于: ",
+      "runtime.persistence": "当前持久化模式",
+      "runtime.configPath": "本地缓存配置路径",
+      "runtime.blobContainer": "Blob 容器",
+      "runtime.blobName": "配置 Blob 路径",
 
       "payload.greeting": "你好"
     },
@@ -122,6 +129,9 @@
       "caddy.httpsPort": "TLS Port",
       "caddy.upstreamHost": "Upstream Host",
       "caddy.upstreamPort": "Upstream Port",
+      "caddy.dialTimeoutMs": "Dial Timeout (ms)",
+      "caddy.responseHeaderTimeoutMs": "Response Header Timeout (ms)",
+      "caddy.keepAliveTimeoutMs": "Keepalive (ms)",
       "btn.caddy.apply": "Apply & Save",
       "btn.caddy.refresh": "Load from Config",
       "btn.caddy.restart": "Restart Service",
@@ -187,6 +197,10 @@
       "msg.requesting": "Requesting...",
       "msg.invalidPayload": "Invalid JSON payload",
       "msg.startedAt": "Started at: ",
+      "runtime.persistence": "Persistence Mode",
+      "runtime.configPath": "Local Config Cache",
+      "runtime.blobContainer": "Blob Container",
+      "runtime.blobName": "Config Blob Path",
 
       "payload.greeting": "Hello"
     }

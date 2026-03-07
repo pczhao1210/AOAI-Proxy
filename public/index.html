@@ -135,6 +135,7 @@
         <button id="reloadBtn" class="secondary" data-i18n="btn.reload">重载</button>
       </div>
       <div id="configMsg" class="muted" style="margin-top: 8px;"></div>
+      <div class="preview" id="runtimeInfo" style="margin-top: 12px;"></div>
     </section>
 
     <section class="grid">
@@ -185,6 +186,20 @@
         <div class="field">
           <label for="caddyUpstreamPort" class="muted" data-i18n="caddy.upstreamPort">上游端口</label>
           <input id="caddyUpstreamPort" type="number" min="1" max="65535" value="3000" />
+        </div>
+      </div>
+      <div class="row" style="margin-top: 12px;">
+        <div class="field">
+          <label for="caddyDialTimeoutMs" class="muted" data-i18n="caddy.dialTimeoutMs">连接超时（毫秒）</label>
+          <input id="caddyDialTimeoutMs" type="number" min="1" value="5000" />
+        </div>
+        <div class="field">
+          <label for="caddyResponseHeaderTimeoutMs" class="muted" data-i18n="caddy.responseHeaderTimeoutMs">首包头超时（毫秒）</label>
+          <input id="caddyResponseHeaderTimeoutMs" type="number" min="1" value="45000" />
+        </div>
+        <div class="field">
+          <label for="caddyKeepAliveTimeoutMs" class="muted" data-i18n="caddy.keepAliveTimeoutMs">Keepalive（毫秒）</label>
+          <input id="caddyKeepAliveTimeoutMs" type="number" min="1" value="120000" />
         </div>
       </div>
       <div class="row" style="margin-top: 12px;">

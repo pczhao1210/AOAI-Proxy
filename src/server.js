@@ -3,11 +3,12 @@ import path from "node:path";
 import crypto from "node:crypto";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { getConfig, reloadConfig, saveConfig, getConfigPath } from "./config.js";
-import { initAuth, getBearerToken } from "./auth.js";
+import { getConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo } from "./config.js";
+import { initAuth, getBearerToken, warmBearerToken } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
 import { writeCaddyfile, reloadCaddy, getCaddyStatus, setCaddyStatus } from "./caddy.js";
+import { configureUpstreamHttp } from "./http.js";
 
 // Fastify server entry
 const defaultBodyLimit = 50 * 1024 * 1024;
@@ -107,6 +108,15 @@ function attachAuth(config) {
   initAuth(config);
 }
 
+async function primeAuth(config) {
+  try {
+    await warmBearerToken(config.auth.scope);
+    emitStartupLog("auth_warm", { scope: config.auth.scope });
+  } catch (error) {
+    emitStartupError("auth_warm_failed", error, { scope: config.auth.scope });
+  }
+}
+
 function emitStartupLog(stage, fields = {}) {
   const payload = {
     ts: new Date().toISOString(),
@@ -187,10 +197,11 @@ app.get("/admin/api/config", async () => {
 app.put("/admin/api/config", async (req, reply) => {
   const nextConfig = req.body;
   try {
-    const saved = saveConfig(nextConfig);
+    const saved = await saveConfig(nextConfig);
     attachAuth(saved);
+    void primeAuth(saved);
     writeCaddyfile(saved);
-    const reloadResult = await reloadCaddy(saved);
+    await reloadCaddy(saved);
     reply.send({ ok: true, config: saved });
   } catch (error) {
     reply.code(400).send({ error: error.message });
@@ -199,8 +210,9 @@ app.put("/admin/api/config", async (req, reply) => {
 
 app.post("/admin/api/reload", async (req, reply) => {
   try {
-    const config = reloadConfig();
+    const config = await reloadConfig();
     attachAuth(config);
+    void primeAuth(config);
     writeCaddyfile(config);
     await reloadCaddy(config);
     reply.send({ ok: true, config });
@@ -217,6 +229,10 @@ app.post("/admin/api/verify-aad", async (req, reply) => {
   } catch (error) {
     reply.code(400).send({ ok: false, error: error.message });
   }
+});
+
+app.get("/admin/api/runtime", async () => {
+  return { ok: true, runtime: getConfigRuntimeInfo() };
 });
 
 app.get("/admin/api/stats", async () => {
@@ -255,8 +271,10 @@ async function start() {
     bodyLimit,
     logLevel: process.env.LOG_LEVEL || "warn"
   });
-  const config = reloadConfig();
+  const config = await reloadConfig();
+  const upstreamHttp = configureUpstreamHttp(config);
   attachAuth(config);
+  await primeAuth(config);
   const caddyfileWrite = writeCaddyfile(config);
   const caddyReload = await reloadCaddy(config);
   const { host, port } = config.server;
@@ -268,6 +286,7 @@ async function start() {
     caddyEnabled: !!config.server?.caddy?.enabled,
     models: Array.isArray(config.models) ? config.models.length : 0,
     upstreams: Array.isArray(config.upstreams) ? config.upstreams.length : 0,
+    upstreamHttp,
     caddyfileWrite,
     caddyReload
   });

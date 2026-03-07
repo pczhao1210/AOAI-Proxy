@@ -36,6 +36,11 @@ function getCaddyBin() {
   return process.env.CADDY_BIN || DEFAULT_CADDY_BIN;
 }
 
+function msToCaddyDuration(ms, fallbackMs) {
+  const value = Number.isFinite(ms) && ms > 0 ? ms : fallbackMs;
+  return `${Math.max(1, Math.ceil(value / 1000))}s`;
+}
+
 // Render Caddyfile based on server.caddy
 export function renderCaddyfile(config) {
   const caddy = config?.server?.caddy;
@@ -46,6 +51,12 @@ export function renderCaddyfile(config) {
   const httpsPort = Number(caddy.httpsPort ?? 3001);
   const upstreamHost = String(caddy.upstreamHost || "127.0.0.1").trim();
   const upstreamPort = Number(caddy.upstreamPort ?? 3000);
+  const dialTimeout = msToCaddyDuration(caddy?.transport?.dialTimeoutMs, config?.server?.upstream?.connectTimeoutMs ?? 5000);
+  const responseHeaderTimeout = msToCaddyDuration(
+    caddy?.transport?.responseHeaderTimeoutMs,
+    config?.server?.upstream?.firstByteTimeoutMs ?? 45000
+  );
+  const keepAliveTimeout = msToCaddyDuration(caddy?.transport?.keepAliveTimeoutMs, 120000);
 
   const hostPort = `${domain}:${httpsPort}`;
   const upstream = `${upstreamHost}:${upstreamPort}`;
@@ -72,9 +83,9 @@ ${hostPort} {
     health_interval 30s
     fail_duration 30s
     transport http {
-      dial_timeout 5s
-      response_header_timeout 120s
-      keepalive 120s
+      dial_timeout ${dialTimeout}
+      response_header_timeout ${responseHeaderTimeout}
+      keepalive ${keepAliveTimeout}
       keepalive_idle_conns 256
       keepalive_idle_conns_per_host 128
       versions 2 1.1

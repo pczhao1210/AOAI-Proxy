@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import path from "node:path";
+import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary } from "./persistence.js";
 
 // Default config values
 const DEFAULTS = {
@@ -18,7 +18,12 @@ const DEFAULTS = {
       email: "",
       httpsPort: 443,
       upstreamHost: "127.0.0.1",
-      upstreamPort: 3000
+      upstreamPort: 3000,
+      transport: {
+        dialTimeoutMs: 5000,
+        responseHeaderTimeoutMs: 45000,
+        keepAliveTimeoutMs: 120000
+      }
     },
     imageCompression: {
       enabled: true,
@@ -28,13 +33,21 @@ const DEFAULTS = {
     },
     upstream: {
       connectTimeoutMs: 5000,
-      requestTimeoutMs: 120000,
-      firstByteTimeoutMs: 30000,
-      idleTimeoutMs: 45000,
-      maxRetries: 2,
-      retryBaseMs: 400,
-      retryMaxMs: 5000,
-      retryStatuses: [408, 409, 425, 429, 500, 502, 503, 504]
+      requestTimeoutMs: 600000,
+      firstByteTimeoutMs: 90000,
+      idleTimeoutMs: 600000,
+      maxRetries: 1,
+      retryBaseMs: 800,
+      retryMaxMs: 8000,
+      retryStatuses: [408, 409, 425, 429, 500, 502, 503, 504],
+      pool: {
+        connections: 32,
+        keepAliveTimeoutMs: 30000,
+        keepAliveMaxTimeoutMs: 120000,
+        headersTimeoutMs: 60000,
+        bodyTimeoutMs: 0,
+        pipelining: 1
+      }
     }
   },
   auth: {
@@ -91,7 +104,7 @@ function validateConfig(cfg) {
     if (typeof cfg.server.caddy !== "object") {
       throw new Error("server.caddy must be an object");
     }
-    const { enabled, domain, email, httpsPort, upstreamHost, upstreamPort } = cfg.server.caddy;
+    const { enabled, domain, email, httpsPort, upstreamHost, upstreamPort, transport } = cfg.server.caddy;
     if (enabled != null && typeof enabled !== "boolean") {
       throw new Error("server.caddy.enabled must be a boolean");
     }
@@ -111,6 +124,22 @@ function validateConfig(cfg) {
     }
     if (upstreamHost != null && typeof upstreamHost !== "string") {
       throw new Error("server.caddy.upstreamHost must be a string");
+    }
+    if (transport != null) {
+      if (typeof transport !== "object") {
+        throw new Error("server.caddy.transport must be an object");
+      }
+      const { dialTimeoutMs, responseHeaderTimeoutMs, keepAliveTimeoutMs } = transport;
+      const positiveInt = (v) => Number.isInteger(v) && v > 0;
+      if (dialTimeoutMs != null && !positiveInt(dialTimeoutMs)) {
+        throw new Error("server.caddy.transport.dialTimeoutMs must be a positive integer");
+      }
+      if (responseHeaderTimeoutMs != null && !positiveInt(responseHeaderTimeoutMs)) {
+        throw new Error("server.caddy.transport.responseHeaderTimeoutMs must be a positive integer");
+      }
+      if (keepAliveTimeoutMs != null && !positiveInt(keepAliveTimeoutMs)) {
+        throw new Error("server.caddy.transport.keepAliveTimeoutMs must be a positive integer");
+      }
     }
   }
   if (cfg.server.adminAuth != null) {
@@ -163,7 +192,8 @@ function validateConfig(cfg) {
       maxRetries,
       retryBaseMs,
       retryMaxMs,
-      retryStatuses
+      retryStatuses,
+      pool
     } = cfg.server.upstream;
     const positiveInt = (v) => Number.isInteger(v) && v > 0;
     const nonNegativeInt = (v) => Number.isInteger(v) && v >= 0;
@@ -191,6 +221,37 @@ function validateConfig(cfg) {
     if (retryStatuses != null) {
       if (!Array.isArray(retryStatuses) || retryStatuses.some((s) => !Number.isInteger(s) || s < 100 || s > 599)) {
         throw new Error("server.upstream.retryStatuses must be an array of HTTP status codes");
+      }
+    }
+    if (pool != null) {
+      if (typeof pool !== "object") {
+        throw new Error("server.upstream.pool must be an object");
+      }
+      const {
+        connections,
+        keepAliveTimeoutMs,
+        keepAliveMaxTimeoutMs,
+        headersTimeoutMs,
+        bodyTimeoutMs,
+        pipelining
+      } = pool;
+      if (connections != null && !positiveInt(connections)) {
+        throw new Error("server.upstream.pool.connections must be a positive integer");
+      }
+      if (keepAliveTimeoutMs != null && !positiveInt(keepAliveTimeoutMs)) {
+        throw new Error("server.upstream.pool.keepAliveTimeoutMs must be a positive integer");
+      }
+      if (keepAliveMaxTimeoutMs != null && !positiveInt(keepAliveMaxTimeoutMs)) {
+        throw new Error("server.upstream.pool.keepAliveMaxTimeoutMs must be a positive integer");
+      }
+      if (headersTimeoutMs != null && !positiveInt(headersTimeoutMs)) {
+        throw new Error("server.upstream.pool.headersTimeoutMs must be a positive integer");
+      }
+      if (bodyTimeoutMs != null && !nonNegativeInt(bodyTimeoutMs)) {
+        throw new Error("server.upstream.pool.bodyTimeoutMs must be a non-negative integer");
+      }
+      if (pipelining != null && !positiveInt(pipelining)) {
+        throw new Error("server.upstream.pool.pipelining must be a positive integer");
       }
     }
   }
@@ -259,9 +320,8 @@ export function getConfigPath() {
   return configPath;
 }
 
-export function loadConfig() {
-  const filePath = getConfigPath();
-  const rawText = fs.readFileSync(filePath, "utf8");
+export async function loadConfig() {
+  const rawText = await readPersistedConfigText();
   const raw = JSON.parse(rawText);
   const cfg = validateConfig(normalizeConfig(raw));
   currentConfig = cfg;
@@ -270,20 +330,23 @@ export function loadConfig() {
 
 export function getConfig() {
   if (!currentConfig) {
-    return loadConfig();
+    throw new Error("Configuration not loaded yet");
   }
   return currentConfig;
 }
 
-export function saveConfig(nextConfig) {
-  const filePath = getConfigPath();
+export async function saveConfig(nextConfig) {
   const normalized = normalizeConfig(nextConfig);
   const validated = validateConfig(normalized);
-  fs.writeFileSync(filePath, JSON.stringify(validated, null, 2), "utf8");
+  await writePersistedConfigText(JSON.stringify(validated, null, 2));
   currentConfig = validated;
   return validated;
 }
 
-export function reloadConfig() {
+export async function reloadConfig() {
   return loadConfig();
+}
+
+export function getConfigRuntimeInfo() {
+  return getPersistenceSummary();
 }
