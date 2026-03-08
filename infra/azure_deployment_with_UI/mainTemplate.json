@@ -1,0 +1,369 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all new resources."
+      }
+    },
+    "containerGroupName": {
+      "type": "string",
+      "defaultValue": "aoai-proxy",
+      "metadata": {
+        "description": "Container group name."
+      }
+    },
+    "image": {
+      "type": "string",
+      "metadata": {
+        "description": "Container image to deploy."
+      }
+    },
+    "dnsNameLabel": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Public DNS label for the container group. Leave empty to skip public DNS."
+      }
+    },
+    "cpu": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "description": "CPU cores for the container."
+      }
+    },
+    "memoryInGb": {
+      "type": "int",
+      "defaultValue": 2,
+      "metadata": {
+        "description": "Memory in GB for the container."
+      }
+    },
+    "persistenceMode": {
+      "type": "string",
+      "defaultValue": "azureFile",
+      "allowedValues": [
+        "azureFile",
+        "blob"
+      ],
+      "metadata": {
+        "description": "Persistence mode. azureFile keeps the Azure Files mount; blob stores config via Blob SDK and managed identity."
+      }
+    },
+    "storageAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the new storage account to create for Azure Files and Blob configuration storage. This template does not select or reuse an existing storage account."
+      }
+    },
+    "fileShareName": {
+      "type": "string",
+      "defaultValue": "aoaiproxy",
+      "metadata": {
+        "description": "Azure Files share name used when persistenceMode=azureFile."
+      }
+    },
+    "blobContainerName": {
+      "type": "string",
+      "defaultValue": "aoai-proxy-config",
+      "metadata": {
+        "description": "Blob container name used when persistenceMode=blob."
+      }
+    },
+    "configBlobName": {
+      "type": "string",
+      "defaultValue": "config/config.json",
+      "metadata": {
+        "description": "Blob path used for the persisted config file when persistenceMode=blob."
+      }
+    },
+    "cognitiveServicesAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Existing Azure OpenAI or Azure AI Foundry account name."
+      }
+    },
+    "cognitiveServicesAccountResourceGroup": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().name]",
+      "metadata": {
+        "description": "Resource group that contains the existing Azure OpenAI or Azure AI Foundry account. Defaults to the deployment resource group."
+      }
+    },
+    "acrLoginServer": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional ACR login server. Leave empty for public images."
+      }
+    },
+    "acrUsername": {
+      "type": "secureString",
+      "defaultValue": ""
+    },
+    "acrPassword": {
+      "type": "secureString",
+      "defaultValue": ""
+    }
+  },
+  "variables": {
+    "enableAzureFile": "[equals(parameters('persistenceMode'), 'azureFile')]",
+    "enableBlob": "[equals(parameters('persistenceMode'), 'blob')]",
+    "storageBlobDataContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
+    "cognitiveServicesOpenAiUserRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
+    "azureFileShareContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb')]",
+    "blobAccountUrl": "[format('https://{0}.blob.core.windows.net', parameters('storageAccountName'))]",
+    "containerImageRegistryCredentials": "[if(empty(parameters('acrLoginServer')), createArray(), createArray(createObject('server', parameters('acrLoginServer'), 'username', parameters('acrUsername'), 'password', parameters('acrPassword'))))]",
+    "containerEnvironmentVariables": [
+      {
+        "name": "PERSISTENCE_MODE",
+        "value": "[parameters('persistenceMode')]"
+      },
+      {
+        "name": "AZURE_STORAGE_ACCOUNT_URL",
+        "value": "[variables('blobAccountUrl')]"
+      },
+      {
+        "name": "CONFIG_BLOB_CONTAINER",
+        "value": "[parameters('blobContainerName')]"
+      },
+      {
+        "name": "CONFIG_BLOB_NAME",
+        "value": "[parameters('configBlobName')]"
+      }
+    ],
+    "volumeMounts": "[if(variables('enableAzureFile'), createArray(createObject('name', 'configshare', 'mountPath', '/app/data')), createArray())]",
+    "volumes": "[if(variables('enableAzureFile'), createArray(createObject('name', 'configshare', 'azureFile', createObject('shareName', parameters('fileShareName'), 'storageAccountName', parameters('storageAccountName'), 'storageAccountKey', listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').keys[0].value))), createArray())]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "accessTier": "Hot",
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": "[variables('enableAzureFile')]",
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true
+      }
+    },
+    {
+      "condition": "[variables('enableAzureFile')]",
+      "type": "Microsoft.Storage/storageAccounts/fileServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default', parameters('storageAccountName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[variables('enableAzureFile')]",
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default/{1}', parameters('storageAccountName'), parameters('fileShareName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', parameters('storageAccountName'), 'default')]"
+      ]
+    },
+    {
+      "condition": "[variables('enableBlob')]",
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default', parameters('storageAccountName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[variables('enableBlob')]",
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default/{1}', parameters('storageAccountName'), parameters('blobContainerName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('storageAccountName'), 'default')]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.ContainerInstance/containerGroups",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('containerGroupName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', parameters('fileShareName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', parameters('blobContainerName'))]"
+      ],
+      "properties": {
+        "osType": "Linux",
+        "restartPolicy": "Always",
+        "containers": [
+          {
+            "name": "[parameters('containerGroupName')]",
+            "properties": {
+              "image": "[parameters('image')]",
+              "environmentVariables": "[variables('containerEnvironmentVariables')]",
+              "ports": [
+                {
+                  "port": 3000,
+                  "protocol": "TCP"
+                },
+                {
+                  "port": 443,
+                  "protocol": "TCP"
+                }
+              ],
+              "resources": {
+                "requests": {
+                  "cpu": "[parameters('cpu')]",
+                  "memoryInGB": "[parameters('memoryInGb')]"
+                }
+              },
+              "volumeMounts": "[variables('volumeMounts')]"
+            }
+          }
+        ],
+        "imageRegistryCredentials": "[variables('containerImageRegistryCredentials')]",
+        "ipAddress": {
+          "type": "Public",
+          "dnsNameLabel": "[if(empty(parameters('dnsNameLabel')), json('null'), parameters('dnsNameLabel'))]",
+          "ports": [
+            {
+              "port": 3000,
+              "protocol": "TCP"
+            },
+            {
+              "port": 443,
+              "protocol": "TCP"
+            }
+          ]
+        },
+        "volumes": "[variables('volumes')]"
+      }
+    },
+    {
+      "condition": "[variables('enableBlob')]",
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers/providers/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[format('{0}/default/{1}/Microsoft.Authorization/{2}', parameters('storageAccountName'), parameters('blobContainerName'), guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', parameters('blobContainerName')), resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), variables('storageBlobDataContributorRoleId')))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', parameters('blobContainerName'))]"
+      ],
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('storageBlobDataContributorRoleId')]"
+      }
+    },
+    {
+      "condition": "[variables('enableAzureFile')]",
+      "type": "Microsoft.Storage/storageAccounts/providers/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[format('{0}/Microsoft.Authorization/{1}', parameters('storageAccountName'), guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), variables('azureFileShareContributorRoleId')))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ],
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('azureFileShareContributorRoleId')]"
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "cognitive-role-assignment",
+      "resourceGroup": "[parameters('cognitiveServicesAccountResourceGroup')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]"
+      ],
+      "properties": {
+        "mode": "Incremental",
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "cognitiveServicesAccountName": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            },
+            "roleDefinitionId": {
+              "type": "string"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.CognitiveServices/accounts/providers/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[format('{0}/Microsoft.Authorization/{1}', parameters('cognitiveServicesAccountName'), guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('cognitiveServicesAccountName')), parameters('principalId'), parameters('roleDefinitionId')))]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[parameters('roleDefinitionId')]"
+              }
+            }
+          ]
+        },
+        "parameters": {
+          "cognitiveServicesAccountName": {
+            "value": "[parameters('cognitiveServicesAccountName')]"
+          },
+          "principalId": {
+            "value": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]"
+          },
+          "roleDefinitionId": {
+            "value": "[variables('cognitiveServicesOpenAiUserRoleId')]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "containerGroupId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]"
+    },
+    "principalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]"
+    },
+    "persistenceModeOutput": {
+      "type": "string",
+      "value": "[parameters('persistenceMode')]"
+    },
+    "blobAccountUrl": {
+      "type": "string",
+      "value": "[variables('blobAccountUrl')]"
+    },
+    "azureFileShareName": {
+      "type": "string",
+      "value": "[if(variables('enableAzureFile'), parameters('fileShareName'), '')]"
+    },
+    "blobContainerOutput": {
+      "type": "string",
+      "value": "[if(variables('enableBlob'), parameters('blobContainerName'), '')]"
+    }
+  }
+}

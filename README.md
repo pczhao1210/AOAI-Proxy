@@ -19,6 +19,7 @@
 - Bicep template: [infra/main.bicep](infra/main.bicep)
 - ARM template for portal deployment: [infra/azuredeploy.json](infra/azuredeploy.json)
 - Portal UI definition for managed app / custom portal packaging: [infra/createUiDefinition.json](infra/createUiDefinition.json)
+- Azure Managed Application package source: [infra/azure_deployment_with_UI](infra/azure_deployment_with_UI)
 - Example parameters: [infra/parameters/dev.json](infra/parameters/dev.json), [infra/parameters/prod.json](infra/parameters/prod.json)
 
 The Deploy to Azure button targets the ARM JSON template because the portal button flow does not deploy remote Bicep files directly.
@@ -206,6 +207,55 @@ The templates provision:
 
 The target Azure OpenAI / Foundry resource can live in a different resource group within the same subscription. Set `cognitiveServicesAccountResourceGroup` when it differs from the deployment resource group.
 The `storageAccountName` parameter is the name of a new storage account to create. The current templates do not support selecting or reusing an existing storage account.
+
+### Deploy as Azure Managed Application With Custom UI
+
+Use [infra/azure_deployment_with_UI](infra/azure_deployment_with_UI) when you want the Azure Portal to use `createUiDefinition.json` and show the richer resource-selection UI.
+
+Package the files so that `mainTemplate.json` and `createUiDefinition.json` are at the root of the zip:
+
+```bash
+cd infra/azure_deployment_with_UI
+zip -j app.zip mainTemplate.json createUiDefinition.json
+```
+
+Publish a service catalog definition with Azure CLI using either the local files or an uploaded package URI. Example with local files:
+
+```bash
+az managedapp definition create \
+  --resource-group <definition-rg> \
+  --name aoai-proxy-managedapp \
+  --location <location> \
+  --display-name "AOAI Foundry Proxy" \
+  --description "AOAI Foundry Proxy with custom UI for ACI deployment" \
+  --lock-level ReadOnly \
+  --authorizations <principalId>:<roleDefinitionId> \
+  --create-ui-definition @infra/azure_deployment_with_UI/createUiDefinition.json \
+  --main-template @infra/azure_deployment_with_UI/mainTemplate.json
+```
+
+Retrieve the definition ID:
+
+```bash
+az managedapp definition show \
+  --resource-group <definition-rg> \
+  --name aoai-proxy-managedapp \
+  --query id -o tsv
+```
+
+Deploy a service catalog instance:
+
+```bash
+az managedapp create \
+  --resource-group <application-rg> \
+  --name aoai-proxy-instance \
+  --location <location> \
+  --kind ServiceCatalog \
+  --managed-rg-id /subscriptions/<subscription-id>/resourceGroups/<managed-rg-name> \
+  --managedapp-definition-id <definition-id>
+```
+
+The portal UI in this package supports selecting an existing Foundry or Azure OpenAI resource by resource picker and passes the selected resource group to the deployment template.
 
 ## ACI Persistence and RBAC
 
