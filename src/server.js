@@ -7,7 +7,7 @@ import { getConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInf
 import { initAuth, getBearerToken, warmBearerToken } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
-import { writeCaddyfile, reloadCaddy, getCaddyStatus, setCaddyStatus } from "./caddy.js";
+import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
 
 // Fastify server entry
@@ -247,7 +247,11 @@ app.post("/admin/api/restart", async (req, reply) => {
   setCaddyStatus({ state: "restart-requested", message: "restart requested", lastError: null });
   reply.send({ ok: true });
   setTimeout(() => {
-    process.exit(0);
+    try {
+      process.kill(1, "SIGTERM");
+    } catch {
+      process.exit(0);
+    }
   }, 500);
 });
 
@@ -276,7 +280,9 @@ async function start() {
   attachAuth(config);
   await primeAuth(config);
   const caddyfileWrite = writeCaddyfile(config);
-  const caddyReload = await reloadCaddy(config);
+  const caddyReload = config.server?.caddy?.enabled
+    ? scheduleCaddyStartupProbe(config)
+    : await reloadCaddy(config);
   const { host, port } = config.server;
   emitStartupLog("config_loaded", {
     host,

@@ -174,7 +174,7 @@ az deployment group create \
 - Storage Account
 - `persistenceMode=azureFile` 时的 Azure Files 共享
 - `persistenceMode=blob` 时的 Blob Container
-- `blob` 模式下的 `Storage Blob Data Contributor` 角色授权
+- `blob` 模式下会给容器托管身份和当前部署发起者同时授予 Blob 容器级别的 `Storage Blob Data Contributor` 角色
 - 面向目标 Azure OpenAI 资源的 `Cognitive Services OpenAI User` 角色授权
 
 目标 Azure OpenAI / Foundry 资源可以位于同一订阅下的不同资源组；不在当前部署资源组时，设置 `cognitiveServicesAccountResourceGroup` 即可。
@@ -228,6 +228,8 @@ az managedapp create \
 ## Caddy TLS
 
 在管理页配置域名、邮箱、上游和传输超时后，保存配置会自动重写 Caddyfile 并尝试热重载。
+
+如果实例重启时已经启用了 Caddy，应用会先把状态标记为 `starting`，并在后台轮询 Caddy 进程是否已就绪，避免刚启动时因为 `caddy reload` 早于 Caddy 进程拉起而误报错误。
 
 如果启用了主动健康检查，同时 `/healthz` 需要 API Key，建议在 Caddy 中增加 `health_headers`，或关闭 `health_uri`，否则可能出现 401/503 的误判。
 

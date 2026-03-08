@@ -116,6 +116,8 @@
     "storageBlobDataContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
     "cognitiveServicesOpenAiUserRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
     "azureFileShareContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb')]",
+    "deployerObjectId": "[deployer().objectId]",
+    "deployerPrincipalType": "[if(empty(deployer().userPrincipalName), 'ServicePrincipal', 'User')]",
     "blobAccountUrl": "[format('https://{0}.blob.core.windows.net', parameters('storageAccountName'))]",
     "containerImageRegistryCredentials": "[if(empty(parameters('acrLoginServer')), createArray(), createArray(createObject('server', parameters('acrLoginServer'), 'username', parameters('acrUsername'), 'password', parameters('acrPassword'))))]",
     "containerEnvironmentVariables": [
@@ -268,6 +270,20 @@
       "properties": {
         "principalId": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('storageBlobDataContributorRoleId')]"
+      }
+    },
+    {
+      "condition": "[variables('enableBlob')]",
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers/providers/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[format('{0}/default/{1}/Microsoft.Authorization/{2}', parameters('storageAccountName'), parameters('blobContainerName'), guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', parameters('blobContainerName')), variables('deployerObjectId'), variables('storageBlobDataContributorRoleId')))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', parameters('blobContainerName'))]"
+      ],
+      "properties": {
+        "principalId": "[variables('deployerObjectId')]",
+        "principalType": "[variables('deployerPrincipalType')]",
         "roleDefinitionId": "[variables('storageBlobDataContributorRoleId')]"
       }
     },

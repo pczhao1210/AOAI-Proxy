@@ -58,6 +58,8 @@ param acrPassword string = ''
 var storageBlobDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var cognitiveServicesOpenAiUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
 var azureFileShareContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb')
+var deployerPrincipal = deployer()
+var deployerBlobPrincipalType = empty(deployerPrincipal.userPrincipalName) ? 'ServicePrincipal' : 'User'
 var enableAzureFile = persistenceMode == 'azureFile'
 var enableBlob = persistenceMode == 'blob'
 var storageAccountBlobUrl = 'https://${storageAccountName}.blob.${environment().suffixes.storage}'
@@ -202,6 +204,16 @@ resource blobRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01'
   properties: {
     principalId: containerGroup.identity.principalId
     principalType: 'ServicePrincipal'
+    roleDefinitionId: storageBlobDataContributorRoleId
+  }
+}
+
+resource deployerBlobRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableBlob) {
+  name: guid(blobContainer.id, deployerPrincipal.objectId, storageBlobDataContributorRoleId)
+  scope: blobContainer
+  properties: {
+    principalId: deployerPrincipal.objectId
+    principalType: deployerBlobPrincipalType
     roleDefinitionId: storageBlobDataContributorRoleId
   }
 }

@@ -1,6 +1,20 @@
 #!/bin/sh
 set -e
 
+NODE_PID=""
+CADDY_PID=""
+
+cleanup() {
+  if [ -n "$NODE_PID" ]; then
+    kill "$NODE_PID" 2>/dev/null || true
+  fi
+  if [ -n "$CADDY_PID" ]; then
+    kill "$CADDY_PID" 2>/dev/null || true
+  fi
+}
+
+trap cleanup TERM INT EXIT
+
 DATA_DIR=${DATA_DIR:-/app/data}
 CONFIG_PATH=${CONFIG_PATH:-$DATA_DIR/config.json}
 export DATA_DIR

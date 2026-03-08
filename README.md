@@ -202,7 +202,7 @@ The templates provision:
 - A new storage account
 - Azure Files share when `persistenceMode=azureFile`
 - Blob container when `persistenceMode=blob`
-- RBAC assignment for `Storage Blob Data Contributor` when blob mode is enabled
+- RBAC assignment for `Storage Blob Data Contributor` on the blob container for both the container identity and the current deployment principal when blob mode is enabled
 - RBAC assignment for `Cognitive Services OpenAI User` on the target Azure OpenAI resource
 
 The target Azure OpenAI / Foundry resource can live in a different resource group within the same subscription. Set `cognitiveServicesAccountResourceGroup` when it differs from the deployment resource group.
@@ -265,6 +265,8 @@ The portal UI in this package supports selecting an existing Foundry or Azure Op
 ## Caddy TLS
 
 Use the admin page to configure domain, email, upstream, and transport timeouts. Saving config regenerates the Caddyfile and attempts a hot reload.
+
+When Caddy is already enabled and the container restarts, the app now treats the early boot period as `starting` instead of an error and retries the local `caddy reload` probe in the background until the Caddy process is ready.
 
 If active health checks are enabled and `/healthz` is API-key protected, add a health header in Caddy or disable `health_uri` to avoid false 401/503 failures.
 
