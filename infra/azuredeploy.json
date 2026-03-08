@@ -57,7 +57,7 @@
     "storageAccountName": {
       "type": "string",
       "metadata": {
-        "description": "Storage account name for Azure Files and Blob configuration storage."
+        "description": "Name of the new storage account to create for Azure Files and Blob configuration storage. This template does not select or reuse an existing storage account."
       }
     },
     "fileShareName": {
@@ -260,7 +260,7 @@
       "condition": "[variables('enableBlob')]",
       "type": "Microsoft.Storage/storageAccounts/blobServices/containers/providers/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[format('{0}/default/{1}/Microsoft.Authorization/{2}', parameters('storageAccountName'), parameters('blobContainerName'), guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', parameters('blobContainerName')), reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId, variables('storageBlobDataContributorRoleId')))]",
+      "name": "[format('{0}/default/{1}/Microsoft.Authorization/{2}', parameters('storageAccountName'), parameters('blobContainerName'), guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', parameters('blobContainerName')), resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), variables('storageBlobDataContributorRoleId')))]",
       "dependsOn": [
         "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', parameters('blobContainerName'))]"
@@ -275,7 +275,7 @@
       "condition": "[variables('enableAzureFile')]",
       "type": "Microsoft.Storage/storageAccounts/providers/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[format('{0}/Microsoft.Authorization/{1}', parameters('storageAccountName'), guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId, variables('azureFileShareContributorRoleId')))]",
+      "name": "[format('{0}/Microsoft.Authorization/{1}', parameters('storageAccountName'), guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), variables('azureFileShareContributorRoleId')))]",
       "dependsOn": [
         "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"

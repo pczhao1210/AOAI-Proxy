@@ -193,13 +193,14 @@ az deployment group create \
 The templates provision:
 
 - A container group with system-assigned managed identity
-- A storage account
+- A new storage account
 - Azure Files share when `persistenceMode=azureFile`
 - Blob container when `persistenceMode=blob`
 - RBAC assignment for `Storage Blob Data Contributor` when blob mode is enabled
 - RBAC assignment for `Cognitive Services OpenAI User` on the target Azure OpenAI resource
 
 The target Azure OpenAI / Foundry resource can live in a different resource group within the same subscription. Set `cognitiveServicesAccountResourceGroup` when it differs from the deployment resource group.
+The `storageAccountName` parameter is the name of a new storage account to create. The current templates do not support selecting or reusing an existing storage account.
 
 ## ACI Persistence and RBAC
 

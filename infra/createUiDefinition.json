@@ -142,15 +142,23 @@
         "label": "Storage",
         "elements": [
           {
+            "name": "storageInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "options": {
+              "icon": "Info",
+              "text": "This deployment creates a new storage account. Enter a globally unique name. Existing storage accounts are not selectable in the current template."
+            }
+          },
+          {
             "name": "storageAccountName",
             "type": "Microsoft.Common.TextBox",
-            "label": "Storage account name",
+            "label": "New storage account name",
             "defaultValue": "",
-            "toolTip": "New storage account used for Azure Files and Blob config persistence.",
+            "toolTip": "Enter the name for the new storage account that this deployment will create for Azure Files and Blob config persistence.",
             "constraints": {
               "required": true,
               "regex": "^[a-z0-9]{3,24}$",
-              "validationMessage": "Use 3-24 lowercase letters or numbers."
+              "validationMessage": "Use 3-24 lowercase letters or numbers. The name must be globally unique in Azure Storage."
             }
           },
           {

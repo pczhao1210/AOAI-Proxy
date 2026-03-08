@@ -25,7 +25,7 @@ param memoryInGb int = 2
 @description('Persistence mode. azureFile keeps the current Azure Files mount; blob stores config via Blob SDK and managed identity.')
 param persistenceMode string = 'azureFile'
 
-@description('Storage account name for Azure Files and Blob configuration storage.')
+@description('Name of the new storage account to create for Azure Files and Blob configuration storage. This template does not select or reuse an existing storage account.')
 param storageAccountName string
 
 @description('Azure Files share name used when persistenceMode=azureFile.')
