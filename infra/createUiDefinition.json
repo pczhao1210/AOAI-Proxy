@@ -1,0 +1,281 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "config": {
+      "isWizard": true,
+      "basics": {
+        "description": "Deploy AOAI Foundry Proxy on Azure Container Instances with either Azure Files or Blob-backed configuration persistence.",
+        "subscription": {
+          "resourceProviders": [
+            "Microsoft.ContainerInstance",
+            "Microsoft.Storage",
+            "Microsoft.CognitiveServices"
+          ]
+        },
+        "resourceGroup": {
+          "allowExisting": true
+        },
+        "location": {
+          "resourceTypes": [
+            "Microsoft.ContainerInstance/containerGroups",
+            "Microsoft.Storage/storageAccounts"
+          ]
+        }
+      }
+    },
+    "basics": [
+      {
+        "name": "containerGroupName",
+        "type": "Microsoft.Common.TextBox",
+        "label": "Container group name",
+        "defaultValue": "aoai-proxy",
+        "toolTip": "Name of the Azure Container Instance group.",
+        "constraints": {
+          "required": true,
+          "regex": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "validationMessage": "Use 1-63 lowercase letters, numbers, or hyphens, and do not end with a hyphen."
+        }
+      },
+      {
+        "name": "dnsNameLabel",
+        "type": "Microsoft.Common.TextBox",
+        "label": "Public DNS label",
+        "defaultValue": "",
+        "toolTip": "Optional public DNS label for the container group. Leave empty to skip a public DNS name.",
+        "constraints": {
+          "regex": "^$|^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "validationMessage": "Leave empty or use 1-63 lowercase letters, numbers, or hyphens."
+        }
+      }
+    ],
+    "steps": [
+      {
+        "name": "runtime",
+        "label": "Runtime",
+        "elements": [
+          {
+            "name": "image",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Container image",
+            "defaultValue": "alexmcr.azurecr.io/aoai-proxy:latest",
+            "toolTip": "Full image reference, for example alexmcr.azurecr.io/aoai-proxy:azure-deploy-v1.",
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "cpu",
+            "type": "Microsoft.Common.DropDown",
+            "label": "CPU cores",
+            "defaultValue": 1,
+            "toolTip": "CPU cores assigned to the container group.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "1 core",
+                  "value": 1
+                },
+                {
+                  "label": "2 cores",
+                  "value": 2
+                },
+                {
+                  "label": "4 cores",
+                  "value": 4
+                }
+              ],
+              "required": true
+            }
+          },
+          {
+            "name": "memoryInGb",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Memory",
+            "defaultValue": 2,
+            "toolTip": "Memory assigned to the container group.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "2 GB",
+                  "value": 2
+                },
+                {
+                  "label": "4 GB",
+                  "value": 4
+                },
+                {
+                  "label": "8 GB",
+                  "value": 8
+                }
+              ],
+              "required": true
+            }
+          },
+          {
+            "name": "persistenceMode",
+            "type": "Microsoft.Common.OptionsGroup",
+            "label": "Persistence mode",
+            "defaultValue": "azureFile",
+            "toolTip": "Choose Azure Files for a mounted /app/data volume, or Blob for config persistence through the SDK and managed identity.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Azure Files volume",
+                  "description": "Mount /app/data from Azure Files. Requires shared key access.",
+                  "value": "azureFile"
+                },
+                {
+                  "label": "Blob config persistence",
+                  "description": "Persist config in Blob Storage by managed identity.",
+                  "value": "blob"
+                }
+              ],
+              "required": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage",
+        "label": "Storage",
+        "elements": [
+          {
+            "name": "storageAccountName",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Storage account name",
+            "defaultValue": "",
+            "toolTip": "New storage account used for Azure Files and Blob config persistence.",
+            "constraints": {
+              "required": true,
+              "regex": "^[a-z0-9]{3,24}$",
+              "validationMessage": "Use 3-24 lowercase letters or numbers."
+            }
+          },
+          {
+            "name": "fileShareName",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Azure Files share name",
+            "defaultValue": "aoaiproxy",
+            "toolTip": "Used only when Azure Files persistence is selected.",
+            "visible": "[equals(steps('runtime').persistenceMode, 'azureFile')]",
+            "constraints": {
+              "required": "[equals(steps('runtime').persistenceMode, 'azureFile')]",
+              "regex": "^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$",
+              "validationMessage": "Use 3-63 lowercase letters, numbers, or hyphens."
+            }
+          },
+          {
+            "name": "blobContainerName",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Blob container name",
+            "defaultValue": "aoai-proxy-config",
+            "toolTip": "Used only when Blob persistence is selected.",
+            "visible": "[equals(steps('runtime').persistenceMode, 'blob')]",
+            "constraints": {
+              "required": "[equals(steps('runtime').persistenceMode, 'blob')]",
+              "regex": "^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$",
+              "validationMessage": "Use 3-63 lowercase letters, numbers, or hyphens."
+            }
+          },
+          {
+            "name": "configBlobName",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Config blob path",
+            "defaultValue": "config/config.json",
+            "toolTip": "Blob path for the persisted config file.",
+            "visible": "[equals(steps('runtime').persistenceMode, 'blob')]",
+            "constraints": {
+              "required": "[equals(steps('runtime').persistenceMode, 'blob')]"
+            }
+          }
+        ]
+      },
+      {
+        "name": "foundry",
+        "label": "Azure OpenAI / Foundry",
+        "elements": [
+          {
+            "name": "foundryInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "options": {
+              "icon": "Info",
+              "text": "Select an existing `Microsoft.CognitiveServices/accounts` resource. Cross-resource-group selection is supported within the selected subscription."
+            }
+          },
+          {
+            "name": "cognitiveAccount",
+            "type": "Microsoft.Solutions.ResourceSelector",
+            "label": "Existing Azure OpenAI or Azure AI Foundry account",
+            "resourceType": "Microsoft.CognitiveServices/accounts",
+            "options": {
+              "filter": {
+                "subscription": "onBasics",
+                "location": "all"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "registry",
+        "label": "Registry",
+        "elements": [
+          {
+            "name": "acrLoginServer",
+            "type": "Microsoft.Common.TextBox",
+            "label": "ACR login server",
+            "defaultValue": "alexmcr.azurecr.io",
+            "toolTip": "Leave empty for a public image registry.",
+            "constraints": {
+              "required": false
+            }
+          },
+          {
+            "name": "acrUsername",
+            "type": "Microsoft.Common.TextBox",
+            "label": "ACR username",
+            "defaultValue": "",
+            "toolTip": "Required only when the registry needs basic authentication.",
+            "visible": "[not(empty(steps('registry').acrLoginServer))]"
+          },
+          {
+            "name": "acrPassword",
+            "type": "Microsoft.Common.PasswordBox",
+            "label": {
+              "password": "ACR password",
+              "confirmPassword": "Confirm ACR password"
+            },
+            "toolTip": {
+              "password": "Registry password or access token.",
+              "confirmPassword": "Re-enter the registry password."
+            },
+            "visible": "[not(empty(steps('registry').acrLoginServer))]",
+            "constraints": {
+              "required": "[not(empty(steps('registry').acrLoginServer))]"
+            }
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "location": "[location()]",
+      "containerGroupName": "[basics('containerGroupName')]",
+      "image": "[steps('runtime').image]",
+      "dnsNameLabel": "[basics('dnsNameLabel')]",
+      "cpu": "[steps('runtime').cpu]",
+      "memoryInGb": "[steps('runtime').memoryInGb]",
+      "persistenceMode": "[steps('runtime').persistenceMode]",
+      "storageAccountName": "[steps('storage').storageAccountName]",
+      "fileShareName": "[steps('storage').fileShareName]",
+      "blobContainerName": "[steps('storage').blobContainerName]",
+      "configBlobName": "[steps('storage').configBlobName]",
+      "cognitiveServicesAccountName": "[steps('foundry').cognitiveAccount.name]",
+      "cognitiveServicesAccountResourceGroup": "[split(steps('foundry').cognitiveAccount.id, '/')[4]]",
+      "acrLoginServer": "[steps('registry').acrLoginServer]",
+      "acrUsername": "[steps('registry').acrUsername]",
+      "acrPassword": "[steps('registry').acrPassword]"
+    }
+  }
+}

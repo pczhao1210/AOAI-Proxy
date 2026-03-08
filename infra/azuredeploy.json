@@ -84,7 +84,14 @@
     "cognitiveServicesAccountName": {
       "type": "string",
       "metadata": {
-        "description": "Existing Azure OpenAI or Azure AI Foundry account name in the same resource group."
+        "description": "Existing Azure OpenAI or Azure AI Foundry account name."
+      }
+    },
+    "cognitiveServicesAccountResourceGroup": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().name]",
+      "metadata": {
+        "description": "Resource group that contains the existing Azure OpenAI or Azure AI Foundry account. Defaults to the deployment resource group."
       }
     },
     "acrLoginServer": {
@@ -280,16 +287,53 @@
       }
     },
     {
-      "type": "Microsoft.CognitiveServices/accounts/providers/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "name": "[format('{0}/Microsoft.Authorization/{1}', parameters('cognitiveServicesAccountName'), guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('cognitiveServicesAccountName')), reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId, variables('cognitiveServicesOpenAiUserRoleId')))]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "cognitive-role-assignment",
+      "resourceGroup": "[parameters('cognitiveServicesAccountResourceGroup')]",
       "dependsOn": [
         "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]"
       ],
       "properties": {
-        "principalId": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]",
-        "principalType": "ServicePrincipal",
-        "roleDefinitionId": "[variables('cognitiveServicesOpenAiUserRoleId')]"
+        "mode": "Incremental",
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "cognitiveServicesAccountName": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            },
+            "roleDefinitionId": {
+              "type": "string"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.CognitiveServices/accounts/providers/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[format('{0}/Microsoft.Authorization/{1}', parameters('cognitiveServicesAccountName'), guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('cognitiveServicesAccountName')), parameters('principalId'), parameters('roleDefinitionId')))]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[parameters('roleDefinitionId')]"
+              }
+            }
+          ]
+        },
+        "parameters": {
+          "cognitiveServicesAccountName": {
+            "value": "[parameters('cognitiveServicesAccountName')]"
+          },
+          "principalId": {
+            "value": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]"
+          },
+          "roleDefinitionId": {
+            "value": "[variables('cognitiveServicesOpenAiUserRoleId')]"
+          }
+        }
       }
     }
   ],

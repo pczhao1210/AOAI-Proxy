@@ -18,9 +18,11 @@
 
 - Bicep template: [infra/main.bicep](infra/main.bicep)
 - ARM template for portal deployment: [infra/azuredeploy.json](infra/azuredeploy.json)
+- Portal UI definition for managed app / custom portal packaging: [infra/createUiDefinition.json](infra/createUiDefinition.json)
 - Example parameters: [infra/parameters/dev.json](infra/parameters/dev.json), [infra/parameters/prod.json](infra/parameters/prod.json)
 
 The Deploy to Azure button targets the ARM JSON template because the portal button flow does not deploy remote Bicep files directly.
+The standard raw-template Deploy to Azure button does not automatically use `createUiDefinition.json`; that file is intended for portal packaging flows that support a custom create experience.
 
 ## Persistence Modes
 
@@ -196,6 +198,8 @@ The templates provision:
 - Blob container when `persistenceMode=blob`
 - RBAC assignment for `Storage Blob Data Contributor` when blob mode is enabled
 - RBAC assignment for `Cognitive Services OpenAI User` on the target Azure OpenAI resource
+
+The target Azure OpenAI / Foundry resource can live in a different resource group within the same subscription. Set `cognitiveServicesAccountResourceGroup` when it differs from the deployment resource group.
 
 ## ACI Persistence and RBAC
 

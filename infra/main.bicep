@@ -38,8 +38,11 @@ param blobContainerName string = 'aoai-proxy-config'
 param configBlobName string = 'config/config.json'
 
 @minLength(2)
-@description('Existing Azure OpenAI or Azure AI Foundry account name in the same resource group.')
+@description('Existing Azure OpenAI or Azure AI Foundry account name.')
 param cognitiveServicesAccountName string
+
+@description('Resource group that contains the existing Azure OpenAI or Azure AI Foundry account. Defaults to the deployment resource group.')
+param cognitiveServicesAccountResourceGroup string = resourceGroup().name
 
 @description('Optional ACR login server. Leave empty for public images.')
 param acrLoginServer string = ''
@@ -139,10 +142,6 @@ resource blobContainer 'Microsoft.Storage/storageAccounts/blobServices/container
   }
 }
 
-resource cognitiveAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = {
-  name: cognitiveServicesAccountName
-}
-
 resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
   name: containerGroupName
   location: location
@@ -217,12 +216,12 @@ resource fileRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
-resource llmRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(cognitiveAccount.id, containerGroup.id, cognitiveServicesOpenAiUserRoleId)
-  scope: cognitiveAccount
-  properties: {
+module cognitiveRoleAssignment 'modules/cognitive-role-assignment.bicep' = {
+  name: 'cognitive-role-assignment'
+  scope: resourceGroup(cognitiveServicesAccountResourceGroup)
+  params: {
+    cognitiveServicesAccountName: cognitiveServicesAccountName
     principalId: containerGroup.identity.principalId
-    principalType: 'ServicePrincipal'
     roleDefinitionId: cognitiveServicesOpenAiUserRoleId
   }
 }

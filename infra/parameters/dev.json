@@ -32,6 +32,9 @@
     "cognitiveServicesAccountName": {
       "value": "replace-with-your-aoai-account"
     },
+    "cognitiveServicesAccountResourceGroup": {
+      "value": "replace-with-foundry-resource-group-if-different"
+    },
     "acrLoginServer": {
       "value": "alexmcr.azurecr.io"
     },
