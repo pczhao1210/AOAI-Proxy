@@ -431,11 +431,39 @@ ${hostPort} {
       const json = await getRuntimeApi();
       if (!json.ok) return;
       const runtime = json.runtime || {};
-      const mode = runtime.mode || "azureFile";
+      const lines = [];
+      const configuredMode = runtime.mode || "azureFile";
+      const activeMode = runtime.activeMode || configuredMode;
+      const blobAccessState = runtime.blobAccessState || (configuredMode === "blob" ? "unknown" : "disabled");
       const path = runtime.configPath || "";
+      const blobAccountUrl = runtime.blobAccountUrl || "";
       const blobContainer = runtime.blobContainerName || "";
       const blobName = runtime.configBlobName || "";
-      runtimeInfo.textContent = `${t("runtime.persistence")}: ${mode}\n${t("runtime.configPath")}: ${path}${blobContainer ? `\n${t("runtime.blobContainer")}: ${blobContainer}` : ""}${blobName ? `\n${t("runtime.blobName")}: ${blobName}` : ""}`;
+      const pendingBlobSync = !!runtime.pendingBlobSync;
+      const lastBlobError = runtime.lastBlobError;
+
+      lines.push(`${t("runtime.persistence")}: ${configuredMode}`);
+      lines.push(`${t("runtime.activeMode")}: ${t(`runtime.activeMode.${activeMode}`)}`);
+      lines.push(`${t("runtime.blobAccessState")}: ${t(`runtime.blobAccessState.${blobAccessState}`)}`);
+      lines.push(`${t("runtime.syncState")}: ${pendingBlobSync ? t("runtime.syncState.pending") : t("runtime.syncState.clean")}`);
+      lines.push(`${t("runtime.configPath")}: ${path}`);
+
+      if (blobAccountUrl) {
+        lines.push(`${t("runtime.blobAccountUrl")}: ${blobAccountUrl}`);
+      }
+      if (blobContainer) {
+        lines.push(`${t("runtime.blobContainer")}: ${blobContainer}`);
+      }
+      if (blobName) {
+        lines.push(`${t("runtime.blobName")}: ${blobName}`);
+      }
+      if (lastBlobError?.code || lastBlobError?.message) {
+        const errorCode = lastBlobError.code || "UnknownError";
+        const errorMessage = lastBlobError.message || "Unknown error";
+        lines.push(`${t("runtime.lastBlobError")}: ${errorCode} - ${errorMessage}`);
+      }
+
+      runtimeInfo.textContent = lines.join("\n");
     }
 
     async function applyCaddyAndSave() {

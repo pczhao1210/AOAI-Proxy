@@ -39,6 +39,10 @@ This repo now supports deployment-time persistence selection.
 - Keeps config persistence at the application layer through Blob SDK
 - Uses `DefaultAzureCredential` and managed identity to read and write the config blob
 - Does not replace Azure Files mount semantics for `/app/data`
+- If Blob access is not ready yet, startup falls back to the local cached config at `/app/data/config.json`
+- While Blob access is degraded, config writes continue to the local file and are retried to Blob in the background
+- After RBAC propagation completes, the app automatically switches back to Blob-backed persistence without requiring a restart
+- Background Blob recovery checks run every `30000` ms by default and can be tuned with `BLOB_RECOVERY_INTERVAL_MS`
 
 ### Deployment Constraint
 
@@ -122,6 +126,7 @@ Config file values under `server.upstream.pool` are primary. These environment v
 - `AZURE_STORAGE_ACCOUNT_URL=https://<storage>.blob.core.windows.net`
 - `CONFIG_BLOB_CONTAINER=<container-name>`
 - `CONFIG_BLOB_NAME=config/config.json`
+- `BLOB_RECOVERY_INTERVAL_MS=30000` to control how often the app retries Blob access after falling back to the local cache
 
 In `blob` mode, the app reads from Blob first and falls back to the local cached config if the blob is not present yet.
 
