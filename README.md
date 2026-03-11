@@ -11,7 +11,7 @@
 - OpenAI-compatible proxy for `chat/completions`, `responses`, `images/generations`, and `models`
 - Client -> Proxy uses API key auth via `Authorization: Bearer` or `x-api-key`
 - Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens from `DefaultAzureCredential`
-- Static admin page for config editing, AAD verification, and model usage stats
+- Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
 
 ## Deployment Assets
@@ -109,6 +109,7 @@ Guidance:
 - `CONFIG_PATH`: local cached config path, default `./config/config.json`
 - `BODY_LIMIT`: request body limit in bytes, default `52428800`
 - `CADDY_BIN`: optional Caddy binary path override
+- `ADMIN_LOG_BUFFER_SIZE`: in-memory admin log ring buffer size, default `1000`
 
 ### Optional Upstream Pool Overrides
 
@@ -137,10 +138,15 @@ Open `/admin` to manage config.
 
 The admin page now exposes:
 
+- Top-level status cards for proxy health, AAD verification status, config state, and runtime state
+- Config dirty-state badges, basic structure reminders, and a local diff preview before save
 - Caddy dial timeout
 - Caddy response header timeout
 - Caddy keepalive timeout
 - Runtime persistence summary so you can see whether the deployment is using `azureFile` or `blob`
+- Recent logs with level filters (`warn`, `error`, optional `info`), keyword search, request-id filtering, and copy-summary actions
+
+The log panel uses a compact always-visible toolbar plus collapsible advanced filters instead of a sticky filter bar.
 
 ### Admin Login
 
@@ -152,6 +158,13 @@ Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin
 - `usage` is collected from non-stream JSON responses and streaming SSE usage events
 - Cached token fields from upstream are counted when present
 - The proxy preserves `stream_options` for streaming `chat/completions` and `responses` requests, and strips it for other routes where Foundry v1 may reject it
+
+## Log Notes
+
+- Admin logs are stored in an in-memory ring buffer; restart clears them
+- Default retention is the most recent `1000` entries and can be tuned with `ADMIN_LOG_BUFFER_SIZE`
+- Log records are sanitized for common sensitive keys and large strings are truncated before entering the admin buffer
+- The admin page is intended for recent troubleshooting, not long-term audit retention
 
 ## Docker
 

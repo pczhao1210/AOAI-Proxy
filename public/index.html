@@ -50,12 +50,20 @@
     header p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
     main { padding: 24px 32px 48px; display: grid; gap: 20px; }
     .grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .summary-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
     .card {
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 16px;
       padding: 18px;
       box-shadow: var(--shadow);
+    }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      flex-wrap: wrap;
     }
     .card h2 { margin: 0 0 10px; font-size: 16px; }
     .card p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
@@ -82,6 +90,7 @@
     button.secondary { background: #1f2937; color: var(--text); border: 1px solid var(--border); }
     button.danger { background: #ef4444; color: #0b1220; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     .stat {
       display: flex;
       flex-direction: column;
@@ -92,6 +101,38 @@
       border: 1px solid var(--border);
     }
     .stat strong { font-size: 18px; }
+    .summary-card {
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(9, 15, 28, 0.96));
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+    .summary-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .summary-label {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .summary-value {
+      display: block;
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .summary-note {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
     .muted { color: var(--muted); font-size: 12px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; }
@@ -99,6 +140,22 @@
     code { background: #0b1220; padding: 2px 6px; border-radius: 6px; }
     .field { display: flex; flex-direction: column; gap: 6px; min-width: 200px; flex: 1; }
     .inline { display: inline-flex; gap: 8px; align-items: center; }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(148, 163, 184, 0.12);
+      color: #cbd5e1;
+    }
+    .status-pill.good { background: rgba(34, 197, 94, 0.16); color: #86efac; }
+    .status-pill.warn { background: rgba(245, 158, 11, 0.16); color: #fbbf24; }
+    .status-pill.error { background: rgba(239, 68, 68, 0.16); color: #fca5a5; }
+    .status-pill.neutral { background: rgba(56, 189, 248, 0.16); color: #67e8f9; }
     .preview {
       white-space: pre-wrap;
       background: #0b1220;
@@ -107,6 +164,159 @@
       padding: 12px;
       font-size: 12px;
       color: var(--muted);
+    }
+    .preview.compact {
+      min-height: 0;
+      padding: 10px 12px;
+    }
+    .config-insights {
+      display: grid;
+      gap: 8px;
+      min-width: 280px;
+      flex: 1 1 320px;
+    }
+    .pill-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .log-controls {
+      padding: 14px;
+      margin-bottom: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      border-radius: 14px;
+      background: rgba(10, 18, 32, 0.92);
+      backdrop-filter: blur(10px);
+    }
+    .log-controls-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .log-advanced {
+      margin-top: 12px;
+      border-top: 1px solid rgba(148, 163, 184, 0.12);
+      padding-top: 12px;
+    }
+    .log-advanced summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      user-select: none;
+    }
+    .log-advanced-body {
+      margin-top: 12px;
+      display: grid;
+      gap: 12px;
+    }
+    .log-list {
+      display: grid;
+      gap: 12px;
+      max-height: 560px;
+      overflow: auto;
+    }
+    .log-entry {
+      background: #0b1220;
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .log-entry.warn { border-left-color: #f59e0b; }
+    .log-entry.error, .log-entry.fatal { border-left-color: #ef4444; }
+    .log-entry.info { border-left-color: #38bdf8; }
+    .log-entry.debug, .log-entry.trace { border-left-color: #64748b; }
+    .log-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .log-badges {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: #1f2937;
+      color: var(--text);
+    }
+    .badge.warn { background: rgba(245, 158, 11, 0.16); color: #fbbf24; }
+    .badge.error, .badge.fatal { background: rgba(239, 68, 68, 0.16); color: #f87171; }
+    .badge.info { background: rgba(56, 189, 248, 0.16); color: #67e8f9; }
+    .badge.debug, .badge.trace { background: rgba(148, 163, 184, 0.16); color: #cbd5e1; }
+    .log-message {
+      margin-top: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-weight: 600;
+    }
+    .log-topline {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .log-meta {
+      margin-top: 8px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .log-actions {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .mini-btn {
+      padding: 6px 10px;
+      margin-right: 0;
+      font-size: 12px;
+      background: #111827;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      color: var(--text);
+    }
+    .mini-btn:hover { border-color: rgba(56, 189, 248, 0.45); }
+    .event-label {
+      color: #cbd5e1;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    details.log-details {
+      margin-top: 8px;
+    }
+    details.log-details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    details.log-details pre {
+      margin: 8px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    @media (max-width: 720px) {
+      main { padding: 20px 16px 40px; }
+      header { padding: 20px 16px; }
     }
   </style>
 </head>
@@ -125,9 +335,56 @@
   </header>
 
   <main>
+    <section class="summary-grid">
+      <div class="summary-card">
+        <div class="summary-head">
+          <span class="summary-label" data-i18n="summary.proxy.label">代理状态</span>
+          <span id="summaryProxyBadge" class="status-pill neutral" data-i18n="summary.state.neutral">待检查</span>
+        </div>
+        <strong id="summaryProxyValue" class="summary-value">-</strong>
+        <div id="summaryProxyNote" class="summary-note"></div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-head">
+          <span class="summary-label" data-i18n="summary.aad.label">AAD</span>
+          <span id="summaryAadBadge" class="status-pill neutral" data-i18n="summary.state.neutral">待检查</span>
+        </div>
+        <strong id="summaryAadValue" class="summary-value">-</strong>
+        <div id="summaryAadNote" class="summary-note"></div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-head">
+          <span class="summary-label" data-i18n="summary.config.label">配置状态</span>
+          <span id="summaryConfigBadge" class="status-pill neutral" data-i18n="summary.state.neutral">待检查</span>
+        </div>
+        <strong id="summaryConfigValue" class="summary-value">-</strong>
+        <div id="summaryConfigNote" class="summary-note"></div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-head">
+          <span class="summary-label" data-i18n="summary.runtime.label">运行状态</span>
+          <span id="summaryRuntimeBadge" class="status-pill neutral" data-i18n="summary.state.neutral">待检查</span>
+        </div>
+        <strong id="summaryRuntimeValue" class="summary-value">-</strong>
+        <div id="summaryRuntimeNote" class="summary-note"></div>
+      </div>
+    </section>
+
     <section class="card">
-      <h2 data-i18n="section.config.title">配置管理</h2>
-      <p data-i18n="section.config.desc">编辑 JSON 配置并保存，或重载磁盘配置。</p>
+      <div class="section-head">
+        <div>
+          <h2 data-i18n="section.config.title">配置管理</h2>
+          <p data-i18n="section.config.desc">编辑 JSON 配置并保存，或重载磁盘配置。</p>
+        </div>
+        <div class="config-insights">
+          <div class="pill-row">
+            <span id="configDirtyBadge" class="status-pill neutral" data-i18n="config.state.clean">未修改</span>
+            <span id="configValidityBadge" class="status-pill neutral" data-i18n="config.validity.unknown">待检查</span>
+          </div>
+          <div id="configDiffSummary" class="muted"></div>
+          <div id="configValidationSummary" class="muted"></div>
+        </div>
+      </div>
       <textarea id="configArea"></textarea>
       <div class="row" style="margin-top: 12px;">
         <button id="loadBtn" data-i18n="btn.load">加载</button>
@@ -135,6 +392,7 @@
         <button id="reloadBtn" class="secondary" data-i18n="btn.reload">重载</button>
       </div>
       <div id="configMsg" class="muted" style="margin-top: 8px;"></div>
+      <div id="configDiffPreview" class="preview compact" style="margin-top: 12px;"></div>
       <div class="preview" id="runtimeInfo" style="margin-top: 12px;"></div>
     </section>
 
@@ -254,6 +512,71 @@
         </thead>
         <tbody id="modelRows"></tbody>
       </table>
+    </section>
+
+    <section class="card">
+      <h2 data-i18n="section.logs.title">运行日志</h2>
+      <p data-i18n="section.logs.desc">查看最近日志，并按级别、事件、模型、请求 ID 或关键词筛选。</p>
+      <div class="log-controls">
+        <div class="log-controls-head">
+          <div class="toolbar">
+            <label class="inline">
+              <input type="checkbox" id="logLevelWarn" checked />
+              <span data-i18n="logs.level.warn">Warning</span>
+            </label>
+            <label class="inline">
+              <input type="checkbox" id="logLevelError" checked />
+              <span data-i18n="logs.level.error">Error</span>
+            </label>
+            <label class="inline">
+              <input type="checkbox" id="logLevelInfo" />
+              <span data-i18n="logs.level.info">Info</span>
+            </label>
+            <label class="inline">
+              <input type="checkbox" id="logAutoRefresh" checked />
+              <span data-i18n="logs.autoRefresh">自动刷新</span>
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="refreshLogsBtn" class="secondary" data-i18n="btn.refreshLogs">刷新日志</button>
+            <div class="muted" id="logSummary"></div>
+          </div>
+        </div>
+        <details class="log-advanced" id="logAdvancedFilters">
+          <summary data-i18n="logs.advancedFilters">更多筛选</summary>
+          <div class="log-advanced-body">
+            <div class="row">
+              <div class="field">
+                <label for="logEventInput" class="muted" data-i18n="logs.filter.event">事件</label>
+                <input id="logEventInput" data-i18n-placeholder="logs.filter.event.placeholder" placeholder="proxy.request_rejected" />
+              </div>
+              <div class="field">
+                <label for="logModelInput" class="muted" data-i18n="logs.filter.model">模型</label>
+                <input id="logModelInput" data-i18n-placeholder="logs.filter.model.placeholder" placeholder="gpt-5.4" />
+              </div>
+              <div class="field">
+                <label for="logRequestIdInput" class="muted" data-i18n="logs.filter.requestId">请求 ID</label>
+                <input id="logRequestIdInput" data-i18n-placeholder="logs.filter.requestId.placeholder" placeholder="req-123" />
+              </div>
+            </div>
+            <div class="row">
+              <div class="field">
+                <label for="logKeywordInput" class="muted" data-i18n="logs.filter.keyword">关键词</label>
+                <input id="logKeywordInput" data-i18n-placeholder="logs.filter.keyword.placeholder" placeholder="timeout" />
+              </div>
+              <div class="field" style="max-width: 160px;">
+                <label for="logLimitSelect" class="muted" data-i18n="logs.filter.limit">条数</label>
+                <select id="logLimitSelect">
+                  <option value="50">50</option>
+                  <option value="100" selected>100</option>
+                  <option value="200">200</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div id="logList" class="log-list" style="margin-top: 12px;"></div>
     </section>
 
     <section class="card">

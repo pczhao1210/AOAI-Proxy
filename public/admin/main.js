@@ -5,6 +5,7 @@ import {
   getRuntimeApi,
   verifyAadApi,
   getStatsApi,
+  getLogsApi,
   getCaddyStatusApi,
   restartServiceApi,
   sendProxyRequestApi
@@ -13,11 +14,39 @@ import {
     const { setLanguage, t, getStoredLang, applyI18n } = window.I18N;
     const configArea = document.getElementById("configArea");
     const configMsg = document.getElementById("configMsg");
+    const configDirtyBadge = document.getElementById("configDirtyBadge");
+    const configValidityBadge = document.getElementById("configValidityBadge");
+    const configDiffSummary = document.getElementById("configDiffSummary");
+    const configValidationSummary = document.getElementById("configValidationSummary");
+    const configDiffPreview = document.getElementById("configDiffPreview");
     const runtimeInfo = document.getElementById("runtimeInfo");
     const verifyMsg = document.getElementById("verifyMsg");
+    const summaryProxyBadge = document.getElementById("summaryProxyBadge");
+    const summaryProxyValue = document.getElementById("summaryProxyValue");
+    const summaryProxyNote = document.getElementById("summaryProxyNote");
+    const summaryAadBadge = document.getElementById("summaryAadBadge");
+    const summaryAadValue = document.getElementById("summaryAadValue");
+    const summaryAadNote = document.getElementById("summaryAadNote");
+    const summaryConfigBadge = document.getElementById("summaryConfigBadge");
+    const summaryConfigValue = document.getElementById("summaryConfigValue");
+    const summaryConfigNote = document.getElementById("summaryConfigNote");
+    const summaryRuntimeBadge = document.getElementById("summaryRuntimeBadge");
+    const summaryRuntimeValue = document.getElementById("summaryRuntimeValue");
+    const summaryRuntimeNote = document.getElementById("summaryRuntimeNote");
     const statTotals = document.getElementById("statTotals");
     const statTimestamp = document.getElementById("statTimestamp");
     const modelRows = document.getElementById("modelRows");
+    const logLevelWarn = document.getElementById("logLevelWarn");
+    const logLevelError = document.getElementById("logLevelError");
+    const logLevelInfo = document.getElementById("logLevelInfo");
+    const logAutoRefresh = document.getElementById("logAutoRefresh");
+    const logEventInput = document.getElementById("logEventInput");
+    const logModelInput = document.getElementById("logModelInput");
+    const logRequestIdInput = document.getElementById("logRequestIdInput");
+    const logKeywordInput = document.getElementById("logKeywordInput");
+    const logLimitSelect = document.getElementById("logLimitSelect");
+    const logSummary = document.getElementById("logSummary");
+    const logList = document.getElementById("logList");
     const payloadArea = document.getElementById("payloadArea");
     const responseArea = document.getElementById("responseArea");
     const compressEnabled = document.getElementById("compressEnabled");
@@ -43,7 +72,14 @@ import {
     const caddyLastWrite = document.getElementById("caddyLastWrite");
     const caddyLastReload = document.getElementById("caddyLastReload");
     const caddyLastError = document.getElementById("caddyLastError");
+    let logsRefreshTimer = null;
     let configMsgState = null;
+    let latestStats = null;
+    let latestRuntime = null;
+    let latestCaddyStatus = null;
+    let lastLoadedConfigObject = null;
+    let lastConfigInspection = { validJson: true, issues: [], diff: { added: [], removed: [], changed: [] } };
+    let aadStatus = { state: "unchecked", detail: "", checkedAt: "" };
 
     function setConfigMessageState(state) {
       configMsgState = state;
@@ -61,6 +97,218 @@ import {
       }
       if (configMsgState.kind === "error") {
         configMsg.textContent = `${t(configMsgState.prefixKey)}: ${configMsgState.detail || "Unknown"}`;
+      }
+    }
+
+    function fillTemplate(template, values = {}) {
+      return String(template || "").replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ""));
+    }
+
+    function setPill(el, tone, text) {
+      el.className = `status-pill ${tone}`;
+      el.textContent = text;
+    }
+
+    function safeParseJson(text) {
+      try {
+        return { ok: true, value: JSON.parse(text) };
+      } catch (error) {
+        return { ok: false, error };
+      }
+    }
+
+    function flattenConfig(value, prefix = "", out = {}) {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => {
+          flattenConfig(item, `${prefix}[${index}]`, out);
+        });
+        if (!value.length && prefix) {
+          out[prefix] = "[]";
+        }
+        return out;
+      }
+      if (value && typeof value === "object") {
+        const entries = Object.entries(value);
+        if (!entries.length && prefix) {
+          out[prefix] = "{}";
+          return out;
+        }
+        entries.forEach(([key, child]) => {
+          const nextPrefix = prefix ? `${prefix}.${key}` : key;
+          flattenConfig(child, nextPrefix, out);
+        });
+        return out;
+      }
+      if (prefix) {
+        out[prefix] = JSON.stringify(value);
+      }
+      return out;
+    }
+
+    function computeConfigDiff(prevConfig, nextConfig) {
+      const prevFlat = flattenConfig(prevConfig || {});
+      const nextFlat = flattenConfig(nextConfig || {});
+      const keys = new Set([...Object.keys(prevFlat), ...Object.keys(nextFlat)]);
+      const diff = { added: [], removed: [], changed: [] };
+      Array.from(keys).sort().forEach((key) => {
+        if (!(key in prevFlat)) {
+          diff.added.push(key);
+          return;
+        }
+        if (!(key in nextFlat)) {
+          diff.removed.push(key);
+          return;
+        }
+        if (prevFlat[key] !== nextFlat[key]) {
+          diff.changed.push(key);
+        }
+      });
+      return diff;
+    }
+
+    function inspectConfigStructure(config) {
+      const issues = [];
+      if (!config || typeof config !== "object" || Array.isArray(config)) {
+        return ["Root config must be an object"];
+      }
+      if (!config.server || typeof config.server !== "object") {
+        issues.push("server must be an object");
+      }
+      if (!config.auth || typeof config.auth !== "object") {
+        issues.push("auth must be an object");
+      }
+      if (!Array.isArray(config.apiKeys) || config.apiKeys.length === 0) {
+        issues.push("apiKeys must be a non-empty array");
+      }
+      if (!Array.isArray(config.upstreams) || config.upstreams.length === 0) {
+        issues.push("upstreams must be a non-empty array");
+      }
+      if (!Array.isArray(config.models) || config.models.length === 0) {
+        issues.push("models must be a non-empty array");
+      }
+      return issues;
+    }
+
+    function summarizeDiff(diff) {
+      return diff.added.length + diff.removed.length + diff.changed.length;
+    }
+
+    function formatDiffPath(path, kind) {
+      const marker = kind === "added" ? "+" : kind === "removed" ? "-" : "~";
+      return `${marker} ${path}`;
+    }
+
+    function updateConfigEditorState() {
+      const currentText = configArea.value || "";
+      const parsed = safeParseJson(currentText);
+      if (!parsed.ok) {
+        lastConfigInspection = { validJson: false, issues: [parsed.error.message], diff: { added: [], removed: [], changed: [] } };
+        setPill(configDirtyBadge, isConfigDirty() ? "warn" : "neutral", t(isConfigDirty() ? "config.state.dirty" : "config.state.clean"));
+        setPill(configValidityBadge, "error", t("config.validity.invalid"));
+        configDiffSummary.textContent = t("config.diff.none");
+        configValidationSummary.textContent = parsed.error.message;
+        configDiffPreview.textContent = t("summary.config.invalid");
+        renderSummaryCards();
+        return;
+      }
+
+      const issues = inspectConfigStructure(parsed.value);
+      const diff = computeConfigDiff(lastLoadedConfigObject || {}, parsed.value);
+      lastConfigInspection = { validJson: true, issues, diff };
+
+      setPill(configDirtyBadge, isConfigDirty() ? "warn" : "good", t(isConfigDirty() ? "config.state.dirty" : "config.state.clean"));
+      setPill(configValidityBadge, issues.length ? "warn" : "good", t(issues.length ? "config.validity.invalid" : "config.validity.valid"));
+
+      const diffCount = summarizeDiff(diff);
+      configDiffSummary.textContent = `${t("config.diff.summary")}: ${diffCount}`;
+      configValidationSummary.textContent = issues.length
+        ? `${t("config.validation.issueCount")}: ${issues.length}`
+        : t("config.validation.ok");
+
+      if (!diffCount) {
+        configDiffPreview.textContent = `${t("config.diff.previewTitle")}: ${t("config.diff.none")}`;
+      } else {
+        const lines = [t("config.diff.previewTitle")];
+        diff.added.slice(0, 4).forEach((path) => lines.push(formatDiffPath(path, "added")));
+        diff.changed.slice(0, 4).forEach((path) => lines.push(formatDiffPath(path, "changed")));
+        diff.removed.slice(0, 4).forEach((path) => lines.push(formatDiffPath(path, "removed")));
+        configDiffPreview.textContent = lines.join("\n");
+      }
+
+      renderSummaryCards();
+    }
+
+    function renderSummaryCards() {
+      if (latestStats) {
+        const totals = latestStats.totals || {};
+        setPill(summaryProxyBadge, totals.errors > 0 ? "warn" : "good", t(totals.errors > 0 ? "summary.state.warn" : "summary.state.good"));
+        summaryProxyValue.textContent = t("summary.proxy.online");
+        summaryProxyNote.textContent = fillTemplate(t("summary.proxy.note"), {
+          requests: totals.requests || 0,
+          errors: totals.errors || 0
+        });
+      } else {
+        setPill(summaryProxyBadge, "neutral", t("summary.state.neutral"));
+        summaryProxyValue.textContent = "-";
+        summaryProxyNote.textContent = "";
+      }
+
+      const aadTone = aadStatus.state === "ok" ? "good" : aadStatus.state === "failed" ? "error" : "neutral";
+      const aadTextKey = aadStatus.state === "ok"
+        ? "summary.aad.ok"
+        : aadStatus.state === "failed"
+          ? "summary.aad.failed"
+          : "summary.aad.unchecked";
+      setPill(summaryAadBadge, aadTone, t(aadTextKey));
+      summaryAadValue.textContent = t(aadTextKey);
+      summaryAadNote.textContent = aadStatus.detail || t("summary.aad.note.unchecked");
+
+      if (!lastLoadedConfigObject && !configArea.value) {
+        setPill(summaryConfigBadge, "neutral", t("summary.state.neutral"));
+        summaryConfigValue.textContent = "-";
+        summaryConfigNote.textContent = "";
+      } else if (!lastConfigInspection.validJson) {
+        setPill(summaryConfigBadge, "error", t("summary.state.error"));
+        summaryConfigValue.textContent = t("summary.config.invalid");
+        summaryConfigNote.textContent = fillTemplate(t("summary.config.note"), {
+          count: summarizeDiff(lastConfigInspection.diff),
+          issues: lastConfigInspection.issues.length
+        });
+      } else if (isConfigDirty()) {
+        setPill(summaryConfigBadge, "warn", t("summary.state.warn"));
+        summaryConfigValue.textContent = t("summary.config.dirty");
+        summaryConfigNote.textContent = fillTemplate(t("summary.config.note"), {
+          count: summarizeDiff(lastConfigInspection.diff),
+          issues: lastConfigInspection.issues.length
+        });
+      } else {
+        setPill(summaryConfigBadge, lastConfigInspection.issues.length ? "warn" : "good", t(lastConfigInspection.issues.length ? "summary.state.warn" : "summary.state.good"));
+        summaryConfigValue.textContent = t("summary.config.clean");
+        summaryConfigNote.textContent = fillTemplate(t("summary.config.note"), {
+          count: summarizeDiff(lastConfigInspection.diff),
+          issues: lastConfigInspection.issues.length
+        });
+      }
+
+      if (latestRuntime || latestCaddyStatus) {
+        const mode = latestRuntime?.activeMode || latestRuntime?.mode || "-";
+        const caddyState = latestCaddyStatus?.state || "disabled";
+        const runtimeTone = latestRuntime?.blobAccessState === "degraded" || caddyState === "error"
+          ? "warn"
+          : "good";
+        setPill(summaryRuntimeBadge, runtimeTone, t(runtimeTone === "good" ? "summary.state.good" : "summary.state.warn"));
+        summaryRuntimeValue.textContent = fillTemplate(t("summary.runtime.value"), {
+          mode,
+          caddy: t(`caddy.state.${caddyState}`)
+        });
+        summaryRuntimeNote.textContent = fillTemplate(t("summary.runtime.note"), {
+          sync: t(`runtime.syncState.${latestRuntime?.pendingBlobSync ? "pending" : "clean"}.short`),
+          blob: t(`runtime.blobAccessState.${latestRuntime?.blobAccessState || "unknown"}.short`)
+        });
+      } else {
+        setPill(summaryRuntimeBadge, "neutral", t("summary.state.neutral"));
+        summaryRuntimeValue.textContent = "-";
+        summaryRuntimeNote.textContent = "";
       }
     }
 
@@ -101,19 +349,27 @@ import {
       setConfigMessageState({ kind: "key", key: "msg.loaded" });
       hydrateCaddyForm(json);
       hydrateCompressionFromConfig(json);
+      lastLoadedConfigObject = json;
       setLoadedConfigText();
+      updateConfigEditorState();
     }
 
     async function saveConfig() {
       try {
         const next = JSON.parse(configArea.value);
+        const issues = inspectConfigStructure(next);
+        if (issues.length && !window.confirm(`${t("config.validation.confirm")}\n- ${issues.slice(0, 5).join("\n- ")}`)) {
+          return;
+        }
         const json = await saveConfigApi(next);
         if (json.ok) {
           setConfigMessageState({ kind: "key", key: "msg.saved" });
           configArea.value = JSON.stringify(json.config, null, 2);
           hydrateCaddyForm(json.config);
           hydrateCompressionFromConfig(json.config);
+          lastLoadedConfigObject = json.config;
           setLoadedConfigText();
+          updateConfigEditorState();
         } else {
           setConfigMessageState({
             kind: "error",
@@ -137,7 +393,9 @@ import {
         setConfigMessageState({ kind: "key", key: "msg.reloadSuccess" });
         hydrateCaddyForm(json.config);
         hydrateCompressionFromConfig(json.config);
+        lastLoadedConfigObject = json.config;
         setLoadedConfigText();
+        updateConfigEditorState();
       } else {
         setConfigMessageState({
           kind: "error",
@@ -431,6 +689,7 @@ ${hostPort} {
       const json = await getRuntimeApi();
       if (!json.ok) return;
       const runtime = json.runtime || {};
+      latestRuntime = runtime;
       const lines = [];
       const configuredMode = runtime.mode || "azureFile";
       const activeMode = runtime.activeMode || configuredMode;
@@ -464,6 +723,7 @@ ${hostPort} {
       }
 
       runtimeInfo.textContent = lines.join("\n");
+      renderSummaryCards();
     }
 
     async function applyCaddyAndSave() {
@@ -506,12 +766,14 @@ ${hostPort} {
       const json = await getCaddyStatusApi();
       if (!json.ok) return;
       const status = json.status || {};
+      latestCaddyStatus = status;
       const stateKey = `caddy.state.${status.state || "disabled"}`;
       caddyState.textContent = t(stateKey);
       caddyStateMsg.textContent = status.message || "";
       caddyLastWrite.textContent = status.lastWriteAt || "";
       caddyLastReload.textContent = status.lastReloadAt || "";
       caddyLastError.textContent = status.lastError || "";
+      renderSummaryCards();
       return status;
     }
 
@@ -541,9 +803,20 @@ ${hostPort} {
       const json = await verifyAadApi();
       if (json.ok) {
         verifyMsg.textContent = t("msg.verifyOk") + json.tokenPreview;
+        aadStatus = {
+          state: "ok",
+          detail: json.tokenPreview,
+          checkedAt: new Date().toISOString()
+        };
       } else {
         verifyMsg.textContent = t("msg.verifyFail") + (json.error || "Unknown");
+        aadStatus = {
+          state: "failed",
+          detail: json.error || "Unknown",
+          checkedAt: new Date().toISOString()
+        };
       }
+      renderSummaryCards();
     }
 
     function renderStats(stats) {
@@ -584,7 +857,212 @@ ${hostPort} {
 
     async function loadStats() {
       const json = await getStatsApi();
+      latestStats = json;
       renderStats(json);
+      renderSummaryCards();
+    }
+
+    function collectLogLevels() {
+      const levels = [];
+      if (logLevelWarn.checked) levels.push("warn");
+      if (logLevelError.checked) levels.push("error");
+      if (logLevelInfo.checked) levels.push("info");
+      return levels;
+    }
+
+    function getLogFilters() {
+      return {
+        level: collectLogLevels(),
+        event: logEventInput.value.trim(),
+        modelId: logModelInput.value.trim(),
+        requestId: logRequestIdInput.value.trim(),
+        keyword: logKeywordInput.value.trim(),
+        limit: Number(logLimitSelect.value || 100)
+      };
+    }
+
+    function formatLogTimestamp(value) {
+      const parsed = Date.parse(value || "");
+      if (Number.isNaN(parsed)) return value || "";
+      return new Date(parsed).toLocaleString();
+    }
+
+    function renderLogMetaItem(label, value) {
+      const span = document.createElement("span");
+      span.textContent = `${label}: ${value}`;
+      return span;
+    }
+
+    function getEventLabel(eventName) {
+      if (!eventName) return "";
+      const key = `logs.event.${eventName}`;
+      const localized = t(key);
+      return localized === key ? eventName : localized;
+    }
+
+    async function copyLogSummary(entry) {
+      const summary = [
+        `[${entry.level || "info"}] ${entry.event || ""}`.trim(),
+        entry.message || "",
+        entry.requestId ? `${t("logs.meta.requestId")}: ${entry.requestId}` : "",
+        entry.modelId ? `${t("logs.meta.model")}: ${entry.modelId}` : "",
+        entry.errorCode ? `${t("logs.meta.errorCode")}: ${entry.errorCode}` : "",
+        entry.status != null ? `${t("logs.meta.status")}: ${entry.status}` : ""
+      ].filter(Boolean).join("\n");
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(summary);
+      }
+    }
+
+    function applyRequestIdFilter(requestId) {
+      if (!requestId) return;
+      logRequestIdInput.value = requestId;
+      loadLogs();
+    }
+
+    function renderLogs(result) {
+      logList.innerHTML = "";
+      const items = Array.isArray(result?.items) ? result.items : [];
+      logSummary.textContent = `${t("logs.summary")}: ${result?.total || 0}`;
+
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "muted";
+        empty.textContent = t("logs.empty");
+        logList.appendChild(empty);
+        return;
+      }
+
+      items.forEach((entry) => {
+        const article = document.createElement("article");
+        article.className = `log-entry ${entry.level || "info"}`;
+
+        const header = document.createElement("div");
+        header.className = "log-header";
+
+        const badges = document.createElement("div");
+        badges.className = "log-badges";
+
+        const levelBadge = document.createElement("span");
+        levelBadge.className = `badge ${entry.level || "info"}`;
+        levelBadge.textContent = String(entry.level || "info");
+        badges.appendChild(levelBadge);
+
+        if (entry.event) {
+          const eventBadge = document.createElement("span");
+          eventBadge.className = "badge";
+          eventBadge.textContent = getEventLabel(entry.event);
+          badges.appendChild(eventBadge);
+        }
+
+        if (entry.status != null) {
+          const statusBadge = document.createElement("span");
+          statusBadge.className = "badge";
+          statusBadge.textContent = `${t("logs.meta.status")} ${entry.status}`;
+          badges.appendChild(statusBadge);
+        }
+
+        if (entry.errorCode) {
+          const errorCodeBadge = document.createElement("span");
+          errorCodeBadge.className = "badge";
+          errorCodeBadge.textContent = entry.errorCode;
+          badges.appendChild(errorCodeBadge);
+        }
+
+        const ts = document.createElement("span");
+        ts.className = "muted";
+        ts.textContent = formatLogTimestamp(entry.ts);
+
+        header.appendChild(badges);
+        header.appendChild(ts);
+        article.appendChild(header);
+
+        const topLine = document.createElement("div");
+        topLine.className = "log-topline";
+        if (entry.event) {
+          const eventLabel = document.createElement("span");
+          eventLabel.className = "event-label";
+          eventLabel.textContent = getEventLabel(entry.event);
+          topLine.appendChild(eventLabel);
+        }
+        article.appendChild(topLine);
+
+        const message = document.createElement("div");
+        message.className = "log-message";
+        message.textContent = entry.message || entry.errorCode || entry.event || "-";
+        article.appendChild(message);
+
+        const meta = document.createElement("div");
+        meta.className = "log-meta";
+        if (entry.requestId) meta.appendChild(renderLogMetaItem(t("logs.meta.requestId"), entry.requestId));
+        if (entry.modelId) meta.appendChild(renderLogMetaItem(t("logs.meta.model"), entry.modelId));
+        if (entry.routeKey || entry.backendRouteKey) {
+          const routeText = entry.backendRouteKey && entry.backendRouteKey !== entry.routeKey
+            ? `${entry.routeKey || "-"} -> ${entry.backendRouteKey}`
+            : entry.routeKey || entry.backendRouteKey;
+          meta.appendChild(renderLogMetaItem(t("logs.meta.route"), routeText));
+        }
+        if (entry.status != null) meta.appendChild(renderLogMetaItem(t("logs.meta.status"), entry.status));
+        if (entry.errorCode) meta.appendChild(renderLogMetaItem(t("logs.meta.errorCode"), entry.errorCode));
+        if (entry.latencyMs != null) meta.appendChild(renderLogMetaItem(t("logs.meta.latency"), `${entry.latencyMs} ms`));
+        if (meta.childNodes.length > 0) {
+          article.appendChild(meta);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "log-actions";
+        if (entry.requestId) {
+          const filterBtn = document.createElement("button");
+          filterBtn.className = "mini-btn";
+          filterBtn.textContent = t("logs.filterByRequest");
+          filterBtn.onclick = () => applyRequestIdFilter(entry.requestId);
+          actions.appendChild(filterBtn);
+        }
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "mini-btn";
+        copyBtn.textContent = t("logs.copySummary");
+        copyBtn.onclick = () => {
+          copyLogSummary(entry);
+        };
+        actions.appendChild(copyBtn);
+        article.appendChild(actions);
+
+        if (entry.fields && Object.keys(entry.fields).length > 0) {
+          const details = document.createElement("details");
+          details.className = "log-details";
+          details.open = entry.level === "error" || entry.level === "fatal";
+          const summary = document.createElement("summary");
+          summary.textContent = t("logs.details");
+          const pre = document.createElement("pre");
+          pre.textContent = JSON.stringify(entry.fields, null, 2);
+          details.appendChild(summary);
+          details.appendChild(pre);
+          article.appendChild(details);
+        }
+
+        logList.appendChild(article);
+      });
+    }
+
+    async function loadLogs() {
+      try {
+        const json = await getLogsApi(getLogFilters());
+        renderLogs(json);
+      } catch {
+        logSummary.textContent = t("logs.loadFailed");
+        logList.innerHTML = "";
+      }
+    }
+
+    function updateLogsAutoRefresh() {
+      if (logsRefreshTimer) {
+        clearInterval(logsRefreshTimer);
+        logsRefreshTimer = null;
+      }
+      if (!logAutoRefresh.checked) return;
+      logsRefreshTimer = setInterval(() => {
+        loadLogs();
+      }, 5000);
     }
 
     async function sendRequest() {
@@ -629,6 +1107,7 @@ ${hostPort} {
     document.getElementById("verifyBtn").onclick = verifyAad;
     document.getElementById("sendBtn").onclick = sendRequest;
     document.getElementById("refreshStatsBtn").onclick = loadStats;
+    document.getElementById("refreshLogsBtn").onclick = loadLogs;
     document.getElementById("applyCaddyBtn").onclick = applyCaddyAndSave;
     document.getElementById("refreshCaddyBtn").onclick = loadConfig;
     document.getElementById("restartServiceBtn").onclick = restartService;
@@ -644,8 +1123,11 @@ ${hostPort} {
     document.getElementById("langZh").onclick = () => {
       setLanguage("zh-CN");
       renderConfigMessage();
+      updateConfigEditorState();
+      renderSummaryCards();
       resetPayloadSample();
       loadStats();
+      loadLogs();
       loadCaddyStatus();
       loadRuntimeInfo();
       renderCaddyPreview();
@@ -653,8 +1135,11 @@ ${hostPort} {
     document.getElementById("langEn").onclick = () => {
       setLanguage("en");
       renderConfigMessage();
+      updateConfigEditorState();
+      renderSummaryCards();
       resetPayloadSample();
       loadStats();
+      loadLogs();
       loadCaddyStatus();
       loadRuntimeInfo();
       renderCaddyPreview();
@@ -673,10 +1158,26 @@ ${hostPort} {
       el.addEventListener("input", renderCaddyPreview);
       el.addEventListener("change", renderCaddyPreview);
     });
+    [logLevelWarn, logLevelError, logLevelInfo, logEventInput, logModelInput, logRequestIdInput, logKeywordInput, logLimitSelect].forEach((el) => {
+      el.addEventListener("change", loadLogs);
+    });
+    [logEventInput, logModelInput, logRequestIdInput, logKeywordInput].forEach((el) => {
+      el.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          loadLogs();
+        }
+      });
+    });
+    logAutoRefresh.addEventListener("change", updateLogsAutoRefresh);
+    configArea.addEventListener("input", updateConfigEditorState);
 
     setLanguage(getStoredLang());
+    renderSummaryCards();
     resetPayloadSample();
     loadConfig();
     loadStats();
+    loadLogs();
+    updateLogsAutoRefresh();
     loadCaddyStatus();
     loadRuntimeInfo();

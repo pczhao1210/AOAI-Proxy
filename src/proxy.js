@@ -54,21 +54,25 @@ export async function proxyRequest({
   const body = sanitizeRequestBody(req.body || {}, { preserveNull: routeKey === "responses" });
   const modelId = body.model || config.models[0]?.id;
   if (!modelId) {
+    log.warn({ requestId, routeKey, event: "proxy.request_rejected", errorCode: "MODEL_REQUIRED" }, "request rejected: model is required");
     reply.code(400).send({ error: "model is required" });
     return;
   }
   const model = findModel(config, modelId);
   if (!model) {
+    log.warn({ requestId, modelId, routeKey, event: "proxy.request_rejected", errorCode: "MODEL_NOT_FOUND" }, "request rejected: model not found");
     reply.code(404).send({ error: `model ${modelId} not found` });
     return;
   }
   const upstream = findUpstream(config, model.upstream);
   if (!upstream) {
+    log.error({ requestId, modelId, routeKey, event: "proxy.upstream_missing", errorCode: "UPSTREAM_NOT_FOUND" }, "configured upstream not found");
     reply.code(500).send({ error: `upstream ${model.upstream} not found` });
     return;
   }
 
   if (isPlaceholderBaseUrl(upstream.baseUrl)) {
+    log.error({ requestId, modelId, routeKey, event: "proxy.upstream_invalid", errorCode: "INVALID_UPSTREAM_CONFIG" }, "invalid upstream baseUrl placeholder");
     reply.code(500).send({
       error: "InvalidUpstreamConfig",
       message:
@@ -125,6 +129,15 @@ export async function proxyRequest({
       modelId: deployment || modelId
     });
     if (unsupportedRequest) {
+      log.warn({
+        requestId,
+        modelId,
+        routeKey,
+        backendRouteKey,
+        event: "proxy.request_rejected",
+        errorCode: "UNSUPPORTED_PARAMETER",
+        param: unsupportedRequest.param
+      }, unsupportedRequest.message);
       reply.code(400).send({
         error: "UnsupportedParameter",
         message: unsupportedRequest.message,

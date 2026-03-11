@@ -9,6 +9,7 @@ import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
+import { appendStructuredLog, createPinoCaptureStream, queryLogs } from "./logs.js";
 
 // Fastify server entry
 const defaultBodyLimit = 50 * 1024 * 1024;
@@ -17,7 +18,8 @@ const bodyLimit = Number.isFinite(bodyLimitEnv) && bodyLimitEnv > 0 ? bodyLimitE
 
 const app = fastify({
   logger: {
-    level: process.env.LOG_LEVEL || "warn"
+    level: process.env.LOG_LEVEL || "warn",
+    stream: createPinoCaptureStream()
   },
   bodyLimit
 });
@@ -123,6 +125,7 @@ function emitStartupLog(stage, fields = {}) {
     event: `startup.${stage}`,
     ...fields
   };
+  appendStructuredLog("info", payload);
   try {
     console.log(JSON.stringify(payload));
   } catch {
@@ -137,6 +140,7 @@ function emitStartupError(stage, error, fields = {}) {
     message: error?.message || String(error),
     ...fields
   };
+  appendStructuredLog("error", payload);
   try {
     console.error(JSON.stringify(payload));
   } catch {
@@ -202,6 +206,7 @@ app.put("/admin/api/config", async (req, reply) => {
     void primeAuth(saved);
     writeCaddyfile(saved);
     await reloadCaddy(saved);
+    app.log.info({ event: "admin.config_saved" }, "admin config saved");
     reply.send({ ok: true, config: saved });
   } catch (error) {
     reply.code(400).send({ error: error.message });
@@ -215,6 +220,7 @@ app.post("/admin/api/reload", async (req, reply) => {
     void primeAuth(config);
     writeCaddyfile(config);
     await reloadCaddy(config);
+    app.log.info({ event: "admin.config_reloaded" }, "admin config reloaded");
     reply.send({ ok: true, config });
   } catch (error) {
     reply.code(400).send({ error: error.message });
@@ -239,12 +245,17 @@ app.get("/admin/api/stats", async () => {
   return getStats();
 });
 
+app.get("/admin/api/logs", async (req) => {
+  return queryLogs(req.query || {});
+});
+
 app.get("/admin/api/caddy/status", async () => {
   return { ok: true, status: getCaddyStatus() };
 });
 
 app.post("/admin/api/restart", async (req, reply) => {
   setCaddyStatus({ state: "restart-requested", message: "restart requested", lastError: null });
+  app.log.warn({ event: "admin.restart_requested" }, "admin restart requested");
   reply.send({ ok: true });
   setTimeout(() => {
     try {

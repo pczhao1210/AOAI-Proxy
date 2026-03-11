@@ -32,6 +32,22 @@ export async function getStatsApi() {
   return res.json();
 }
 
+export async function getLogsApi(params = {}) {
+  const search = new URLSearchParams();
+  if (Array.isArray(params.level) && params.level.length > 0) {
+    search.set("level", params.level.join(","));
+  }
+  ["event", "modelId", "requestId", "keyword", "since", "limit"].forEach((key) => {
+    const value = params[key];
+    if (value != null && value !== "") {
+      search.set(key, String(value));
+    }
+  });
+  const query = search.toString();
+  const res = await fetch(query ? `/admin/api/logs?${query}` : "/admin/api/logs");
+  return res.json();
+}
+
 export async function getCaddyStatusApi() {
   const res = await fetch("/admin/api/caddy/status");
   return res.json();

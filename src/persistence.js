@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { BlobServiceClient } from "@azure/storage-blob";
 import { DefaultAzureCredential } from "@azure/identity";
+import { appendStructuredLog } from "./logs.js";
 
 const DEFAULT_PERSISTENCE_MODE = "azureFile";
 const DEFAULT_CONFIG_BLOB_NAME = "config/config.json";
@@ -35,6 +36,7 @@ function emitPersistenceEvent(level, event, fields = {}) {
     event,
     ...fields
   };
+  appendStructuredLog(level, payload);
   const logger = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
   logger(JSON.stringify(payload));
 }
