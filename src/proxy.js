@@ -51,7 +51,7 @@ export async function proxyRequest({
     ? req.headers["x-request-id"]
     : req.id;
   const log = req.log;
-  const body = sanitizeRequestBody(req.body || {});
+  const body = sanitizeRequestBody(req.body || {}, { preserveNull: routeKey === "responses" });
   const modelId = body.model || config.models[0]?.id;
   if (!modelId) {
     reply.code(400).send({ error: "model is required" });
@@ -117,7 +117,29 @@ export async function proxyRequest({
       };
   }
 
-  if (nextBody && typeof nextBody === "object" && "stream_options" in nextBody) {
+  if (nextBody && typeof nextBody === "object") {
+    normalizeReasoningConfig(nextBody, backendRouteKey);
+    const unsupportedRequest = sanitizeModernModelRequest(nextBody, {
+      routeKey,
+      backendRouteKey,
+      modelId: deployment || modelId
+    });
+    if (unsupportedRequest) {
+      reply.code(400).send({
+        error: "UnsupportedParameter",
+        message: unsupportedRequest.message,
+        param: unsupportedRequest.param
+      });
+      return;
+    }
+  }
+
+  if (
+    nextBody
+    && typeof nextBody === "object"
+    && "stream_options" in nextBody
+    && (!isStream || (backendRouteKey !== "chat/completions" && backendRouteKey !== "responses"))
+  ) {
     delete nextBody.stream_options;
   }
 
@@ -363,4 +385,139 @@ export async function proxyRequest({
     latencyMs: Date.now() - startAt
   }, "proxy request completed");
   reply.code(upstreamResponse.status).send(payload);
+}
+
+function extractReasoningEffort(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && typeof value.effort === "string") {
+    return value.effort;
+  }
+  return undefined;
+}
+
+function normalizeReasoningConfig(body, backendRouteKey) {
+  const thinking = body?.thinking;
+  const reasoning = body?.reasoning;
+  const thinkingEffort = extractReasoningEffort(thinking);
+  const reasoningEffort = extractReasoningEffort(reasoning);
+  const directReasoningEffort = typeof body?.reasoning_effort === "string"
+    ? body.reasoning_effort
+    : undefined;
+
+  if (backendRouteKey === "responses") {
+    if ((reasoning == null || typeof reasoning !== "object") && thinking && typeof thinking === "object") {
+      body.reasoning = {
+        ...thinking,
+        ...(reasoning && typeof reasoning === "object" ? reasoning : {})
+      };
+    }
+    if (body.reasoning == null && (thinkingEffort || directReasoningEffort)) {
+      body.reasoning = {
+        ...(reasoning && typeof reasoning === "object" ? reasoning : {}),
+        effort: directReasoningEffort || thinkingEffort
+      };
+    } else if (body.reasoning && typeof body.reasoning === "object" && (directReasoningEffort || thinkingEffort) && body.reasoning.effort == null) {
+      body.reasoning.effort = directReasoningEffort || thinkingEffort;
+    }
+    delete body.reasoning_effort;
+    delete body.thinking;
+    return;
+  }
+
+  if (backendRouteKey === "chat/completions") {
+    if (body.reasoning_effort == null && (reasoningEffort || thinkingEffort)) {
+      body.reasoning_effort = reasoningEffort || thinkingEffort;
+    }
+    delete body.reasoning;
+    delete body.thinking;
+  }
+}
+
+function isModernModel(modelId) {
+  const value = String(modelId || "").toLowerCase();
+  return /^gpt-(?:[5-9]|\d{2,})(?:$|[.-])/.test(value) || /^o\d(?:$|[.-])/.test(value);
+}
+
+function normalizeModernReasoningEffort(value) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "xhigh") return "high";
+  if (normalized === "low" || normalized === "medium" || normalized === "high") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function findUnsupportedWebSearchParam(body) {
+  if (Array.isArray(body?.tools)) {
+    for (const tool of body.tools) {
+      const type = typeof tool?.type === "string" ? tool.type.toLowerCase() : "";
+      if (type === "web_search" || type === "web_search_preview" || type === "web_search_preview_2025_03_11") {
+        return "tools";
+      }
+    }
+  }
+
+  const toolChoiceType = typeof body?.tool_choice?.type === "string"
+    ? body.tool_choice.type.toLowerCase()
+    : "";
+  if (toolChoiceType === "web_search" || toolChoiceType === "web_search_preview" || toolChoiceType === "web_search_preview_2025_03_11") {
+    return "tool_choice";
+  }
+
+  return null;
+}
+
+function sanitizeModernModelRequest(body, { backendRouteKey, modelId }) {
+  if (!body || typeof body !== "object" || !isModernModel(modelId)) {
+    return null;
+  }
+
+  const unsupportedWebSearchParam = findUnsupportedWebSearchParam(body);
+  if (unsupportedWebSearchParam) {
+    return {
+      param: unsupportedWebSearchParam,
+      message: "Azure Foundry 当前不支持 web_search 工具，请移除 web_search_preview 相关 tools 或 tool_choice。"
+    };
+  }
+
+  delete body.serviceTier;
+  delete body.service_tier;
+  delete body.verbosity;
+  delete body.top_k;
+
+  if (backendRouteKey === "chat/completions") {
+    if (typeof body.max_completion_tokens !== "number" && typeof body.max_tokens === "number") {
+      body.max_completion_tokens = body.max_tokens;
+    }
+    delete body.max_tokens;
+
+    if (body.top_logprobs != null && body.logprobs == null) {
+      body.logprobs = true;
+    }
+
+    if (body.reasoning_effort != null) {
+      const normalizedEffort = normalizeModernReasoningEffort(body.reasoning_effort);
+      if (!normalizedEffort) {
+        return {
+          param: "reasoning_effort",
+          message: "reasoning_effort 仅支持 low、medium、high；xhigh 已自动降级为 high。"
+        };
+      }
+      body.reasoning_effort = normalizedEffort;
+    }
+  }
+
+  if (backendRouteKey === "responses" && body.reasoning && typeof body.reasoning === "object" && body.reasoning.effort != null) {
+    const normalizedEffort = normalizeModernReasoningEffort(body.reasoning.effort);
+    if (!normalizedEffort) {
+      return {
+        param: "reasoning.effort",
+        message: "reasoning.effort 仅支持 low、medium、high；xhigh 已自动降级为 high。"
+      };
+    }
+    body.reasoning.effort = normalizedEffort;
+  }
+
+  return null;
 }

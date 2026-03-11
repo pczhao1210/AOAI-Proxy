@@ -29,22 +29,23 @@ export function getStreamFlag(body) {
   return body?.stream === true;
 }
 
-function isMeaninglessValue(value) {
+function isMeaninglessValue(value, options = {}) {
   return (
     value === undefined
-    || value === null
+    || (!options.preserveNull && value === null)
     || value === "[undefined]"
     || value === "undefined"
   );
 }
 
-function pruneMeaningless(value) {
-  if (isMeaninglessValue(value)) return undefined;
+function pruneMeaningless(value, options = {}) {
+  if (isMeaninglessValue(value, options)) return undefined;
+  if (value === null) return value;
   if (Array.isArray(value)) {
     let changed = false;
     const out = [];
     for (const item of value) {
-      const pruned = pruneMeaningless(item);
+      const pruned = pruneMeaningless(item, options);
       if (pruned === undefined) {
         changed = true;
         continue;
@@ -58,7 +59,7 @@ function pruneMeaningless(value) {
     let changed = false;
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      const pruned = pruneMeaningless(v);
+      const pruned = pruneMeaningless(v, options);
       if (pruned === undefined) {
         changed = true;
         continue;
@@ -71,8 +72,8 @@ function pruneMeaningless(value) {
   return value;
 }
 
-export function sanitizeRequestBody(body) {
-  const pruned = pruneMeaningless(body);
+export function sanitizeRequestBody(body, options = {}) {
+  const pruned = pruneMeaningless(body, options);
   return pruned && typeof pruned === "object" ? pruned : {};
 }
 
@@ -159,15 +160,9 @@ async function compressImagesInPlace(value, options, cache) {
   if (!value || typeof value !== "object") return;
 
   for (const [key, raw] of Object.entries(value)) {
-    if (typeof raw === "string") {
-      if (key === "image_base64") {
-        value[key] = await compressBase64String(raw, options);
-        continue;
-      }
-      if (isDataUrlImage(raw)) {
-        value[key] = await compressDataUrl(raw, options, cache);
-        continue;
-      }
+    if (key === "image_base64" && typeof raw === "string") {
+      value[key] = await compressBase64String(raw, options);
+      continue;
     }
 
     if (key === "image_url") {
@@ -186,9 +181,6 @@ async function compressImagesInPlace(value, options, cache) {
 }
 
 function hasCompressibleImage(value) {
-  if (typeof value === "string") {
-    return isDataUrlImage(value);
-  }
   if (Array.isArray(value)) {
     for (const item of value) {
       if (hasCompressibleImage(item)) return true;
@@ -213,7 +205,7 @@ function hasCompressibleImage(value) {
 export async function maybeCompressImages(payload, config, routeKey) {
   const options = resolveImageCompression(config);
   if (!options.enabled) return payload;
-  if (routeKey !== "images/generations" && !hasCompressibleImage(payload)) {
+  if (!hasCompressibleImage(payload)) {
     return payload;
   }
   const cache = new Map();

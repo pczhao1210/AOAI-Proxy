@@ -151,7 +151,7 @@ Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin
 - Stats are in-memory only; restart resets counters
 - `usage` is collected from non-stream JSON responses and streaming SSE usage events
 - Cached token fields from upstream are counted when present
-- The proxy strips `stream_options` to avoid Foundry v1 `unknown_parameter` errors
+- The proxy preserves `stream_options` for streaming `chat/completions` and `responses` requests, and strips it for other routes where Foundry v1 may reject it
 
 ## Docker
 
@@ -275,6 +275,18 @@ If active health checks are enabled and `/healthz` is API-key protected, add a h
 - Data plane path is `/openai/v1/*`
 - `api-version` is optional; default behavior is v1
 - Request `model` must be the deployment identifier
+
+### Modern Model Compatibility
+
+For `gpt-5` and newer models, plus `o*` reasoning models, the proxy now applies a small set of request normalizations before forwarding to Foundry:
+
+- `max_tokens` is upgraded to `max_completion_tokens` for `chat/completions`
+- `top_logprobs` implies `logprobs: true` when the client omits it
+- `reasoning_effort` and `reasoning.effort` accept `low`, `medium`, and `high`; `xhigh` is downgraded to `high`
+- `service_tier`, `verbosity`, and `top_k` are stripped for modern models because they are common sources of `unknown_parameter` errors against Foundry
+- `web_search_preview` tools are rejected early with a `400` because Azure Foundry does not currently support web search tools
+
+The proxy also keeps `stream_options` for streaming `chat/completions` and `responses` requests, and strips it only for routes where Foundry v1 may reject it.
 
 ## Model Route Overrides
 

@@ -203,6 +203,191 @@ function normalizeToolChoiceForResponses(toolChoice) {
   return undefined;
 }
 
+function normalizeResponsesContentToChatContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) {
+    if (content && typeof content === "object" && typeof content.text === "string") {
+      return content.text;
+    }
+    return "";
+  }
+
+  const parts = [];
+  for (const part of content) {
+    if (!part) continue;
+    if (typeof part === "string") {
+      parts.push({ type: "text", text: part });
+      continue;
+    }
+
+    if (
+      (part.type === "text" || part.type === "input_text" || part.type === "output_text")
+      && typeof part.text === "string"
+    ) {
+      parts.push({ type: "text", text: part.text });
+      continue;
+    }
+
+    const imageUrl = typeof part.image_url === "string"
+      ? part.image_url
+      : part.image_url?.url;
+    if ((part.type === "input_image" || part.type === "image") && typeof imageUrl === "string") {
+      parts.push({
+        type: "image_url",
+        image_url: {
+          url: imageUrl,
+          ...(part.detail ? { detail: part.detail } : {})
+        }
+      });
+    }
+  }
+
+  if (!parts.length) return "";
+  if (parts.every((part) => part.type === "text")) {
+    return parts.map((part) => part.text).join("");
+  }
+  return parts;
+}
+
+function buildChatMessagesFromResponsesInput(input, instructions) {
+  const messages = [];
+
+  if (typeof instructions === "string" && instructions) {
+    messages.push({ role: "system", content: instructions });
+  }
+
+  const pushMessage = (message) => {
+    if (!message || !message.role) return;
+    const next = { ...message };
+    if (typeof next.content === "string" && !next.content && !Array.isArray(next.tool_calls)) {
+      delete next.content;
+    }
+    messages.push(next);
+  };
+
+  const mapInputItem = (item) => {
+    if (!item) return;
+    if (typeof item === "string") {
+      pushMessage({ role: "user", content: item });
+      return;
+    }
+    if (typeof item !== "object") return;
+
+    if (item.type === "function_call") {
+      pushMessage({
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: item.call_id || item.id,
+          type: "function",
+          function: {
+            name: item.name || "",
+            arguments: item.arguments || ""
+          }
+        }]
+      });
+      return;
+    }
+
+    if (item.type === "function_call_output") {
+      pushMessage({
+        role: "tool",
+        tool_call_id: item.call_id,
+        content: coerceToText(item.output)
+      });
+      return;
+    }
+
+    if (item.type === "message" || item.role) {
+      const role = item.role || "user";
+      pushMessage({
+        role: role === "developer" ? "system" : role,
+        content: normalizeResponsesContentToChatContent(item.content)
+      });
+      return;
+    }
+
+    const text = coerceToText(item);
+    if (text) pushMessage({ role: "user", content: text });
+  };
+
+  if (Array.isArray(input)) {
+    for (const item of input) mapInputItem(item);
+  } else if (input != null) {
+    mapInputItem(input);
+  }
+
+  return messages;
+}
+
+function normalizeToolsForChat(tools) {
+  if (!Array.isArray(tools)) return undefined;
+  const out = [];
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") continue;
+    if (tool.type === "function" && tool.function && typeof tool.function === "object") {
+      const name = tool.function.name;
+      if (!name) continue;
+      out.push({
+        type: "function",
+        function: {
+          name,
+          description: tool.function.description,
+          parameters: tool.function.parameters,
+          strict: tool.function.strict
+        }
+      });
+      continue;
+    }
+    if (tool.type === "function" && tool.name) {
+      out.push({
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+          strict: tool.strict
+        }
+      });
+    }
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeToolChoiceForChat(toolChoice) {
+  if (!toolChoice) return undefined;
+  if (typeof toolChoice === "string") return toolChoice;
+  if (typeof toolChoice === "object" && toolChoice.type === "function") {
+    const name = toolChoice.function?.name || toolChoice.name;
+    if (!name) return undefined;
+    return {
+      type: "function",
+      function: { name }
+    };
+  }
+  return undefined;
+}
+
+function normalizeResponseFormatForChat(textConfig) {
+  const format = textConfig?.format;
+  if (!format || typeof format !== "object") return undefined;
+  if (format.type === "json_object") {
+    return { type: "json_object" };
+  }
+  if (format.type === "json_schema") {
+    return {
+      type: "json_schema",
+      json_schema: {
+        name: format.name,
+        schema: format.schema,
+        strict: format.strict,
+        description: format.description
+      }
+    };
+  }
+  return undefined;
+}
+
 export function chatToResponsesRequest(body, deployment) {
   const messages = body?.messages;
   const text = extractLastUserTextFromMessages(messages);
@@ -290,15 +475,52 @@ export function chatToResponsesRequest(body, deployment) {
 }
 
 export function responsesToChatRequest(body, deployment) {
-  const text = coerceToText(body?.input);
+  const messages = buildChatMessagesFromResponsesInput(body?.input, body?.instructions);
   const out = {
     ...body,
     model: deployment
   };
   if (out.messages == null) {
-    out.messages = [{ role: "user", content: text }];
+    out.messages = messages.length ? messages : [{ role: "user", content: coerceToText(body?.input) }];
   }
+
+  const normalizedTools = normalizeToolsForChat(out.tools);
+  if (normalizedTools) out.tools = normalizedTools;
+  else delete out.tools;
+
+  const normalizedToolChoice = normalizeToolChoiceForChat(out.tool_choice);
+  if (normalizedToolChoice !== undefined) out.tool_choice = normalizedToolChoice;
+  else if (typeof out.tool_choice !== "string") delete out.tool_choice;
+
+  if (out.response_format == null) {
+    const normalizedResponseFormat = normalizeResponseFormatForChat(out.text);
+    if (normalizedResponseFormat) out.response_format = normalizedResponseFormat;
+  }
+
+  if (out.max_completion_tokens == null && typeof out.max_output_tokens === "number") {
+    out.max_completion_tokens = out.max_output_tokens;
+  }
+
+  if (out.reasoning_effort == null && typeof out.reasoning?.effort === "string") {
+    out.reasoning_effort = out.reasoning.effort;
+  }
+
   delete out.input;
+  delete out.instructions;
+  delete out.text;
+  delete out.max_output_tokens;
+  delete out.reasoning;
+  delete out.background;
+  delete out.context_management;
+  delete out.conversation;
+  delete out.include;
+  delete out.max_tool_calls;
+  delete out.previous_response_id;
+  delete out.prompt;
+  delete out.prompt_cache_key;
+  delete out.prompt_cache_retention;
+  delete out.store;
+  delete out.truncation;
   return out;
 }
 
