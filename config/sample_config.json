@@ -52,7 +52,8 @@
     "clientId": "",
     "clientSecret": "",
     "managedIdentityClientId": "",
-    "scope": "https://cognitiveservices.azure.com/.default"
+    "scope": "https://cognitiveservices.azure.com/.default",
+    "apiKey": ""
   },
   "apiKeys": [
     {

@@ -2,7 +2,7 @@
   const dictionaries = {
     "zh-CN": {
       "app.title": "AOAI Foundry Proxy Admin",
-      "app.subtitle": "配置代理、验证 AAD、查看模型调用统计与测试 OpenAI 兼容端点",
+      "app.subtitle": "配置代理、验证上游认证、查看模型调用统计与测试 OpenAI 兼容端点",
       "lang.zh": "中文",
       "lang.en": "English",
 
@@ -25,7 +25,7 @@
       "config.validation.details.more": "其余项省略",
 
       "summary.proxy.label": "代理状态",
-      "summary.aad.label": "AAD",
+      "summary.aad.label": "上游认证",
       "summary.config.label": "配置状态",
       "summary.runtime.label": "运行状态",
       "summary.state.good": "正常",
@@ -37,7 +37,7 @@
       "summary.aad.unchecked": "未验证",
       "summary.aad.ok": "验证通过",
       "summary.aad.failed": "验证失败",
-      "summary.aad.note.unchecked": "点击 AAD 验证后更新状态",
+      "summary.aad.note.unchecked": "点击验证上游认证后更新状态",
       "summary.config.clean": "已同步",
       "summary.config.dirty": "待保存",
       "summary.config.invalid": "JSON 无效",
@@ -52,9 +52,9 @@
       "runtime.blobAccessState.disabled.short": "未启用",
       "runtime.blobAccessState.unknown.short": "未知",
 
-      "section.aad.title": "AAD 验证",
-      "section.aad.desc": "验证服务主体或系统分配身份是否可获取 Bearer Token。",
-      "btn.verifyAad": "验证 AAD",
+      "section.aad.title": "上游认证验证",
+      "section.aad.desc": "验证当前上游认证配置是否可用，包括 AAD 或 api-key 模式。",
+      "btn.verifyAad": "验证上游认证",
 
       "section.stats.title": "统计总览",
       "btn.refreshStats": "刷新统计",
@@ -196,7 +196,7 @@
     },
     "en": {
       "app.title": "AOAI Foundry Proxy Admin",
-      "app.subtitle": "Configure proxy, verify AAD, view model stats, and test OpenAI-compatible endpoints",
+      "app.subtitle": "Configure proxy, verify upstream auth, view model stats, and test OpenAI-compatible endpoints",
       "lang.zh": "中文",
       "lang.en": "English",
 
@@ -219,7 +219,7 @@
       "config.validation.details.more": "More items omitted",
 
       "summary.proxy.label": "Proxy",
-      "summary.aad.label": "AAD",
+      "summary.aad.label": "Upstream Auth",
       "summary.config.label": "Config",
       "summary.runtime.label": "Runtime",
       "summary.state.good": "Healthy",
@@ -231,7 +231,7 @@
       "summary.aad.unchecked": "Unchecked",
       "summary.aad.ok": "Verified",
       "summary.aad.failed": "Failed",
-      "summary.aad.note.unchecked": "Status updates after AAD verification",
+      "summary.aad.note.unchecked": "Status updates after upstream auth verification",
       "summary.config.clean": "In Sync",
       "summary.config.dirty": "Pending Save",
       "summary.config.invalid": "Invalid JSON",
@@ -246,9 +246,9 @@
       "runtime.blobAccessState.disabled.short": "disabled",
       "runtime.blobAccessState.unknown.short": "unknown",
 
-      "section.aad.title": "AAD Verification",
-      "section.aad.desc": "Verify service principal or managed identity token acquisition.",
-      "btn.verifyAad": "Verify AAD",
+      "section.aad.title": "Upstream Auth Verification",
+      "section.aad.desc": "Verify the configured upstream auth path, including AAD or api-key mode.",
+      "btn.verifyAad": "Verify Upstream Auth",
 
       "section.stats.title": "Statistics",
       "btn.refreshStats": "Refresh",

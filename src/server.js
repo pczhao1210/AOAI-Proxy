@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { getConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo } from "./config.js";
-import { initAuth, getBearerToken, warmBearerToken } from "./auth.js";
+import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
@@ -112,8 +112,8 @@ function attachAuth(config) {
 
 async function primeAuth(config) {
   try {
-    await warmBearerToken(config.auth.scope);
-    emitStartupLog("auth_warm", { scope: config.auth.scope });
+    const result = await verifyUpstreamAuth(config.auth.scope);
+    emitStartupLog("auth_warm", { mode: result.mode, scope: config.auth.scope });
   } catch (error) {
     emitStartupError("auth_warm_failed", error, { scope: config.auth.scope });
   }
@@ -230,8 +230,8 @@ app.post("/admin/api/reload", async (req, reply) => {
 app.post("/admin/api/verify-aad", async (req, reply) => {
   const config = getConfig();
   try {
-    const token = await getBearerToken(config.auth.scope);
-    reply.send({ ok: true, tokenPreview: token.slice(0, 16) + "..." });
+    const result = await verifyUpstreamAuth(config.auth.scope);
+    reply.send({ ok: true, mode: result.mode, preview: result.preview });
   } catch (error) {
     reply.code(400).send({ ok: false, error: error.message });
   }

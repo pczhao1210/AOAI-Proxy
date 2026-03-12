@@ -1,4 +1,4 @@
-import { getBearerToken } from "./auth.js";
+import { getUpstreamAuthHeaders } from "./auth.js";
 import { recordError, recordRequest, recordUsage } from "./stats.js";
 import {
   findUpstream,
@@ -89,14 +89,14 @@ export async function proxyRequest({
     ? buildDirectUpstreamUrl(upstream, override.value, deployment)
     : buildUpstreamUrl(upstream, effectiveRouteKey, deployment);
   const policy = resolveUpstreamPolicy(config);
-  let bearer;
+  let upstreamAuthHeaders;
   try {
-    bearer = await getBearerToken(config.auth.scope);
+    upstreamAuthHeaders = await getUpstreamAuthHeaders(config.auth.scope);
   } catch (error) {
     recordError(model.id);
-    log.error({ requestId, modelId, routeKey, error: error?.message }, "failed to acquire AAD token");
-    const classified = { code: "AAD_TOKEN_ACQUIRE_FAILED", retryable: false, status: 500 };
-    reply.code(500).send(buildErrorBody({ classified, requestId, detail: error?.message || "token acquisition failed" }));
+    log.error({ requestId, modelId, routeKey, error: error?.message }, "failed to prepare upstream authentication");
+    const classified = { code: "UPSTREAM_AUTH_PREPARE_FAILED", retryable: false, status: 500 };
+    reply.code(500).send(buildErrorBody({ classified, requestId, detail: error?.message || "upstream authentication failed" }));
     return;
   }
 
@@ -173,7 +173,7 @@ export async function proxyRequest({
   const headers = {
     ...sanitizeIncomingHeaders(req.headers),
     "content-type": "application/json",
-    authorization: `Bearer ${bearer}`,
+    ...upstreamAuthHeaders,
     "x-request-id": requestId
   };
   const bodyText = JSON.stringify(nextBody);

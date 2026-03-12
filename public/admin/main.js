@@ -802,10 +802,11 @@ ${hostPort} {
       verifyMsg.textContent = t("msg.verifyPending");
       const json = await verifyAadApi();
       if (json.ok) {
-        verifyMsg.textContent = t("msg.verifyOk") + json.tokenPreview;
+        const detail = json.preview || json.tokenPreview || "";
+        verifyMsg.textContent = t("msg.verifyOk") + detail;
         aadStatus = {
           state: "ok",
-          detail: json.tokenPreview,
+          detail,
           checkedAt: new Date().toISOString()
         };
       } else {

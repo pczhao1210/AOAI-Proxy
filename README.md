@@ -10,7 +10,7 @@
 
 - OpenAI-compatible proxy for `chat/completions`, `responses`, `images/generations`, and `models`
 - Client -> Proxy uses API key auth via `Authorization: Bearer` or `x-api-key`
-- Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens from `DefaultAzureCredential`
+- Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or `api-key`, based on `auth.mode`
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
 
@@ -97,6 +97,9 @@ Guidance:
 2. Edit `config/config.json`:
    - Replace `upstreams[].baseUrl` with your Foundry or Azure OpenAI endpoint
    - Set `models[].targetModel` to the deployment identifier
+  - Choose upstream auth:
+    - `auth.mode = "servicePrincipal"` with `scope`, plus service principal fields or managed identity
+    - `auth.mode = "apiKey"` with `auth.apiKey`
    - Replace the default API key and admin credentials
 3. Install dependencies and start:
    - `npm install`
@@ -188,6 +191,21 @@ docker run --rm -p 3000:3000 -p 443:443 \
 ```
 
 The container still uses `DefaultAzureCredential`, so provide service principal credentials for local development or a managed identity in Azure.
+
+## Upstream Auth Modes
+
+### `servicePrincipal`
+
+- Default mode
+- Uses a client secret when `tenantId`, `clientId`, and `clientSecret` are provided
+- Otherwise falls back to `DefaultAzureCredential`, including managed identity when available
+- Requires `auth.scope`
+
+### `apiKey`
+
+- Sends requests to Azure AI Foundry / Azure OpenAI with the `api-key` header
+- Requires `auth.apiKey`
+- Does not acquire AAD tokens or use `auth.scope`
 
 ## Azure Deployment
 

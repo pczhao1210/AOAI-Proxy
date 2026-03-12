@@ -56,7 +56,8 @@ const DEFAULTS = {
     clientId: "",
     clientSecret: "",
     managedIdentityClientId: "",
-    scope: "https://cognitiveservices.azure.com/.default"
+    scope: "https://cognitiveservices.azure.com/.default",
+    apiKey: ""
   },
   apiKeys: [],
   upstreams: [],
@@ -255,8 +256,37 @@ function validateConfig(cfg) {
       }
     }
   }
-  if (!cfg.auth || !cfg.auth.scope) {
-    throw new Error("auth.scope is required");
+  if (!cfg.auth || typeof cfg.auth !== "object") {
+    throw new Error("auth must be an object");
+  }
+  const authMode = typeof cfg.auth.mode === "string" && cfg.auth.mode.trim() ? cfg.auth.mode.trim() : "servicePrincipal";
+  if (!["servicePrincipal", "apiKey"].includes(authMode)) {
+    throw new Error("auth.mode must be servicePrincipal or apiKey");
+  }
+  if (cfg.auth.tenantId != null && typeof cfg.auth.tenantId !== "string") {
+    throw new Error("auth.tenantId must be a string");
+  }
+  if (cfg.auth.clientId != null && typeof cfg.auth.clientId !== "string") {
+    throw new Error("auth.clientId must be a string");
+  }
+  if (cfg.auth.clientSecret != null && typeof cfg.auth.clientSecret !== "string") {
+    throw new Error("auth.clientSecret must be a string");
+  }
+  if (cfg.auth.managedIdentityClientId != null && typeof cfg.auth.managedIdentityClientId !== "string") {
+    throw new Error("auth.managedIdentityClientId must be a string");
+  }
+  if (cfg.auth.scope != null && typeof cfg.auth.scope !== "string") {
+    throw new Error("auth.scope must be a string");
+  }
+  if (cfg.auth.apiKey != null && typeof cfg.auth.apiKey !== "string") {
+    throw new Error("auth.apiKey must be a string");
+  }
+  if (authMode === "apiKey") {
+    if (!cfg.auth.apiKey || !cfg.auth.apiKey.trim()) {
+      throw new Error("auth.apiKey is required when auth.mode is apiKey");
+    }
+  } else if (!cfg.auth.scope || !cfg.auth.scope.trim()) {
+    throw new Error("auth.scope is required when auth.mode is servicePrincipal");
   }
   if (!Array.isArray(cfg.apiKeys)) {
     throw new Error("apiKeys must be an array");
