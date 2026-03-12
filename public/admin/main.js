@@ -1060,6 +1060,12 @@ ${hostPort} {
         clearInterval(logsRefreshTimer);
         logsRefreshTimer = null;
       }
+      const logAutoRefreshHint = document.getElementById("logAutoRefreshHint");
+      if (logAutoRefreshHint) {
+        logAutoRefreshHint.textContent = logAutoRefresh.checked
+          ? t("logs.autoRefreshHint.on")
+          : t("logs.autoRefreshHint.off");
+      }
       if (!logAutoRefresh.checked) return;
       logsRefreshTimer = setInterval(() => {
         loadLogs();
@@ -1129,6 +1135,7 @@ ${hostPort} {
       resetPayloadSample();
       loadStats();
       loadLogs();
+      updateLogsAutoRefresh();
       loadCaddyStatus();
       loadRuntimeInfo();
       renderCaddyPreview();
@@ -1141,6 +1148,7 @@ ${hostPort} {
       resetPayloadSample();
       loadStats();
       loadLogs();
+      updateLogsAutoRefresh();
       loadCaddyStatus();
       loadRuntimeInfo();
       renderCaddyPreview();

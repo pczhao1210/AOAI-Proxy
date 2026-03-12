@@ -76,6 +76,14 @@
       padding: 10px 12px;
       font-size: 13px;
     }
+    input[type="checkbox"] {
+      width: auto;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      flex: 0 0 auto;
+    }
     textarea { min-height: 220px; resize: vertical; }
     button {
       background: linear-gradient(135deg, #38bdf8, #0ea5e9);
@@ -139,7 +147,13 @@
     th { color: var(--muted); font-weight: 500; }
     code { background: #0b1220; padding: 2px 6px; border-radius: 6px; }
     .field { display: flex; flex-direction: column; gap: 6px; min-width: 200px; flex: 1; }
-    .inline { display: inline-flex; gap: 8px; align-items: center; }
+    .inline {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -529,11 +543,11 @@
               <span data-i18n="logs.level.error">Error</span>
             </label>
             <label class="inline">
-              <input type="checkbox" id="logLevelInfo" />
+              <input type="checkbox" id="logLevelInfo" checked />
               <span data-i18n="logs.level.info">Info</span>
             </label>
             <label class="inline">
-              <input type="checkbox" id="logAutoRefresh" checked />
+              <input type="checkbox" id="logAutoRefresh" />
               <span data-i18n="logs.autoRefresh">自动刷新</span>
             </label>
           </div>
@@ -542,6 +556,7 @@
             <div class="muted" id="logSummary"></div>
           </div>
         </div>
+        <div class="muted" id="logAutoRefreshHint" style="margin-top: 8px;"></div>
         <details class="log-advanced" id="logAdvancedFilters">
           <summary data-i18n="logs.advancedFilters">更多筛选</summary>
           <div class="log-advanced-body">

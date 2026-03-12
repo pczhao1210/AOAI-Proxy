@@ -1,4 +1,5 @@
 import { getUpstreamAuthHeaders } from "./auth.js";
+import { appendStructuredLog } from "./logs.js";
 import { recordError, recordRequest, recordUsage } from "./stats.js";
 import {
   findUpstream,
@@ -39,6 +40,19 @@ import {
   streamPassthrough,
   streamShim
 } from "./proxy/stream.js";
+
+function emitInfoLog(payload) {
+  appendStructuredLog("info", payload);
+  try {
+    console.log(JSON.stringify({
+      ts: new Date().toISOString(),
+      level: "info",
+      ...payload
+    }));
+  } catch {
+    console.log(payload.message || payload.event || "info");
+  }
+}
 
 export async function proxyRequest({
   config,
@@ -161,14 +175,16 @@ export async function proxyRequest({
   }
 
   recordRequest(model.id);
-  log.info({
+  emitInfoLog({
     requestId,
     modelId,
+    event: "proxy.request_started",
     routeKey,
     backendRouteKey,
     targetUrl,
-    stream: isStream
-  }, "proxy request started");
+    stream: isStream,
+    message: "proxy request started"
+  });
 
   const headers = {
     ...sanitizeIncomingHeaders(req.headers),
@@ -273,14 +289,16 @@ export async function proxyRequest({
           writeSseDoneFrame(reply.raw);
           reply.raw.end();
         }
-        log.info({
+        emitInfoLog({
           requestId,
           modelId,
+          event: "proxy.stream_completed",
           routeKey,
           backendRouteKey,
           attempt,
-          latencyMs: Date.now() - startAt
-        }, "stream request completed");
+          latencyMs: Date.now() - startAt,
+          message: "stream request completed"
+        });
         return;
       }
 
@@ -388,15 +406,17 @@ export async function proxyRequest({
   if (payload?.usage) {
     recordUsage(model.id, payload.usage);
   }
-  log.info({
+  emitInfoLog({
     requestId,
     modelId,
+    event: "proxy.request_completed",
     routeKey,
     backendRouteKey,
     attempt: fetchResult.attempt,
     status: upstreamResponse.status,
-    latencyMs: Date.now() - startAt
-  }, "proxy request completed");
+    latencyMs: Date.now() - startAt,
+    message: "proxy request completed"
+  });
   reply.code(upstreamResponse.status).send(payload);
 }
 

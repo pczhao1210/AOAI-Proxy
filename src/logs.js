@@ -157,7 +157,10 @@ export function createPinoCaptureStream() {
 
   return new Writable({
     write(chunk, encoding, callback) {
-      const text = typeof chunk === "string" ? chunk : chunk.toString(encoding || "utf8");
+      const resolvedEncoding = typeof encoding === "string" && encoding && encoding !== "buffer"
+        ? encoding
+        : "utf8";
+      const text = typeof chunk === "string" ? chunk : chunk.toString(resolvedEncoding);
       process.stdout.write(text);
       buffered += text;
 
