@@ -906,6 +906,7 @@ ${hostPort} {
         `[${entry.level || "info"}] ${entry.event || ""}`.trim(),
         entry.message || "",
         entry.requestId ? `${t("logs.meta.requestId")}: ${entry.requestId}` : "",
+        entry.azureRequestId ? `${t("logs.meta.azureRequestId")}: ${entry.azureRequestId}` : "",
         entry.modelId ? `${t("logs.meta.model")}: ${entry.modelId}` : "",
         entry.errorCode ? `${t("logs.meta.errorCode")}: ${entry.errorCode}` : "",
         entry.status != null ? `${t("logs.meta.status")}: ${entry.status}` : ""
@@ -996,6 +997,7 @@ ${hostPort} {
         const meta = document.createElement("div");
         meta.className = "log-meta";
         if (entry.requestId) meta.appendChild(renderLogMetaItem(t("logs.meta.requestId"), entry.requestId));
+        if (entry.azureRequestId) meta.appendChild(renderLogMetaItem(t("logs.meta.azureRequestId"), entry.azureRequestId));
         if (entry.modelId) meta.appendChild(renderLogMetaItem(t("logs.meta.model"), entry.modelId));
         if (entry.routeKey || entry.backendRouteKey) {
           const routeText = entry.backendRouteKey && entry.backendRouteKey !== entry.routeKey

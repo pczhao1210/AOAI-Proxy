@@ -312,21 +312,28 @@ export async function proxyRequest({
       }
 
       recordError(model.id);
-      const errBody = buildErrorBody({ classified, requestId, detail: classified.detail });
+      const providerError = streamResult.providerError;
+      const errBody = buildErrorBody({ classified, requestId, detail: providerError?.message || classified.detail });
       if (!streamingStarted) {
         reply.code(classified.status || 502).send(errBody);
         return;
       }
-      writeSseError(reply.raw, errBody);
+      if (!streamResult.providerErrorForwarded) {
+        writeSseError(reply.raw, errBody);
+      }
       reply.raw.end();
       log.error({
         requestId,
+        azureRequestId: providerError?.azureRequestId || "",
         modelId,
+        event: providerError ? "proxy.stream_provider_error" : "proxy.stream_failed",
         routeKey,
         backendRouteKey,
-        errorCode: classified.code,
+        errorCode: providerError?.code || classified.code,
+        providerErrorType: providerError?.type || "",
+        providerMessage: providerError?.message || classified.detail || "",
         latencyMs: Date.now() - startAt
-      }, "stream request failed");
+      }, providerError ? "stream provider error" : "stream request failed");
       return;
     }
     recordError(model.id);

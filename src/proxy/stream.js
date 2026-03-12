@@ -1,6 +1,29 @@
 import { recordUsage } from "../stats.js";
 import { markErrorWithCode } from "./reliability.js";
 
+function extractAzureRequestId(value) {
+  if (typeof value !== "string") return "";
+  const match = value.match(/request ID\s+([0-9a-fA-F-]{16,})/i);
+  return match ? match[1] : "";
+}
+
+function buildProviderStreamError(evt) {
+  const error = evt?.error && typeof evt.error === "object" ? evt.error : {};
+  const message = typeof error.message === "string" ? error.message : "upstream provider stream error";
+  const azureRequestId =
+    (typeof error.request_id === "string" && error.request_id)
+    || (typeof evt?.request_id === "string" && evt.request_id)
+    || extractAzureRequestId(message);
+
+  return {
+    type: typeof error.type === "string" ? error.type : typeof evt?.type === "string" ? evt.type : "error",
+    code: typeof error.code === "string" ? error.code : "UPSTREAM_PROVIDER_STREAM_ERROR",
+    message,
+    param: error?.param ?? null,
+    azureRequestId
+  };
+}
+
 function writeSse(replyRaw, dataObj) {
   replyRaw.write(`data: ${JSON.stringify(dataObj)}\n\n`);
 }
@@ -64,6 +87,7 @@ export async function streamPassthrough({
   let idleTimedOut = false;
   let idleTimer = null;
   const usageState = { buffer: "", recorded: false };
+  let providerError = null;
   const clearIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
@@ -95,6 +119,24 @@ export async function streamPassthrough({
       const chunk = Buffer.from(value);
       const text = chunk.toString("utf8");
       extractUsageFromSseChunk(text, modelId, usageState);
+      usageState.buffer += text;
+      let idx;
+      while ((idx = usageState.buffer.indexOf("\n")) >= 0) {
+        const rawLine = usageState.buffer.slice(0, idx);
+        usageState.buffer = usageState.buffer.slice(idx + 1);
+        const line = rawLine.trim();
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          const evt = JSON.parse(payload);
+          if (evt?.type === "error" && evt?.error) {
+            providerError = buildProviderStreamError(evt);
+          }
+        } catch {
+          // ignore parse errors for passthrough events
+        }
+      }
       reply.raw.write(chunk);
     }
   } catch (error) {
@@ -116,6 +158,15 @@ export async function streamPassthrough({
       ok: false,
       beforeFirstChunk: !firstChunkSeen,
       error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
+    };
+  }
+  if (providerError) {
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: markErrorWithCode(new Error(providerError.message), "UPSTREAM_PROVIDER_STREAM_ERROR"),
+      providerErrorForwarded: true,
+      providerError
     };
   }
   return { ok: true, firstChunkSeen };
