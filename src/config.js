@@ -32,19 +32,19 @@ const DEFAULTS = {
       format: "jpeg"
     },
     upstream: {
-      connectTimeoutMs: 5000,
-      requestTimeoutMs: 600000,
-      firstByteTimeoutMs: 90000,
-      idleTimeoutMs: 600000,
-      maxRetries: 1,
+      connectTimeoutMs: 10000,
+      requestTimeoutMs: 900000,
+      firstByteTimeoutMs: 300000,
+      idleTimeoutMs: 900000,
+      maxRetries: 0,
       retryBaseMs: 800,
       retryMaxMs: 8000,
       retryStatuses: [408, 409, 425, 429, 500, 502, 503, 504],
       pool: {
-        connections: 32,
-        keepAliveTimeoutMs: 30000,
-        keepAliveMaxTimeoutMs: 120000,
-        headersTimeoutMs: 60000,
+        connections: 64,
+        keepAliveTimeoutMs: 60000,
+        keepAliveMaxTimeoutMs: 300000,
+        headersTimeoutMs: 300000,
         bodyTimeoutMs: 0,
         pipelining: 1
       }

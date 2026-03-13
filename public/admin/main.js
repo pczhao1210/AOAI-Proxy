@@ -901,10 +901,27 @@ ${hostPort} {
       return localized === key ? eventName : localized;
     }
 
+    function getLogSourceLabel(source) {
+      if (!source) return "";
+      const key = `logs.source.${source}`;
+      const localized = t(key);
+      return localized === key ? source : localized;
+    }
+
+    function getLogMessage(entry) {
+      const message = entry.message || "";
+      const failureReason = entry.failureReason || "";
+      if (message && failureReason && message !== failureReason && !message.includes(failureReason)) {
+        return `${message}: ${failureReason}`;
+      }
+      return message || failureReason || entry.errorCode || entry.event || "-";
+    }
+
     async function copyLogSummary(entry) {
       const summary = [
         `[${entry.level || "info"}] ${entry.event || ""}`.trim(),
-        entry.message || "",
+        getLogMessage(entry),
+        entry.source ? `${t("logs.meta.source")}: ${getLogSourceLabel(entry.source)}` : "",
         entry.requestId ? `${t("logs.meta.requestId")}: ${entry.requestId}` : "",
         entry.azureRequestId ? `${t("logs.meta.azureRequestId")}: ${entry.azureRequestId}` : "",
         entry.modelId ? `${t("logs.meta.model")}: ${entry.modelId}` : "",
@@ -957,6 +974,13 @@ ${hostPort} {
           badges.appendChild(eventBadge);
         }
 
+        if (entry.source) {
+          const sourceBadge = document.createElement("span");
+          sourceBadge.className = "badge";
+          sourceBadge.textContent = getLogSourceLabel(entry.source);
+          badges.appendChild(sourceBadge);
+        }
+
         if (entry.status != null) {
           const statusBadge = document.createElement("span");
           statusBadge.className = "badge";
@@ -991,11 +1015,12 @@ ${hostPort} {
 
         const message = document.createElement("div");
         message.className = "log-message";
-        message.textContent = entry.message || entry.errorCode || entry.event || "-";
+  message.textContent = getLogMessage(entry);
         article.appendChild(message);
 
         const meta = document.createElement("div");
         meta.className = "log-meta";
+  if (entry.source) meta.appendChild(renderLogMetaItem(t("logs.meta.source"), getLogSourceLabel(entry.source)));
         if (entry.requestId) meta.appendChild(renderLogMetaItem(t("logs.meta.requestId"), entry.requestId));
         if (entry.azureRequestId) meta.appendChild(renderLogMetaItem(t("logs.meta.azureRequestId"), entry.azureRequestId));
         if (entry.modelId) meta.appendChild(renderLogMetaItem(t("logs.meta.model"), entry.modelId));

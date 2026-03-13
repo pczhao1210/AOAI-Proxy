@@ -115,8 +115,10 @@ function buildEntry(payload) {
     modelId,
     routeKey,
     backendRouteKey,
+    source,
     status,
     errorCode,
+    failureReason,
     latencyMs,
     ...rest
   } = payload || {};
@@ -132,8 +134,10 @@ function buildEntry(payload) {
     modelId: typeof modelId === "string" ? modelId : "",
     routeKey: typeof routeKey === "string" ? routeKey : "",
     backendRouteKey: typeof backendRouteKey === "string" ? backendRouteKey : "",
+    source: typeof source === "string" ? source : "",
     status: Number.isFinite(status) ? status : null,
     errorCode: typeof errorCode === "string" ? errorCode : "",
+    failureReason: truncateString(typeof failureReason === "string" ? failureReason : failureReason == null ? "" : String(failureReason)),
     latencyMs: Number.isFinite(latencyMs) ? latencyMs : null,
     fields: sanitizeValue(rest)
   };

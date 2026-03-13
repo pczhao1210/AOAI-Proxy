@@ -21,6 +21,7 @@ const app = fastify({
     level: process.env.LOG_LEVEL || "warn",
     stream: createPinoCaptureStream()
   },
+  disableRequestLogging: true,
   bodyLimit
 });
 
@@ -122,6 +123,7 @@ async function primeAuth(config) {
 function emitStartupLog(stage, fields = {}) {
   const payload = {
     ts: new Date().toISOString(),
+    source: "proxy",
     event: `startup.${stage}`,
     ...fields
   };
@@ -136,8 +138,10 @@ function emitStartupLog(stage, fields = {}) {
 function emitStartupError(stage, error, fields = {}) {
   const payload = {
     ts: new Date().toISOString(),
+    source: "proxy",
     event: `startup.${stage}`,
     message: error?.message || String(error),
+    failureReason: error?.message || String(error),
     ...fields
   };
   appendStructuredLog("error", payload);
@@ -146,6 +150,19 @@ function emitStartupError(stage, error, fields = {}) {
   } catch {
     console.error(`[${payload.ts}] startup.${stage}: ${payload.message}`);
   }
+}
+
+function logAdminApiError(event, error, fields = {}) {
+  const { status = 400, ...rest } = fields;
+  const failureReason = error?.message || String(error);
+  app.log.error({
+    source: "admin",
+    event,
+    status,
+    failureReason,
+    err: error,
+    ...rest
+  }, failureReason);
 }
 
 app.addHook("preHandler", async (req, reply) => {
@@ -169,6 +186,20 @@ app.addHook("preHandler", async (req, reply) => {
   if (!verifyApiKey(config, key)) {
     return reply.code(401).send({ error: "Unauthorized" });
   }
+});
+
+app.addHook("onResponse", async (req, reply) => {
+  const status = reply.statusCode;
+  const level = status >= 400 ? "error" : "info";
+  req.log[level]({
+    source: "http",
+    event: "http.request_completed",
+    requestId: req.id,
+    method: req.method,
+    url: req.raw?.url || req.url,
+    status,
+    latencyMs: Math.round(reply.elapsedTime || 0)
+  }, status >= 400 ? "request completed with error" : "request completed");
 });
 
 app.get("/healthz", async () => ({ status: "ok" }));
@@ -206,9 +237,10 @@ app.put("/admin/api/config", async (req, reply) => {
     void primeAuth(saved);
     writeCaddyfile(saved);
     await reloadCaddy(saved);
-    app.log.info({ event: "admin.config_saved" }, "admin config saved");
+    app.log.info({ source: "admin", event: "admin.config_saved" }, "admin config saved");
     reply.send({ ok: true, config: saved });
   } catch (error) {
+    logAdminApiError("admin.config_save_failed", error, { route: "/admin/api/config" });
     reply.code(400).send({ error: error.message });
   }
 });
@@ -220,9 +252,10 @@ app.post("/admin/api/reload", async (req, reply) => {
     void primeAuth(config);
     writeCaddyfile(config);
     await reloadCaddy(config);
-    app.log.info({ event: "admin.config_reloaded" }, "admin config reloaded");
+    app.log.info({ source: "admin", event: "admin.config_reloaded" }, "admin config reloaded");
     reply.send({ ok: true, config });
   } catch (error) {
+    logAdminApiError("admin.config_reload_failed", error, { route: "/admin/api/reload" });
     reply.code(400).send({ error: error.message });
   }
 });
@@ -233,6 +266,10 @@ app.post("/admin/api/verify-aad", async (req, reply) => {
     const result = await verifyUpstreamAuth(config.auth.scope);
     reply.send({ ok: true, mode: result.mode, preview: result.preview });
   } catch (error) {
+    logAdminApiError("admin.verify_aad_failed", error, {
+      route: "/admin/api/verify-aad",
+      scope: config.auth.scope
+    });
     reply.code(400).send({ ok: false, error: error.message });
   }
 });
@@ -255,7 +292,7 @@ app.get("/admin/api/caddy/status", async () => {
 
 app.post("/admin/api/restart", async (req, reply) => {
   setCaddyStatus({ state: "restart-requested", message: "restart requested", lastError: null });
-  app.log.warn({ event: "admin.restart_requested" }, "admin restart requested");
+  app.log.warn({ source: "admin", event: "admin.restart_requested" }, "admin restart requested");
   reply.send({ ok: true });
   setTimeout(() => {
     try {
@@ -312,7 +349,7 @@ async function start() {
     host,
     port
   });
-  app.log.info({ configPath: getConfigPath() }, "config loaded");
+  app.log.info({ source: "proxy", configPath: getConfigPath() }, "config loaded");
 }
 
 start().catch((error) => {

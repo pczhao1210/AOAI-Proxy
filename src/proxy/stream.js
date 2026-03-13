@@ -87,6 +87,7 @@ export async function streamPassthrough({
   let idleTimedOut = false;
   let idleTimer = null;
   const usageState = { buffer: "", recorded: false };
+  let providerBuffer = "";
   let providerError = null;
   const clearIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
@@ -119,11 +120,11 @@ export async function streamPassthrough({
       const chunk = Buffer.from(value);
       const text = chunk.toString("utf8");
       extractUsageFromSseChunk(text, modelId, usageState);
-      usageState.buffer += text;
+      providerBuffer += text;
       let idx;
-      while ((idx = usageState.buffer.indexOf("\n")) >= 0) {
-        const rawLine = usageState.buffer.slice(0, idx);
-        usageState.buffer = usageState.buffer.slice(idx + 1);
+      while ((idx = providerBuffer.indexOf("\n")) >= 0) {
+        const rawLine = providerBuffer.slice(0, idx);
+        providerBuffer = providerBuffer.slice(idx + 1);
         const line = rawLine.trim();
         if (!line.startsWith("data:")) continue;
         const payload = line.slice(5).trim();

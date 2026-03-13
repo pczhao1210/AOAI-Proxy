@@ -42,16 +42,60 @@ import {
 } from "./proxy/stream.js";
 
 function emitInfoLog(payload) {
-  appendStructuredLog("info", payload);
+  const normalizedPayload = {
+    source: "proxy",
+    ...payload
+  };
+  appendStructuredLog("info", normalizedPayload);
   try {
     console.log(JSON.stringify({
       ts: new Date().toISOString(),
       level: "info",
-      ...payload
+      ...normalizedPayload
     }));
   } catch {
-    console.log(payload.message || payload.event || "info");
+    console.log(normalizedPayload.message || normalizedPayload.event || "info");
   }
+}
+
+function stringifyLogValue(value) {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function extractFailureDetails(detail) {
+  const detailText = stringifyLogValue(detail).trim();
+  let parsed = null;
+
+  if (detail && typeof detail === "object") {
+    parsed = detail;
+  } else if (detailText) {
+    try {
+      parsed = JSON.parse(detailText);
+    } catch {
+      parsed = null;
+    }
+  }
+
+  const upstreamError = parsed && typeof parsed === "object"
+    ? (parsed.error && typeof parsed.error === "object" ? parsed.error : parsed)
+    : null;
+  const innerMessage = upstreamError?.innererror?.message || upstreamError?.inner_error?.message || "";
+
+  return {
+    failureReason: upstreamError?.message || detailText || "",
+    ...(detailText ? { detail: detailText } : {}),
+    ...(upstreamError ? { upstreamError } : {}),
+    ...(typeof upstreamError?.code === "string" && upstreamError.code ? { upstreamCode: upstreamError.code } : {}),
+    ...(typeof upstreamError?.type === "string" && upstreamError.type ? { upstreamType: upstreamError.type } : {}),
+    ...(upstreamError?.param != null ? { upstreamParam: String(upstreamError.param) } : {}),
+    ...(innerMessage ? { upstreamInnerMessage: innerMessage } : {})
+  };
 }
 
 export async function proxyRequest({
@@ -68,25 +112,60 @@ export async function proxyRequest({
   const body = sanitizeRequestBody(req.body || {}, { preserveNull: routeKey === "responses" });
   const modelId = body.model || config.models[0]?.id;
   if (!modelId) {
-    log.warn({ requestId, routeKey, event: "proxy.request_rejected", errorCode: "MODEL_REQUIRED" }, "request rejected: model is required");
+    log.error({
+      source: "proxy",
+      requestId,
+      routeKey,
+      status: 400,
+      event: "proxy.request_rejected",
+      errorCode: "MODEL_REQUIRED",
+      failureReason: "model is required"
+    }, "request rejected: model is required");
     reply.code(400).send({ error: "model is required" });
     return;
   }
   const model = findModel(config, modelId);
   if (!model) {
-    log.warn({ requestId, modelId, routeKey, event: "proxy.request_rejected", errorCode: "MODEL_NOT_FOUND" }, "request rejected: model not found");
+    log.error({
+      source: "proxy",
+      requestId,
+      modelId,
+      routeKey,
+      status: 404,
+      event: "proxy.request_rejected",
+      errorCode: "MODEL_NOT_FOUND",
+      failureReason: `model ${modelId} not found`
+    }, "request rejected: model not found");
     reply.code(404).send({ error: `model ${modelId} not found` });
     return;
   }
   const upstream = findUpstream(config, model.upstream);
   if (!upstream) {
-    log.error({ requestId, modelId, routeKey, event: "proxy.upstream_missing", errorCode: "UPSTREAM_NOT_FOUND" }, "configured upstream not found");
+    log.error({
+      source: "proxy",
+      requestId,
+      modelId,
+      routeKey,
+      status: 500,
+      event: "proxy.upstream_missing",
+      errorCode: "UPSTREAM_NOT_FOUND",
+      failureReason: `upstream ${model.upstream} not found`
+    }, "configured upstream not found");
     reply.code(500).send({ error: `upstream ${model.upstream} not found` });
     return;
   }
 
   if (isPlaceholderBaseUrl(upstream.baseUrl)) {
-    log.error({ requestId, modelId, routeKey, event: "proxy.upstream_invalid", errorCode: "INVALID_UPSTREAM_CONFIG" }, "invalid upstream baseUrl placeholder");
+    log.error({
+      source: "proxy",
+      requestId,
+      modelId,
+      routeKey,
+      status: 500,
+      event: "proxy.upstream_invalid",
+      errorCode: "INVALID_UPSTREAM_CONFIG",
+      failureReason: "upstream baseUrl placeholder is still present"
+    }, "invalid upstream baseUrl placeholder");
     reply.code(500).send({
       error: "InvalidUpstreamConfig",
       message:
@@ -108,7 +187,17 @@ export async function proxyRequest({
     upstreamAuthHeaders = await getUpstreamAuthHeaders(config.auth.scope);
   } catch (error) {
     recordError(model.id);
-    log.error({ requestId, modelId, routeKey, error: error?.message }, "failed to prepare upstream authentication");
+    log.error({
+      source: "proxy",
+      requestId,
+      modelId,
+      routeKey,
+      status: 500,
+      event: "proxy.auth_prepare_failed",
+      errorCode: "UPSTREAM_AUTH_PREPARE_FAILED",
+      failureReason: error?.message || "upstream authentication failed",
+      error: error?.message
+    }, "failed to prepare upstream authentication");
     const classified = { code: "UPSTREAM_AUTH_PREPARE_FAILED", retryable: false, status: 500 };
     reply.code(500).send(buildErrorBody({ classified, requestId, detail: error?.message || "upstream authentication failed" }));
     return;
@@ -143,14 +232,17 @@ export async function proxyRequest({
       modelId: deployment || modelId
     });
     if (unsupportedRequest) {
-      log.warn({
+      log.error({
+        source: "proxy",
         requestId,
         modelId,
         routeKey,
         backendRouteKey,
+        status: 400,
         event: "proxy.request_rejected",
         errorCode: "UNSUPPORTED_PARAMETER",
-        param: unsupportedRequest.param
+        param: unsupportedRequest.param,
+        failureReason: unsupportedRequest.message
       }, unsupportedRequest.message);
       reply.code(400).send({
         error: "UnsupportedParameter",
@@ -197,6 +289,15 @@ export async function proxyRequest({
   if (isStream) {
     const maxAttempts = Math.max(1, policy.maxRetries + 1);
     let streamingStarted = false;
+    const startStreamingResponse = () => {
+      if (streamingStarted) return;
+      setSseResponseHeaders(reply.raw);
+      reply.hijack();
+      streamingStarted = true;
+    };
+
+    startStreamingResponse();
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       let upstreamResponse;
       try {
@@ -208,20 +309,29 @@ export async function proxyRequest({
         });
       } catch (error) {
         const classified = classifyFetchError(error);
-        if (attempt < maxAttempts && classified.retryable && !streamingStarted) {
+        if (attempt < maxAttempts && classified.retryable) {
           const backoffMs = computeBackoffMs(policy, attempt);
-          log.warn({ requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream fetch retry");
+          log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream fetch retry");
           await sleep(backoffMs);
           continue;
         }
         recordError(model.id);
         const errBody = buildErrorBody({ classified, requestId, detail: classified.detail });
-        if (streamingStarted) {
-          writeSseError(reply.raw, errBody);
-          reply.raw.end();
-          return;
-        }
-        reply.code(classified.status || 502).send(errBody);
+        log.error({
+          source: "upstream",
+          requestId,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          attempt,
+          status: classified.status || 502,
+          event: "proxy.stream_fetch_failed",
+          errorCode: classified.code,
+          latencyMs: Date.now() - startAt,
+          ...extractFailureDetails(classified.detail)
+        }, "stream fetch failed");
+        writeSseError(reply.raw, errBody);
+        reply.raw.end();
         return;
       }
 
@@ -229,9 +339,9 @@ export async function proxyRequest({
         const detail = await upstreamResponse.text().catch(() => "");
         const classified = classifyHttpStatus(upstreamResponse.status);
         const retryableStatus = policy.retryStatuses.has(upstreamResponse.status) || classified.retryable;
-        if (attempt < maxAttempts && retryableStatus && !streamingStarted) {
+        if (attempt < maxAttempts && retryableStatus) {
           const backoffMs = computeBackoffMs(policy, attempt);
-          log.warn({ requestId, modelId, routeKey, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "stream upstream retry on status");
+          log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "stream upstream retry on status");
           await sleep(backoffMs);
           continue;
         }
@@ -242,12 +352,21 @@ export async function proxyRequest({
           detail,
           upstreamStatus: upstreamResponse.status
         });
-        if (streamingStarted) {
-          writeSseError(reply.raw, errBody);
-          reply.raw.end();
-          return;
-        }
-        reply.code(upstreamResponse.status).send(errBody);
+        log.error({
+          source: "upstream",
+          requestId,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          attempt,
+          status: upstreamResponse.status,
+          event: "proxy.stream_upstream_failed",
+          errorCode: classified.code,
+          latencyMs: Date.now() - startAt,
+          ...extractFailureDetails(detail)
+        }, "stream upstream request failed");
+        writeSseError(reply.raw, errBody);
+        reply.raw.end();
         return;
       }
 
@@ -258,10 +377,7 @@ export async function proxyRequest({
           modelId: model.id,
           policy,
           onFirstChunk: () => {
-            if (streamingStarted) return;
-            reply.raw.writeHead(upstreamResponse.status, Object.fromEntries(upstreamResponse.headers));
-            reply.hijack();
-            streamingStarted = true;
+            startStreamingResponse();
           }
         })
         : await streamShim({
@@ -273,22 +389,12 @@ export async function proxyRequest({
           model,
           policy,
           onFirstChunk: () => {
-            if (streamingStarted) return;
-            setSseResponseHeaders(reply.raw);
-            reply.hijack();
-            streamingStarted = true;
+            startStreamingResponse();
           }
         });
 
       if (streamResult.ok) {
-        if (streamingStarted) {
-          reply.raw.end();
-        } else {
-          setSseResponseHeaders(reply.raw);
-          reply.hijack();
-          writeSseDoneFrame(reply.raw);
-          reply.raw.end();
-        }
+        reply.raw.end();
         emitInfoLog({
           requestId,
           modelId,
@@ -306,7 +412,7 @@ export async function proxyRequest({
       const canRetry = streamResult.beforeFirstChunk && classified.retryable && attempt < maxAttempts;
       if (canRetry) {
         const backoffMs = computeBackoffMs(policy, attempt);
-        log.warn({ requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream retry before first chunk");
+        log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream retry before first chunk");
         await sleep(backoffMs);
         continue;
       }
@@ -314,15 +420,12 @@ export async function proxyRequest({
       recordError(model.id);
       const providerError = streamResult.providerError;
       const errBody = buildErrorBody({ classified, requestId, detail: providerError?.message || classified.detail });
-      if (!streamingStarted) {
-        reply.code(classified.status || 502).send(errBody);
-        return;
-      }
       if (!streamResult.providerErrorForwarded) {
         writeSseError(reply.raw, errBody);
       }
       reply.raw.end();
       log.error({
+        source: providerError ? "provider" : "upstream",
         requestId,
         azureRequestId: providerError?.azureRequestId || "",
         modelId,
@@ -330,6 +433,7 @@ export async function proxyRequest({
         routeKey,
         backendRouteKey,
         errorCode: providerError?.code || classified.code,
+        failureReason: providerError?.message || classified.detail || "stream request failed",
         providerErrorType: providerError?.type || "",
         providerMessage: providerError?.message || classified.detail || "",
         latencyMs: Date.now() - startAt
@@ -347,7 +451,7 @@ export async function proxyRequest({
     headers,
     bodyText,
     policy,
-    logMeta: { requestId, modelId, routeKey, backendRouteKey },
+    logMeta: { source: "upstream", requestId, modelId, routeKey, backendRouteKey },
     log
   });
   if (!fetchResult.ok) {
@@ -360,6 +464,7 @@ export async function proxyRequest({
       upstreamStatus: fetchResult.upstreamStatus
     });
     log.error({
+      source: "upstream",
       requestId,
       modelId,
       routeKey,
@@ -367,7 +472,8 @@ export async function proxyRequest({
       attempt: fetchResult.attempt,
       status,
       errorCode: fetchResult.classified.code,
-      latencyMs: Date.now() - startAt
+      latencyMs: Date.now() - startAt,
+      ...extractFailureDetails(fetchResult.detail)
     }, "non-stream upstream request failed");
     reply.code(status).send(errBody);
     return;
@@ -383,13 +489,15 @@ export async function proxyRequest({
     const status = classified.status || 504;
     const errBody = buildErrorBody({ classified, requestId, detail: classified.detail });
     log.error({
+      source: "upstream",
       requestId,
       modelId,
       routeKey,
       backendRouteKey,
       attempt: fetchResult.attempt,
       errorCode: classified.code,
-      latencyMs: Date.now() - startAt
+      latencyMs: Date.now() - startAt,
+      ...extractFailureDetails(classified.detail)
     }, "non-stream response parse failed");
     reply.code(status).send(errBody);
     return;
