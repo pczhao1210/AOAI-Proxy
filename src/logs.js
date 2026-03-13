@@ -120,6 +120,9 @@ function buildEntry(payload) {
     errorCode,
     failureReason,
     latencyMs,
+    clientIp,
+    userAgent,
+    forwardedFor,
     ...rest
   } = payload || {};
 
@@ -139,6 +142,9 @@ function buildEntry(payload) {
     errorCode: typeof errorCode === "string" ? errorCode : "",
     failureReason: truncateString(typeof failureReason === "string" ? failureReason : failureReason == null ? "" : String(failureReason)),
     latencyMs: Number.isFinite(latencyMs) ? latencyMs : null,
+    clientIp: typeof clientIp === "string" ? truncateString(clientIp, 512) : "",
+    userAgent: typeof userAgent === "string" ? truncateString(userAgent, 1024) : "",
+    forwardedFor: typeof forwardedFor === "string" ? truncateString(forwardedFor, 1024) : "",
     fields: sanitizeValue(rest)
   };
 }

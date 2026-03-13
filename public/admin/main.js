@@ -885,7 +885,9 @@ ${hostPort} {
     function formatLogTimestamp(value) {
       const parsed = Date.parse(value || "");
       if (Number.isNaN(parsed)) return value || "";
-      return new Date(parsed).toLocaleString();
+      const date = new Date(parsed);
+      const pad = (part, width = 2) => String(part).padStart(width, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
     }
 
     function renderLogMetaItem(label, value) {
@@ -917,10 +919,20 @@ ${hostPort} {
       return message || failureReason || entry.errorCode || entry.event || "-";
     }
 
+    function buildLogDetails(entry) {
+      const details = { ...(entry.fields || {}) };
+      if (entry.clientIp) details.clientIp = entry.clientIp;
+      if (entry.forwardedFor) details.forwardedFor = entry.forwardedFor;
+      if (entry.userAgent) details.userAgent = entry.userAgent;
+      return details;
+    }
+
     async function copyLogSummary(entry) {
+      const timestamp = formatLogTimestamp(entry.ts);
       const summary = [
         `[${entry.level || "info"}] ${entry.event || ""}`.trim(),
         getLogMessage(entry),
+        timestamp ? `${t("logs.meta.time")}: ${timestamp}` : "",
         entry.source ? `${t("logs.meta.source")}: ${getLogSourceLabel(entry.source)}` : "",
         entry.requestId ? `${t("logs.meta.requestId")}: ${entry.requestId}` : "",
         entry.azureRequestId ? `${t("logs.meta.azureRequestId")}: ${entry.azureRequestId}` : "",
@@ -998,6 +1010,7 @@ ${hostPort} {
         const ts = document.createElement("span");
         ts.className = "muted";
         ts.textContent = formatLogTimestamp(entry.ts);
+        ts.title = entry.ts || "";
 
         header.appendChild(badges);
         header.appendChild(ts);
@@ -1020,7 +1033,8 @@ ${hostPort} {
 
         const meta = document.createElement("div");
         meta.className = "log-meta";
-  if (entry.source) meta.appendChild(renderLogMetaItem(t("logs.meta.source"), getLogSourceLabel(entry.source)));
+        if (entry.ts) meta.appendChild(renderLogMetaItem(t("logs.meta.time"), formatLogTimestamp(entry.ts)));
+        if (entry.source) meta.appendChild(renderLogMetaItem(t("logs.meta.source"), getLogSourceLabel(entry.source)));
         if (entry.requestId) meta.appendChild(renderLogMetaItem(t("logs.meta.requestId"), entry.requestId));
         if (entry.azureRequestId) meta.appendChild(renderLogMetaItem(t("logs.meta.azureRequestId"), entry.azureRequestId));
         if (entry.modelId) meta.appendChild(renderLogMetaItem(t("logs.meta.model"), entry.modelId));
@@ -1055,14 +1069,15 @@ ${hostPort} {
         actions.appendChild(copyBtn);
         article.appendChild(actions);
 
-        if (entry.fields && Object.keys(entry.fields).length > 0) {
+        const detailPayload = buildLogDetails(entry);
+        if (Object.keys(detailPayload).length > 0) {
           const details = document.createElement("details");
           details.className = "log-details";
           details.open = entry.level === "error" || entry.level === "fatal";
           const summary = document.createElement("summary");
           summary.textContent = t("logs.details");
           const pre = document.createElement("pre");
-          pre.textContent = JSON.stringify(entry.fields, null, 2);
+          pre.textContent = JSON.stringify(detailPayload, null, 2);
           details.appendChild(summary);
           details.appendChild(pre);
           article.appendChild(details);

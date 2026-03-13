@@ -98,6 +98,17 @@ function extractFailureDetails(detail) {
   };
 }
 
+function getRequestNetworkContext(req) {
+  const forwardedFor = req.headers["x-forwarded-for"];
+  const userAgent = req.headers["user-agent"];
+  const remoteAddress = req.ip || req.socket?.remoteAddress || req.raw?.socket?.remoteAddress || "";
+  return {
+    clientIp: typeof remoteAddress === "string" ? remoteAddress : "",
+    userAgent: typeof userAgent === "string" ? userAgent : "",
+    forwardedFor: typeof forwardedFor === "string" ? forwardedFor : ""
+  };
+}
+
 export async function proxyRequest({
   config,
   routeKey,
@@ -108,6 +119,7 @@ export async function proxyRequest({
   const requestId = typeof req.headers["x-request-id"] === "string" && req.headers["x-request-id"]
     ? req.headers["x-request-id"]
     : req.id;
+  const requestNetworkContext = getRequestNetworkContext(req);
   const log = req.log;
   const body = sanitizeRequestBody(req.body || {}, { preserveNull: routeKey === "responses" });
   const modelId = body.model || config.models[0]?.id;
@@ -115,6 +127,7 @@ export async function proxyRequest({
     log.error({
       source: "proxy",
       requestId,
+      ...requestNetworkContext,
       routeKey,
       status: 400,
       event: "proxy.request_rejected",
@@ -129,6 +142,7 @@ export async function proxyRequest({
     log.error({
       source: "proxy",
       requestId,
+      ...requestNetworkContext,
       modelId,
       routeKey,
       status: 404,
@@ -144,6 +158,7 @@ export async function proxyRequest({
     log.error({
       source: "proxy",
       requestId,
+      ...requestNetworkContext,
       modelId,
       routeKey,
       status: 500,
@@ -159,6 +174,7 @@ export async function proxyRequest({
     log.error({
       source: "proxy",
       requestId,
+      ...requestNetworkContext,
       modelId,
       routeKey,
       status: 500,
@@ -190,6 +206,7 @@ export async function proxyRequest({
     log.error({
       source: "proxy",
       requestId,
+      ...requestNetworkContext,
       modelId,
       routeKey,
       status: 500,
@@ -235,6 +252,7 @@ export async function proxyRequest({
       log.error({
         source: "proxy",
         requestId,
+        ...requestNetworkContext,
         modelId,
         routeKey,
         backendRouteKey,
@@ -320,6 +338,7 @@ export async function proxyRequest({
         log.error({
           source: "upstream",
           requestId,
+          ...requestNetworkContext,
           modelId,
           routeKey,
           backendRouteKey,
@@ -355,6 +374,7 @@ export async function proxyRequest({
         log.error({
           source: "upstream",
           requestId,
+          ...requestNetworkContext,
           modelId,
           routeKey,
           backendRouteKey,
@@ -427,6 +447,7 @@ export async function proxyRequest({
       log.error({
         source: providerError ? "provider" : "upstream",
         requestId,
+        ...requestNetworkContext,
         azureRequestId: providerError?.azureRequestId || "",
         modelId,
         event: providerError ? "proxy.stream_provider_error" : "proxy.stream_failed",
@@ -466,6 +487,7 @@ export async function proxyRequest({
     log.error({
       source: "upstream",
       requestId,
+      ...requestNetworkContext,
       modelId,
       routeKey,
       backendRouteKey,
@@ -491,6 +513,7 @@ export async function proxyRequest({
     log.error({
       source: "upstream",
       requestId,
+      ...requestNetworkContext,
       modelId,
       routeKey,
       backendRouteKey,

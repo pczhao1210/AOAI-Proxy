@@ -94,6 +94,17 @@ function verifyAdminBasicAuth(config, headers) {
   return secureEqual(parsed.username, username) && secureEqual(parsed.password, password);
 }
 
+function getRequestNetworkContext(req) {
+  const forwardedFor = req.headers["x-forwarded-for"];
+  const userAgent = req.headers["user-agent"];
+  const remoteAddress = req.ip || req.socket?.remoteAddress || req.raw?.socket?.remoteAddress || "";
+  return {
+    clientIp: typeof remoteAddress === "string" ? remoteAddress : "",
+    userAgent: typeof userAgent === "string" ? userAgent : "",
+    forwardedFor: typeof forwardedFor === "string" ? forwardedFor : ""
+  };
+}
+
 function buildModelList(config) {
   const created = Math.floor(Date.now() / 1000);
   return {
@@ -191,6 +202,7 @@ app.addHook("preHandler", async (req, reply) => {
 app.addHook("onResponse", async (req, reply) => {
   const status = reply.statusCode;
   const level = status >= 400 ? "error" : "info";
+  const networkContext = getRequestNetworkContext(req);
   req.log[level]({
     source: "http",
     event: "http.request_completed",
@@ -198,7 +210,8 @@ app.addHook("onResponse", async (req, reply) => {
     method: req.method,
     url: req.raw?.url || req.url,
     status,
-    latencyMs: Math.round(reply.elapsedTime || 0)
+    latencyMs: Math.round(reply.elapsedTime || 0),
+    ...networkContext
   }, status >= 400 ? "request completed with error" : "request completed");
 });
 
