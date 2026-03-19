@@ -517,12 +517,10 @@ export async function proxyRequest({
       let streamingStarted = false;
       const startStreamingResponse = () => {
         if (streamingStarted) return;
-        setSseResponseHeaders(reply.raw);
         reply.hijack();
+        setSseResponseHeaders(reply.raw);
         streamingStarted = true;
       };
-
-      startStreamingResponse();
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         let upstreamResponse;
@@ -562,8 +560,7 @@ export async function proxyRequest({
             latencyMs: Date.now() - startAt,
             ...extractFailureDetails(classified.detail)
           }, "stream fetch failed");
-          writeSseError(reply.raw, errBody);
-          reply.raw.end();
+          reply.code(classified.status || 502).send(errBody);
           return;
         }
 
@@ -603,8 +600,7 @@ export async function proxyRequest({
             latencyMs: Date.now() - startAt,
             ...extractFailureDetails(detail)
           }, "stream upstream request failed");
-          writeSseError(reply.raw, errBody);
-          reply.raw.end();
+          reply.code(upstreamResponse.status).send(errBody);
           return;
         }
 
@@ -635,6 +631,37 @@ export async function proxyRequest({
           });
 
         if (streamResult.ok) {
+          if (!streamingStarted) {
+            const classified = {
+              code: "UPSTREAM_EMPTY_STREAM",
+              retryable: false,
+              status: 502,
+              detail: "upstream stream ended before any data was sent"
+            };
+            recordProxyError({
+              status: classified.status,
+              errorCode: classified.code,
+              failureReason: classified.detail,
+              source: "upstream"
+            });
+            const errBody = buildErrorBody({ classified, requestId, detail: classified.detail });
+            log.error({
+              source: "upstream",
+              requestId,
+              ...requestNetworkContext,
+              modelId,
+              routeKey,
+              backendRouteKey,
+              attempt,
+              status: classified.status,
+              event: "proxy.stream_empty",
+              errorCode: classified.code,
+              latencyMs: Date.now() - startAt,
+              failureReason: classified.detail
+            }, "stream ended before any data was sent");
+            reply.code(classified.status).send(errBody);
+            return;
+          }
           reply.raw.end();
           emitInfoLog({
             requestId,
@@ -666,10 +693,14 @@ export async function proxyRequest({
           source: providerError ? "provider" : "upstream"
         });
         const errBody = buildErrorBody({ classified, requestId, detail: providerError?.message || classified.detail });
-        if (!streamResult.providerErrorForwarded) {
+        if (!streamingStarted) {
+          reply.code(classified.status || 502).send(errBody);
+        } else if (!streamResult.providerErrorForwarded) {
           writeSseError(reply.raw, errBody);
+          reply.raw.end();
+        } else {
+          reply.raw.end();
         }
-        reply.raw.end();
         log.error({
           source: providerError ? "provider" : "upstream",
           requestId,

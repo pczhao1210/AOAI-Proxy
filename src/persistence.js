@@ -9,6 +9,7 @@ const DEFAULT_PERSISTENCE_MODE = "file";
 const DEFAULT_LOCAL_CONFIG_PATH = "./config/config.json";
 const DEFAULT_CONFIG_BLOB_NAME = "config/config.json";
 const DEFAULT_BLOB_RECOVERY_INTERVAL_MS = 30000;
+const DEFAULT_DATABASE_RECOVERY_INTERVAL_MS = 30000;
 const DEFAULT_DATABASE_SCHEMA = "public";
 const DEFAULT_DATABASE_TABLE_NAME = "proxy_configs";
 const DEFAULT_DATABASE_CONFIG_KEY = "active";
@@ -19,6 +20,8 @@ let blobServiceKey = "";
 let blobCredential = null;
 let blobRecoveryTimer = null;
 let blobRecoveryRunning = false;
+let databaseRecoveryTimer = null;
+let databaseRecoveryRunning = false;
 
 const persistenceState = {
   configuredMode: DEFAULT_PERSISTENCE_MODE,
@@ -168,6 +171,10 @@ function applyConfiguredMode(settings) {
   }
 
   if (settings.mode !== "database") {
+    if (databaseRecoveryTimer) {
+      clearTimeout(databaseRecoveryTimer);
+      databaseRecoveryTimer = null;
+    }
     patch.databaseAccessState = "disabled";
     patch.pendingDatabaseSync = false;
     patch.lastDatabaseError = null;
@@ -234,6 +241,41 @@ async function writeLocalCacheText(settings, text) {
   }
   for (const targetPath of targets) {
     await writeLocalConfigText(targetPath, text);
+  }
+}
+
+function getDatabasePendingSyncMarkerPath(settings) {
+  return `${settings.configPath}.database-pending-sync`;
+}
+
+async function hasDatabasePendingSyncMarker(settings) {
+  try {
+    await fs.access(getDatabasePendingSyncMarkerPath(settings));
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function writeDatabasePendingSyncMarker(settings) {
+  const markerPath = getDatabasePendingSyncMarkerPath(settings);
+  await ensureLocalDirectory(markerPath);
+  await fs.writeFile(markerPath, JSON.stringify({
+    updatedAt: new Date().toISOString(),
+    target: describeDatabaseTarget(settings)
+  }, null, 2), "utf8");
+}
+
+async function clearDatabasePendingSyncMarker(settings) {
+  try {
+    await fs.unlink(getDatabasePendingSyncMarkerPath(settings));
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
   }
 }
 
@@ -430,6 +472,22 @@ function markDatabaseDegraded(settings, error, patch = {}) {
   });
 }
 
+function scheduleDatabaseRecovery(settings) {
+  if (
+    settings.mode !== "database"
+    || (persistenceState.databaseAccessState === "ready" && !persistenceState.pendingDatabaseSync)
+    || databaseRecoveryTimer
+    || databaseRecoveryRunning
+  ) {
+    return;
+  }
+
+  databaseRecoveryTimer = setTimeout(() => {
+    databaseRecoveryTimer = null;
+    void recoverDatabaseAccess();
+  }, DEFAULT_DATABASE_RECOVERY_INTERVAL_MS);
+}
+
 async function readDatabaseConfigText(settings) {
   await ensureDatabaseTable(settings);
   const pool = getDatabasePool(settings);
@@ -462,6 +520,54 @@ async function writeDatabaseConfigText(settings, text) {
     `,
     [settings.database.configKey, JSON.stringify(parsed)]
   );
+}
+
+async function recoverDatabaseAccess() {
+  const settings = resolvePersistenceSettings();
+  if (
+    settings.mode !== "database"
+    || databaseRecoveryRunning
+    || (persistenceState.databaseAccessState === "ready" && !persistenceState.pendingDatabaseSync)
+  ) {
+    return;
+  }
+
+  databaseRecoveryRunning = true;
+  try {
+    const hasPendingMarker = await hasDatabasePendingSyncMarker(settings);
+    if (hasPendingMarker) {
+      updatePersistenceState({ pendingDatabaseSync: true });
+    }
+
+    if (persistenceState.pendingDatabaseSync) {
+      const localText = await readLocalCacheText(settings);
+      if (localText != null) {
+        await writeDatabaseConfigText(settings, localText);
+        await clearDatabasePendingSyncMarker(settings);
+        markDatabaseReady(settings, "synced");
+        return;
+      }
+      await clearDatabasePendingSyncMarker(settings);
+      updatePersistenceState({ pendingDatabaseSync: false });
+    }
+
+    await readDatabaseConfigText(settings);
+    markDatabaseReady(settings, "probe");
+  } catch (error) {
+    const hasPendingMarker = await hasDatabasePendingSyncMarker(settings).catch(() => persistenceState.pendingDatabaseSync);
+    markDatabaseDegraded(settings, error, { pendingDatabaseSync: hasPendingMarker || persistenceState.pendingDatabaseSync });
+    emitPersistenceEvent("warn", "persistence.database_probe_failed", {
+      target: describeDatabaseTarget(settings),
+      activeMode: persistenceState.activeMode,
+      pendingDatabaseSync: persistenceState.pendingDatabaseSync,
+      error: persistenceState.lastDatabaseError
+    });
+  } finally {
+    databaseRecoveryRunning = false;
+    if (persistenceState.databaseAccessState !== "ready" || persistenceState.pendingDatabaseSync) {
+      scheduleDatabaseRecovery(settings);
+    }
+  }
 }
 
 async function resolveBootstrapSettings() {
@@ -526,11 +632,32 @@ export async function readPersistedConfigText() {
   }
 
   if (settings.mode === "database") {
+    const pendingDatabaseSync = await hasDatabasePendingSyncMarker(settings);
+    if (pendingDatabaseSync) {
+      updatePersistenceState({ pendingDatabaseSync: true });
+      const localText = await readLocalCacheText(settings);
+      if (localText != null) {
+        markDatabaseDegraded(settings, null, { pendingDatabaseSync: true });
+        emitPersistenceEvent("warn", "startup.persistence_database_sync_pending", {
+          target: describeDatabaseTarget(settings),
+          configPath: settings.configPath,
+          message: "Database sync is pending from a previous failed write. Using local cached config until PostgreSQL is updated.",
+          activeMode: persistenceState.activeMode,
+          pendingDatabaseSync: persistenceState.pendingDatabaseSync
+        });
+        scheduleDatabaseRecovery(settings);
+        return localText;
+      }
+      await clearDatabasePendingSyncMarker(settings);
+      updatePersistenceState({ pendingDatabaseSync: false });
+    }
+
     try {
       const databaseText = await readDatabaseConfigText(settings);
       markDatabaseReady(settings, "read");
       if (databaseText != null) {
         await writeLocalCacheText(settings, databaseText);
+        await clearDatabasePendingSyncMarker(settings);
         return databaseText;
       }
       if (settings.database.readFallbackMode === "lastKnownGood") {
@@ -552,6 +679,7 @@ export async function readPersistedConfigText() {
             activeMode: persistenceState.activeMode,
             error: persistenceState.lastDatabaseError
           });
+          scheduleDatabaseRecovery(settings);
           return localText;
         }
       }
@@ -591,8 +719,10 @@ export async function writePersistedConfigText(text, nextConfig = null) {
   if (settings.mode === "database") {
     try {
       await writeDatabaseConfigText(settings, text);
+      await clearDatabasePendingSyncMarker(settings);
       markDatabaseReady(settings, "write");
     } catch (error) {
+      await writeDatabasePendingSyncMarker(settings);
       markDatabaseDegraded(settings, error, { pendingDatabaseSync: true });
       emitPersistenceEvent("warn", "persistence.database_write_deferred", {
         target: describeDatabaseTarget(settings),
@@ -602,6 +732,7 @@ export async function writePersistedConfigText(text, nextConfig = null) {
         pendingDatabaseSync: persistenceState.pendingDatabaseSync,
         error: persistenceState.lastDatabaseError
       });
+      scheduleDatabaseRecovery(settings);
     }
     return;
   }

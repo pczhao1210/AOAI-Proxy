@@ -1437,7 +1437,7 @@ export async function hydrateGovernanceRuntime(config, keyId, rateWindowStartedA
     await flushRuntimeEvents();
     await ensureRuntimeTables(settings);
     const pool = getRuntimeStorePool(settings);
-    const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
+    const { schemaName, eventsTableName, rollupsTableName } = getQualifiedTableNames(settings);
     const result = await pool.query(`
       WITH latest_block AS (
         SELECT occurred_at, blocked_reason
@@ -1445,29 +1445,65 @@ export async function hydrateGovernanceRuntime(config, keyId, rateWindowStartedA
         WHERE key_id = $1 AND event_type = 'blocked'
         ORDER BY occurred_at DESC
         LIMIT 1
+      ),
+      rate_window AS (
+        SELECT
+          COUNT(*) FILTER (WHERE event_type = 'request') AS rate_requests,
+          COALESCE(SUM(prompt_tokens) FILTER (WHERE event_type = 'usage'), 0) AS rate_prompt_tokens,
+          COALESCE(SUM(completion_tokens) FILTER (WHERE event_type = 'usage'), 0) AS rate_completion_tokens,
+          COALESCE(SUM(total_tokens) FILTER (WHERE event_type = 'usage'), 0) AS rate_total_tokens,
+          COALESCE(SUM(cached_tokens) FILTER (WHERE event_type = 'usage'), 0) AS rate_cached_tokens,
+          COUNT(*) FILTER (WHERE event_type = 'blocked') AS rate_blocked_requests
+        FROM ${schemaName}.${eventsTableName}
+        WHERE key_id = $1 AND occurred_at >= $2::timestamptz
+      ),
+      key_totals AS (
+        SELECT
+          MAX(last_occurred_at) AS last_seen_at,
+          COALESCE(SUM(requests), 0) AS total_requests,
+          COALESCE(SUM(errors), 0) AS total_errors,
+          COALESCE(SUM(blocked_count), 0) AS total_blocked_requests
+        FROM ${schemaName}.${rollupsTableName}
+        WHERE grain = 'daily' AND scope_type = 'key' AND scope_key = $1
+      ),
+      budget_window AS (
+        SELECT
+          COALESCE(SUM(prompt_tokens), 0) AS budget_prompt_tokens,
+          COALESCE(SUM(completion_tokens), 0) AS budget_completion_tokens,
+          COALESCE(SUM(total_tokens), 0) AS budget_total_tokens,
+          COALESCE(SUM(cached_tokens), 0) AS budget_cached_tokens,
+          COALESCE(SUM(estimated_cost_amount), 0) AS budget_spent_amount,
+          COALESCE(SUM(blocked_count), 0) AS budget_blocked_requests
+        FROM ${schemaName}.${rollupsTableName}
+        WHERE grain = 'daily' AND scope_type = 'key' AND scope_key = $1 AND bucket_start >= $3::timestamptz
+      ),
+      budget_requests AS (
+        SELECT
+          COUNT(*) FILTER (WHERE event_type = 'usage') AS budget_requests
+        FROM ${schemaName}.${eventsTableName}
+        WHERE key_id = $1 AND occurred_at >= $3::timestamptz
       )
       SELECT
-        MAX(occurred_at) FILTER (WHERE event_type IN ('request', 'usage', 'error')) AS last_seen_at,
-        COUNT(*) FILTER (WHERE event_type = 'request') AS total_requests,
-        COUNT(*) FILTER (WHERE event_type = 'error') AS total_errors,
-        COUNT(*) FILTER (WHERE event_type = 'blocked') AS total_blocked_requests,
+        key_totals.last_seen_at,
+        key_totals.total_requests,
+        key_totals.total_errors,
+        key_totals.total_blocked_requests,
         (SELECT occurred_at FROM latest_block) AS last_blocked_at,
         (SELECT blocked_reason FROM latest_block) AS last_blocked_reason,
-        COUNT(*) FILTER (WHERE event_type = 'request' AND occurred_at >= $2::timestamptz) AS rate_requests,
-        COALESCE(SUM(prompt_tokens) FILTER (WHERE event_type = 'usage' AND occurred_at >= $2::timestamptz), 0) AS rate_prompt_tokens,
-        COALESCE(SUM(completion_tokens) FILTER (WHERE event_type = 'usage' AND occurred_at >= $2::timestamptz), 0) AS rate_completion_tokens,
-        COALESCE(SUM(total_tokens) FILTER (WHERE event_type = 'usage' AND occurred_at >= $2::timestamptz), 0) AS rate_total_tokens,
-        COALESCE(SUM(cached_tokens) FILTER (WHERE event_type = 'usage' AND occurred_at >= $2::timestamptz), 0) AS rate_cached_tokens,
-        COUNT(*) FILTER (WHERE event_type = 'blocked' AND occurred_at >= $2::timestamptz) AS rate_blocked_requests,
-        COUNT(*) FILTER (WHERE event_type = 'usage' AND occurred_at >= $3::timestamptz) AS budget_requests,
-        COALESCE(SUM(prompt_tokens) FILTER (WHERE event_type = 'usage' AND occurred_at >= $3::timestamptz), 0) AS budget_prompt_tokens,
-        COALESCE(SUM(completion_tokens) FILTER (WHERE event_type = 'usage' AND occurred_at >= $3::timestamptz), 0) AS budget_completion_tokens,
-        COALESCE(SUM(total_tokens) FILTER (WHERE event_type = 'usage' AND occurred_at >= $3::timestamptz), 0) AS budget_total_tokens,
-        COALESCE(SUM(cached_tokens) FILTER (WHERE event_type = 'usage' AND occurred_at >= $3::timestamptz), 0) AS budget_cached_tokens,
-        COALESCE(SUM(estimated_cost_amount) FILTER (WHERE event_type = 'usage' AND occurred_at >= $3::timestamptz), 0) AS budget_spent_amount,
-        COUNT(*) FILTER (WHERE event_type = 'blocked' AND occurred_at >= $3::timestamptz) AS budget_blocked_requests
-      FROM ${schemaName}.${eventsTableName}
-      WHERE key_id = $1 AND occurred_at >= LEAST($2::timestamptz, $3::timestamptz)
+        rate_window.rate_requests,
+        rate_window.rate_prompt_tokens,
+        rate_window.rate_completion_tokens,
+        rate_window.rate_total_tokens,
+        rate_window.rate_cached_tokens,
+        rate_window.rate_blocked_requests,
+        budget_requests.budget_requests,
+        budget_window.budget_prompt_tokens,
+        budget_window.budget_completion_tokens,
+        budget_window.budget_total_tokens,
+        budget_window.budget_cached_tokens,
+        budget_window.budget_spent_amount,
+        budget_window.budget_blocked_requests
+      FROM key_totals, rate_window, budget_window, budget_requests
     `, [keyId, rateWindowStartedAt, budgetWindowStartedAt]);
 
     return result.rows[0] || null;
