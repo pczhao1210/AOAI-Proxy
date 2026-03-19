@@ -45,7 +45,18 @@ This repo now supports deployment-time persistence selection, and the Azure depl
 - Keeps the current ACI + Azure Files mount to `/app/data`
 - Best fit when you need filesystem-style persistence for config, Caddyfile, and Caddy state
 - The deployment flow can now either create new storage/share resources or reuse existing ones
-- Still requires storage account key for the ACI mount itself
+- The deployment UI now accepts an optional Azure Files storage account key; when supplied, deployment uses that key directly and skips the `listKeys` call
+- If no key is supplied, the template falls back to `listKeys` for the ACI mount itself
+
+How the Azure Files credential path works:
+
+- Bicep/ARM parameter name: `azureFileStorageAccountKey`
+- Portal managed-app UI: an optional password field named `Azure Files storage account key`
+- When this field is populated, the deployment passes that secure value directly into the ACI Azure Files volume definition
+- When this field is empty, the deployment identity must be able to call `listKeys` on the target storage account, because the template resolves the mount credential during deployment
+- This is mainly useful when the storage account and share are already provisioned and the deployment should avoid an additional key lookup step
+- Providing the key does not change the underlying ACI requirement: Azure Files mounting still uses shared-key authentication at mount time
+- If you choose an existing file share, the deployment still expects `fileShareName` to already exist; supplying a key only changes how the credential is obtained
 
 ### `blob`
 
@@ -61,6 +72,12 @@ This repo now supports deployment-time persistence selection, and the Azure depl
 ### Deployment Constraint
 
 ACI native Azure Files mounting still depends on shared key authentication. Managed identity can be used for Blob SDK operations, but it does not convert Azure Files volume mounting into an AAD-only flow. If you must disable key-based auth and still need `/app/data` mount semantics, move to another platform such as ACA, AKS, or a VM-based deployment.
+
+Practical implication:
+
+- Manual key input avoids a deployment-time `listKeys` dependency
+- It does not eliminate the storage-account-key dependency of the ACI mount itself
+- If shared-key access is disabled on the storage account, both the manual-key path and the automatic `listKeys` path are unsuitable for Azure Files mounting on ACI
 
 ## Timeout Model
 

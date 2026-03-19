@@ -45,7 +45,17 @@
 - 保留当前 ACI + Azure Files 挂载 `/app/data`
 - 适合需要文件系统语义的配置、Caddyfile 与 Caddy 状态持久化
 - 部署时可以选择新建 storage/share，或复用现有资源
-- ACI 挂载本身仍依赖存储账号密钥
+- 部署 UI 现在提供可选的 Azure Files 存储账号 key 输入框；如果手工填写，模板会直接使用这个密钥，不再调用 `listKeys`
+- 如果未填写，模板会按原有逻辑自动调用 `listKeys` 获取挂载所需密钥
+
+这条凭据链路的具体行为如下：
+
+- Bicep / ARM 参数名为 `azureFileStorageAccountKey`
+- Portal 自定义 UI 中显示为可选密码框 `Azure Files storage account key`
+- 填写后，部署会把该安全值直接写入 ACI 的 Azure Files volume 定义
+- 留空后，部署发起身份必须对目标存储账号具备 `listKeys` 所需权限，因为模板会在部署阶段解析挂载凭据
+- 这个能力主要用于“存储账号和文件共享已经预创建，但不希望部署过程再额外做一次 key 查询”的场景
+- 如果选择的是 existing file share，`fileShareName` 仍然必须是已经存在的共享；手填 key 只改变凭据来源，不会替你创建共享
 
 ### `blob`
 
@@ -60,6 +70,12 @@
 ### 关键约束
 
 ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用于 Blob SDK 的应用层访问，但不能把 Azure Files 卷挂载直接改造成 AAD-only 认证。如果你的目标是“完全禁用 Key Authentication 且仍保留 `/app/data` 挂载语义”，需要评估 ACA、AKS 或 VM 等替代平台。
+
+落地上可以这样理解：
+
+- 手填 key 解决的是“部署阶段是否需要调用 `listKeys`”
+- 它并不会消除 ACI 挂载 Azure Files 时对存储账号 key 的依赖
+- 如果存储账号本身禁用了 shared key access，那么无论是手填 key 还是自动 `listKeys`，都不适合作为 ACI 的 Azure Files 挂载方案
 
 ## 超时模型
 
@@ -260,6 +276,13 @@ az deployment group create \
 如果 `databaseName` 为空，模板会创建 `aoaiproxy`。
 PostgreSQL 默认规格是 `Burstable` + `Standard_B1ms` + `32 GB`，对应微软文档里最小的开发向规格。
 
+Azure Files 凭据补充说明：
+
+- Bicep / ARM 可额外传入可选安全参数 `azureFileStorageAccountKey`
+- 如果该参数有值，模板直接把它用于 ACI 的 Azure Files 挂载，不再调用 `listKeys`
+- 如果该参数为空，模板会回退到 `listKeys`
+- 这意味着“手填 key”可以减少对部署发起身份的 key 查询依赖，但并不改变 Azure Files 挂载仍需 shared key 的平台限制
+
 当前限制：这套 ACI 模板没有稳定可选的 ARM64 机型参数，因此当前落地的是最小 PostgreSQL 开发规格默认值，而不是显式 ARM 系列运行时选择。
 
 ### 使用 Azure Managed Application 与自定义 UI 部署
@@ -267,6 +290,12 @@ PostgreSQL 默认规格是 `Burstable` + `Standard_B1ms` + `32 GB`，对应微�
 如果希望在 Azure Portal 中使用资源选择器，而不是原始参数页，请使用 [../infra/azure_deployment_with_UI](../infra/azure_deployment_with_UI) 里的 Managed Application 包源文件。
 
 这套自定义 UI 现在默认走 PostgreSQL 配置持久化，并暴露数据库服务器名、数据库名、管理员账号和 SKU 选择；只有切换到 Azure Files 或 Blob 时才显示存储相关输入。
+
+当选择 Azure Files 时，UI 还会显示一个可选的 `Azure Files storage account key` 密码框：
+
+- 填写时：直接使用输入的 key 挂载共享
+- 留空时：由模板自动调用 `listKeys`
+- 两种方式最终都还是在 ACI 挂载阶段使用 shared key；区别只在于密钥来自手工输入还是部署时查询
 
 打包要求：`mainTemplate.json` 和 `createUiDefinition.json` 必须位于 zip 根目录。
 

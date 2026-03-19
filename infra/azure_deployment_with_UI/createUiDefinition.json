@@ -371,6 +371,22 @@
             }
           },
           {
+            "name": "azureFileStorageAccountKey",
+            "type": "Microsoft.Common.PasswordBox",
+            "label": {
+              "password": "Azure Files storage account key",
+              "confirmPassword": "Confirm Azure Files storage account key"
+            },
+            "toolTip": {
+              "password": "Optional. When provided, the deployment uses this key directly for the Azure Files mount instead of calling listKeys.",
+              "confirmPassword": "Re-enter the Azure Files storage account key."
+            },
+            "visible": "[equals(steps('runtime').persistenceMode, 'azureFile')]",
+            "constraints": {
+              "required": false
+            }
+          },
+          {
             "name": "blobContainerMode",
             "type": "Microsoft.Common.OptionsGroup",
             "label": "Blob container source",
@@ -498,6 +514,7 @@
       "storageAccountName": "[steps('storage').storageAccountName]",
       "fileShareMode": "[steps('storage').fileShareMode]",
       "fileShareName": "[steps('storage').fileShareName]",
+      "azureFileStorageAccountKey": "[steps('storage').azureFileStorageAccountKey]",
       "blobContainerMode": "[steps('storage').blobContainerMode]",
       "blobContainerName": "[steps('storage').blobContainerName]",
       "configBlobName": "[steps('storage').configBlobName]",

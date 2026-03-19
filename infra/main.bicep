@@ -46,6 +46,10 @@ param fileShareMode string = 'new'
 @description('Azure Files share name used when persistenceMode=azureFile.')
 param fileShareName string = 'aoaiproxy'
 
+@secure()
+@description('Optional Azure Files storage account key used when persistenceMode=azureFile. When provided, the container group uses this key directly instead of calling listKeys during deployment.')
+param azureFileStorageAccountKey string = ''
+
 @allowed([
   'new'
   'existing'
@@ -172,6 +176,11 @@ var imageRegistryCredentials = empty(acrLoginServer) ? [] : [
     password: acrPassword
   }
 ]
+var effectiveAzureFileStorageAccountKey = enableAzureFile
+  ? (!empty(azureFileStorageAccountKey)
+      ? azureFileStorageAccountKey
+      : (createStorageAccount ? storageAccount!.listKeys().keys[0].value : existingStorageAccount!.listKeys().keys[0].value))
+  : ''
 var environmentVariables = enableDatabase
   ? [
       {
@@ -213,7 +222,7 @@ var volumes = enableAzureFile ? [
     azureFile: {
       shareName: fileShareName
       storageAccountName: effectiveStorageAccountName
-      storageAccountKey: listKeys(resourceId('Microsoft.Storage/storageAccounts', effectiveStorageAccountName), '2023-05-01').keys[0].value
+      storageAccountKey: effectiveAzureFileStorageAccountKey
     }
   }
 ] : []

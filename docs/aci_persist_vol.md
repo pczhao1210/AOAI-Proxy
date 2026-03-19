@@ -26,6 +26,11 @@
 - ACI 原生 Azure Files 挂载仍需账号密钥。
 - 如果你既要完全无 Key，又要保留 `/app/data` 挂载语义，需要考虑 ACA、AKS 或 VM。
 
+另外要区分两种 Azure Files 密钥来源：
+
+- 手工 ACI CLI 流程：你需要自己准备并传入存储账号 key
+- 仓库自带的 Bicep / ARM / Portal 部署流程：支持“手填 key”或“留空后自动 `listKeys`”两条路径
+
 ## 前置变量
 
 按需替换以下变量：
@@ -91,6 +96,13 @@ echo "$STORAGE_KEY"
 
 ACI 的 Azure Files 挂载仍需要账号密钥。如果存储账号关闭了 key-based auth，请改用别的平台，或临时允许 shared key access。
 
+如果你使用的是本仓库自带模板，而不是这里的原始 CLI 命令，则还有两种做法：
+
+- 直接传入 `azureFileStorageAccountKey`，模板会使用你提供的 key，不再调用 `listKeys`
+- 不传该参数，模板会在部署阶段自动调用 `listKeys`
+
+这两种方式的差别只在“部署时如何拿到 key”；ACI 真正挂载 Azure Files 时，底层仍然是 shared key。
+
 ## 3) 创建 ACI 并选择持久化方式
 
 ### 3.1 `database` 模式
@@ -120,6 +132,14 @@ az container create \
 ### 3.2 `azureFile` 模式
 
 适合需要 `/app/data` 在重启或替换容器后继续存在的场景。
+
+这里展示的是 Azure CLI 手工创建 ACI 的方式，所以必须显式传入 `--azure-file-volume-account-key "$STORAGE_KEY"`。
+
+如果你改用仓库里的 Bicep / ARM / Portal 模板，逻辑会变成：
+
+- 手工填写 `azureFileStorageAccountKey` 时，直接使用输入值
+- 不填写时，模板自动 `listKeys`
+- 无论哪条路径，最终挂载阶段都还是使用 shared key
 
 ```bash
 az container create \
@@ -269,6 +289,8 @@ az role assignment create \
 ```
 
 注意：ACI 的 Azure Files 挂载仍需要账号密钥；RBAC 只是运行期权限，不会替代挂载凭据。
+
+换句话说：RBAC 可以解决运行期访问授权问题，但不能把“手填 key / 自动 `listKeys`”这两条挂载凭据路径替换成纯 AAD 挂载。
 
 ### 6.3 `blob` 模式：授予 Blob 写权限
 

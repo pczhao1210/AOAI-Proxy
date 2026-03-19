@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "1452931745566050751"
+      "templateHash": "17425892013322819198"
     }
   },
   "parameters": {
@@ -96,6 +96,13 @@
       "defaultValue": "aoaiproxy",
       "metadata": {
         "description": "Azure Files share name used when persistenceMode=azureFile."
+      }
+    },
+    "azureFileStorageAccountKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional Azure Files storage account key used when persistenceMode=azureFile. When provided, the container group uses this key directly instead of calling listKeys during deployment."
       }
     },
     "blobContainerMode": {
@@ -489,8 +496,11 @@
             }
           ]
         },
-        "volumes": "[if(variables('enableAzureFile'), createArray(createObject('name', 'configshare', 'azureFile', createObject('shareName', parameters('fileShareName'), 'storageAccountName', variables('effectiveStorageAccountName'), 'storageAccountKey', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('effectiveStorageAccountName')), '2023-05-01').keys[0].value))), createArray())]"
-      }
+        "volumes": "[if(variables('enableAzureFile'), createArray(createObject('name', 'configshare', 'azureFile', createObject('shareName', parameters('fileShareName'), 'storageAccountName', variables('effectiveStorageAccountName'), 'storageAccountKey', if(variables('enableAzureFile'), if(not(empty(parameters('azureFileStorageAccountKey'))), parameters('azureFileStorageAccountKey'), if(variables('createStorageAccount'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('effectiveStorageAccountName')), '2023-05-01').keys[0].value, listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('effectiveStorageAccountName')), '2023-05-01').keys[0].value)), '')))), createArray())]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('effectiveStorageAccountName'))]"
+      ]
     },
     {
       "condition": "[and(variables('createBlobContainer'), variables('createStorageAccount'))]",
