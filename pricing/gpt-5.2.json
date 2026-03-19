@@ -1,0 +1,61 @@
+{
+  "id": "gpt-5.2",
+  "displayName": "GPT-5.2",
+  "provider": "azure-openai",
+  "family": "gpt-5.2",
+  "modelVersion": "2025-12-11",
+  "status": "ga",
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 1.75,
+    "cachedInputPer1mTokens": 0.18,
+    "outputPer1mTokens": 14,
+    "inputPer1kTokens": 0.00175,
+    "cachedInputPer1kTokens": 0.00018,
+    "outputPer1kTokens": 0.014
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00175,
+    "cachedInputPer1kTokens": 0.00018,
+    "outputPer1kTokens": 0.014
+  },
+  "proxyTemplate": {
+    "id": "gpt-5.2",
+    "displayName": "GPT-5.2",
+    "targetModel": "gpt-5.2",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling",
+      "structured-outputs",
+      "parallel-tool-calling"
+    ],
+    "pricingRef": "gpt-5.2"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

@@ -21,19 +21,22 @@
       "value": 4
     },
     "persistenceMode": {
-      "value": "blob"
+      "value": "database"
     },
-    "storageAccountName": {
-      "value": "staoaiproxyprod"
-    },
-    "fileShareName": {
+    "databaseName": {
       "value": "aoaiproxy"
     },
-    "blobContainerName": {
-      "value": "aoai-proxy-config"
+    "databaseAdminUsername": {
+      "value": "aoaiproxyadmin"
     },
-    "configBlobName": {
-      "value": "config/config.json"
+    "databaseAdminPassword": {
+      "value": "replace-with-postgresql-admin-password"
+    },
+    "databaseTier": {
+      "value": "Burstable"
+    },
+    "databaseSkuName": {
+      "value": "Standard_B2s"
     },
     "cognitiveServicesAccountName": {
       "value": "replace-with-your-aoai-account"

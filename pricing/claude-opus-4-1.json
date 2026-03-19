@@ -1,0 +1,62 @@
+{
+  "id": "claude-opus-4-1",
+  "displayName": "Claude Opus 4.1",
+  "provider": "anthropic",
+  "family": "claude-4",
+  "modelVersion": "2025-09-29",
+  "status": "preview",
+  "interfaces": [
+    "messages"
+  ],
+  "inputModalities": [
+    "text",
+    "image",
+    "code"
+  ],
+  "outputModalities": [
+    "text",
+    "code"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "anthropic-official",
+    "status": "published",
+    "inputPer1mTokens": 15,
+    "cachedInputPer1mTokens": 1.5,
+    "outputPer1mTokens": 75,
+    "inputPer1kTokens": 0.015,
+    "cachedInputPer1kTokens": 0.0015,
+    "outputPer1kTokens": 0.075
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.015,
+    "cachedInputPer1kTokens": 0.0015,
+    "outputPer1kTokens": 0.075
+  },
+  "proxyTemplate": {
+    "id": "claude-opus-4-1",
+    "displayName": "Claude Opus 4.1",
+    "targetModel": "claude-opus-4-1",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling"
+    ],
+    "pricingRef": "claude-opus-4-1"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-from-partners#anthropic",
+    "pricing": "https://claude.com/pricing#api"
+  },
+  "notes": [
+    "Anthropic 公开页对 prompt caching 分别提供 write/read 价格；当前 schema 只有一个 cachedInput 字段，这里按 cache read 价格回填。",
+    "Claude 在 model-router 中仍需先单独部署到 Foundry 资源。"
+  ]
+}

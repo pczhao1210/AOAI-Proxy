@@ -1,0 +1,57 @@
+{
+  "id": "Kimi-K2-Thinking",
+  "displayName": "Kimi K2 Thinking",
+  "provider": "moonshot-ai",
+  "family": "kimi-k2",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "fireworks-official",
+    "status": "published",
+    "inputPer1mTokens": 0.6,
+    "cachedInputPer1mTokens": 0.3,
+    "outputPer1mTokens": 2.5,
+    "inputPer1kTokens": 0.0006,
+    "cachedInputPer1kTokens": 0.0003,
+    "outputPer1kTokens": 0.0025
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.0006,
+    "cachedInputPer1kTokens": 0.0003,
+    "outputPer1kTokens": 0.0025
+  },
+  "proxyTemplate": {
+    "id": "Kimi-K2-Thinking",
+    "displayName": "Kimi K2 Thinking",
+    "targetModel": "Kimi-K2-Thinking",
+    "capabilities": [
+      "reasoning",
+      "function-calling"
+    ],
+    "pricingRef": "Kimi-K2-Thinking"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#moonshot-ai-models-sold-directly-by-azure",
+    "pricing": "https://fireworks.ai/pricing"
+  },
+  "notes": [
+    "这里参考 Fireworks 公布的 Kimi K2 Thinking Serverless 单价回填。",
+    "Fireworks 说明未单列 cached input 时默认按 input 的 50% 计费，因此这里写为 0.30 USD / 1M tokens。"
+  ]
+}

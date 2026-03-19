@@ -9,6 +9,7 @@ This directory contains the project documentation and deployment guides.
 
 ## Deployment Guides
 
+- Database-first Azure deployment: [../README.md#azure-deployment](../README.md#azure-deployment)
 - Azure deployment overview: [../README.md#azure-deployment](../README.md#azure-deployment)
 - Azure Managed Application package: [../infra/azure_deployment_with_UI/README.md](../infra/azure_deployment_with_UI/README.md)
 - ACI persistence guide (English): [aci_persist_vol.en.md](aci_persist_vol.en.md)
@@ -26,4 +27,5 @@ This directory contains the project documentation and deployment guides.
 ## Notes
 
 - The root [../README.md](../README.md) is the primary English entry point.
+- Azure deployment defaults are now database-first and support both new and existing storage/database resource paths. The ACI persistence guides explain when to choose PostgreSQL, Azure Files, or Blob.
 - Process and scratch documents are intentionally excluded from version control and are not part of the public docs set.

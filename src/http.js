@@ -4,7 +4,7 @@ const DEFAULT_CONNECTIONS = 32;
 const DEFAULT_KEEPALIVE_TIMEOUT_MS = 30000;
 const DEFAULT_KEEPALIVE_MAX_TIMEOUT_MS = 120000;
 const DEFAULT_HEADERS_TIMEOUT_MS = 60000;
-const DEFAULT_BODY_TIMEOUT_MS = 0;
+const DEFAULT_BODY_TIMEOUT_MS = 120000;
 const DEFAULT_PIPLINING = 1;
 
 let currentAgent = null;
@@ -27,7 +27,7 @@ function resolvePoolValue(configValue, envName, fallback, readFn) {
 }
 
 export function configureUpstreamHttp(config) {
-  const pool = config?.server?.upstream?.pool || {};
+  const pool = config?.proxy?.httpClient || config?.server?.upstream?.pool || {};
   const resolvedConfig = {
     connections: resolvePoolValue(pool.connections, "UPSTREAM_MAX_CONNECTIONS", DEFAULT_CONNECTIONS, readPositiveIntEnv),
     keepAliveTimeout: resolvePoolValue(pool.keepAliveTimeoutMs, "UPSTREAM_KEEPALIVE_TIMEOUT_MS", DEFAULT_KEEPALIVE_TIMEOUT_MS, readPositiveIntEnv),
@@ -36,6 +36,9 @@ export function configureUpstreamHttp(config) {
     bodyTimeout: resolvePoolValue(pool.bodyTimeoutMs, "UPSTREAM_BODY_TIMEOUT_MS", DEFAULT_BODY_TIMEOUT_MS, readNonNegativeIntEnv),
     pipelining: resolvePoolValue(pool.pipelining, "UPSTREAM_PIPELINING", DEFAULT_PIPLINING, readPositiveIntEnv)
   };
+  if (pool.forceIpv4 === true) {
+    resolvedConfig.connect = { family: 4 };
+  }
   const nextAgent = new Agent(resolvedConfig);
 
   setGlobalDispatcher(nextAgent);

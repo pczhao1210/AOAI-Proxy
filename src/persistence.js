@@ -3,12 +3,19 @@ import path from "node:path";
 import { BlobServiceClient } from "@azure/storage-blob";
 import { DefaultAzureCredential } from "@azure/identity";
 import { appendStructuredLog } from "./logs.js";
+import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
 
-const DEFAULT_PERSISTENCE_MODE = "azureFile";
+const DEFAULT_PERSISTENCE_MODE = "file";
+const DEFAULT_LOCAL_CONFIG_PATH = "./config/config.json";
 const DEFAULT_CONFIG_BLOB_NAME = "config/config.json";
 const DEFAULT_BLOB_RECOVERY_INTERVAL_MS = 30000;
+const DEFAULT_DATABASE_SCHEMA = "public";
+const DEFAULT_DATABASE_TABLE_NAME = "proxy_configs";
+const DEFAULT_DATABASE_CONFIG_KEY = "active";
 
+let runtimeConfig = null;
 let blobServiceClient = null;
+let blobServiceKey = "";
 let blobCredential = null;
 let blobRecoveryTimer = null;
 let blobRecoveryRunning = false;
@@ -18,16 +25,57 @@ const persistenceState = {
   activeMode: DEFAULT_PERSISTENCE_MODE,
   blobAccessState: "disabled",
   pendingBlobSync: false,
-  lastBlobError: null
+  lastBlobError: null,
+  databaseAccessState: "disabled",
+  pendingDatabaseSync: false,
+  lastDatabaseError: null
 };
 
-function normalizeMode(mode) {
-  return mode === "blob" ? "blob" : DEFAULT_PERSISTENCE_MODE;
+function asPlainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-function getBlobRecoveryIntervalMs() {
-  const envValue = Number(process.env.BLOB_RECOVERY_INTERVAL_MS);
-  return Number.isFinite(envValue) && envValue >= 1000 ? envValue : DEFAULT_BLOB_RECOVERY_INTERVAL_MS;
+function normalizeMode(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (["blob", "azureblob"].includes(normalized)) return "blob";
+  if (["database", "db", "postgres", "postgresql"].includes(normalized)) return "database";
+  if (["file", "local", "azurefile", ""].includes(normalized)) return "file";
+  return DEFAULT_PERSISTENCE_MODE;
+}
+
+function resolveInt(value, fallback, minimum = 0) {
+  const numeric = Number(value);
+  if (Number.isInteger(numeric) && numeric >= minimum) {
+    return numeric;
+  }
+  return fallback;
+}
+
+function ensureResolvedPath(filePath) {
+  return path.resolve(process.cwd(), String(filePath || DEFAULT_LOCAL_CONFIG_PATH));
+}
+
+function safeParseJson(text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function getEnvOverride(...names) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function updatePersistenceState(patch) {
+  Object.assign(persistenceState, patch);
 }
 
 function emitPersistenceEvent(level, event, fields = {}) {
@@ -41,15 +89,7 @@ function emitPersistenceEvent(level, event, fields = {}) {
   logger(JSON.stringify(payload));
 }
 
-function updatePersistenceState(patch) {
-  Object.assign(persistenceState, patch);
-}
-
-function isBlobAuthorizationError(error) {
-  return error?.statusCode === 403 || error?.details?.errorCode === "AuthorizationPermissionMismatch" || error?.code === "AuthorizationPermissionMismatch";
-}
-
-function snapshotBlobError(error) {
+function snapshotError(error) {
   if (!error) return null;
   return {
     code: error?.details?.errorCode || error?.code || "UnknownError",
@@ -58,134 +98,90 @@ function snapshotBlobError(error) {
   };
 }
 
-function describeBlobTarget() {
-  const accountUrl = getBlobAccountUrl() || "<missing-account-url>";
-  const containerName = getBlobContainerName() || "<missing-container>";
-  const blobName = getBlobName();
-  return `${accountUrl}/${containerName}/${blobName}`;
-}
+function resolvePersistenceSettings(config = runtimeConfig) {
+  const persistence = asPlainObject(config?.persistence);
+  const configStore = asPlainObject(persistence.configStore);
+  const compatibilityExport = asPlainObject(persistence.compatibilityExport);
+  const blob = asPlainObject(configStore.blob);
+  const database = asPlainObject(configStore.database);
 
-function markBlobReady(reason) {
-  const patch = {
-    activeMode: "blob",
-    blobAccessState: "ready",
-    lastBlobError: null
-  };
-  if (reason === "synced") {
-    patch.pendingBlobSync = false;
-  }
-  updatePersistenceState(patch);
-  emitPersistenceEvent("log", "persistence.blob_ready", {
-    reason,
-    target: describeBlobTarget(),
-    activeMode: persistenceState.activeMode,
-    pendingBlobSync: persistenceState.pendingBlobSync
-  });
-}
+  const requestedMode = normalizeMode(
+    getEnvOverride("PERSISTENCE_MODE", "CONFIG_PERSISTENCE_MODE")
+      || configStore.mode
+      || (database.enabled === true ? "database" : DEFAULT_PERSISTENCE_MODE)
+  );
 
-function markBlobDegraded(error, patch = {}) {
-  updatePersistenceState({
-    activeMode: "local",
-    blobAccessState: "degraded",
-    lastBlobError: snapshotBlobError(error),
-    ...patch
-  });
-}
+  const configPath = ensureResolvedPath(getEnvOverride("CONFIG_PATH") || configStore.filePath || DEFAULT_LOCAL_CONFIG_PATH);
+  const compatibilityPath = ensureResolvedPath(
+    getEnvOverride("LEGACY_CONFIG_PATH")
+      || compatibilityExport.legacyConfigPath
+      || configPath
+  );
 
-function scheduleBlobRecovery() {
-  if (getPersistenceMode() !== "blob" || persistenceState.blobAccessState === "ready" || blobRecoveryTimer || blobRecoveryRunning) {
-    return;
-  }
-  blobRecoveryTimer = setTimeout(() => {
-    blobRecoveryTimer = null;
-    void recoverBlobAccess();
-  }, getBlobRecoveryIntervalMs());
-}
+  const connectionRef = getEnvOverride("CONFIG_DB_CONNECTION_REF", "POSTGRES_CONNECTION_REF") || String(database.connectionRef || "").trim();
+  const connectionString = getEnvOverride("CONFIG_DB_CONNECTION_STRING", "DATABASE_URL")
+    || (connectionRef ? getEnvOverride(connectionRef) : "");
 
-async function recoverBlobAccess() {
-  if (getPersistenceMode() !== "blob" || persistenceState.blobAccessState === "ready" || blobRecoveryRunning) {
-    return;
-  }
-
-  blobRecoveryRunning = true;
-  try {
-    const filePath = getConfigPath();
-    if (persistenceState.pendingBlobSync) {
-      const localText = await tryReadLocalConfigText(filePath);
-      if (localText != null) {
-        await writeBlobConfigText(localText);
-        markBlobReady("synced");
-        return;
+  return {
+    mode: requestedMode,
+    configPath,
+    compatibilityPath,
+    compatibilityExportEnabled: compatibilityExport.enabled !== false && compatibilityExport.exportLegacyConfigOnChange !== false,
+    blob: {
+      accountUrl: getEnvOverride("BLOB_ACCOUNT_URL", "AZURE_STORAGE_ACCOUNT_URL") || String(blob.accountUrl || "").trim(),
+      containerName: getEnvOverride("CONFIG_BLOB_CONTAINER", "BLOB_CONTAINER_NAME") || String(blob.container || "").trim(),
+      blobName: getEnvOverride("CONFIG_BLOB_NAME") || String(blob.path || DEFAULT_CONFIG_BLOB_NAME).trim(),
+      healthProbeIntervalMs: resolveInt(getEnvOverride("BLOB_RECOVERY_INTERVAL_MS") || blob.healthProbeIntervalMs, DEFAULT_BLOB_RECOVERY_INTERVAL_MS, 1000)
+    },
+    database: {
+      enabled: requestedMode === "database" || database.enabled === true,
+      provider: String(database.provider || "postgresql").trim() || "postgresql",
+      connectionRef,
+      connectionString,
+      schemaName: String(database.schema || DEFAULT_DATABASE_SCHEMA).trim() || DEFAULT_DATABASE_SCHEMA,
+      tableName: String(database.tableName || DEFAULT_DATABASE_TABLE_NAME).trim() || DEFAULT_DATABASE_TABLE_NAME,
+      configKey: String(database.configKey || DEFAULT_DATABASE_CONFIG_KEY).trim() || DEFAULT_DATABASE_CONFIG_KEY,
+      readFallbackMode: database.readFallbackMode === "none" ? "none" : "lastKnownGood",
+      pool: {
+        max: resolveInt(database.pool?.max, 10, 1),
+        min: resolveInt(database.pool?.min, 0, 0),
+        idleTimeoutMs: resolveInt(database.pool?.idleTimeoutMs, 30000, 0),
+        connectionTimeoutMs: resolveInt(database.pool?.connectionTimeoutMs, 10000, 0)
       }
     }
+  };
+}
 
-    await readBlobConfigText();
-    markBlobReady("probe");
-  } catch (error) {
-    markBlobDegraded(error);
-    emitPersistenceEvent("warn", "persistence.blob_probe_failed", {
-      target: describeBlobTarget(),
-      activeMode: persistenceState.activeMode,
-      pendingBlobSync: persistenceState.pendingBlobSync,
-      error: persistenceState.lastBlobError
-    });
-  } finally {
-    blobRecoveryRunning = false;
-    if (persistenceState.blobAccessState !== "ready") {
-      scheduleBlobRecovery();
+function applyConfiguredMode(settings) {
+  const patch = {
+    configuredMode: settings.mode
+  };
+
+  if (settings.mode !== "blob") {
+    if (blobRecoveryTimer) {
+      clearTimeout(blobRecoveryTimer);
+      blobRecoveryTimer = null;
     }
+    patch.blobAccessState = "disabled";
+    patch.pendingBlobSync = false;
+    patch.lastBlobError = null;
   }
-}
 
-export function getPersistenceMode() {
-  const mode = normalizeMode(process.env.PERSISTENCE_MODE || process.env.CONFIG_PERSISTENCE_MODE);
-  persistenceState.configuredMode = mode;
-  if (mode !== "blob") {
-    updatePersistenceState({
-      activeMode: DEFAULT_PERSISTENCE_MODE,
-      blobAccessState: "disabled",
-      pendingBlobSync: false,
-      lastBlobError: null
-    });
+  if (settings.mode !== "database") {
+    patch.databaseAccessState = "disabled";
+    patch.pendingDatabaseSync = false;
+    patch.lastDatabaseError = null;
   }
-  return mode;
-}
 
-export function getConfigPath() {
-  const envPath = process.env.CONFIG_PATH || "./config/config.json";
-  return path.resolve(process.cwd(), envPath);
-}
-
-function getBlobAccountUrl() {
-  return String(process.env.BLOB_ACCOUNT_URL || process.env.AZURE_STORAGE_ACCOUNT_URL || "").trim();
-}
-
-function getBlobContainerName() {
-  return String(process.env.CONFIG_BLOB_CONTAINER || process.env.BLOB_CONTAINER_NAME || "").trim();
-}
-
-function getBlobName() {
-  return String(process.env.CONFIG_BLOB_NAME || DEFAULT_CONFIG_BLOB_NAME).trim();
-}
-
-function getBlobCredential() {
-  if (!blobCredential) {
-    blobCredential = new DefaultAzureCredential({
-      managedIdentityClientId: process.env.AZURE_CLIENT_ID || undefined
-    });
+  if (settings.mode === "file") {
+    patch.activeMode = "file";
   }
-  return blobCredential;
+
+  updatePersistenceState(patch);
 }
 
-function getBlobService() {
-  if (!blobServiceClient) {
-    const accountUrl = getBlobAccountUrl();
-    if (!accountUrl) {
-      throw new Error("BLOB_ACCOUNT_URL or AZURE_STORAGE_ACCOUNT_URL is required when persistence mode is blob");
-    }
-    blobServiceClient = new BlobServiceClient(accountUrl, getBlobCredential());
-  }
-  return blobServiceClient;
+function getLocalReadCandidates(settings) {
+  return [...new Set([settings.configPath, settings.compatibilityPath].filter(Boolean))];
 }
 
 async function ensureLocalDirectory(filePath) {
@@ -201,13 +197,122 @@ async function writeLocalConfigText(filePath, text) {
   await fs.writeFile(filePath, text, "utf8");
 }
 
-async function readBlobConfigText() {
-  const containerName = getBlobContainerName();
-  if (!containerName) {
-    throw new Error("CONFIG_BLOB_CONTAINER or BLOB_CONTAINER_NAME is required when persistence mode is blob");
+async function tryReadLocalConfigText(filePath) {
+  try {
+    return await readLocalConfigText(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    throw error;
   }
-  const containerClient = getBlobService().getContainerClient(containerName);
-  const blobClient = containerClient.getBlockBlobClient(getBlobName());
+}
+
+async function readLocalCacheText(settings) {
+  for (const filePath of getLocalReadCandidates(settings)) {
+    const text = await tryReadLocalConfigText(filePath);
+    if (text != null) {
+      return text;
+    }
+  }
+  return null;
+}
+
+async function readPrimaryLocalConfigText(settings) {
+  const cached = await readLocalCacheText(settings);
+  if (cached != null) {
+    updatePersistenceState({ activeMode: "file" });
+    return cached;
+  }
+  return readLocalConfigText(settings.configPath);
+}
+
+async function writeLocalCacheText(settings, text) {
+  const targets = new Set([settings.configPath]);
+  if (settings.compatibilityExportEnabled) {
+    targets.add(settings.compatibilityPath);
+  }
+  for (const targetPath of targets) {
+    await writeLocalConfigText(targetPath, text);
+  }
+}
+
+function describeBlobTarget(settings) {
+  const accountUrl = settings.blob.accountUrl || "<missing-account-url>";
+  const containerName = settings.blob.containerName || "<missing-container>";
+  const blobName = settings.blob.blobName || DEFAULT_CONFIG_BLOB_NAME;
+  return `${accountUrl}/${containerName}/${blobName}`;
+}
+
+function getBlobCredential() {
+  if (!blobCredential) {
+    blobCredential = new DefaultAzureCredential({
+      managedIdentityClientId: process.env.AZURE_CLIENT_ID || undefined
+    });
+  }
+  return blobCredential;
+}
+
+function getBlobService(settings) {
+  if (!settings.blob.accountUrl) {
+    throw new Error("BLOB_ACCOUNT_URL or persistence.configStore.blob.accountUrl is required when persistence mode is blob");
+  }
+
+  if (!blobServiceClient || blobServiceKey !== settings.blob.accountUrl) {
+    blobServiceClient = new BlobServiceClient(settings.blob.accountUrl, getBlobCredential());
+    blobServiceKey = settings.blob.accountUrl;
+  }
+
+  return blobServiceClient;
+}
+
+function isBlobAuthorizationError(error) {
+  return error?.statusCode === 403 || error?.details?.errorCode === "AuthorizationPermissionMismatch" || error?.code === "AuthorizationPermissionMismatch";
+}
+
+function markBlobReady(settings, reason) {
+  updatePersistenceState({
+    configuredMode: settings.mode,
+    activeMode: "blob",
+    blobAccessState: "ready",
+    pendingBlobSync: false,
+    lastBlobError: null
+  });
+  emitPersistenceEvent("log", "persistence.blob_ready", {
+    reason,
+    target: describeBlobTarget(settings),
+    activeMode: persistenceState.activeMode
+  });
+}
+
+function markBlobDegraded(settings, error, patch = {}) {
+  updatePersistenceState({
+    configuredMode: settings.mode,
+    activeMode: "file",
+    blobAccessState: "degraded",
+    lastBlobError: snapshotError(error),
+    ...patch
+  });
+}
+
+function scheduleBlobRecovery(settings) {
+  if (settings.mode !== "blob" || persistenceState.blobAccessState === "ready" || blobRecoveryTimer || blobRecoveryRunning) {
+    return;
+  }
+
+  blobRecoveryTimer = setTimeout(() => {
+    blobRecoveryTimer = null;
+    void recoverBlobAccess();
+  }, settings.blob.healthProbeIntervalMs);
+}
+
+async function readBlobConfigText(settings) {
+  if (!settings.blob.containerName) {
+    throw new Error("CONFIG_BLOB_CONTAINER or persistence.configStore.blob.container is required when persistence mode is blob");
+  }
+
+  const containerClient = getBlobService(settings).getContainerClient(settings.blob.containerName);
+  const blobClient = containerClient.getBlockBlobClient(settings.blob.blobName);
   try {
     const response = await blobClient.download();
     const chunks = [];
@@ -223,14 +328,14 @@ async function readBlobConfigText() {
   }
 }
 
-async function writeBlobConfigText(text) {
-  const containerName = getBlobContainerName();
-  if (!containerName) {
-    throw new Error("CONFIG_BLOB_CONTAINER or BLOB_CONTAINER_NAME is required when persistence mode is blob");
+async function writeBlobConfigText(settings, text) {
+  if (!settings.blob.containerName) {
+    throw new Error("CONFIG_BLOB_CONTAINER or persistence.configStore.blob.container is required when persistence mode is blob");
   }
-  const containerClient = getBlobService().getContainerClient(containerName);
+
+  const containerClient = getBlobService(settings).getContainerClient(settings.blob.containerName);
   await containerClient.createIfNotExists();
-  const blobClient = containerClient.getBlockBlobClient(getBlobName());
+  const blobClient = containerClient.getBlockBlobClient(settings.blob.blobName);
   await blobClient.upload(text, Buffer.byteLength(text), {
     blobHTTPHeaders: {
       blobContentType: "application/json; charset=utf-8"
@@ -238,98 +343,292 @@ async function writeBlobConfigText(text) {
   });
 }
 
-async function tryReadLocalConfigText(filePath) {
-  try {
-    return await readLocalConfigText(filePath);
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return null;
-    }
-    throw error;
+async function recoverBlobAccess() {
+  const settings = resolvePersistenceSettings();
+  if (settings.mode !== "blob" || persistenceState.blobAccessState === "ready" || blobRecoveryRunning) {
+    return;
   }
+
+  blobRecoveryRunning = true;
+  try {
+    if (persistenceState.pendingBlobSync) {
+      const localText = await readLocalCacheText(settings);
+      if (localText != null) {
+        await writeBlobConfigText(settings, localText);
+        markBlobReady(settings, "synced");
+        return;
+      }
+    }
+
+    await readBlobConfigText(settings);
+    markBlobReady(settings, "probe");
+  } catch (error) {
+    markBlobDegraded(settings, error);
+    emitPersistenceEvent("warn", "persistence.blob_probe_failed", {
+      target: describeBlobTarget(settings),
+      activeMode: persistenceState.activeMode,
+      pendingBlobSync: persistenceState.pendingBlobSync,
+      error: persistenceState.lastBlobError
+    });
+  } finally {
+    blobRecoveryRunning = false;
+    if (persistenceState.blobAccessState !== "ready") {
+      scheduleBlobRecovery(settings);
+    }
+  }
+}
+
+function describeDatabaseTarget(settings) {
+  return `${settings.database.provider}:${settings.database.schemaName}.${settings.database.tableName}/${settings.database.configKey}`;
+}
+
+function getDatabasePool(settings) {
+  if (!settings.database.connectionString) {
+    throw new Error("CONFIG_DB_CONNECTION_STRING, DATABASE_URL, or persistence.configStore.database.connectionRef is required when persistence mode is database");
+  }
+
+  return getSharedPostgresPool(buildPostgresPoolOptions(settings.database));
+}
+
+async function ensureDatabaseTable(settings) {
+  const pool = getDatabasePool(settings);
+  const schemaName = quoteIdentifier(settings.database.schemaName, "persistence.configStore.database.schema");
+  const tableName = quoteIdentifier(settings.database.tableName, "persistence.configStore.database.tableName");
+  await pool.query(`CREATE SCHEMA IF NOT EXISTS ${schemaName}`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${schemaName}.${tableName} (
+      config_key TEXT PRIMARY KEY,
+      config_json JSONB NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
+function markDatabaseReady(settings, reason) {
+  updatePersistenceState({
+    configuredMode: settings.mode,
+    activeMode: "database",
+    databaseAccessState: "ready",
+    pendingDatabaseSync: false,
+    lastDatabaseError: null
+  });
+  emitPersistenceEvent("log", "persistence.database_ready", {
+    reason,
+    target: describeDatabaseTarget(settings),
+    activeMode: persistenceState.activeMode
+  });
+}
+
+function markDatabaseDegraded(settings, error, patch = {}) {
+  updatePersistenceState({
+    configuredMode: settings.mode,
+    activeMode: "file",
+    databaseAccessState: "degraded",
+    lastDatabaseError: snapshotError(error),
+    ...patch
+  });
+}
+
+async function readDatabaseConfigText(settings) {
+  await ensureDatabaseTable(settings);
+  const pool = getDatabasePool(settings);
+  const schemaName = quoteIdentifier(settings.database.schemaName, "persistence.configStore.database.schema");
+  const tableName = quoteIdentifier(settings.database.tableName, "persistence.configStore.database.tableName");
+  const result = await pool.query(
+    `SELECT config_json FROM ${schemaName}.${tableName} WHERE config_key = $1 LIMIT 1`,
+    [settings.database.configKey]
+  );
+  if (!result.rows.length) {
+    return null;
+  }
+  return JSON.stringify(result.rows[0].config_json, null, 2);
+}
+
+async function writeDatabaseConfigText(settings, text) {
+  await ensureDatabaseTable(settings);
+  const pool = getDatabasePool(settings);
+  const schemaName = quoteIdentifier(settings.database.schemaName, "persistence.configStore.database.schema");
+  const tableName = quoteIdentifier(settings.database.tableName, "persistence.configStore.database.tableName");
+  const parsed = JSON.parse(text);
+  await pool.query(
+    `
+      INSERT INTO ${schemaName}.${tableName} (config_key, config_json, version, updated_at)
+      VALUES ($1, $2::jsonb, 1, NOW())
+      ON CONFLICT (config_key) DO UPDATE
+      SET config_json = EXCLUDED.config_json,
+          version = ${tableName}.version + 1,
+          updated_at = NOW()
+    `,
+    [settings.database.configKey, JSON.stringify(parsed)]
+  );
+}
+
+async function resolveBootstrapSettings() {
+  if (runtimeConfig) {
+    return resolvePersistenceSettings(runtimeConfig);
+  }
+
+  const fallbackSettings = resolvePersistenceSettings(null);
+  const bootstrapText = await readLocalCacheText(fallbackSettings);
+  const bootstrapConfig = safeParseJson(bootstrapText);
+  return bootstrapConfig ? resolvePersistenceSettings(bootstrapConfig) : fallbackSettings;
+}
+
+export function setPersistenceConfig(config) {
+  runtimeConfig = config || null;
+  applyConfiguredMode(resolvePersistenceSettings(runtimeConfig));
 }
 
 export async function readPersistedConfigText() {
-  const mode = getPersistenceMode();
-  const filePath = getConfigPath();
-  if (mode !== "blob") {
-    return readLocalConfigText(filePath);
-  }
+  const settings = await resolveBootstrapSettings();
+  applyConfiguredMode(settings);
 
-  if (persistenceState.pendingBlobSync) {
-    const localText = await tryReadLocalConfigText(filePath);
-    if (localText != null) {
-      scheduleBlobRecovery();
-      return localText;
-    }
-  }
-
-  let blobText;
-  try {
-    blobText = await readBlobConfigText();
-    markBlobReady("read");
-  } catch (error) {
-    if (isBlobAuthorizationError(error)) {
-      const localText = await tryReadLocalConfigText(filePath);
+  if (settings.mode === "blob") {
+    if (persistenceState.pendingBlobSync) {
+      const localText = await readLocalCacheText(settings);
       if (localText != null) {
-        markBlobDegraded(error);
-        emitPersistenceEvent("warn", "startup.persistence_blob_fallback", {
-          reason: error?.details?.errorCode || error?.code || "AuthorizationFailed",
-          target: describeBlobTarget(),
-          configPath: filePath,
-          message: "Blob config read is not authorized. Falling back to local cached config.",
-          activeMode: persistenceState.activeMode,
-          pendingBlobSync: persistenceState.pendingBlobSync
-        });
-        scheduleBlobRecovery();
+        scheduleBlobRecovery(settings);
         return localText;
       }
-      throw new Error(`Blob config read is not authorized and no local fallback config exists at ${filePath}. Check Storage Blob Data Contributor or Reader access for ${describeBlobTarget()}.`);
     }
-    throw error;
+
+    try {
+      const blobText = await readBlobConfigText(settings);
+      markBlobReady(settings, "read");
+      if (blobText != null) {
+        await writeLocalCacheText(settings, blobText);
+        return blobText;
+      }
+      const localText = await readLocalCacheText(settings);
+      if (localText != null) {
+        return localText;
+      }
+      return readLocalConfigText(settings.configPath);
+    } catch (error) {
+      const localText = await readLocalCacheText(settings);
+      if (localText != null) {
+        markBlobDegraded(settings, error, { pendingBlobSync: isBlobAuthorizationError(error) });
+        emitPersistenceEvent("warn", "startup.persistence_blob_fallback", {
+          reason: error?.details?.errorCode || error?.code || "BlobReadFailed",
+          target: describeBlobTarget(settings),
+          configPath: settings.configPath,
+          message: "Blob config read failed. Falling back to local cached config.",
+          activeMode: persistenceState.activeMode,
+          pendingBlobSync: persistenceState.pendingBlobSync,
+          error: persistenceState.lastBlobError
+        });
+        scheduleBlobRecovery(settings);
+        return localText;
+      }
+      throw error;
+    }
   }
 
-  if (blobText != null) {
-    await writeLocalConfigText(filePath, blobText);
-    return blobText;
+  if (settings.mode === "database") {
+    try {
+      const databaseText = await readDatabaseConfigText(settings);
+      markDatabaseReady(settings, "read");
+      if (databaseText != null) {
+        await writeLocalCacheText(settings, databaseText);
+        return databaseText;
+      }
+      if (settings.database.readFallbackMode === "lastKnownGood") {
+        const localText = await readLocalCacheText(settings);
+        if (localText != null) {
+          return localText;
+        }
+      }
+      return readLocalConfigText(settings.configPath);
+    } catch (error) {
+      if (settings.database.readFallbackMode === "lastKnownGood") {
+        const localText = await readLocalCacheText(settings);
+        if (localText != null) {
+          markDatabaseDegraded(settings, error, { pendingDatabaseSync: false });
+          emitPersistenceEvent("warn", "startup.persistence_database_fallback", {
+            target: describeDatabaseTarget(settings),
+            configPath: settings.configPath,
+            message: "Database config read failed. Falling back to local cached config.",
+            activeMode: persistenceState.activeMode,
+            error: persistenceState.lastDatabaseError
+          });
+          return localText;
+        }
+      }
+      throw error;
+    }
   }
 
-  return readLocalConfigText(filePath);
+  return readPrimaryLocalConfigText(settings);
 }
 
-export async function writePersistedConfigText(text) {
-  const mode = getPersistenceMode();
-  const filePath = getConfigPath();
-  await writeLocalConfigText(filePath, text);
-  if (mode === "blob") {
+export async function writePersistedConfigText(text, nextConfig = null) {
+  const parsedConfig = nextConfig || safeParseJson(text) || runtimeConfig;
+  const settings = resolvePersistenceSettings(parsedConfig);
+  applyConfiguredMode(settings);
+
+  await writeLocalCacheText(settings, text);
+
+  if (settings.mode === "blob") {
     try {
-      await writeBlobConfigText(text);
-      markBlobReady("write");
+      await writeBlobConfigText(settings, text);
+      markBlobReady(settings, "write");
     } catch (error) {
-      markBlobDegraded(error, { pendingBlobSync: true });
+      markBlobDegraded(settings, error, { pendingBlobSync: true });
       emitPersistenceEvent("warn", "persistence.blob_write_deferred", {
-        target: describeBlobTarget(),
-        configPath: filePath,
+        target: describeBlobTarget(settings),
+        configPath: settings.configPath,
         message: "Blob config write failed. Local config was updated and blob sync will retry in the background.",
         activeMode: persistenceState.activeMode,
         pendingBlobSync: persistenceState.pendingBlobSync,
         error: persistenceState.lastBlobError
       });
-      scheduleBlobRecovery();
+      scheduleBlobRecovery(settings);
     }
+    return;
   }
+
+  if (settings.mode === "database") {
+    try {
+      await writeDatabaseConfigText(settings, text);
+      markDatabaseReady(settings, "write");
+    } catch (error) {
+      markDatabaseDegraded(settings, error, { pendingDatabaseSync: true });
+      emitPersistenceEvent("warn", "persistence.database_write_deferred", {
+        target: describeDatabaseTarget(settings),
+        configPath: settings.configPath,
+        message: "Database config write failed. Local config was updated and remains the last known good copy.",
+        activeMode: persistenceState.activeMode,
+        pendingDatabaseSync: persistenceState.pendingDatabaseSync,
+        error: persistenceState.lastDatabaseError
+      });
+    }
+    return;
+  }
+
+  updatePersistenceState({ activeMode: "file" });
 }
 
-export function getPersistenceSummary() {
+export function getPersistenceSummary(config = runtimeConfig) {
+  const settings = resolvePersistenceSettings(config);
+  applyConfiguredMode(settings);
   return {
-    mode: getPersistenceMode(),
+    mode: settings.mode,
     activeMode: persistenceState.activeMode,
     blobAccessState: persistenceState.blobAccessState,
     pendingBlobSync: persistenceState.pendingBlobSync,
     lastBlobError: persistenceState.lastBlobError,
-    configPath: getConfigPath(),
-    blobAccountUrl: getBlobAccountUrl(),
-    blobContainerName: getBlobContainerName(),
-    configBlobName: getBlobName()
+    databaseAccessState: persistenceState.databaseAccessState,
+    pendingDatabaseSync: persistenceState.pendingDatabaseSync,
+    lastDatabaseError: persistenceState.lastDatabaseError,
+    configPath: settings.configPath,
+    compatibilityPath: settings.compatibilityPath,
+    blobAccountUrl: settings.blob.accountUrl,
+    blobContainerName: settings.blob.containerName,
+    configBlobName: settings.blob.blobName,
+    databaseProvider: settings.database.provider,
+    databaseSchema: settings.database.schemaName,
+    databaseTableName: settings.database.tableName,
+    databaseConfigKey: settings.database.configKey
   };
 }

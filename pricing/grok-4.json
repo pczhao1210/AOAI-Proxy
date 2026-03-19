@@ -1,0 +1,56 @@
+{
+  "id": "grok-4",
+  "displayName": "Grok 4",
+  "provider": "xai",
+  "family": "grok-4",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "xai-official",
+    "status": "published",
+    "inputPer1mTokens": 3,
+    "cachedInputPer1mTokens": 0.75,
+    "outputPer1mTokens": 15,
+    "inputPer1kTokens": 0.003,
+    "cachedInputPer1kTokens": 0.00075,
+    "outputPer1kTokens": 0.015
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.003,
+    "cachedInputPer1kTokens": 0.00075,
+    "outputPer1kTokens": 0.015
+  },
+  "proxyTemplate": {
+    "id": "grok-4",
+    "displayName": "Grok 4",
+    "targetModel": "grok-4",
+    "capabilities": [
+      "reasoning",
+      "function-calling"
+    ],
+    "pricingRef": "grok-4"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#xai-models-sold-directly-by-azure",
+    "pricing": "https://docs.x.ai/developers/models"
+  },
+  "notes": [
+    "xAI 定价页公开的是带日期的稳定模型行，这里将 grok-4 映射为当前稳定 grok-4 价格。"
+  ]
+}

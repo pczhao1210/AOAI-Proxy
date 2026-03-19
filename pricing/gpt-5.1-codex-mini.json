@@ -1,0 +1,63 @@
+{
+  "id": "gpt-5.1-codex-mini",
+  "displayName": "GPT-5.1 Codex Mini",
+  "provider": "azure-openai",
+  "family": "gpt-5.1",
+  "modelVersion": "2025-11-13",
+  "status": "ga",
+  "interfaces": [
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "vision",
+    "code-optimized",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 0.25,
+    "cachedInputPer1mTokens": 0.03,
+    "outputPer1mTokens": 2,
+    "inputPer1kTokens": 0.00025,
+    "cachedInputPer1kTokens": 0.00003,
+    "outputPer1kTokens": 0.002
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00025,
+    "cachedInputPer1kTokens": 0.00003,
+    "outputPer1kTokens": 0.002
+  },
+  "proxyTemplate": {
+    "id": "gpt-5.1-codex-mini",
+    "displayName": "GPT-5.1 Codex Mini",
+    "targetModel": "gpt-5.1-codex-mini",
+    "capabilities": [
+      "vision",
+      "code-optimized",
+      "function-calling",
+      "structured-outputs",
+      "parallel-tool-calling"
+    ],
+    "pricingRef": "gpt-5.1-codex-mini",
+    "routes": {
+      "*": "responses"
+    }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

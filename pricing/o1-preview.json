@@ -1,0 +1,51 @@
+{
+  "id": "o1-preview",
+  "displayName": "o1 Preview",
+  "provider": "azure-openai",
+  "family": "o-series",
+  "modelVersion": "2024-09-12",
+  "status": "preview",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-data-zone",
+    "status": "published",
+    "inputPer1mTokens": 16.5,
+    "cachedInputPer1mTokens": 8.25,
+    "outputPer1mTokens": 66,
+    "inputPer1kTokens": 0.0165,
+    "cachedInputPer1kTokens": 0.00825,
+    "outputPer1kTokens": 0.066
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.0165,
+    "cachedInputPer1kTokens": 0.00825,
+    "outputPer1kTokens": 0.066
+  },
+  "proxyTemplate": {
+    "id": "o1-preview",
+    "displayName": "o1 Preview",
+    "targetModel": "o1-preview",
+    "capabilities": [
+      "reasoning"
+    ],
+    "pricingRef": "o1-preview"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

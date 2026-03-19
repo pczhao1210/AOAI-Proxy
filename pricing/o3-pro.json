@@ -1,0 +1,53 @@
+{
+  "id": "o3-pro",
+  "displayName": "o3 Pro",
+  "provider": "azure-openai",
+  "family": "o-series",
+  "modelVersion": "2025-06-10",
+  "status": "ga",
+  "interfaces": [
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "unpublished",
+    "status": "unavailable"
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "o3-pro",
+    "displayName": "o3 Pro",
+    "targetModel": "o3-pro",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling",
+      "structured-outputs"
+    ],
+    "pricingRef": "o3-pro",
+    "routes": {
+      "*": "responses"
+    }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  },
+  "notes": [
+    "Azure 模型能力已公开，但公开抓取的官方定价页未提供 o3-pro 的独立费率。"
+  ]
+}

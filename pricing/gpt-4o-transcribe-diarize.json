@@ -1,0 +1,44 @@
+{
+  "id": "gpt-4o-transcribe-diarize",
+  "displayName": "GPT-4o Transcribe Diarize",
+  "provider": "azure-openai",
+  "family": "gpt-4o",
+  "modelVersion": "2025-10-15",
+  "status": "ga",
+  "interfaces": [
+    "audio/transcriptions"
+  ],
+  "inputModalities": [
+    "audio",
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "transcription",
+    "speech-to-text",
+    "speaker-diarization"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 2.5,
+    "outputPer1mTokens": 10,
+    "inputPer1kTokens": 0.0025,
+    "outputPer1kTokens": 0.01,
+    "channels": {
+      "audio": {
+        "inputPer1mTokens": 6,
+        "inputPer1kTokens": 0.006
+      }
+    }
+  },
+  "pricingCatalogEntry": null,
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

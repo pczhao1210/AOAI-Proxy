@@ -2,6 +2,14 @@
 
 This folder contains a service-catalog style Azure Managed Application package source.
 
+The packaged portal experience is now database-first:
+
+- Default persistence mode is PostgreSQL
+- The custom UI exposes database server name, database name, admin username, admin password, and SKU selection
+- Leaving the database name empty auto-creates `aoaiproxy`
+- The default PostgreSQL size is `Burstable` + `Standard_B1ms`
+- Storage account inputs stay hidden unless the user explicitly switches to Azure Files or Blob
+
 Required package files:
 
 - `mainTemplate.json`
@@ -41,7 +49,7 @@ az managedapp definition create \
   --main-template @mainTemplate.json
 ```
 
-Example using a package zip uploaded to blob storage:
+Example using a package zip uploaded to Blob Storage:
 
 ```bash
 az managedapp definition create \
@@ -54,6 +62,8 @@ az managedapp definition create \
   --authorizations <principalId>:<roleDefinitionId> \
   --package-file-uri https://<storage>.blob.core.windows.net/<container>/app.zip
 ```
+
+The custom UI passes database parameters, storage parameters, Foundry resource selection, and registry credentials into the deployment template. The template creates only the resources required by the chosen persistence mode.
 
 ## Deploy An Instance
 

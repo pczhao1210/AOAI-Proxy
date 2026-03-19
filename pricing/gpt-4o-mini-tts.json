@@ -1,0 +1,40 @@
+{
+  "id": "gpt-4o-mini-tts",
+  "displayName": "GPT-4o Mini TTS",
+  "provider": "azure-openai",
+  "family": "gpt-4o",
+  "modelVersion": "2025-12-15",
+  "status": "preview",
+  "interfaces": [
+    "audio/speech"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "audio"
+  ],
+  "capabilities": [
+    "text-to-speech",
+    "speech-generation"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 0.6,
+    "inputPer1kTokens": 0.0006,
+    "channels": {
+      "audio": {
+        "outputPer1mTokens": 12,
+        "outputPer1kTokens": 0.012
+      }
+    }
+  },
+  "pricingCatalogEntry": null,
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "id": "gpt-oss-120b",
+  "displayName": "GPT OSS 120B",
+  "provider": "azure-openai",
+  "family": "gpt-oss",
+  "modelVersion": null,
+  "status": "preview",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "streaming",
+    "function-calling",
+    "structured-outputs"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 0.15,
+    "outputPer1mTokens": 0.6,
+    "inputPer1kTokens": 0.00015,
+    "outputPer1kTokens": 0.0006
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00015,
+    "outputPer1kTokens": 0.0006
+  },
+  "proxyTemplate": {
+    "id": "gpt-oss-120b",
+    "displayName": "GPT OSS 120B",
+    "targetModel": "gpt-oss-120b",
+    "capabilities": [
+      "reasoning",
+      "streaming",
+      "function-calling",
+      "structured-outputs"
+    ],
+    "pricingRef": "gpt-oss-120b"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-oss",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

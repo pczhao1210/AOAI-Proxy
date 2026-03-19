@@ -4,7 +4,7 @@
 
 [English](../README.md) | [简体中文](README.zh-CN.md) | [Docs Index](README.md)
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Fazure-deploy%2Finfra%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Faoai-nextgen%2Finfra%2Fazuredeploy.json)
 
 ## 概述
 
@@ -24,21 +24,34 @@
 
 说明：Deploy to Azure 按钮指向 ARM JSON 模板，因为 Azure Portal 的远程模板按钮当前不直接支持远程 Bicep 文件。
 补充：标准的原始模板 Deploy to Azure 流程不会自动使用 `createUiDefinition.json`。如果需要 Portal 中更友好的资源选择界面，需要使用 Azure Managed Application 打包与发布流程。
+补充：当前部署模板已经区分 `new` 和 `existing` 资源路径，在受 Azure Policy 限制的环境里可以复用预先创建好的 Azure Files、Blob 或 PostgreSQL 资源，而不是强制新建。
 
 ## 持久化方式
 
-当前支持在部署时选择持久化方式。
+当前支持在部署时选择持久化方式，且 Azure 模板默认使用 `database`。
+
+### `database`
+
+- Bicep、ARM 和 Portal 自定义 UI 的默认模式
+- 自动创建 Azure Database for PostgreSQL Flexible Server，并以安全环境变量方式注入连接串
+- 部署时可以选择新建 PostgreSQL 资源，或复用现有 server/database
+- Azure 模板中如果 `databaseName` 为空，会自动创建 `aoaiproxy`
+- 应用会在该数据库内自动创建 schema、table 和配置行
+- 只负责代理配置持久化，不会自动把 `/app/data` 变成持久卷
+- 在纯 `database` 模式下，本地缓存文件、生成的 Caddyfile、ACME 证书和 Caddy 状态仍是容器本地数据，替换容器后不会保留
 
 ### `azureFile`
 
 - 保留当前 ACI + Azure Files 挂载 `/app/data`
 - 适合需要文件系统语义的配置、Caddyfile 与 Caddy 状态持久化
+- 部署时可以选择新建 storage/share，或复用现有资源
 - ACI 挂载本身仍依赖存储账号密钥
 
 ### `blob`
 
 - 使用 Blob SDK 在应用层保存和读取配置文件
 - 通过 `DefaultAzureCredential` 和托管身份访问 Blob
+- 部署时可以选择新建 storage/container，或复用现有资源
 - 不替代 `/app/data` 的 Azure Files 挂载语义，只解决配置读写与恢复问题
 - 如果 Blob RBAC 还未生效，启动时会先回退到本地缓存配置 `/app/data/config.json`
 - 在 Blob 暂时不可用期间，配置写入会先落到本地文件，并在后台持续重试同步到 Blob
@@ -126,11 +139,14 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 
 ### 持久化模式
 
-- `PERSISTENCE_MODE=azureFile|blob`
+- `PERSISTENCE_MODE=database|azureFile|blob`
+- `CONFIG_DB_CONNECTION_STRING` 或 `DATABASE_URL`，用于 `database` 模式
 - `AZURE_STORAGE_ACCOUNT_URL=https://<storage>.blob.core.windows.net`
 - `CONFIG_BLOB_CONTAINER=<container-name>`
 - `CONFIG_BLOB_NAME=config/config.json`
 - `BLOB_RECOVERY_INTERVAL_MS=30000`，控制回退到本地缓存后重试 Blob 的间隔
+
+在 `database` 模式下，应用会优先从 PostgreSQL 读取配置，并保留本地缓存用于启动引导和降级回退。
 
 在 `blob` 模式下，应用会优先从 Blob 读取配置；如果 Blob 中还没有配置文件，则回退到本地缓存配置。
 
@@ -230,18 +246,27 @@ az deployment group create \
 模板会创建或配置：
 
 - 启用系统分配托管身份的 Container Group
-- Storage Account
+- `persistenceMode=database` 时的 Azure Database for PostgreSQL Flexible Server、允许 Azure 服务访问的防火墙规则，以及数据库子资源
+- 仅在 `persistenceMode=azureFile` 或 `persistenceMode=blob` 时创建 Storage Account
 - `persistenceMode=azureFile` 时的 Azure Files 共享
 - `persistenceMode=blob` 时的 Blob Container
+- `persistenceMode=database` 时向容器安全注入 `CONFIG_DB_CONNECTION_STRING`
 - `blob` 模式下会给容器托管身份和当前部署发起者同时授予 Blob 容器级别的 `Storage Blob Data Contributor` 角色
 - 面向目标 Azure OpenAI 资源的 `Cognitive Services OpenAI User` 角色授权
 
 目标 Azure OpenAI / Foundry 资源可以位于同一订阅下的不同资源组；不在当前部署资源组时，设置 `cognitiveServicesAccountResourceGroup` 即可。
-`storageAccountName` 参数表示要新建的存储账号名称，当前模板不支持直接选择或复用已有存储账号。
+如果 `storageAccountName` 为空，模板会在存储模式下自动生成一个合法名称。
+如果 `databaseServerName` 为空，模板会自动生成 PostgreSQL 服务器名。
+如果 `databaseName` 为空，模板会创建 `aoaiproxy`。
+PostgreSQL 默认规格是 `Burstable` + `Standard_B1ms` + `32 GB`，对应微软文档里最小的开发向规格。
+
+当前限制：这套 ACI 模板没有稳定可选的 ARM64 机型参数，因此当前落地的是最小 PostgreSQL 开发规格默认值，而不是显式 ARM 系列运行时选择。
 
 ### 使用 Azure Managed Application 与自定义 UI 部署
 
 如果希望在 Azure Portal 中使用资源选择器，而不是原始参数页，请使用 [../infra/azure_deployment_with_UI](../infra/azure_deployment_with_UI) 里的 Managed Application 包源文件。
+
+这套自定义 UI 现在默认走 PostgreSQL 配置持久化，并暴露数据库服务器名、数据库名、管理员账号和 SKU 选择；只有切换到 Azure Files 或 Blob 时才显示存储相关输入。
 
 打包要求：`mainTemplate.json` 和 `createUiDefinition.json` 必须位于 zip 根目录。
 
@@ -279,7 +304,7 @@ az managedapp create \
 
 这套 UI 支持在 Portal 中直接选择已有的 Foundry 或 Azure OpenAI 资源，并自动把对应资源组传给模板。
 
-## ACI 持久化与 RBAC
+## ACI 持久化、数据库说明与 RBAC
 
 - Azure Files 指南：[aci_persist_vol.md](aci_persist_vol.md)
 - English version: [aci_persist_vol.en.md](aci_persist_vol.en.md)

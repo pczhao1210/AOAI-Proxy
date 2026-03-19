@@ -1,0 +1,61 @@
+{
+  "id": "gpt-5-nano",
+  "displayName": "GPT-5 Nano",
+  "provider": "azure-openai",
+  "family": "gpt-5",
+  "modelVersion": "2025-08-07",
+  "status": "ga",
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 0.05,
+    "cachedInputPer1mTokens": 0.01,
+    "outputPer1mTokens": 0.4,
+    "inputPer1kTokens": 0.00005,
+    "cachedInputPer1kTokens": 0.00001,
+    "outputPer1kTokens": 0.0004
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00005,
+    "cachedInputPer1kTokens": 0.00001,
+    "outputPer1kTokens": 0.0004
+  },
+  "proxyTemplate": {
+    "id": "gpt-5-nano",
+    "displayName": "GPT-5 Nano",
+    "targetModel": "gpt-5-nano",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling",
+      "structured-outputs",
+      "parallel-tool-calling"
+    ],
+    "pricingRef": "gpt-5-nano"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

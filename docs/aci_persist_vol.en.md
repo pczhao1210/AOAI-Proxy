@@ -1,28 +1,39 @@
-# ACI Persistence (Azure Files + Blob Config Option)
+# ACI Persistence Modes (Database + Azure Files + Blob)
 
-This document explains how to keep Azure Files mounted at `/app/data` while optionally adding Blob SDK-based config persistence for deployments that want managed identity access to configuration storage.
+This document explains the persistence choices for AOAI Proxy when you deploy it to Azure Container Instances.
+
+Important distinction:
+
+- The Bicep and ARM templates in this repo now default to `database` mode and create the PostgreSQL server and database for you.
+- The raw `az container create` flow in this document does not provision PostgreSQL automatically. If you choose `database`, you must already have a working PostgreSQL connection string.
 
 ## Persistence Modes
 
-Two deployment modes are now supported:
+Three modes are supported:
 
-- `azureFile`: keep the Azure Files mount at `/app/data` for config, Caddyfile, and Caddy state
-- `blob`: use Blob SDK + managed identity for config reads and writes at the application layer
+- `database`: persist proxy config in PostgreSQL
+- `azureFile`: mount Azure Files at `/app/data` for config, Caddyfile, ACME certificates, and Caddy state
+- `blob`: persist config through Blob SDK and managed identity
 
 Important constraints:
 
-- `blob` mode does not replace Azure Files volume semantics
-- ACI native Azure Files mounting still requires the storage account key
-- If you need fully keyless auth and still require `/app/data` mount semantics, move to ACA, AKS, or a VM-based deployment
+- `database` mode persists proxy configuration only. It does not make `/app/data` durable.
+- In pure `database` mode, generated Caddyfile, ACME certificates, and Caddy state remain container-local and are lost when the container group is replaced.
+- The app auto-creates schema, table, and config row in PostgreSQL, but the raw ACI flow still expects the PostgreSQL database resource itself to already exist.
+- `blob` mode does not replace Azure Files mount semantics.
+- ACI native Azure Files mounting still requires the storage account key.
+- If you need fully keyless auth and still require `/app/data` mount semantics, move to ACA, AKS, or a VM-based deployment.
 
 ## Variables
+
 Replace the following variables as needed:
+
 - Resource group: `<rg>`
-- Region: `<region>` (e.g., `japaneast`)
-- Storage account: `<storage>` (globally unique, lowercase)
+- Region: `<region>`
+- Storage account: `<storage>`
 - File share: `<share>`
 - Container name: `<aciName>`
-- DNS label (optional): `<dnsLabel>` (unique, lowercase)
+- DNS label: `<dnsLabel>`
 
 Recommended environment variables:
 
@@ -41,7 +52,11 @@ export DNS_LABEL=<dnsLabel>
 az group create -n "$RG" -l "$REGION"
 ```
 
-## 2) Create storage account
+## 2) Create storage resources for `azureFile` or `blob`
+
+Skip this section when you use `database` mode only.
+
+Create the storage account:
 
 ```bash
 az storage account create \
@@ -52,9 +67,7 @@ az storage account create \
   --kind StorageV2
 ```
 
-## 3) Create Azure Files share
-
-Use AAD (RBAC) to create the share:
+Create the Azure Files share when you plan to use `azureFile` mode:
 
 ```bash
 az storage share create \
@@ -63,13 +76,7 @@ az storage share create \
   --auth-mode login
 ```
 
-> You must be logged in (`az login`) and have Storage File Data SMB Share Contributor (or higher).
-
-## 4) Get storage account key (only if Key Based Auth is allowed)
-
-> ACI Azure Files mount currently requires the account key. If the storage account disables Key Based Auth, temporarily enable Shared Key access or use an alternative deployment.
-
-> If you see `InvalidApiVersionParameter` (e.g., `2025-06-01`), upgrade Azure CLI or set `AZURE_STORAGE_API_VERSION=2025-04-01` and retry.
+Get the storage account key when you plan to use `azureFile` mode:
 
 ```bash
 STORAGE_KEY=$(az storage account keys list \
@@ -80,11 +87,37 @@ STORAGE_KEY=$(az storage account keys list \
 echo "$STORAGE_KEY"
 ```
 
-## 5) Create ACI and choose a persistence mode
+ACI Azure Files mounting still requires the account key. If the storage account disables key-based auth, use a different platform or temporarily allow shared key access.
 
-### 5.1 `azureFile` mode
+## 3) Create ACI and choose a persistence mode
 
-The following command keeps the Azure Files mount and explicitly sets `PERSISTENCE_MODE=azureFile`.
+### 3.1 `database` mode
+
+Use this mode when you want durable proxy configuration but do not need `/app/data` to survive container replacement.
+
+The app can create its schema, table, and config row automatically, but not the PostgreSQL database resource itself. If you want Azure to create the PostgreSQL server and database automatically, use [../infra/main.bicep](../infra/main.bicep) or [../infra/azuredeploy.json](../infra/azuredeploy.json) instead of the raw ACI CLI flow.
+
+```bash
+az container create \
+  -g "$RG" \
+  -n "$ACI_NAME" \
+  --image <image> \
+  --registry-login-server <registry-login-server> \
+  --registry-username <registry-username> \
+  --registry-password <registry-password> \
+  --assign-identity \
+  --cpu 1 --memory 2 \
+  --ports 3000 443 \
+  --dns-name-label "$DNS_LABEL" \
+  --environment-variables \
+    PERSISTENCE_MODE=database \
+    CONFIG_DB_CONNECTION_STRING="postgresql://<user>:<password>@<server>.postgres.database.azure.com:5432/<database>?sslmode=require" \
+  --os-type Linux
+```
+
+### 3.2 `azureFile` mode
+
+Use this mode when you need `/app/data` to survive restart or replacement, including Caddy state.
 
 ```bash
 az container create \
@@ -109,11 +142,9 @@ az container create \
   --os-type Linux
 ```
 
-> If your image is public, remove the `--registry-*` arguments.
+### 3.3 `blob` mode
 
-### 5.2 `blob` mode
-
-If you want to keep ACI but store config through Blob SDK, deploy with blob-specific environment variables instead of the Azure Files mount.
+Use this mode when you want config in Blob Storage but do not need Azure Files volume semantics.
 
 ```bash
 az container create \
@@ -135,7 +166,7 @@ az container create \
   --os-type Linux
 ```
 
-## 6) Verify mount
+## 4) Verify behavior
 
 Check container logs:
 
@@ -143,7 +174,7 @@ Check container logs:
 az container logs -g "$RG" -n "$ACI_NAME"
 ```
 
-List files in the share:
+If you use `azureFile`, list files in the share:
 
 ```bash
 az storage file list \
@@ -152,15 +183,15 @@ az storage file list \
   --output table
 ```
 
-In `azureFile` mode, you should see `config.json` created in the share on first start. Admin saves update files in the share.
+Expected behavior:
 
-In `blob` mode, admin saves upload the latest config to Blob, and the next startup restores from Blob first.
-
-ACME certificates and Caddy state are stored in `/app/data/caddy` and must also be persisted.
+- `database`: config is stored in PostgreSQL and a local cache remains inside the container filesystem. `/app/data/caddy` is not durable unless you add your own persistent volume pattern.
+- `azureFile`: `config.json`, generated Caddyfile, and Caddy state are persisted in the mounted share.
+- `blob`: config is restored from Blob first, but Caddy state is still local to the container.
 
 ## Appendix: Mount Azure Files on Linux VM (SMB)
 
-> Do not hardcode keys in scripts. Use `/etc/smbcredentials/<storage>.cred`.
+Do not hardcode keys in scripts. Use `/etc/smbcredentials/<storage>.cred`.
 
 ```bash
 sudo mkdir -p /media/aoaiproxy
@@ -176,7 +207,7 @@ sudo mount -t cifs //<storage>.file.core.windows.net/<share> /media/aoaiproxy \
   -o credentials=/etc/smbcredentials/<storage>.cred,dir_mode=0755,file_mode=0755,serverino,nosharesock,mfsymlinks,actimeo=30
 ```
 
-## 7) Restart or re-create
+## 5) Restart or re-create
 
 ```bash
 az container restart -g "$RG" -n "$ACI_NAME"
@@ -186,19 +217,20 @@ If your Azure CLI does not support `az container update`, delete and re-create:
 
 ```bash
 az container delete -g "$RG" -n "$ACI_NAME" -y
-# Then re-run the az container create command above
 ```
 
-Persistence remains intact after restarts.
+## 6) Enable managed identity and grant permissions
 
-## 8) Enable ACI Managed Identity and grant permissions
+This project uses `DefaultAzureCredential` for upstream Azure OpenAI / Foundry access.
 
-This project uses `DefaultAzureCredential`. Enable **system-assigned identity** and grant:
-- Azure Files access for `azureFile` mode
-- Blob write access for `blob` mode
-- Azure OpenAI / Foundry access
+Grant what is relevant for the selected mode:
 
-### 8.1 Enable system-assigned identity
+- `database`: no Storage RBAC is needed for config persistence, but PostgreSQL firewall and networking must allow the container to connect
+- `azureFile`: grant Azure Files runtime access
+- `blob`: grant Blob write access
+- all AAD upstream scenarios: grant Azure OpenAI / Foundry access
+
+### 6.1 Enable system-assigned identity
 
 ```bash
 az container create \
@@ -212,10 +244,6 @@ az container create \
   --cpu 1 --memory 2 \
   --ports 3000 443 \
   --dns-name-label "$DNS_LABEL" \
-  --azure-file-volume-account-name "$STORAGE" \
-  --azure-file-volume-account-key "$STORAGE_KEY" \
-  --azure-file-volume-share-name "$SHARE" \
-  --azure-file-volume-mount-path /app/data \
   --os-type Linux
 ```
 
@@ -226,7 +254,7 @@ ACI_PRINCIPAL_ID=$(az container show -g "$RG" -n "$ACI_NAME" --query identity.pr
 echo "$ACI_PRINCIPAL_ID"
 ```
 
-### 8.2 `azureFile` mode: grant Azure Files RBAC
+### 6.2 `azureFile` mode: grant Azure Files RBAC
 
 ```bash
 STORAGE_ID=$(az storage account show -g "$RG" -n "$STORAGE" --query id -o tsv)
@@ -238,11 +266,9 @@ az role assignment create \
   --scope "$STORAGE_ID"
 ```
 
-> Note: ACI Azure Files mount still needs the account key; RBAC is for runtime access.
+ACI Azure Files mounting still needs the account key. RBAC is for runtime access, not for replacing the mount credential.
 
-### 8.3 `blob` mode: grant Blob write access
-
-Prefer container-level or storage-account-level scope instead of subscription-wide assignments:
+### 6.3 `blob` mode: grant Blob write access
 
 ```bash
 BLOB_SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/$STORAGE/blobServices/default/containers/aoai-proxy-config"
@@ -254,9 +280,13 @@ az role assignment create \
   --scope "$BLOB_SCOPE"
 ```
 
-### 8.4 Grant Azure OpenAI / Foundry access
+### 6.4 `database` mode: allow PostgreSQL connectivity
 
-Prefer resource-level scope instead of subscription-level scope:
+For the template-driven deployment in this repo, `persistenceMode=database` creates a PostgreSQL flexible server, creates the database, injects the connection string securely, and adds a `0.0.0.0` firewall rule so Azure services can connect.
+
+For the raw ACI CLI flow, make sure your PostgreSQL server allows the container to connect.
+
+### 6.5 Grant Azure OpenAI / Foundry access
 
 ```bash
 AOAI_SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG/providers/Microsoft.CognitiveServices/accounts/<aoai-account-name>"
@@ -268,4 +298,4 @@ az role assignment create \
   --scope "$AOAI_SCOPE"
 ```
 
-After this, `DefaultAzureCredential` will use the managed identity to acquire upstream tokens.
+After this, `DefaultAzureCredential` can use the managed identity to acquire upstream tokens.

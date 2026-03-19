@@ -1,0 +1,53 @@
+{
+  "id": "llama4-maverick-instruct",
+  "displayName": "Llama 4 Maverick Instruct",
+  "provider": "meta",
+  "family": "llama-4-maverick",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "vision"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-foundry-models",
+    "status": "published",
+    "inputPer1mTokens": 0.25,
+    "outputPer1mTokens": 1,
+    "inputPer1kTokens": 0.00025,
+    "outputPer1kTokens": 0.001
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00025,
+    "outputPer1kTokens": 0.001
+  },
+  "proxyTemplate": {
+    "id": "llama4-maverick-instruct",
+    "displayName": "Llama 4 Maverick Instruct",
+    "targetModel": "Llama-4-Maverick-17B-128E-Instruct-FP8",
+    "capabilities": [
+      "vision"
+    ],
+    "pricingRef": "llama4-maverick-instruct"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#meta-models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/llama/"
+  },
+  "notes": [
+    "model-router 使用的是简化路由名 llama4-maverick-instruct，这里同时兼容 Azure 模型目录中的完整模型名。",
+    "这里按 Azure Foundry 定价页公开的 Llama4 Maverick 17B Global Serverless 单价回填。"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "id": "DeepSeek-V3.2-Speciale",
+  "displayName": "DeepSeek V3.2 Speciale",
+  "provider": "deepseek",
+  "family": "deepseek-v3.2",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "json-output"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-foundry-models",
+    "status": "published",
+    "inputPer1mTokens": 0.58,
+    "outputPer1mTokens": 1.68,
+    "inputPer1kTokens": 0.00058,
+    "outputPer1kTokens": 0.00168
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00058,
+    "outputPer1kTokens": 0.00168
+  },
+  "proxyTemplate": {
+    "id": "DeepSeek-V3.2-Speciale",
+    "displayName": "DeepSeek V3.2 Speciale",
+    "targetModel": "DeepSeek-V3.2-Speciale",
+    "capabilities": [
+      "reasoning",
+      "json-output"
+    ],
+    "pricingRef": "DeepSeek-V3.2-Speciale"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/deepseek/"
+  },
+  "notes": [
+    "Azure Foundry 定价页当前公开了 DeepSeek V3.2 SP Global 的 Serverless 单价，这里映射到 DeepSeek-V3.2-Speciale。"
+  ]
+}

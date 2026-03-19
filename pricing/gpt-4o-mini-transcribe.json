@@ -1,0 +1,43 @@
+{
+  "id": "gpt-4o-mini-transcribe",
+  "displayName": "GPT-4o Mini Transcribe",
+  "provider": "azure-openai",
+  "family": "gpt-4o",
+  "modelVersion": "2025-12-15",
+  "status": "ga",
+  "interfaces": [
+    "audio/transcriptions"
+  ],
+  "inputModalities": [
+    "audio",
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "transcription",
+    "speech-to-text"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 1.25,
+    "outputPer1mTokens": 5,
+    "inputPer1kTokens": 0.00125,
+    "outputPer1kTokens": 0.005,
+    "channels": {
+      "audio": {
+        "inputPer1mTokens": 3,
+        "inputPer1kTokens": 0.003
+      }
+    }
+  },
+  "pricingCatalogEntry": null,
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

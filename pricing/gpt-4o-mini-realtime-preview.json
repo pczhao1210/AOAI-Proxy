@@ -1,0 +1,52 @@
+{
+  "id": "gpt-4o-mini-realtime-preview",
+  "displayName": "GPT-4o Mini Realtime Preview",
+  "provider": "azure-openai",
+  "family": "gpt-4o",
+  "modelVersion": "2024-12-17",
+  "status": "preview",
+  "interfaces": [
+    "realtime"
+  ],
+  "inputModalities": [
+    "text",
+    "audio"
+  ],
+  "outputModalities": [
+    "text",
+    "audio"
+  ],
+  "capabilities": [
+    "realtime",
+    "audio-input",
+    "audio-output",
+    "streaming"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 0.6,
+    "cachedInputPer1mTokens": 0.3,
+    "outputPer1mTokens": 2.4,
+    "inputPer1kTokens": 0.0006,
+    "cachedInputPer1kTokens": 0.0003,
+    "outputPer1kTokens": 0.0024,
+    "channels": {
+      "audio": {
+        "inputPer1mTokens": 10,
+        "cachedInputPer1mTokens": 0.3,
+        "outputPer1mTokens": 20,
+        "inputPer1kTokens": 0.01,
+        "cachedInputPer1kTokens": 0.0003,
+        "outputPer1kTokens": 0.02
+      }
+    }
+  },
+  "pricingCatalogEntry": null,
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

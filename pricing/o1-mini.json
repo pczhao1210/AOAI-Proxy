@@ -1,0 +1,52 @@
+{
+  "id": "o1-mini",
+  "displayName": "o1 Mini",
+  "provider": "azure-openai",
+  "family": "o-series",
+  "modelVersion": "2024-09-12",
+  "status": "ga",
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 1.1,
+    "cachedInputPer1mTokens": 0.55,
+    "outputPer1mTokens": 4.4,
+    "inputPer1kTokens": 0.0011,
+    "cachedInputPer1kTokens": 0.00055,
+    "outputPer1kTokens": 0.0044
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.0011,
+    "cachedInputPer1kTokens": 0.00055,
+    "outputPer1kTokens": 0.0044
+  },
+  "proxyTemplate": {
+    "id": "o1-mini",
+    "displayName": "o1 Mini",
+    "targetModel": "o1-mini",
+    "capabilities": [
+      "reasoning"
+    ],
+    "pricingRef": "o1-mini"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "id": "gpt-4o",
+  "displayName": "GPT-4o",
+  "provider": "azure-openai",
+  "family": "gpt-4o",
+  "modelVersion": "2024-11-20",
+  "status": "ga",
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "vision",
+    "streaming",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 2.5,
+    "cachedInputPer1mTokens": 1.25,
+    "outputPer1mTokens": 10,
+    "inputPer1kTokens": 0.0025,
+    "cachedInputPer1kTokens": 0.00125,
+    "outputPer1kTokens": 0.01
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.0025,
+    "cachedInputPer1kTokens": 0.00125,
+    "outputPer1kTokens": 0.01
+  },
+  "proxyTemplate": {
+    "id": "gpt-4o",
+    "displayName": "GPT-4o",
+    "targetModel": "gpt-4o",
+    "capabilities": [
+      "vision",
+      "streaming",
+      "function-calling",
+      "structured-outputs",
+      "parallel-tool-calling"
+    ],
+    "pricingRef": "gpt-4o"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

@@ -1,12 +1,15 @@
 {
+  "version": 2,
   "server": {
     "host": "0.0.0.0",
     "port": 3000,
-    "adminPath": "/admin",
-    "adminAuth": {
-      "enabled": true,
-      "username": "admin",
-      "password": "admin"
+    "bodyLimitBytes": 52428800,
+    "trustProxy": false,
+    "gracefulShutdownMs": 10000,
+    "requestId": {
+      "headerName": "x-request-id",
+      "generateIfMissing": true,
+      "forwardToUpstream": true
     },
     "caddy": {
       "enabled": false,
@@ -20,30 +23,6 @@
         "responseHeaderTimeoutMs": 45000,
         "keepAliveTimeoutMs": 120000
       }
-    },
-    "imageCompression": {
-      "enabled": true,
-      "maxSize": 1600,
-      "quality": 0.85,
-      "format": "jpeg"
-    },
-    "upstream": {
-      "connectTimeoutMs": 10000,
-      "requestTimeoutMs": 900000,
-      "firstByteTimeoutMs": 300000,
-      "idleTimeoutMs": 900000,
-      "maxRetries": 0,
-      "retryBaseMs": 800,
-      "retryMaxMs": 8000,
-      "retryStatuses": [408, 409, 425, 429, 500, 502, 503, 504],
-      "pool": {
-        "connections": 64,
-        "keepAliveTimeoutMs": 60000,
-        "keepAliveMaxTimeoutMs": 300000,
-        "headersTimeoutMs": 300000,
-        "bodyTimeoutMs": 0,
-        "pipelining": 1
-      }
     }
   },
   "auth": {
@@ -53,7 +32,258 @@
     "clientSecret": "",
     "managedIdentityClientId": "",
     "scope": "https://cognitiveservices.azure.com/.default",
-    "apiKey": ""
+    "apiKey": "",
+    "credentialRef": ""
+  },
+  "admin": {
+    "basePath": "/admin",
+    "auth": {
+      "enabled": true,
+      "mode": "basic",
+      "username": "admin",
+      "password": "admin",
+      "passwordRef": "",
+      "sessionTtlMs": 86400000,
+      "allowBasicAuth": true,
+      "allowOidc": false
+    },
+    "security": {
+      "allowedIps": [],
+      "csrfProtection": false,
+      "auditAllWrites": true,
+      "maskSecretsInUi": true
+    },
+    "features": {
+      "enableLegacyJsonEditor": true,
+      "enableConfigImportExport": true,
+      "enableDangerousActions": false
+    }
+  },
+  "proxy": {
+    "timeouts": {
+      "connectMs": 10000,
+      "requestMs": 180000,
+      "firstByteMs": 45000,
+      "idleMs": 120000,
+      "maxStreamDurationMs": 0,
+      "allowPerRequestOverride": false,
+      "requestOverrideFields": ["timeoutMs", "streamTimeoutMs", "idleTimeoutMs", "maxStreamDurationMs", "maxRetries"]
+    },
+    "retries": {
+      "maxRetries": 1,
+      "baseDelayMs": 800,
+      "maxDelayMs": 8000,
+      "statuses": [408, 409, 425, 429, 500, 502, 503, 504],
+      "retryBeforeFirstChunkOnly": true,
+      "classifyNetworkErrorsAsRetryable": true
+    },
+    "httpClient": {
+      "implementation": "undici",
+      "connections": 64,
+      "keepAliveTimeoutMs": 60000,
+      "keepAliveMaxTimeoutMs": 300000,
+      "headersTimeoutMs": 300000,
+      "bodyTimeoutMs": 120000,
+      "pipelining": 1,
+      "dnsCacheTtlMs": 300000,
+      "forceIpv4": false
+    },
+    "forwardHeaders": {
+      "mode": "allowlist",
+      "allow": ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-correlation-id"],
+      "deny": ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
+      "addRequestIdHeader": true
+    },
+    "guards": {
+      "maxRequestBodyBytes": 52428800,
+      "maxResponseBodyBytes": 0,
+      "rejectUnknownProxyParams": false,
+      "dropUnsupportedOpenAiParams": false,
+      "sanitizeMeaninglessValues": true
+    }
+  },
+  "routing": {
+    "routeProfiles": {
+      "chatCompletions": {
+        "enabled": true,
+        "defaultParams": {},
+        "allowedRequestFields": []
+      },
+      "responses": {
+        "enabled": true,
+        "defaultParams": {},
+        "allowedRequestFields": []
+      },
+      "imageGenerations": {
+        "enabled": true,
+        "defaultParams": {},
+        "allowedRequestFields": [],
+        "polling": {
+          "intervalMs": 2000,
+          "timeoutMs": 600000
+        }
+      }
+    }
+  },
+  "media": {
+    "inputCompression": {
+      "enabled": true,
+      "maxLongSidePx": 1600,
+      "quality": 0.85,
+      "outputFormat": "jpeg",
+      "minQuality": 0.1,
+      "progressive": false,
+      "useMozJpeg": true
+    },
+    "remoteImages": {
+      "allow": false,
+      "maxDownloadSizeMb": 50,
+      "allowedMimeTypes": ["image/jpeg", "image/png", "image/webp", "image/gif"],
+      "allowedHosts": [],
+      "timeoutMs": 10000
+    },
+    "inlineImages": {
+      "maxBase64Bytes": 20971520,
+      "redactInLogs": true,
+      "logPreviewChars": 64
+    },
+    "generation": {
+      "enabled": true,
+      "defaultModel": "",
+      "requestTimeoutMs": 300000,
+      "pollIntervalMs": 2000,
+      "pollTimeoutMs": 600000,
+      "maxImages": 4,
+      "allowedSizes": [],
+      "allowedQualityModes": []
+    }
+  },
+  "observability": {
+    "logs": {
+      "level": "warn",
+      "sinks": ["memory", "console"],
+      "bufferSize": 100,
+      "redactSecrets": true,
+      "redactApiKeyInfo": true,
+      "messageContentMode": "summary",
+      "maxPayloadLogBytes": 102400,
+      "maxBase64LogChars": 64,
+      "includeClientIp": true,
+      "includeUsage": true,
+      "includeHeaders": false
+    },
+    "logAnalytics": {
+      "enabled": false,
+      "workspaceId": "",
+      "endpoint": "",
+      "dcrImmutableId": "",
+      "streamName": "Custom-AOAIProxyLogs",
+      "audience": "",
+      "credentialRef": "",
+      "tableName": "AOAIProxyLogs",
+      "flushIntervalMs": 10000,
+      "batchSize": 100,
+      "samplingRatio": 1,
+      "maxConcurrency": 1,
+      "maxQueueSize": 5000,
+      "contentMode": "summary",
+      "fieldPolicies": {}
+    },
+    "runtimeStore": {
+      "enabled": true,
+      "connectionRef": "",
+      "schema": "public",
+      "eventsTableName": "runtime_events",
+      "rollupsTableName": "runtime_rollups",
+      "metaTableName": "runtime_store_meta",
+      "detailRetentionDays": 30,
+      "rollupRetentionDays": 365,
+      "rollupBatchSize": 5000,
+      "flushIntervalMs": 1000,
+      "batchSize": 100,
+      "maxQueueSize": 5000
+    }
+  },
+  "persistence": {
+    "configStore": {
+      "mode": "file",
+      "filePath": "./config/config.json",
+      "blob": {
+        "accountUrl": "",
+        "container": "",
+        "path": "config/config.json",
+        "healthProbeIntervalMs": 30000
+      },
+      "database": {
+        "enabled": false,
+        "provider": "postgresql",
+        "connectionRef": "",
+        "schema": "public",
+        "tableName": "proxy_configs",
+        "configKey": "active",
+        "pool": {},
+        "readFallbackMode": "lastKnownGood"
+      }
+    },
+    "cache": {
+      "type": "memory",
+      "ttlMs": 60000
+    },
+    "compatibilityExport": {
+      "enabled": true,
+      "exportLegacyConfigOnChange": true,
+      "legacyConfigPath": "./config/config.json"
+    }
+  },
+  "access": {
+    "defaults": {
+      "requireApiKey": true,
+      "keyHeaderNames": ["Authorization", "x-api-key"],
+      "defaultKeyStatus": "active",
+      "enforceUserField": false,
+      "rejectClientSideMetadataTags": false
+    },
+    "rateLimits": {
+      "windowSeconds": 60,
+      "defaultRpm": 0,
+      "defaultTpm": 0,
+      "defaultConcurrency": 0
+    },
+    "budgets": {
+      "enabled": false,
+      "defaultCurrency": "USD",
+      "defaultWindowType": "monthly",
+      "softLimitRatio": 0.8,
+      "hardLimitAction": "block"
+    },
+    "pricingCatalog": {
+      "gpt-5-mini": {
+        "currency": "USD",
+        "inputPer1kTokens": 0.00025,
+        "cachedInputPer1kTokens": 0.00003,
+        "outputPer1kTokens": 0.002
+      },
+      "gpt-5.2-codex": {
+        "currency": "USD",
+        "inputPer1kTokens": 0.00175,
+        "cachedInputPer1kTokens": 0.00018,
+        "outputPer1kTokens": 0.014
+      }
+    },
+    "keyStorage": {
+      "hashAlgorithm": "sha256",
+      "prefixLength": 8,
+      "rotationGracePeriodMs": 0
+    }
+  },
+  "compatibility": {
+    "enableLegacyConfigRead": true,
+    "enableLegacyConfigWrite": true,
+    "mapServerAdminPathToAdminBasePath": true,
+    "mapImageCompressionToMediaInputCompression": true,
+    "mapServerUpstreamToProxyDefaults": true,
+    "warnOnDeprecatedFields": true,
+    "failOnDeprecatedFieldsAfterVersion": 3
   },
   "apiKeys": [
     {
@@ -65,7 +295,11 @@
   "upstreams": [
     {
       "name": "foundry",
+      "provider": "azure-openai",
       "baseUrl": "https://YOUR-RESOURCE-NAME.openai.azure.com/",
+      "status": "active",
+      "priority": 100,
+      "capabilities": [],
       "routes": {
         "chat/completions": "/openai/v1/chat/completions",
         "responses": "/openai/v1/responses",
@@ -75,15 +309,38 @@
   ],
   "models": [
     {
+      "id": "model-router",
+      "displayName": "model-router",
+      "status": "active",
+      "upstream": "foundry",
+      "targetModel": "model-router",
+      "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs", "parallel-tool-calling"],
+      "pricingRef": "model-router",
+      "defaultParams": {},
+      "routes": {
+        "*": "chat/completions"
+      }
+    },
+    {
       "id": "gpt-5-mini",
+      "displayName": "GPT-5 Mini",
+      "status": "active",
       "upstream": "foundry",
       "targetModel": "gpt-5-mini",
+      "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs", "parallel-tool-calling"],
+      "pricingRef": "gpt-5-mini",
+      "defaultParams": {},
       "routes": {}
     },
     {
       "id": "gpt-5.2-codex",
+      "displayName": "GPT-5.2 Codex",
+      "status": "active",
       "upstream": "foundry",
       "targetModel": "gpt-5.2-codex",
+      "capabilities": ["reasoning", "vision", "code-optimized", "function-calling", "structured-outputs", "parallel-tool-calling"],
+      "pricingRef": "gpt-5.2-codex",
+      "defaultParams": {},
       "routes": {
         "*": "responses"
       }

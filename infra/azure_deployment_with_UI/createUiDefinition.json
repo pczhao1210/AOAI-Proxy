@@ -6,12 +6,13 @@
     "config": {
       "isWizard": true,
       "basics": {
-        "description": "Deploy AOAI Foundry Proxy on Azure Container Instances with either Azure Files or Blob-backed configuration persistence.",
+        "description": "Deploy AOAI Foundry Proxy on Azure Container Instances. The default path uses Azure Database for PostgreSQL for config persistence; Azure Files and Blob remain available for storage-backed deployments.",
         "subscription": {
           "resourceProviders": [
             "Microsoft.ContainerInstance",
             "Microsoft.Storage",
-            "Microsoft.CognitiveServices"
+            "Microsoft.CognitiveServices",
+            "Microsoft.DBforPostgreSQL"
           ]
         },
         "resourceGroup": {
@@ -20,7 +21,8 @@
         "location": {
           "resourceTypes": [
             "Microsoft.ContainerInstance/containerGroups",
-            "Microsoft.Storage/storageAccounts"
+            "Microsoft.Storage/storageAccounts",
+            "Microsoft.DBforPostgreSQL/flexibleServers"
           ]
         }
       }
@@ -117,10 +119,15 @@
             "name": "persistenceMode",
             "type": "Microsoft.Common.OptionsGroup",
             "label": "Persistence mode",
-            "defaultValue": "azureFile",
-            "toolTip": "Choose Azure Files for a mounted /app/data volume, or Blob for config persistence through the SDK and managed identity.",
+            "defaultValue": "database",
+            "toolTip": "Database is the default and creates PostgreSQL-backed config persistence. Azure Files and Blob remain available for storage-backed modes.",
             "constraints": {
               "allowedValues": [
+                {
+                  "label": "PostgreSQL config persistence",
+                  "description": "Create Azure Database for PostgreSQL Flexible Server and persist config there. Database name can be left empty to auto-create the default database.",
+                  "value": "database"
+                },
                 {
                   "label": "Azure Files volume",
                   "description": "Mount /app/data from Azure Files. Requires shared key access.",
@@ -134,6 +141,170 @@
               ],
               "required": true
             }
+          },
+          {
+            "name": "storageAccountMode",
+            "type": "Microsoft.Common.OptionsGroup",
+            "label": "Storage account source",
+            "defaultValue": "new",
+            "visible": "[not(equals(steps('runtime').persistenceMode, 'database'))]",
+            "toolTip": "Choose whether the deployment should create a storage account or reuse an existing one.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Create new storage account",
+                  "description": "Recommended when policy allows storage creation in this resource group.",
+                  "value": "new"
+                },
+                {
+                  "label": "Use existing storage account",
+                  "description": "Avoids changing storage account creation behavior when policy requires pre-provisioned storage.",
+                  "value": "existing"
+                }
+              ],
+              "required": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "database",
+        "label": "Database",
+        "elements": [
+          {
+            "name": "databaseInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "options": {
+              "icon": "Info",
+              "text": "Choose whether to create a new PostgreSQL Flexible Server or connect to an existing one. The deployment always injects the final connection string into the container as a secure environment variable."
+            }
+          },
+          {
+            "name": "databaseServerMode",
+            "type": "Microsoft.Common.OptionsGroup",
+            "label": "PostgreSQL server source",
+            "defaultValue": "new",
+            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "toolTip": "Choose whether the deployment should create a PostgreSQL server or reuse an existing one.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Create new PostgreSQL server",
+                  "description": "Creates a Flexible Server and a database in the current resource group.",
+                  "value": "new"
+                },
+                {
+                  "label": "Use existing PostgreSQL server",
+                  "description": "Reuses a pre-created Flexible Server and avoids server creation in policy-restricted environments.",
+                  "value": "existing"
+                }
+              ],
+              "required": true
+            }
+          },
+          {
+            "name": "databaseServerName",
+            "type": "Microsoft.Common.TextBox",
+            "label": "PostgreSQL server name",
+            "defaultValue": "",
+            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "toolTip": "Server name to create or reuse. Leave empty to auto-generate only when creating a new server.",
+            "constraints": {
+              "required": "[equals(steps('database').databaseServerMode, 'existing')]",
+              "regex": "^$|^[a-z0-9]+(?:-[a-z0-9]+)*$",
+              "validationMessage": "Leave empty or use 3-63 lowercase letters, numbers, or hyphens."
+            }
+          },
+          {
+            "name": "databaseMode",
+            "type": "Microsoft.Common.OptionsGroup",
+            "label": "Database source",
+            "defaultValue": "new",
+            "visible": "[and(equals(steps('runtime').persistenceMode, 'database'), equals(steps('database').databaseServerMode, 'existing'))]",
+            "toolTip": "Choose whether to create the database on the existing server or connect to an existing database.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Create database on existing server",
+                  "description": "Useful when the server already exists but the AOAI Proxy database does not.",
+                  "value": "new"
+                },
+                {
+                  "label": "Use existing database",
+                  "description": "Avoids database creation when policy requires a fully pre-provisioned PostgreSQL setup.",
+                  "value": "existing"
+                }
+              ],
+              "required": true
+            }
+          },
+          {
+            "name": "databaseName",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Database name",
+            "defaultValue": "",
+            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "toolTip": "Database name to create or reuse. Leave empty to auto-create aoaiproxy only when creating a new database.",
+            "constraints": {
+              "required": "[and(equals(steps('database').databaseServerMode, 'existing'), equals(steps('database').databaseMode, 'existing'))]",
+              "regex": "^$|^[A-Za-z_][A-Za-z0-9_.-]{0,62}$",
+              "validationMessage": "Leave empty or use a PostgreSQL-compatible database name."
+            }
+          },
+          {
+            "name": "databaseAdminUsername",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Database username",
+            "defaultValue": "aoaiproxyadmin",
+            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "toolTip": "Username used in the application connection string. For existing servers, use a login that already has access to the target database.",
+            "constraints": {
+              "required": "[equals(steps('runtime').persistenceMode, 'database')]",
+              "regex": "^[A-Za-z][A-Za-z0-9]{0,62}$",
+              "validationMessage": "Use 1-63 letters or numbers and start with a letter."
+            }
+          },
+          {
+            "name": "databaseAdminPassword",
+            "type": "Microsoft.Common.PasswordBox",
+            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "label": {
+              "password": "Database password",
+              "confirmPassword": "Confirm database password"
+            },
+            "toolTip": {
+              "password": "Password used in the application connection string.",
+              "confirmPassword": "Re-enter the database password."
+            },
+            "constraints": {
+              "required": "[equals(steps('runtime').persistenceMode, 'database')]"
+            }
+          },
+          {
+            "name": "databaseSkuName",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Database size",
+            "defaultValue": "Standard_B1ms",
+            "visible": "[and(equals(steps('runtime').persistenceMode, 'database'), equals(steps('database').databaseServerMode, 'new'))]",
+            "toolTip": "Burstable development sizes for Azure Database for PostgreSQL Flexible Server.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Standard_B1ms (1 vCore, 2 GiB)",
+                  "value": "Standard_B1ms"
+                },
+                {
+                  "label": "Standard_B2s (2 vCores, 4 GiB)",
+                  "value": "Standard_B2s"
+                },
+                {
+                  "label": "Standard_B2ms (2 vCores, 8 GiB)",
+                  "value": "Standard_B2ms"
+                }
+              ],
+              "required": "[equals(steps('runtime').persistenceMode, 'database')]"
+            }
           }
         ]
       },
@@ -144,21 +315,46 @@
           {
             "name": "storageInfo",
             "type": "Microsoft.Common.InfoBox",
+            "visible": "[not(equals(steps('runtime').persistenceMode, 'database'))]",
             "options": {
               "icon": "Info",
-              "text": "This deployment creates a new storage account. Enter a globally unique name. Existing storage accounts are not selectable in the current template."
+              "text": "Choose whether to create new storage resources or reuse existing ones. Existing-resource mode is useful when Azure Policy requires storage accounts or shares to be pre-provisioned."
             }
           },
           {
             "name": "storageAccountName",
             "type": "Microsoft.Common.TextBox",
-            "label": "New storage account name",
+            "label": "Storage account name",
             "defaultValue": "",
-            "toolTip": "Enter the name for the new storage account that this deployment will create for Azure Files and Blob config persistence.",
+            "visible": "[not(equals(steps('runtime').persistenceMode, 'database'))]",
+            "toolTip": "Name of the storage account to create or reuse. Leave empty to auto-generate only when creating a new account.",
             "constraints": {
-              "required": true,
+              "required": "[and(not(equals(steps('runtime').persistenceMode, 'database')), equals(steps('runtime').storageAccountMode, 'existing'))]",
               "regex": "^[a-z0-9]{3,24}$",
               "validationMessage": "Use 3-24 lowercase letters or numbers. The name must be globally unique in Azure Storage."
+            }
+          },
+          {
+            "name": "fileShareMode",
+            "type": "Microsoft.Common.OptionsGroup",
+            "label": "Azure Files share source",
+            "defaultValue": "new",
+            "visible": "[and(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').storageAccountMode, 'existing'))]",
+            "toolTip": "Choose whether the deployment should create the Azure Files share or reuse an existing one.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Create file share",
+                  "description": "Creates a share in the existing storage account.",
+                  "value": "new"
+                },
+                {
+                  "label": "Use existing file share",
+                  "description": "Avoids creating a new share when policy requires a fully pre-provisioned Azure Files setup.",
+                  "value": "existing"
+                }
+              ],
+              "required": true
             }
           },
           {
@@ -172,6 +368,29 @@
               "required": "[equals(steps('runtime').persistenceMode, 'azureFile')]",
               "regex": "^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$",
               "validationMessage": "Use 3-63 lowercase letters, numbers, or hyphens."
+            }
+          },
+          {
+            "name": "blobContainerMode",
+            "type": "Microsoft.Common.OptionsGroup",
+            "label": "Blob container source",
+            "defaultValue": "new",
+            "visible": "[and(equals(steps('runtime').persistenceMode, 'blob'), equals(steps('runtime').storageAccountMode, 'existing'))]",
+            "toolTip": "Choose whether the deployment should create the Blob container or reuse an existing one.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Create Blob container",
+                  "description": "Creates the container in the existing storage account.",
+                  "value": "new"
+                },
+                {
+                  "label": "Use existing Blob container",
+                  "description": "Avoids container creation when policy requires a fully pre-provisioned Blob setup.",
+                  "value": "existing"
+                }
+              ],
+              "required": true
             }
           },
           {
@@ -209,7 +428,7 @@
             "type": "Microsoft.Common.InfoBox",
             "options": {
               "icon": "Info",
-              "text": "Select an existing Microsoft.CognitiveServices/accounts resource. Cross-resource-group selection is supported within the selected subscription."
+              "text": "Select an existing `Microsoft.CognitiveServices/accounts` resource. Cross-resource-group selection is supported within the selected subscription."
             }
           },
           {
@@ -268,7 +487,6 @@
       }
     ],
     "outputs": {
-      "applicationResourceName": "[concat(basics('containerGroupName'), '-managedapp')]",
       "location": "[location()]",
       "containerGroupName": "[basics('containerGroupName')]",
       "image": "[steps('runtime').image]",
@@ -276,10 +494,21 @@
       "cpu": "[steps('runtime').cpu]",
       "memoryInGb": "[steps('runtime').memoryInGb]",
       "persistenceMode": "[steps('runtime').persistenceMode]",
+      "storageAccountMode": "[steps('runtime').storageAccountMode]",
       "storageAccountName": "[steps('storage').storageAccountName]",
+      "fileShareMode": "[steps('storage').fileShareMode]",
       "fileShareName": "[steps('storage').fileShareName]",
+      "blobContainerMode": "[steps('storage').blobContainerMode]",
       "blobContainerName": "[steps('storage').blobContainerName]",
       "configBlobName": "[steps('storage').configBlobName]",
+      "databaseServerMode": "[steps('database').databaseServerMode]",
+      "databaseServerName": "[steps('database').databaseServerName]",
+      "databaseMode": "[steps('database').databaseMode]",
+      "databaseName": "[steps('database').databaseName]",
+      "databaseAdminUsername": "[steps('database').databaseAdminUsername]",
+      "databaseAdminPassword": "[steps('database').databaseAdminPassword]",
+      "databaseTier": "Burstable",
+      "databaseSkuName": "[steps('database').databaseSkuName]",
       "cognitiveServicesAccountName": "[steps('foundry').cognitiveAccount.name]",
       "cognitiveServicesAccountResourceGroup": "[split(steps('foundry').cognitiveAccount.id, '/')[4]]",
       "acrLoginServer": "[steps('registry').acrLoginServer]",

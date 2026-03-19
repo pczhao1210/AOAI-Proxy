@@ -1,0 +1,62 @@
+{
+  "id": "gpt-4o-mini-audio-preview",
+  "displayName": "GPT-4o Mini Audio Preview",
+  "provider": "azure-openai",
+  "family": "gpt-4o",
+  "modelVersion": "2024-12-17",
+  "status": "preview",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text",
+    "audio"
+  ],
+  "outputModalities": [
+    "text",
+    "audio"
+  ],
+  "capabilities": [
+    "audio-input",
+    "audio-output",
+    "speech-generation"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 0.15,
+    "outputPer1mTokens": 0.6,
+    "inputPer1kTokens": 0.00015,
+    "outputPer1kTokens": 0.0006,
+    "channels": {
+      "audio": {
+        "inputPer1mTokens": 10,
+        "outputPer1mTokens": 20,
+        "inputPer1kTokens": 0.01,
+        "outputPer1kTokens": 0.02
+      }
+    }
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00015,
+    "outputPer1kTokens": 0.0006
+  },
+  "proxyTemplate": {
+    "id": "gpt-4o-mini-audio-preview",
+    "displayName": "GPT-4o Mini Audio Preview",
+    "targetModel": "gpt-4o-mini-audio-preview",
+    "capabilities": [
+      "audio-input",
+      "audio-output",
+      "speech-generation"
+    ],
+    "pricingRef": "gpt-4o-mini-audio-preview"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

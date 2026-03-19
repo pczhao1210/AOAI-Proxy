@@ -1,0 +1,61 @@
+{
+  "id": "o3",
+  "displayName": "o3",
+  "provider": "azure-openai",
+  "family": "o-series",
+  "modelVersion": "2025-04-16",
+  "status": "ga",
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 2,
+    "cachedInputPer1mTokens": 0.5,
+    "outputPer1mTokens": 8,
+    "inputPer1kTokens": 0.002,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.008
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.002,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.008
+  },
+  "proxyTemplate": {
+    "id": "o3",
+    "displayName": "o3",
+    "targetModel": "o3",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling",
+      "structured-outputs",
+      "parallel-tool-calling"
+    ],
+    "pricingRef": "o3"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

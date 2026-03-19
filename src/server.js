@@ -1,4 +1,5 @@
 import "dotenv/config";
+import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import fastify from "fastify";
@@ -7,9 +8,13 @@ import { getConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInf
 import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
+import { flushRuntimeEvents, getRuntimeStatsSnapshot } from "./runtime-store.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
-import { appendStructuredLog, createPinoCaptureStream, queryLogs } from "./logs.js";
+import { appendStructuredLog, createPinoCaptureStream, queryLogs, setLogConfig } from "./logs.js";
+import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
+import { listPricingDefinitions } from "./pricing-library.js";
+import { getRequestNetworkContext } from "./request-network.js";
 
 // Fastify server entry
 const defaultBodyLimit = 50 * 1024 * 1024;
@@ -35,23 +40,24 @@ function isAdminRoute(url, adminPath) {
 }
 
 // Extract API key from Authorization or x-api-key
-function extractApiKey(headers) {
+function extractApiKey(config, headers) {
   const auth = headers.authorization || headers.Authorization;
   if (auth && typeof auth === "string" && auth.toLowerCase().startsWith("bearer ")) {
     return auth.slice(7).trim();
   }
-  const xApiKey = headers["x-api-key"] || headers["X-API-Key"]; 
-  if (xApiKey && typeof xApiKey === "string") {
-    return xApiKey.trim();
+
+  const configuredHeaderNames = Array.isArray(config?.access?.defaults?.keyHeaderNames)
+    ? config.access.defaults.keyHeaderNames.filter((item) => typeof item === "string" && item.trim())
+    : ["x-api-key"];
+  for (const headerName of configuredHeaderNames) {
+    const normalizedHeaderName = headerName.toLowerCase();
+    if (normalizedHeaderName === "authorization") continue;
+    const candidate = headers[normalizedHeaderName] || headers[headerName] || headers[headerName.toUpperCase()];
+    if (candidate && typeof candidate === "string") {
+      return candidate.trim();
+    }
   }
   return null;
-}
-
-// Validate API key against active keys
-function verifyApiKey(config, key) {
-  if (!key) return false;
-  const activeKeys = config.apiKeys.filter((k) => k.status !== "disabled");
-  return activeKeys.some((k) => k.key === key);
 }
 
 function secureEqual(a, b) {
@@ -94,22 +100,11 @@ function verifyAdminBasicAuth(config, headers) {
   return secureEqual(parsed.username, username) && secureEqual(parsed.password, password);
 }
 
-function getRequestNetworkContext(req) {
-  const forwardedFor = req.headers["x-forwarded-for"];
-  const userAgent = req.headers["user-agent"];
-  const remoteAddress = req.ip || req.socket?.remoteAddress || req.raw?.socket?.remoteAddress || "";
-  return {
-    clientIp: typeof remoteAddress === "string" ? remoteAddress : "",
-    userAgent: typeof userAgent === "string" ? userAgent : "",
-    forwardedFor: typeof forwardedFor === "string" ? forwardedFor : ""
-  };
-}
-
-function buildModelList(config) {
+function buildModelList(config, consumer) {
   const created = Math.floor(Date.now() / 1000);
   return {
     object: "list",
-    data: config.models.map((m) => ({
+    data: filterModelsForConsumer(config.models, consumer).map((m) => ({
       id: m.id,
       object: "model",
       created,
@@ -193,16 +188,19 @@ app.addHook("preHandler", async (req, reply) => {
     }
     return;
   }
-  const key = extractApiKey(req.headers);
-  if (!verifyApiKey(config, key)) {
-    return reply.code(401).send({ error: "Unauthorized" });
+  const key = extractApiKey(config, req.headers);
+  const consumerResult = resolveApiConsumer(config, key);
+  if (!consumerResult.ok) {
+    return reply.code(consumerResult.status || 401).send({ error: consumerResult.error || "Unauthorized", message: consumerResult.message || "Unauthorized" });
   }
+  req.proxyAccess = { key, consumer: consumerResult.consumer };
 });
 
 app.addHook("onResponse", async (req, reply) => {
   const status = reply.statusCode;
   const level = status >= 400 ? "error" : "info";
-  const networkContext = getRequestNetworkContext(req);
+  const config = getConfig();
+  const networkContext = getRequestNetworkContext(config, req);
   req.log[level]({
     source: "http",
     event: "http.request_completed",
@@ -217,9 +215,9 @@ app.addHook("onResponse", async (req, reply) => {
 
 app.get("/healthz", async () => ({ status: "ok" }));
 
-app.get("/v1/models", async () => {
+app.get("/v1/models", async (req) => {
   const config = getConfig();
-  return buildModelList(config);
+  return buildModelList(config, req.proxyAccess?.consumer);
 });
 
 app.post("/v1/chat/completions", async (req, reply) => {
@@ -246,6 +244,7 @@ app.put("/admin/api/config", async (req, reply) => {
   const nextConfig = req.body;
   try {
     const saved = await saveConfig(nextConfig);
+    setLogConfig(saved);
     attachAuth(saved);
     void primeAuth(saved);
     writeCaddyfile(saved);
@@ -261,6 +260,7 @@ app.put("/admin/api/config", async (req, reply) => {
 app.post("/admin/api/reload", async (req, reply) => {
   try {
     const config = await reloadConfig();
+    setLogConfig(config);
     attachAuth(config);
     void primeAuth(config);
     writeCaddyfile(config);
@@ -291,8 +291,24 @@ app.get("/admin/api/runtime", async () => {
   return { ok: true, runtime: getConfigRuntimeInfo() };
 });
 
-app.get("/admin/api/stats", async () => {
-  return getStats();
+app.get("/admin/api/pricing-library", async () => {
+  return {
+    ok: true,
+    items: listPricingDefinitions()
+  };
+});
+
+app.get("/admin/api/stats", async (req) => {
+  const config = getConfig();
+  const query = req.query || {};
+  await flushRuntimeEvents();
+  return {
+    ...(await getRuntimeStatsSnapshot(config, getStats(), {
+      keyId: typeof query.keyId === "string" ? query.keyId : "",
+      timeRange: typeof query.timeRange === "string" ? query.timeRange : "all"
+    })),
+    governance: await getGovernanceSnapshot(config)
+  };
 });
 
 app.get("/admin/api/logs", async (req) => {
@@ -317,14 +333,51 @@ app.post("/admin/api/restart", async (req, reply) => {
 });
 
 const publicRoot = path.resolve(process.cwd(), "public");
-app.register(fastifyStatic, {
-  root: publicRoot,
-  prefix: "/admin/",
-  index: "index.html"
+const adminAppRoot = path.resolve(publicRoot, "admin-app");
+const adminAppAssetsRoot = path.resolve(adminAppRoot, "assets");
+const hasBuiltAdminApp = fs.existsSync(adminAppRoot) && fs.existsSync(adminAppAssetsRoot);
+
+if (hasBuiltAdminApp) {
+  app.register(fastifyStatic, {
+    root: adminAppAssetsRoot,
+    prefix: "/admin/assets/",
+    index: false
+  });
+
+  app.get("/admin", async (req, reply) => {
+    return reply.redirect("/admin/");
+  });
+
+  app.get("/admin/", async (req, reply) => {
+    return reply.sendFile("index.html", adminAppRoot);
+  });
+
+  app.get("/admin/*", async (req, reply) => {
+    const requestPath = req.raw?.url?.split("?")[0] || req.url;
+    if (requestPath.startsWith("/admin/api/")) {
+      return reply.callNotFound();
+    }
+    if (requestPath.startsWith("/admin/legacy/")) {
+      return reply.redirect("/admin/");
+    }
+    return reply.sendFile("index.html", adminAppRoot);
+  });
+} else {
+  app.get("/admin", async (req, reply) => {
+    return reply.redirect("/admin/");
+  });
+
+  app.get("/admin/", async (req, reply) => {
+    return reply.code(503).type("text/plain; charset=utf-8").send("Admin UI is not built. Run npm run build:admin.");
+  });
+}
+
+app.get("/admin/legacy", async (req, reply) => {
+  return reply.redirect("/admin/");
 });
 
-app.get("/admin", async (req, reply) => {
-  reply.redirect("/admin/");
+app.get("/admin/legacy/", async (req, reply) => {
+  return reply.redirect("/admin/");
 });
 
 async function start() {
@@ -337,6 +390,7 @@ async function start() {
     logLevel: process.env.LOG_LEVEL || "warn"
   });
   const config = await reloadConfig();
+  setLogConfig(config);
   const upstreamHttp = configureUpstreamHttp(config);
   attachAuth(config);
   await primeAuth(config);
@@ -351,6 +405,7 @@ async function start() {
     adminPath: config.server?.adminPath,
     adminAuthEnabled: !!config.server?.adminAuth?.enabled,
     caddyEnabled: !!config.server?.caddy?.enabled,
+    trustProxy: config.server?.trustProxy === true,
     models: Array.isArray(config.models) ? config.models.length : 0,
     upstreams: Array.isArray(config.upstreams) ? config.upstreams.length : 0,
     upstreamHttp,

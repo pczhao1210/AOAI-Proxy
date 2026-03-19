@@ -15,19 +15,22 @@
       "value": "aoai-proxy-dev"
     },
     "persistenceMode": {
-      "value": "azureFile"
+      "value": "database"
     },
-    "storageAccountName": {
-      "value": "staoaiproxydev"
+    "databaseName": {
+      "value": ""
     },
-    "fileShareName": {
-      "value": "aoaiproxy"
+    "databaseAdminUsername": {
+      "value": "aoaiproxyadmin"
     },
-    "blobContainerName": {
-      "value": "aoai-proxy-config"
+    "databaseAdminPassword": {
+      "value": "replace-with-postgresql-admin-password"
     },
-    "configBlobName": {
-      "value": "config/config.json"
+    "databaseTier": {
+      "value": "Burstable"
+    },
+    "databaseSkuName": {
+      "value": "Standard_B1ms"
     },
     "cognitiveServicesAccountName": {
       "value": "replace-with-your-aoai-account"

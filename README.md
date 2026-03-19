@@ -4,7 +4,7 @@
 
 [English](README.md) | [简体中文](docs/README.zh-CN.md) | [Docs Index](docs/README.md)
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Fazure-deploy%2Finfra%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Faoai-nextgen%2Finfra%2Fazuredeploy.json)
 
 ## Overview
 
@@ -24,21 +24,34 @@
 
 The Deploy to Azure button targets the ARM JSON template because the portal button flow does not deploy remote Bicep files directly.
 The standard raw-template Deploy to Azure button does not automatically use `createUiDefinition.json`; that file is intended for portal packaging flows that support a custom create experience.
+The deployment templates now distinguish between `new` and `existing` storage/database resources so policy-restricted environments can reuse pre-provisioned Azure Files, Blob, or PostgreSQL resources instead of forcing resource creation.
 
 ## Persistence Modes
 
-This repo now supports deployment-time persistence selection.
+This repo now supports deployment-time persistence selection, and the Azure deployment templates default to `database`.
+
+### `database`
+
+- Default mode for the Bicep, ARM, and portal UI flows
+- Creates Azure Database for PostgreSQL Flexible Server and injects the connection string as a secure environment variable
+- The deployment flow can now either create new PostgreSQL resources or point to an existing server/database
+- If `databaseName` is empty in the Azure templates, the deployment auto-creates `aoaiproxy`
+- The application auto-creates the schema/table/config row inside that database on first use
+- Persists proxy configuration, but does not turn `/app/data` into a persistent volume
+- In pure `database` mode, local cache files, generated Caddyfile, ACME certificates, and Caddy state remain container-local and are therefore ephemeral across container replacement
 
 ### `azureFile`
 
 - Keeps the current ACI + Azure Files mount to `/app/data`
 - Best fit when you need filesystem-style persistence for config, Caddyfile, and Caddy state
+- The deployment flow can now either create new storage/share resources or reuse existing ones
 - Still requires storage account key for the ACI mount itself
 
 ### `blob`
 
 - Keeps config persistence at the application layer through Blob SDK
 - Uses `DefaultAzureCredential` and managed identity to read and write the config blob
+- The deployment flow can now either create new storage/container resources or reuse existing ones
 - Does not replace Azure Files mount semantics for `/app/data`
 - If Blob access is not ready yet, startup falls back to the local cached config at `/app/data/config.json`
 - While Blob access is degraded, config writes continue to the local file and are retried to Blob in the background
@@ -127,11 +140,14 @@ Config file values under `server.upstream.pool` are primary. These environment v
 
 ### Persistence Selection
 
-- `PERSISTENCE_MODE=azureFile|blob`
+- `PERSISTENCE_MODE=database|azureFile|blob`
+- `CONFIG_DB_CONNECTION_STRING` or `DATABASE_URL` for `database` mode
 - `AZURE_STORAGE_ACCOUNT_URL=https://<storage>.blob.core.windows.net`
 - `CONFIG_BLOB_CONTAINER=<container-name>`
 - `CONFIG_BLOB_NAME=config/config.json`
 - `BLOB_RECOVERY_INTERVAL_MS=30000` to control how often the app retries Blob access after falling back to the local cache
+
+In `database` mode, the app reads configuration from PostgreSQL first and keeps a local cache for restart bootstrap and degraded-mode fallback.
 
 In `blob` mode, the app reads from Blob first and falls back to the local cached config if the blob is not present yet.
 
@@ -230,18 +246,27 @@ az deployment group create \
 The templates provision:
 
 - A container group with system-assigned managed identity
-- A new storage account
+- Azure Database for PostgreSQL Flexible Server, a firewall rule that allows Azure services, and a database child resource when `persistenceMode=database`
+- A new storage account only when `persistenceMode=azureFile` or `persistenceMode=blob`
 - Azure Files share when `persistenceMode=azureFile`
 - Blob container when `persistenceMode=blob`
+- Secure `CONFIG_DB_CONNECTION_STRING` injection into the container when `persistenceMode=database`
 - RBAC assignment for `Storage Blob Data Contributor` on the blob container for both the container identity and the current deployment principal when blob mode is enabled
 - RBAC assignment for `Cognitive Services OpenAI User` on the target Azure OpenAI resource
 
 The target Azure OpenAI / Foundry resource can live in a different resource group within the same subscription. Set `cognitiveServicesAccountResourceGroup` when it differs from the deployment resource group.
-The `storageAccountName` parameter is the name of a new storage account to create. The current templates do not support selecting or reusing an existing storage account.
+If `storageAccountName` is empty, the template auto-generates a valid name for storage-backed modes.
+If `databaseServerName` is empty, the template auto-generates a valid PostgreSQL server name.
+If `databaseName` is empty, the template creates `aoaiproxy`.
+The PostgreSQL default is `Burstable` + `Standard_B1ms` + `32 GB`, which is the smallest documented development-oriented size in Microsoft Learn guidance.
+
+Current limitation: this ACI-based deployment does not expose an ARM64 machine-family selector. The implemented default is therefore the smallest documented PostgreSQL development SKU, not a guaranteed ARM-series runtime.
 
 ### Deploy as Azure Managed Application With Custom UI
 
 Use [infra/azure_deployment_with_UI](infra/azure_deployment_with_UI) when you want the Azure Portal to use `createUiDefinition.json` and show the richer resource-selection UI.
+
+That custom UI now defaults to PostgreSQL-backed config persistence, exposes database server/name/admin fields, and hides storage inputs unless you explicitly switch to Azure Files or Blob.
 
 Package the files so that `mainTemplate.json` and `createUiDefinition.json` are at the root of the zip:
 
@@ -288,7 +313,7 @@ az managedapp create \
 
 The portal UI in this package supports selecting an existing Foundry or Azure OpenAI resource by resource picker and passes the selected resource group to the deployment template.
 
-## ACI Persistence and RBAC
+## ACI Persistence, Database Notes, and RBAC
 
 - Azure Files walkthrough: [docs/aci_persist_vol.en.md](docs/aci_persist_vol.en.md)
 - Chinese version: [docs/aci_persist_vol.md](docs/aci_persist_vol.md)

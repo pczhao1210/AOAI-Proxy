@@ -1,4 +1,3 @@
-import { recordUsage } from "../stats.js";
 import { markErrorWithCode } from "./reliability.js";
 
 function extractAzureRequestId(value) {
@@ -32,7 +31,7 @@ function writeSseDone(replyRaw) {
   replyRaw.write("data: [DONE]\n\n");
 }
 
-function extractUsageFromSseChunk(chunkText, modelId, usageState) {
+function extractUsageFromSseChunk(chunkText, usageState, onUsage, onModel) {
   usageState.buffer += chunkText;
   let idx;
   while ((idx = usageState.buffer.indexOf("\n")) >= 0) {
@@ -43,9 +42,13 @@ function extractUsageFromSseChunk(chunkText, modelId, usageState) {
     if (!payload || payload === "[DONE]") continue;
     try {
       const json = JSON.parse(payload);
+      const resolvedModel = json.model || json.response?.model;
+      if (typeof resolvedModel === "string" && resolvedModel) {
+        onModel?.(resolvedModel);
+      }
       const usage = json.usage || json.response?.usage;
       if (!usageState.recorded && usage) {
-        recordUsage(modelId, usage);
+        onUsage?.(usage);
         usageState.recorded = true;
       }
     } catch {
@@ -63,7 +66,7 @@ export function setSseResponseHeaders(replyRaw) {
 }
 
 export function writeSseError(replyRaw, errorBody) {
-  writeSse(replyRaw, { error: errorBody });
+  writeSse(replyRaw, errorBody);
   writeSseDone(replyRaw);
 }
 
@@ -74,9 +77,10 @@ export function writeSseDoneFrame(replyRaw) {
 export async function streamPassthrough({
   upstreamResponse,
   reply,
-  modelId,
   policy,
-  onFirstChunk
+  onFirstChunk,
+  onUsage,
+  onModel
 }) {
   const reader = upstreamResponse.body?.getReader();
   if (!reader) {
@@ -85,13 +89,19 @@ export async function streamPassthrough({
   let firstChunkSeen = false;
   let firstByteTimedOut = false;
   let idleTimedOut = false;
+  let maxDurationTimedOut = false;
   let idleTimer = null;
+  let maxDurationTimer = null;
   const usageState = { buffer: "", recorded: false };
   let providerBuffer = "";
   let providerError = null;
   const clearIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
+  };
+  const clearMaxDuration = () => {
+    if (maxDurationTimer) clearTimeout(maxDurationTimer);
+    maxDurationTimer = null;
   };
   const resetIdle = () => {
     clearIdle();
@@ -106,6 +116,12 @@ export async function streamPassthrough({
       reader.cancel("first-byte-timeout").catch(() => {});
     }
   }, policy.firstByteTimeoutMs);
+  if (policy.maxStreamDurationMs > 0) {
+    maxDurationTimer = setTimeout(() => {
+      maxDurationTimedOut = true;
+      reader.cancel("max-stream-duration").catch(() => {});
+    }, policy.maxStreamDurationMs);
+  }
 
   try {
     while (true) {
@@ -119,7 +135,7 @@ export async function streamPassthrough({
       resetIdle();
       const chunk = Buffer.from(value);
       const text = chunk.toString("utf8");
-      extractUsageFromSseChunk(text, modelId, usageState);
+      extractUsageFromSseChunk(text, usageState, onUsage, onModel);
       providerBuffer += text;
       let idx;
       while ((idx = providerBuffer.indexOf("\n")) >= 0) {
@@ -143,10 +159,12 @@ export async function streamPassthrough({
   } catch (error) {
     clearTimeout(firstByteTimer);
     clearIdle();
+    clearMaxDuration();
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error };
   }
   clearTimeout(firstByteTimer);
   clearIdle();
+  clearMaxDuration();
   if (firstByteTimedOut) {
     return {
       ok: false,
@@ -159,6 +177,13 @@ export async function streamPassthrough({
       ok: false,
       beforeFirstChunk: !firstChunkSeen,
       error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
+    };
+  }
+  if (maxDurationTimedOut) {
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: markErrorWithCode(new Error(`stream exceeded max duration after ${policy.maxStreamDurationMs}ms`), "UPSTREAM_MAX_STREAM_DURATION")
     };
   }
   if (providerError) {
@@ -181,7 +206,9 @@ export async function streamShim({
   backendRouteKey,
   model,
   policy,
-  onFirstChunk
+  onFirstChunk,
+  onUsage,
+  onModel
 }) {
   const reader = upstreamResponse.body?.getReader();
   if (!reader) {
@@ -190,16 +217,35 @@ export async function streamShim({
   let firstChunkSeen = false;
   let firstByteTimedOut = false;
   let idleTimedOut = false;
+  let maxDurationTimedOut = false;
   let idleTimer = null;
+  let maxDurationTimer = null;
   let buffer = "";
   const created = Math.floor(Date.now() / 1000);
   const streamId = `chatcmpl_${created}`;
   const toolCallMap = new Map();
   let toolCallIndex = 0;
   let sawToolCall = false;
+  let usageRecorded = false;
+  let resolvedModel = modelId;
+  const updateResolvedModel = (value) => {
+    if (typeof value === "string" && value.trim()) {
+      resolvedModel = value.trim();
+      onModel?.(resolvedModel);
+    }
+  };
+  const maybeRecordUsage = (usage) => {
+    if (!usage || usageRecorded) return;
+    onUsage?.(usage);
+    usageRecorded = true;
+  };
   const clearIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
+  };
+  const clearMaxDuration = () => {
+    if (maxDurationTimer) clearTimeout(maxDurationTimer);
+    maxDurationTimer = null;
   };
   const resetIdle = () => {
     clearIdle();
@@ -214,6 +260,12 @@ export async function streamShim({
       reader.cancel("first-byte-timeout").catch(() => {});
     }
   }, policy.firstByteTimeoutMs);
+  if (policy.maxStreamDurationMs > 0) {
+    maxDurationTimer = setTimeout(() => {
+      maxDurationTimedOut = true;
+      reader.cancel("max-stream-duration").catch(() => {});
+    }, policy.maxStreamDurationMs);
+  }
 
   try {
     while (true) {
@@ -241,7 +293,8 @@ export async function streamShim({
         if (routeKey === "chat/completions" && backendRouteKey === "responses") {
           try {
             const evt = JSON.parse(payload);
-            if (evt?.usage) recordUsage(model.id, evt.usage);
+            updateResolvedModel(evt?.model || evt?.response?.model);
+            maybeRecordUsage(evt?.usage);
             const t = evt?.type;
             if (t === "response.output_text.delta") {
               const delta = evt?.delta ?? "";
@@ -249,7 +302,7 @@ export async function streamShim({
                 id: streamId,
                 object: "chat.completion.chunk",
                 created,
-                model: modelId,
+                model: resolvedModel,
                 choices: [{ index: 0, delta: { content: delta }, finish_reason: null }]
               });
             } else if (t === "response.output_item.added" || t === "response.output_item.done") {
@@ -273,7 +326,7 @@ export async function streamShim({
                   id: streamId,
                   object: "chat.completion.chunk",
                   created,
-                  model: modelId,
+                  model: resolvedModel,
                   choices: [{
                     index: 0,
                     delta: {
@@ -290,12 +343,12 @@ export async function streamShim({
               }
             } else if (t === "response.completed" || t === "response.output_text.done") {
               const usage = evt?.response?.usage;
-              if (usage) recordUsage(model.id, usage);
+              maybeRecordUsage(usage);
               writeSse(reply.raw, {
                 id: streamId,
                 object: "chat.completion.chunk",
                 created,
-                model: modelId,
+                model: resolvedModel,
                 choices: [{ index: 0, delta: {}, finish_reason: sawToolCall ? "tool_calls" : "stop" }]
               });
               writeSseDone(reply.raw);
@@ -309,7 +362,8 @@ export async function streamShim({
         if (routeKey === "responses" && backendRouteKey === "chat/completions") {
           try {
             const evt = JSON.parse(payload);
-            if (evt?.usage) recordUsage(model.id, evt.usage);
+            updateResolvedModel(evt?.model);
+            maybeRecordUsage(evt?.usage);
             const choiceDelta = evt?.choices?.[0]?.delta?.content;
             if (typeof choiceDelta === "string" && choiceDelta.length > 0) {
               writeSse(reply.raw, { type: "response.output_text.delta", delta: choiceDelta });
@@ -323,10 +377,12 @@ export async function streamShim({
   } catch (error) {
     clearTimeout(firstByteTimer);
     clearIdle();
+    clearMaxDuration();
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error };
   }
   clearTimeout(firstByteTimer);
   clearIdle();
+  clearMaxDuration();
   if (firstByteTimedOut) {
     return {
       ok: false,
@@ -339,6 +395,13 @@ export async function streamShim({
       ok: false,
       beforeFirstChunk: !firstChunkSeen,
       error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
+    };
+  }
+  if (maxDurationTimedOut) {
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: markErrorWithCode(new Error(`stream exceeded max duration after ${policy.maxStreamDurationMs}ms`), "UPSTREAM_MAX_STREAM_DURATION")
     };
   }
   return { ok: true, firstChunkSeen };

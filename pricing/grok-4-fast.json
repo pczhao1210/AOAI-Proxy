@@ -1,0 +1,58 @@
+{
+  "id": "grok-4-fast",
+  "displayName": "Grok 4 Fast",
+  "provider": "xai",
+  "family": "grok-4-fast",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "vision",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "xai-official",
+    "status": "published",
+    "inputPer1mTokens": 0.2,
+    "cachedInputPer1mTokens": 0.05,
+    "outputPer1mTokens": 0.5,
+    "inputPer1kTokens": 0.0002,
+    "cachedInputPer1kTokens": 0.00005,
+    "outputPer1kTokens": 0.0005
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.0002,
+    "cachedInputPer1kTokens": 0.00005,
+    "outputPer1kTokens": 0.0005
+  },
+  "proxyTemplate": {
+    "id": "grok-4-fast",
+    "displayName": "Grok 4 Fast",
+    "targetModel": "grok-4-fast-reasoning",
+    "capabilities": [
+      "vision",
+      "function-calling"
+    ],
+    "pricingRef": "grok-4-fast"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#xai-models-sold-directly-by-azure",
+    "pricing": "https://docs.x.ai/developers/models"
+  },
+  "notes": [
+    "model-router 支持表使用 grok-4-fast 简化名称，而 xAI 模型目录公开的是 grok-4-fast-reasoning 和 grok-4-fast-non-reasoning。",
+    "xAI 当前公开的 reasoning 和 non-reasoning 两个 fast 变体单价一致，因此这里使用统一价格。"
+  ]
+}

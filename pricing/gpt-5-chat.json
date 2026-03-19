@@ -1,0 +1,53 @@
+{
+  "id": "gpt-5-chat",
+  "displayName": "GPT-5 Chat",
+  "provider": "azure-openai",
+  "family": "gpt-5",
+  "modelVersion": "2025-10-03",
+  "status": "preview",
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "vision"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 1.25,
+    "cachedInputPer1mTokens": 0.13,
+    "outputPer1mTokens": 10,
+    "inputPer1kTokens": 0.00125,
+    "cachedInputPer1kTokens": 0.00013,
+    "outputPer1kTokens": 0.01
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00125,
+    "cachedInputPer1kTokens": 0.00013,
+    "outputPer1kTokens": 0.01
+  },
+  "proxyTemplate": {
+    "id": "gpt-5-chat",
+    "displayName": "GPT-5 Chat",
+    "targetModel": "gpt-5-chat",
+    "capabilities": [
+      "vision"
+    ],
+    "pricingRef": "gpt-5-chat"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  }
+}

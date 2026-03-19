@@ -550,7 +550,7 @@ export function mapResponsesJsonToChatCompletion(payload, modelId) {
     id: payload?.id || `chatcmpl_${created}`,
     object: "chat.completion",
     created,
-    model: modelId,
+    model: payload?.model || modelId,
     choices: [
       {
         index: 0,
@@ -573,7 +573,7 @@ export function mapChatCompletionJsonToResponses(payload, modelId) {
   return {
     id: payload?.id,
     object: "response",
-    model: modelId,
+    model: payload?.model || modelId,
     output_text: text,
     usage: payload?.usage
   };

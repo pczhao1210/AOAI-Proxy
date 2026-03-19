@@ -1,0 +1,63 @@
+{
+  "id": "claude-sonnet-4-6",
+  "displayName": "Claude Sonnet 4.6",
+  "provider": "anthropic",
+  "family": "claude-4",
+  "modelVersion": null,
+  "status": "preview",
+  "interfaces": [
+    "messages"
+  ],
+  "inputModalities": [
+    "text",
+    "image",
+    "code"
+  ],
+  "outputModalities": [
+    "text",
+    "image",
+    "code"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "anthropic-official",
+    "status": "published",
+    "inputPer1mTokens": 3,
+    "cachedInputPer1mTokens": 0.3,
+    "outputPer1mTokens": 15,
+    "inputPer1kTokens": 0.003,
+    "cachedInputPer1kTokens": 0.0003,
+    "outputPer1kTokens": 0.015
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.003,
+    "cachedInputPer1kTokens": 0.0003,
+    "outputPer1kTokens": 0.015
+  },
+  "proxyTemplate": {
+    "id": "claude-sonnet-4-6",
+    "displayName": "Claude Sonnet 4.6",
+    "targetModel": "claude-sonnet-4-6",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling"
+    ],
+    "pricingRef": "claude-sonnet-4-6"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-from-partners#anthropic",
+    "pricing": "https://claude.com/pricing#api"
+  },
+  "notes": [
+    "Anthropic 公开页对 prompt caching 分别提供 write/read 价格；当前 schema 只有一个 cachedInput 字段，这里按 cache read 价格回填。",
+    "Azure Foundry 可直接部署 Claude Sonnet 4.6，但微软文档当前说明 model-router 还不支持 claude-sonnet-4-6。"
+  ]
+}

@@ -1,16 +1,126 @@
-export function resolveUpstreamPolicy(config) {
-  const cfg = config?.server?.upstream || {};
-  const retryStatuses = Array.isArray(cfg.retryStatuses) && cfg.retryStatuses.length
-    ? cfg.retryStatuses
-    : [408, 409, 425, 429, 500, 502, 503, 504];
+function asPlainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function normalizeRouteProfile(routeKey) {
+  if (routeKey === "chat/completions") return "chatCompletions";
+  if (routeKey === "responses") return "responses";
+  if (routeKey === "images/generations") return "imageGenerations";
+  return routeKey;
+}
+
+function pickNumber(...values) {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function pickInteger(...values) {
+  for (const value of values) {
+    if (Number.isInteger(value)) return value;
+  }
+  return undefined;
+}
+
+function resolveRetryStatuses(...values) {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length) {
+      return value.filter((item) => Number.isInteger(item));
+    }
+  }
+  return [408, 409, 425, 429, 500, 502, 503, 504];
+}
+
+export function resolveUpstreamPolicy(config, options = {}) {
+  const legacyCfg = config?.server?.upstream || {};
+  const proxyCfg = asPlainObject(config?.proxy);
+  const timeoutCfg = asPlainObject(proxyCfg.timeouts);
+  const retryCfg = asPlainObject(proxyCfg.retries);
+  const routeProfiles = asPlainObject(config?.routing?.routeProfiles);
+  const routeProfile = asPlainObject(routeProfiles[normalizeRouteProfile(options.routeKey)]);
+  const routeTimeouts = asPlainObject(routeProfile.timeouts || routeProfile.timeoutProfile);
+  const modelTimeouts = asPlainObject(options.model?.timeoutProfile);
+  const modelRetries = asPlainObject(options.model?.retryProfile);
+  const upstreamTimeouts = asPlainObject(options.upstream?.timeoutProfile);
+  const upstreamRetries = asPlainObject(options.upstream?.retryProfile);
+  const requestOverrides = asPlainObject(options.requestOverrides);
+  const retryStatuses = resolveRetryStatuses(
+    requestOverrides.retryStatuses,
+    modelRetries.statuses,
+    upstreamRetries.statuses,
+    retryCfg.statuses,
+    legacyCfg.retryStatuses
+  );
   return {
-    connectTimeoutMs: Number.isFinite(cfg.connectTimeoutMs) ? cfg.connectTimeoutMs : 5000,
-    requestTimeoutMs: Number.isFinite(cfg.requestTimeoutMs) ? cfg.requestTimeoutMs : 600000,
-    firstByteTimeoutMs: Number.isFinite(cfg.firstByteTimeoutMs) ? cfg.firstByteTimeoutMs : 90000,
-    idleTimeoutMs: Number.isFinite(cfg.idleTimeoutMs) ? cfg.idleTimeoutMs : 600000,
-    maxRetries: Number.isFinite(cfg.maxRetries) ? cfg.maxRetries : 1,
-    retryBaseMs: Number.isFinite(cfg.retryBaseMs) ? cfg.retryBaseMs : 800,
-    retryMaxMs: Number.isFinite(cfg.retryMaxMs) ? cfg.retryMaxMs : 8000,
+    connectTimeoutMs: pickInteger(
+      requestOverrides.connectMs,
+      modelTimeouts.connectMs,
+      upstreamTimeouts.connectMs,
+      routeTimeouts.connectMs,
+      timeoutCfg.connectMs,
+      legacyCfg.connectTimeoutMs,
+      5000
+    ),
+    requestTimeoutMs: pickInteger(
+      requestOverrides.requestMs,
+      modelTimeouts.requestMs,
+      upstreamTimeouts.requestMs,
+      routeTimeouts.requestMs,
+      timeoutCfg.requestMs,
+      legacyCfg.requestTimeoutMs,
+      600000
+    ),
+    firstByteTimeoutMs: pickInteger(
+      requestOverrides.firstByteMs,
+      modelTimeouts.firstByteMs,
+      upstreamTimeouts.firstByteMs,
+      routeTimeouts.firstByteMs,
+      timeoutCfg.firstByteMs,
+      legacyCfg.firstByteTimeoutMs,
+      90000
+    ),
+    idleTimeoutMs: pickInteger(
+      requestOverrides.idleMs,
+      modelTimeouts.idleMs,
+      upstreamTimeouts.idleMs,
+      routeTimeouts.idleMs,
+      timeoutCfg.idleMs,
+      legacyCfg.idleTimeoutMs,
+      600000
+    ),
+    maxStreamDurationMs: pickInteger(
+      requestOverrides.maxStreamDurationMs,
+      modelTimeouts.maxStreamDurationMs,
+      upstreamTimeouts.maxStreamDurationMs,
+      routeTimeouts.maxStreamDurationMs,
+      timeoutCfg.maxStreamDurationMs,
+      0
+    ),
+    maxRetries: pickInteger(
+      requestOverrides.maxRetries,
+      modelRetries.maxRetries,
+      upstreamRetries.maxRetries,
+      retryCfg.maxRetries,
+      legacyCfg.maxRetries,
+      1
+    ),
+    retryBaseMs: pickInteger(
+      requestOverrides.retryBaseMs,
+      modelRetries.baseDelayMs,
+      upstreamRetries.baseDelayMs,
+      retryCfg.baseDelayMs,
+      legacyCfg.retryBaseMs,
+      800
+    ),
+    retryMaxMs: pickInteger(
+      requestOverrides.retryMaxMs,
+      modelRetries.maxDelayMs,
+      upstreamRetries.maxDelayMs,
+      retryCfg.maxDelayMs,
+      legacyCfg.retryMaxMs,
+      8000
+    ),
     retryStatuses: new Set(retryStatuses)
   };
 }
@@ -54,6 +164,9 @@ export function classifyFetchError(error) {
   if (code === "UPSTREAM_IDLE_TIMEOUT") {
     return { code: "UPSTREAM_IDLE_TIMEOUT", retryable: true, status: 504, detail: message };
   }
+  if (code === "UPSTREAM_MAX_STREAM_DURATION") {
+    return { code: "UPSTREAM_MAX_STREAM_DURATION", retryable: false, status: 504, detail: message };
+  }
   if (code === "ENOTFOUND" || message.includes("ENOTFOUND")) {
     return { code: "UPSTREAM_DNS_ERROR", retryable: true, status: 502, detail: message };
   }
@@ -69,14 +182,81 @@ export function classifyFetchError(error) {
   return { code: "UPSTREAM_FETCH_FAILED", retryable: true, status: 502, detail: message || "fetch failed" };
 }
 
-export function buildErrorBody({ classified, requestId, detail, upstreamStatus }) {
+function stringifyDetail(detail) {
+  if (typeof detail === "string") return detail.trim();
+  if (detail == null) return "";
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return String(detail);
+  }
+}
+
+function parseDetail(detail) {
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    return detail;
+  }
+  const detailText = stringifyDetail(detail);
+  if (!detailText) return null;
+  try {
+    return JSON.parse(detailText);
+  } catch {
+    return null;
+  }
+}
+
+function extractUpstreamError(parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+  if (parsed.error && typeof parsed.error === "object") return parsed.error;
+  return parsed;
+}
+
+function buildDefaultMessage(classified, upstreamStatus) {
+  if (upstreamStatus === 401 || classified?.status === 401) {
+    return "Upstream returned 401 Unauthorized. Check auth.mode, credentials, and Azure RBAC or API key configuration.";
+  }
+  if (upstreamStatus === 403 || classified?.status === 403) {
+    return "Upstream returned 403 Forbidden. Check whether the current credential has permission to access the target Azure OpenAI or Foundry resource.";
+  }
+  if (typeof upstreamStatus === "number") {
+    return `Upstream request failed with status ${upstreamStatus}.`;
+  }
+  return classified?.detail || classified?.code || "request failed";
+}
+
+export function buildErrorBody({ classified, requestId, detail, upstreamStatus, message, code, param, type }) {
+  const detailText = stringifyDetail(detail || classified?.detail || "");
+  const parsedDetail = parseDetail(detail);
+  const upstreamError = extractUpstreamError(parsedDetail);
+  const resolvedMessage =
+    (typeof message === "string" && message.trim())
+    || (typeof upstreamError?.message === "string" && upstreamError.message.trim())
+    || (typeof upstreamError?.error_description === "string" && upstreamError.error_description.trim())
+    || (typeof upstreamError?.detail === "string" && upstreamError.detail.trim())
+    || (typeof upstreamError?.error === "string" && upstreamError.error.trim())
+    || buildDefaultMessage(classified, upstreamStatus);
+  const resolvedCode =
+    (typeof code === "string" && code.trim())
+    || (typeof upstreamError?.code === "string" && upstreamError.code.trim())
+    || classified.code;
+  const resolvedType =
+    (typeof type === "string" && type.trim())
+    || (typeof upstreamError?.type === "string" && upstreamError.type.trim())
+    || classified.code;
+  const resolvedParam = param ?? upstreamError?.param;
+
   return {
-    error: classified.code,
+    error: {
+      message: resolvedMessage,
+      type: resolvedType,
+      code: resolvedCode,
+      ...(resolvedParam != null ? { param: resolvedParam } : {})
+    },
     code: classified.code,
     retryable: !!classified.retryable,
     requestId,
     upstreamStatus,
-    detail: detail || classified.detail || ""
+    detail: detailText
   };
 }
 
