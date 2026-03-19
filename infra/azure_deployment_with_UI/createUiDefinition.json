@@ -61,7 +61,7 @@
             "name": "image",
             "type": "Microsoft.Common.TextBox",
             "label": "Container image",
-            "defaultValue": "alexmcr.azurecr.io/aoai-proxy:latest",
+            "defaultValue": "alexmcr.azurecr.io/aoai-proxy:nextgen-latest",
             "toolTip": "Full image reference, for example alexmcr.azurecr.io/aoai-proxy:azure-deploy-v1.",
             "constraints": {
               "required": true
