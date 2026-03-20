@@ -71,29 +71,18 @@ export default function WorkspaceTab({ config, updateField, pricingCatalogText, 
             {pricingCatalogError ? <div className="inline-error">{pricingCatalogError}</div> : null}
           </AccordionSection>
 
-          <AccordionSection id="workspace-persistence" title={t("workspace.persistence.title", "Persistence And Cache")} desc={t("workspace.persistence.desc", "Configure file/blob/database modes, PostgreSQL storage, cache, and compatibility export.")} defaultOpen group="workspace-sections">
+          <AccordionSection id="workspace-persistence" title={t("workspace.persistence.title", "Persistence And Cache")} desc={t("workspace.persistence.desc", "Configure file, Azure Files, database, and database+Azure Files persistence modes plus PostgreSQL storage, cache, and compatibility export.")} defaultOpen group="workspace-sections">
             <div className="form-grid">
-              <Field label={t("field.persistenceMode", "Config Store Mode")}>
+              <Field label={t("field.persistenceMode", "Persistence Mode")}>
                 <select value={getValueByPath(config, "persistence.configStore.mode") || "file"} onChange={(event) => updateField("persistence.configStore.mode", event.target.value)}>
                   <option value="file">{t("option.file", "file")}</option>
-                  <option value="blob">{t("option.blob", "blob")}</option>
+                  <option value="azureFile">{t("option.azureFile", "azureFile")}</option>
                   <option value="database">{t("option.database", "database")}</option>
+                  <option value="database+azureFile">{t("option.database+azureFile", "database+azureFile")}</option>
                 </select>
               </Field>
               <Field label={t("field.configFilePath", "Config File Path")}>
                 <input value={getValueByPath(config, "persistence.configStore.filePath") || ""} onChange={(event) => updateField("persistence.configStore.filePath", event.target.value)} />
-              </Field>
-              <Field label={t("field.blobAccountUrl", "Blob Account URL")}>
-                <input value={getValueByPath(config, "persistence.configStore.blob.accountUrl") || ""} onChange={(event) => updateField("persistence.configStore.blob.accountUrl", event.target.value)} />
-              </Field>
-              <Field label={t("field.blobContainer", "Blob Container")}>
-                <input value={getValueByPath(config, "persistence.configStore.blob.container") || ""} onChange={(event) => updateField("persistence.configStore.blob.container", event.target.value)} />
-              </Field>
-              <Field label={t("field.blobPath", "Blob Path")}>
-                <input value={getValueByPath(config, "persistence.configStore.blob.path") || ""} onChange={(event) => updateField("persistence.configStore.blob.path", event.target.value)} />
-              </Field>
-              <Field label={t("field.blobProbeIntervalMs", "Blob Probe Interval ms")}>
-                <input type="number" value={getValueByPath(config, "persistence.configStore.blob.healthProbeIntervalMs") || 0} onChange={(event) => updateField("persistence.configStore.blob.healthProbeIntervalMs", asNumber(event.target.value))} />
               </Field>
               <Field label={t("field.databaseProvider", "Database Provider")}>
                 <input value={getValueByPath(config, "persistence.configStore.database.provider") || "postgresql"} onChange={(event) => updateField("persistence.configStore.database.provider", event.target.value)} />

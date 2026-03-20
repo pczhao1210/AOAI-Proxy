@@ -15,7 +15,7 @@
       "value": "aoai-proxy-dev"
     },
     "persistenceMode": {
-      "value": "database"
+      "value": "database+azureFile"
     },
     "databaseName": {
       "value": ""

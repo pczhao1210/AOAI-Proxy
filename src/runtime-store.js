@@ -1,5 +1,6 @@
 import { appendStructuredLog } from "./logs.js";
 import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
+import { parsePersistenceMode } from "./persistence-mode.js";
 
 const DEFAULT_DATABASE_SCHEMA = "public";
 const DEFAULT_RUNTIME_EVENTS_TABLE_NAME = "runtime_events";
@@ -91,13 +92,6 @@ function updateRuntimeStoreState(patch) {
   runtimeStoreState.queueLength = runtimeEventQueue.length;
 }
 
-function normalizeMode(mode) {
-  const normalized = String(mode || "").trim().toLowerCase();
-  if (["database", "db", "postgres", "postgresql"].includes(normalized)) return "database";
-  if (["blob", "azureblob"].includes(normalized)) return "blob";
-  return "file";
-}
-
 function resolveRuntimeStoreSettings(config = runtimeStoreConfig) {
   const observability = asPlainObject(config?.observability);
   const runtimeStore = asPlainObject(observability.runtimeStore);
@@ -105,11 +99,11 @@ function resolveRuntimeStoreSettings(config = runtimeStoreConfig) {
   const persistence = asPlainObject(config?.persistence);
   const configStore = asPlainObject(persistence.configStore);
   const database = asPlainObject(configStore.database);
-  const requestedMode = normalizeMode(getEnvOverride("PERSISTENCE_MODE", "CONFIG_PERSISTENCE_MODE") || configStore.mode);
+  const requestedMode = parsePersistenceMode(getEnvOverride("PERSISTENCE_MODE", "CONFIG_PERSISTENCE_MODE") || configStore.mode);
   const connectionRef = getEnvOverride("RUNTIME_DB_CONNECTION_REF") || String(runtimeStore.connectionRef || database.connectionRef || "").trim();
   const connectionString = getEnvOverride("RUNTIME_DB_CONNECTION_STRING", "CONFIG_DB_CONNECTION_STRING", "DATABASE_URL")
     || (connectionRef ? getEnvOverride(connectionRef) : "");
-  const enabled = runtimeStore.enabled !== false && requestedMode === "database";
+  const enabled = runtimeStore.enabled !== false && requestedMode.usesDatabase;
   const detailRetentionDays = resolveInt(runtimeStore.detailRetentionDays ?? runtimeStore.retentionDays ?? audit.retentionDays, DEFAULT_DETAIL_RETENTION_DAYS, 1);
 
   return {

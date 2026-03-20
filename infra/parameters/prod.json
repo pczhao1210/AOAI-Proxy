@@ -21,7 +21,7 @@
       "value": 4
     },
     "persistenceMode": {
-      "value": "database"
+      "value": "database+azureFile"
     },
     "databaseName": {
       "value": "aoaiproxy"

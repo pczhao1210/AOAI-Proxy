@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "17425892013322819198"
+      "templateHash": "16410912255070560642"
     }
   },
   "parameters": {
@@ -52,14 +52,14 @@
     },
     "persistenceMode": {
       "type": "string",
-      "defaultValue": "database",
+      "defaultValue": "database+azureFile",
       "allowedValues": [
         "database",
-        "azureFile",
-        "blob"
+        "database+azureFile",
+        "azureFile"
       ],
       "metadata": {
-        "description": "Persistence mode. database is the default and stores config in Azure Database for PostgreSQL. azureFile keeps the Azure Files mount. blob stores config via Blob SDK and managed identity."
+        "description": "Persistence mode. database+azureFile is the default and stores config in Azure Database for PostgreSQL while mounting /app/data from Azure Files. database keeps PostgreSQL-backed config only. azureFile keeps only the Azure Files mount."
       }
     },
     "storageAccountMode": {
@@ -70,14 +70,14 @@
         "existing"
       ],
       "metadata": {
-        "description": "Whether to create a new storage account or use an existing one when persistenceMode=azureFile or blob."
+        "description": "Whether to create a new storage account or use an existing one when persistenceMode includes azureFile."
       }
     },
     "storageAccountName": {
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Name of the storage account to create or use for Azure Files or Blob persistence. Leave empty to auto-generate only when storageAccountMode=new."
+        "description": "Name of the storage account to create or use for Azure Files persistence. Leave empty to auto-generate only when storageAccountMode=new."
       }
     },
     "fileShareMode": {
@@ -88,46 +88,21 @@
         "existing"
       ],
       "metadata": {
-        "description": "Whether to create the Azure Files share or use an existing one when persistenceMode=azureFile and storageAccountMode=existing. When storageAccountMode=new, the share is always created."
+        "description": "Whether to create the Azure Files share or use an existing one when persistenceMode includes azureFile and storageAccountMode=existing. When storageAccountMode=new, the share is always created."
       }
     },
     "fileShareName": {
       "type": "string",
       "defaultValue": "aoaiproxy",
       "metadata": {
-        "description": "Azure Files share name used when persistenceMode=azureFile."
+        "description": "Azure Files share name used when persistenceMode includes azureFile."
       }
     },
     "azureFileStorageAccountKey": {
       "type": "securestring",
       "defaultValue": "",
       "metadata": {
-        "description": "Optional Azure Files storage account key used when persistenceMode=azureFile. When provided, the container group uses this key directly instead of calling listKeys during deployment."
-      }
-    },
-    "blobContainerMode": {
-      "type": "string",
-      "defaultValue": "new",
-      "allowedValues": [
-        "new",
-        "existing"
-      ],
-      "metadata": {
-        "description": "Whether to create the Blob container or use an existing one when persistenceMode=blob and storageAccountMode=existing. When storageAccountMode=new, the container is always created."
-      }
-    },
-    "blobContainerName": {
-      "type": "string",
-      "defaultValue": "aoai-proxy-config",
-      "metadata": {
-        "description": "Blob container name used when persistenceMode=blob."
-      }
-    },
-    "configBlobName": {
-      "type": "string",
-      "defaultValue": "config/config.json",
-      "metadata": {
-        "description": "Blob path used for the persisted config file when persistenceMode=blob."
+        "description": "Optional Azure Files storage account key used when persistenceMode includes azureFile. When provided, the container group uses this key directly instead of calling listKeys during deployment."
       }
     },
     "databaseServerMode": {
@@ -138,7 +113,7 @@
         "existing"
       ],
       "metadata": {
-        "description": "Whether to create a new PostgreSQL flexible server or use an existing one when persistenceMode=database."
+        "description": "Whether to create a new PostgreSQL flexible server or use an existing one when persistenceMode includes database."
       }
     },
     "databaseServerName": {
@@ -156,7 +131,7 @@
         "existing"
       ],
       "metadata": {
-        "description": "Whether to create the PostgreSQL database or use an existing one when persistenceMode=database and databaseServerMode=existing. When databaseServerMode=new, the database is always created."
+        "description": "Whether to create the PostgreSQL database or use an existing one when persistenceMode includes database and databaseServerMode=existing. When databaseServerMode=new, the database is always created."
       }
     },
     "databaseName": {
@@ -170,14 +145,14 @@
       "type": "string",
       "defaultValue": "aoaiproxyadmin",
       "metadata": {
-        "description": "PostgreSQL username used to build the application connection string when persistenceMode=database."
+        "description": "PostgreSQL username used to build the application connection string when persistenceMode includes database."
       }
     },
     "databaseAdminPassword": {
       "type": "securestring",
       "defaultValue": "",
       "metadata": {
-        "description": "PostgreSQL password used to build the application connection string when persistenceMode=database. Required only when persistenceMode=database."
+        "description": "PostgreSQL password used to build the application connection string when persistenceMode includes database. Required only when persistenceMode includes database."
       }
     },
     "databaseTier": {
@@ -189,14 +164,14 @@
         "MemoryOptimized"
       ],
       "metadata": {
-        "description": "PostgreSQL compute tier used when persistenceMode=database."
+        "description": "PostgreSQL compute tier used when persistenceMode includes database."
       }
     },
     "databaseSkuName": {
       "type": "string",
       "defaultValue": "Standard_B1ms",
       "metadata": {
-        "description": "PostgreSQL SKU used when persistenceMode=database. Standard_B1ms is the smallest documented Burstable development size."
+        "description": "PostgreSQL SKU used when persistenceMode includes database. Standard_B1ms is the smallest documented Burstable development size."
       }
     },
     "databaseVersion": {
@@ -209,14 +184,14 @@
         "14"
       ],
       "metadata": {
-        "description": "PostgreSQL server version used when persistenceMode=database."
+        "description": "PostgreSQL server version used when persistenceMode includes database."
       }
     },
     "databaseStorageSizeGB": {
       "type": "int",
       "defaultValue": 32,
       "metadata": {
-        "description": "PostgreSQL storage size in GB used when persistenceMode=database."
+        "description": "PostgreSQL storage size in GB used when persistenceMode includes database."
       }
     },
     "allowAzureServicesToDatabase": {
@@ -230,14 +205,14 @@
       "type": "string",
       "defaultValue": "UTF8",
       "metadata": {
-        "description": "Database charset used when persistenceMode=database."
+        "description": "Database charset used when persistenceMode includes database."
       }
     },
     "databaseCollation": {
       "type": "string",
       "defaultValue": "en_US.utf8",
       "metadata": {
-        "description": "Database collation used when persistenceMode=database."
+        "description": "Database collation used when persistenceMode includes database."
       }
     },
     "cognitiveServicesAccountName": {
@@ -277,31 +252,25 @@
     }
   },
   "variables": {
-    "storageBlobDataContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
     "cognitiveServicesOpenAiUserRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
     "azureFileShareContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb')]",
-    "deployerPrincipal": "[deployer()]",
-    "deployerBlobPrincipalType": "[if(empty(variables('deployerPrincipal').userPrincipalName), 'ServicePrincipal', 'User')]",
-    "enableAzureFile": "[equals(parameters('persistenceMode'), 'azureFile')]",
-    "enableBlob": "[equals(parameters('persistenceMode'), 'blob')]",
-    "enableDatabase": "[equals(parameters('persistenceMode'), 'database')]",
-    "useStorage": "[or(variables('enableAzureFile'), variables('enableBlob'))]",
+    "normalizedPersistenceMode": "[toLower(replace(replace(parameters('persistenceMode'), ' ', ''), '_', ''))]",
+    "enableAzureFile": "[contains(variables('normalizedPersistenceMode'), 'azurefile')]",
+    "enableDatabase": "[contains(variables('normalizedPersistenceMode'), 'database')]",
+    "useStorage": "[variables('enableAzureFile')]",
     "createStorageAccount": "[and(variables('useStorage'), equals(parameters('storageAccountMode'), 'new'))]",
     "useExistingStorageAccount": "[and(variables('useStorage'), equals(parameters('storageAccountMode'), 'existing'))]",
     "effectiveStorageAccountName": "[if(not(empty(parameters('storageAccountName'))), toLower(parameters('storageAccountName')), if(variables('createStorageAccount'), take(format('st{0}{1}', toLower(replace(parameters('containerGroupName'), '-', '')), uniqueString(resourceGroup().id, parameters('containerGroupName'), 'storage')), 24), ''))]",
     "createFileShare": "[and(variables('enableAzureFile'), or(variables('createStorageAccount'), equals(parameters('fileShareMode'), 'new')))]",
-    "createBlobContainer": "[and(variables('enableBlob'), or(variables('createStorageAccount'), equals(parameters('blobContainerMode'), 'new')))]",
-    "useExistingBlobContainer": "[and(and(variables('enableBlob'), variables('useExistingStorageAccount')), equals(parameters('blobContainerMode'), 'existing'))]",
     "createDatabaseServer": "[and(variables('enableDatabase'), equals(parameters('databaseServerMode'), 'new'))]",
     "useExistingDatabaseServer": "[and(variables('enableDatabase'), equals(parameters('databaseServerMode'), 'existing'))]",
     "effectiveDatabaseServerName": "[if(not(empty(parameters('databaseServerName'))), toLower(parameters('databaseServerName')), if(variables('createDatabaseServer'), take(format('pg-{0}-{1}', toLower(replace(parameters('containerGroupName'), '_', '-')), uniqueString(resourceGroup().id, parameters('containerGroupName'), 'postgres')), 63), ''))]",
     "effectiveDatabaseName": "[if(not(empty(parameters('databaseName'))), parameters('databaseName'), 'aoaiproxy')]",
     "createDatabase": "[and(variables('enableDatabase'), or(variables('createDatabaseServer'), equals(parameters('databaseMode'), 'new')))]",
-    "storageAccountBlobUrl": "[if(variables('useStorage'), format('https://{0}.blob.{1}', variables('effectiveStorageAccountName'), environment().suffixes.storage), '')]",
     "databaseServerFqdn": "[if(variables('enableDatabase'), format('{0}.postgres.database.azure.com', variables('effectiveDatabaseServerName')), '')]",
     "databaseConnectionString": "[if(variables('enableDatabase'), format('postgresql://{0}:{1}@{2}:5432/{3}?sslmode=require', parameters('databaseAdminUsername'), uriComponent(parameters('databaseAdminPassword')), variables('databaseServerFqdn'), variables('effectiveDatabaseName')), '')]",
     "imageRegistryCredentials": "[if(empty(parameters('acrLoginServer')), createArray(), createArray(createObject('server', parameters('acrLoginServer'), 'username', parameters('acrUsername'), 'password', parameters('acrPassword'))))]",
-    "environmentVariables": "[if(variables('enableDatabase'), createArray(createObject('name', 'PERSISTENCE_MODE', 'value', parameters('persistenceMode')), createObject('name', 'CONFIG_DB_CONNECTION_STRING', 'secureValue', variables('databaseConnectionString'))), createArray(createObject('name', 'PERSISTENCE_MODE', 'value', parameters('persistenceMode')), createObject('name', 'AZURE_STORAGE_ACCOUNT_URL', 'value', variables('storageAccountBlobUrl')), createObject('name', 'CONFIG_BLOB_CONTAINER', 'value', parameters('blobContainerName')), createObject('name', 'CONFIG_BLOB_NAME', 'value', parameters('configBlobName'))))]",
+    "environmentVariables": "[if(variables('enableDatabase'), createArray(createObject('name', 'PERSISTENCE_MODE', 'value', parameters('persistenceMode')), createObject('name', 'CONFIG_DB_CONNECTION_STRING', 'secureValue', variables('databaseConnectionString'))), createArray(createObject('name', 'PERSISTENCE_MODE', 'value', parameters('persistenceMode'))))]",
     "volumeMounts": "[if(variables('enableAzureFile'), createArray(createObject('name', 'configshare', 'mountPath', '/app/data')), createArray())]"
   },
   "resources": [
@@ -415,36 +384,6 @@
       "name": "[format('{0}/{1}/{2}', variables('effectiveStorageAccountName'), 'default', parameters('fileShareName'))]"
     },
     {
-      "condition": "[and(variables('createBlobContainer'), variables('createStorageAccount'))]",
-      "type": "Microsoft.Storage/storageAccounts/blobServices",
-      "apiVersion": "2023-05-01",
-      "name": "[format('{0}/{1}', variables('effectiveStorageAccountName'), 'default')]",
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('effectiveStorageAccountName'))]"
-      ]
-    },
-    {
-      "condition": "[and(variables('createBlobContainer'), variables('createStorageAccount'))]",
-      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
-      "apiVersion": "2023-05-01",
-      "name": "[format('{0}/{1}/{2}', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]",
-      "properties": {
-        "publicAccess": "None"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('effectiveStorageAccountName'), 'default')]"
-      ]
-    },
-    {
-      "condition": "[and(variables('createBlobContainer'), variables('useExistingStorageAccount'))]",
-      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
-      "apiVersion": "2023-05-01",
-      "name": "[format('{0}/{1}/{2}', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]",
-      "properties": {
-        "publicAccess": "None"
-      }
-    },
-    {
       "type": "Microsoft.ContainerInstance/containerGroups",
       "apiVersion": "2023-05-01",
       "name": "[parameters('containerGroupName')]",
@@ -500,83 +439,6 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.Storage/storageAccounts', variables('effectiveStorageAccountName'))]"
-      ]
-    },
-    {
-      "condition": "[and(variables('createBlobContainer'), variables('createStorageAccount'))]",
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName')), resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), variables('storageBlobDataContributorRoleId'))]",
-      "properties": {
-        "principalId": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]",
-        "principalType": "ServicePrincipal",
-        "roleDefinitionId": "[variables('storageBlobDataContributorRoleId')]"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]",
-        "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]"
-      ]
-    },
-    {
-      "condition": "[and(variables('createBlobContainer'), variables('useExistingStorageAccount'))]",
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName')), resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), variables('storageBlobDataContributorRoleId'))]",
-      "properties": {
-        "principalId": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]",
-        "principalType": "ServicePrincipal",
-        "roleDefinitionId": "[variables('storageBlobDataContributorRoleId')]"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]",
-        "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]"
-      ]
-    },
-    {
-      "condition": "[variables('useExistingBlobContainer')]",
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName')), resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), variables('storageBlobDataContributorRoleId'))]",
-      "properties": {
-        "principalId": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]",
-        "principalType": "ServicePrincipal",
-        "roleDefinitionId": "[variables('storageBlobDataContributorRoleId')]"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]"
-      ]
-    },
-    {
-      "condition": "[and(variables('createBlobContainer'), variables('createStorageAccount'))]",
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName')), variables('deployerPrincipal').objectId, variables('storageBlobDataContributorRoleId'))]",
-      "properties": {
-        "principalId": "[variables('deployerPrincipal').objectId]",
-        "principalType": "[variables('deployerBlobPrincipalType')]",
-        "roleDefinitionId": "[variables('storageBlobDataContributorRoleId')]"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]"
-      ]
-    },
-    {
-      "condition": "[and(variables('createBlobContainer'), variables('useExistingStorageAccount'))]",
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName')), variables('deployerPrincipal').objectId, variables('storageBlobDataContributorRoleId'))]",
-      "properties": {
-        "principalId": "[variables('deployerPrincipal').objectId]",
-        "principalType": "[variables('deployerBlobPrincipalType')]",
-        "roleDefinitionId": "[variables('storageBlobDataContributorRoleId')]"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('effectiveStorageAccountName'), 'default', parameters('blobContainerName'))]"
       ]
     },
     {
@@ -692,21 +554,9 @@
       "type": "string",
       "value": "[if(variables('enableAzureFile'), if(variables('createFileShare'), 'new', 'existing'), '')]"
     },
-    "blobAccountUrl": {
-      "type": "string",
-      "value": "[if(variables('enableBlob'), variables('storageAccountBlobUrl'), '')]"
-    },
     "azureFileShareName": {
       "type": "string",
       "value": "[if(variables('enableAzureFile'), parameters('fileShareName'), '')]"
-    },
-    "blobContainerModeOutput": {
-      "type": "string",
-      "value": "[if(variables('enableBlob'), if(variables('createBlobContainer'), 'new', 'existing'), '')]"
-    },
-    "blobContainerOutput": {
-      "type": "string",
-      "value": "[if(variables('enableBlob'), parameters('blobContainerName'), '')]"
     },
     "databaseServerModeOutput": {
       "type": "string",

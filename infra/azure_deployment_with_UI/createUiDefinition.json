@@ -6,7 +6,7 @@
     "config": {
       "isWizard": true,
       "basics": {
-        "description": "Deploy AOAI Foundry Proxy on Azure Container Instances. The default path uses Azure Database for PostgreSQL for config persistence; Azure Files and Blob remain available for storage-backed deployments.",
+        "description": "Deploy AOAI Foundry Proxy on Azure Container Instances. The default path uses Azure Database for PostgreSQL for config persistence, with Azure Files available for durable /app/data mounts.",
         "subscription": {
           "resourceProviders": [
             "Microsoft.ContainerInstance",
@@ -119,10 +119,15 @@
             "name": "persistenceMode",
             "type": "Microsoft.Common.OptionsGroup",
             "label": "Persistence mode",
-            "defaultValue": "database",
-            "toolTip": "Database is the default and creates PostgreSQL-backed config persistence. Azure Files and Blob remain available for storage-backed modes.",
+            "defaultValue": "database+azureFile",
+            "toolTip": "Database + Azure Files is the default and keeps PostgreSQL-backed config persistence together with an Azure Files /app/data mount.",
             "constraints": {
               "allowedValues": [
+                {
+                  "label": "PostgreSQL config + Azure Files volume",
+                  "description": "Create Azure Database for PostgreSQL Flexible Server and mount /app/data from Azure Files so config and Caddy state both survive container replacement.",
+                  "value": "database+azureFile"
+                },
                 {
                   "label": "PostgreSQL config persistence",
                   "description": "Create Azure Database for PostgreSQL Flexible Server and persist config there. Database name can be left empty to auto-create the default database.",
@@ -133,11 +138,6 @@
                   "description": "Mount /app/data from Azure Files. Requires shared key access.",
                   "value": "azureFile"
                 },
-                {
-                  "label": "Blob config persistence",
-                  "description": "Persist config in Blob Storage by managed identity.",
-                  "value": "blob"
-                }
               ],
               "required": true
             }
@@ -147,7 +147,7 @@
             "type": "Microsoft.Common.OptionsGroup",
             "label": "Storage account source",
             "defaultValue": "new",
-            "visible": "[not(equals(steps('runtime').persistenceMode, 'database'))]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "toolTip": "Choose whether the deployment should create a storage account or reuse an existing one.",
             "constraints": {
               "allowedValues": [
@@ -174,7 +174,7 @@
           {
             "name": "databaseInfo",
             "type": "Microsoft.Common.InfoBox",
-            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "options": {
               "icon": "Info",
               "text": "Choose whether to create a new PostgreSQL Flexible Server or connect to an existing one. The deployment always injects the final connection string into the container as a secure environment variable."
@@ -185,7 +185,7 @@
             "type": "Microsoft.Common.OptionsGroup",
             "label": "PostgreSQL server source",
             "defaultValue": "new",
-            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "toolTip": "Choose whether the deployment should create a PostgreSQL server or reuse an existing one.",
             "constraints": {
               "allowedValues": [
@@ -208,7 +208,7 @@
             "type": "Microsoft.Common.TextBox",
             "label": "PostgreSQL server name",
             "defaultValue": "",
-            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "toolTip": "Server name to create or reuse. Leave empty to auto-generate only when creating a new server.",
             "constraints": {
               "required": "[equals(steps('database').databaseServerMode, 'existing')]",
@@ -221,7 +221,7 @@
             "type": "Microsoft.Common.OptionsGroup",
             "label": "Database source",
             "defaultValue": "new",
-            "visible": "[and(equals(steps('runtime').persistenceMode, 'database'), equals(steps('database').databaseServerMode, 'existing'))]",
+            "visible": "[and(or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile')), equals(steps('database').databaseServerMode, 'existing'))]",
             "toolTip": "Choose whether to create the database on the existing server or connect to an existing database.",
             "constraints": {
               "allowedValues": [
@@ -244,7 +244,7 @@
             "type": "Microsoft.Common.TextBox",
             "label": "Database name",
             "defaultValue": "",
-            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "toolTip": "Database name to create or reuse. Leave empty to auto-create aoaiproxy only when creating a new database.",
             "constraints": {
               "required": "[and(equals(steps('database').databaseServerMode, 'existing'), equals(steps('database').databaseMode, 'existing'))]",
@@ -257,10 +257,10 @@
             "type": "Microsoft.Common.TextBox",
             "label": "Database username",
             "defaultValue": "aoaiproxyadmin",
-            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "toolTip": "Username used in the application connection string. For existing servers, use a login that already has access to the target database.",
             "constraints": {
-              "required": "[equals(steps('runtime').persistenceMode, 'database')]",
+              "required": "[or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
               "regex": "^[A-Za-z][A-Za-z0-9]{0,62}$",
               "validationMessage": "Use 1-63 letters or numbers and start with a letter."
             }
@@ -268,7 +268,7 @@
           {
             "name": "databaseAdminPassword",
             "type": "Microsoft.Common.PasswordBox",
-            "visible": "[equals(steps('runtime').persistenceMode, 'database')]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "label": {
               "password": "Database password",
               "confirmPassword": "Confirm database password"
@@ -278,7 +278,7 @@
               "confirmPassword": "Re-enter the database password."
             },
             "constraints": {
-              "required": "[equals(steps('runtime').persistenceMode, 'database')]"
+              "required": "[or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]"
             }
           },
           {
@@ -286,7 +286,7 @@
             "type": "Microsoft.Common.DropDown",
             "label": "Database size",
             "defaultValue": "Standard_B1ms",
-            "visible": "[and(equals(steps('runtime').persistenceMode, 'database'), equals(steps('database').databaseServerMode, 'new'))]",
+            "visible": "[and(or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile')), equals(steps('database').databaseServerMode, 'new'))]",
             "toolTip": "Burstable development sizes for Azure Database for PostgreSQL Flexible Server.",
             "constraints": {
               "allowedValues": [
@@ -303,7 +303,7 @@
                   "value": "Standard_B2ms"
                 }
               ],
-              "required": "[equals(steps('runtime').persistenceMode, 'database')]"
+              "required": "[or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]"
             }
           }
         ]
@@ -315,7 +315,7 @@
           {
             "name": "storageInfo",
             "type": "Microsoft.Common.InfoBox",
-            "visible": "[not(equals(steps('runtime').persistenceMode, 'database'))]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "options": {
               "icon": "Info",
               "text": "Choose whether to create new storage resources or reuse existing ones. Existing-resource mode is useful when Azure Policy requires storage accounts or shares to be pre-provisioned."
@@ -326,10 +326,10 @@
             "type": "Microsoft.Common.TextBox",
             "label": "Storage account name",
             "defaultValue": "",
-            "visible": "[not(equals(steps('runtime').persistenceMode, 'database'))]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "toolTip": "Name of the storage account to create or reuse. Leave empty to auto-generate only when creating a new account.",
             "constraints": {
-              "required": "[and(not(equals(steps('runtime').persistenceMode, 'database')), equals(steps('runtime').storageAccountMode, 'existing'))]",
+              "required": "[and(or(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').persistenceMode, 'database+azureFile')), equals(steps('runtime').storageAccountMode, 'existing'))]",
               "regex": "^[a-z0-9]{3,24}$",
               "validationMessage": "Use 3-24 lowercase letters or numbers. The name must be globally unique in Azure Storage."
             }
@@ -339,7 +339,7 @@
             "type": "Microsoft.Common.OptionsGroup",
             "label": "Azure Files share source",
             "defaultValue": "new",
-            "visible": "[and(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').storageAccountMode, 'existing'))]",
+            "visible": "[and(or(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').persistenceMode, 'database+azureFile')), equals(steps('runtime').storageAccountMode, 'existing'))]",
             "toolTip": "Choose whether the deployment should create the Azure Files share or reuse an existing one.",
             "constraints": {
               "allowedValues": [
@@ -363,9 +363,9 @@
             "label": "Azure Files share name",
             "defaultValue": "aoaiproxy",
             "toolTip": "Used only when Azure Files persistence is selected.",
-            "visible": "[equals(steps('runtime').persistenceMode, 'azureFile')]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "constraints": {
-              "required": "[equals(steps('runtime').persistenceMode, 'azureFile')]",
+              "required": "[or(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
               "regex": "^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$",
               "validationMessage": "Use 3-63 lowercase letters, numbers, or hyphens."
             }
@@ -381,57 +381,11 @@
               "password": "Optional. When provided, the deployment uses this key directly for the Azure Files mount instead of calling listKeys.",
               "confirmPassword": "Re-enter the Azure Files storage account key."
             },
-            "visible": "[equals(steps('runtime').persistenceMode, 'azureFile')]",
+            "visible": "[or(equals(steps('runtime').persistenceMode, 'azureFile'), equals(steps('runtime').persistenceMode, 'database+azureFile'))]",
             "constraints": {
               "required": false
             }
           },
-          {
-            "name": "blobContainerMode",
-            "type": "Microsoft.Common.OptionsGroup",
-            "label": "Blob container source",
-            "defaultValue": "new",
-            "visible": "[and(equals(steps('runtime').persistenceMode, 'blob'), equals(steps('runtime').storageAccountMode, 'existing'))]",
-            "toolTip": "Choose whether the deployment should create the Blob container or reuse an existing one.",
-            "constraints": {
-              "allowedValues": [
-                {
-                  "label": "Create Blob container",
-                  "description": "Creates the container in the existing storage account.",
-                  "value": "new"
-                },
-                {
-                  "label": "Use existing Blob container",
-                  "description": "Avoids container creation when policy requires a fully pre-provisioned Blob setup.",
-                  "value": "existing"
-                }
-              ],
-              "required": true
-            }
-          },
-          {
-            "name": "blobContainerName",
-            "type": "Microsoft.Common.TextBox",
-            "label": "Blob container name",
-            "defaultValue": "aoai-proxy-config",
-            "toolTip": "Used only when Blob persistence is selected.",
-            "visible": "[equals(steps('runtime').persistenceMode, 'blob')]",
-            "constraints": {
-              "required": "[equals(steps('runtime').persistenceMode, 'blob')]",
-              "regex": "^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$",
-              "validationMessage": "Use 3-63 lowercase letters, numbers, or hyphens."
-            }
-          },
-          {
-            "name": "configBlobName",
-            "type": "Microsoft.Common.TextBox",
-            "label": "Config blob path",
-            "defaultValue": "config/config.json",
-            "toolTip": "Blob path for the persisted config file.",
-            "visible": "[equals(steps('runtime').persistenceMode, 'blob')]",
-            "constraints": {
-              "required": "[equals(steps('runtime').persistenceMode, 'blob')]"
-            }
           }
         ]
       },
@@ -515,9 +469,6 @@
       "fileShareMode": "[steps('storage').fileShareMode]",
       "fileShareName": "[steps('storage').fileShareName]",
       "azureFileStorageAccountKey": "[steps('storage').azureFileStorageAccountKey]",
-      "blobContainerMode": "[steps('storage').blobContainerMode]",
-      "blobContainerName": "[steps('storage').blobContainerName]",
-      "configBlobName": "[steps('storage').configBlobName]",
       "databaseServerMode": "[steps('database').databaseServerMode]",
       "databaseServerName": "[steps('database').databaseServerName]",
       "databaseMode": "[steps('database').databaseMode]",

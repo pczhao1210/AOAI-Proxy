@@ -1,4 +1,4 @@
-# ACI 持久化模式（Database + Azure Files + Blob）
+# ACI 持久化模式（Database + Azure Files）
 
 [English](aci_persist_vol.en.md)
 
@@ -6,8 +6,8 @@
 
 先说明一个关键区别：
 
-- 本仓库的 Bicep / ARM 模板已经默认切到 `database`，并会自动创建 PostgreSQL 服务器和数据库。
-- 本文档里的原始 `az container create` 手工流程不会自动创建 PostgreSQL 资源。如果你选择 `database`，需要先准备好连接串。
+- 本仓库的 Bicep / ARM 模板默认是 `database+azureFile`，会自动创建或复用 PostgreSQL 与 Azure Files 资源。
+- 本文档里的原始 `az container create` 手工流程不会自动创建 PostgreSQL 资源。如果你选择 `database` 或 `database+azureFile`，需要先准备好连接串。
 
 ## 持久化模式
 
@@ -15,14 +15,15 @@
 
 - `database`：把代理配置持久化到 PostgreSQL
 - `azureFile`：把 Azure Files 挂载到 `/app/data`，用于配置、Caddyfile、ACME 证书和 Caddy 状态
-- `blob`：通过 Blob SDK 和托管身份持久化配置
+- `database+azureFile`：配置放 PostgreSQL，同时把 `/app/data` 挂载到 Azure Files
 
 注意：
 
 - `database` 模式只负责代理配置持久化，不会自动让 `/app/data` 变成持久卷。
 - 在纯 `database` 模式下，生成的 Caddyfile、ACME 证书和 Caddy 状态会随着容器替换而丢失。
+- `azureFile` 模式会把配置文件和 `/app/data` 下的其他文件系统产物一起保存在 Azure Files 中。
+- `database+azureFile` 模式同时保留 PostgreSQL 配置持久化和 Azure Files 文件系统持久化，是最适合 ACI 的组合模式。
 - 应用可以在 PostgreSQL 中自动创建 schema、table 和配置行，但手工 ACI 流程仍要求数据库资源本身已经存在。
-- `blob` 模式不替代 Azure Files 的卷挂载语义。
 - ACI 原生 Azure Files 挂载仍需账号密钥。
 - 如果你既要完全无 Key，又要保留 `/app/data` 挂载语义，需要考虑 ACA、AKS 或 VM。
 
@@ -59,7 +60,7 @@ export DNS_LABEL=<dnsLabel>
 az group create -n "$RG" -l "$REGION"
 ```
 
-## 2) 为 `azureFile` 或 `blob` 创建存储资源
+## 2) 为 `azureFile` 或 `database+azureFile` 创建存储资源
 
 如果你只用 `database` 模式，可以跳过本节。
 
@@ -74,7 +75,7 @@ az storage account create \
   --kind StorageV2
 ```
 
-如果要用 `azureFile`，创建文件共享：
+创建文件共享：
 
 ```bash
 az storage share create \
@@ -83,7 +84,7 @@ az storage share create \
   --auth-mode login
 ```
 
-如果要用 `azureFile`，获取存储账号密钥：
+获取存储账号密钥：
 
 ```bash
 STORAGE_KEY=$(az storage account keys list \
@@ -154,9 +155,6 @@ az container create \
   --dns-name-label "$DNS_LABEL" \
   --environment-variables \
     PERSISTENCE_MODE=azureFile \
-    AZURE_STORAGE_ACCOUNT_URL="https://$STORAGE.blob.core.windows.net" \
-    CONFIG_BLOB_CONTAINER=aoai-proxy-config \
-    CONFIG_BLOB_NAME=config/config.json \
   --azure-file-volume-account-name "$STORAGE" \
   --azure-file-volume-account-key "$STORAGE_KEY" \
   --azure-file-volume-share-name "$SHARE" \
@@ -164,9 +162,9 @@ az container create \
   --os-type Linux
 ```
 
-### 3.3 `blob` 模式
+### 3.3 `database+azureFile` 模式
 
-适合把配置放到 Blob，但不依赖 Azure Files 卷语义的场景。
+适合既要 PostgreSQL 配置持久化，又要 `/app/data` 文件系统状态跨容器保留的场景。
 
 ```bash
 az container create \
@@ -181,10 +179,12 @@ az container create \
   --ports 3000 443 \
   --dns-name-label "$DNS_LABEL" \
   --environment-variables \
-    PERSISTENCE_MODE=blob \
-    AZURE_STORAGE_ACCOUNT_URL="https://$STORAGE.blob.core.windows.net" \
-    CONFIG_BLOB_CONTAINER=aoai-proxy-config \
-    CONFIG_BLOB_NAME=config/config.json \
+    PERSISTENCE_MODE=database+azureFile \
+    CONFIG_DB_CONNECTION_STRING="postgresql://<user>:<password>@<server>.postgres.database.azure.com:5432/<database>?sslmode=require" \
+  --azure-file-volume-account-name "$STORAGE" \
+  --azure-file-volume-account-key "$STORAGE_KEY" \
+  --azure-file-volume-share-name "$SHARE" \
+  --azure-file-volume-mount-path /app/data \
   --os-type Linux
 ```
 
@@ -196,7 +196,7 @@ az container create \
 az container logs -g "$RG" -n "$ACI_NAME"
 ```
 
-如果使用 `azureFile`，可以进一步查看共享中的文件：
+如果使用 `azureFile` 或 `database+azureFile`，可以进一步查看共享中的文件：
 
 ```bash
 az storage file list \
@@ -209,7 +209,7 @@ az storage file list \
 
 - `database`：配置保存到 PostgreSQL，同时容器本地保留缓存；`/app/data/caddy` 不是持久的。
 - `azureFile`：`config.json`、生成的 Caddyfile 和 Caddy 状态保存在共享中。
-- `blob`：优先从 Blob 恢复配置，但 Caddy 状态仍在容器本地。
+- `database+azureFile`：配置保存在 PostgreSQL，`/app/data` 下的 Caddy 状态和其他文件产物保存在共享中。
 
 ## 附：在 Linux VM 上挂载 Azure Files（SMB）
 
@@ -248,8 +248,7 @@ az container delete -g "$RG" -n "$ACI_NAME" -y
 不同模式对应的要求如下：
 
 - `database`：配置持久化不需要 Storage RBAC，但 PostgreSQL 的防火墙和网络必须允许容器连接。
-- `azureFile`：需要 Azure Files 运行期访问权限。
-- `blob`：需要 Blob 容器写入权限。
+- `azureFile` 与 `database+azureFile`：需要 Azure Files 运行期访问权限。
 - 所有使用 AAD 上游认证的场景：需要 Azure OpenAI / Foundry 访问权限。
 
 ### 6.1 启用系统分配托管身份
@@ -276,7 +275,7 @@ ACI_PRINCIPAL_ID=$(az container show -g "$RG" -n "$ACI_NAME" --query identity.pr
 echo "$ACI_PRINCIPAL_ID"
 ```
 
-### 6.2 `azureFile` 模式：授予 Azure Files RBAC
+### 6.2 `azureFile` 与 `database+azureFile` 模式：授予 Azure Files RBAC
 
 ```bash
 STORAGE_ID=$(az storage account show -g "$RG" -n "$STORAGE" --query id -o tsv)
@@ -292,25 +291,13 @@ az role assignment create \
 
 换句话说：RBAC 可以解决运行期访问授权问题，但不能把“手填 key / 自动 `listKeys`”这两条挂载凭据路径替换成纯 AAD 挂载。
 
-### 6.3 `blob` 模式：授予 Blob 写权限
+### 6.3 `database` 与 `database+azureFile` 模式：保证 PostgreSQL 可连通
 
-```bash
-BLOB_SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/$STORAGE/blobServices/default/containers/aoai-proxy-config"
-
-az role assignment create \
-  --assignee-object-id "$ACI_PRINCIPAL_ID" \
-  --assignee-principal-type ServicePrincipal \
-  --role "Storage Blob Data Contributor" \
-  --scope "$BLOB_SCOPE"
-```
-
-### 6.4 `database` 模式：保证 PostgreSQL 可连通
-
-本仓库模板在 `persistenceMode=database` 下会自动创建 PostgreSQL Flexible Server、数据库、允许 Azure 服务访问的 `0.0.0.0` 防火墙规则，并把连接串以安全环境变量方式注入容器。
+本仓库模板在 `persistenceMode=database` 或 `persistenceMode=database+azureFile` 下会自动创建 PostgreSQL Flexible Server、数据库、允许 Azure 服务访问的 `0.0.0.0` 防火墙规则，并把连接串以安全环境变量方式注入容器。
 
 如果你走的是本文档里的原始 ACI CLI 手工流程，需要自己确保 PostgreSQL 服务器允许该容器连接。
 
-### 6.5 授予 Azure OpenAI / Foundry 访问权限
+### 6.4 授予 Azure OpenAI / Foundry 访问权限
 
 ```bash
 AOAI_SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG/providers/Microsoft.CognitiveServices/accounts/<aoai-account-name>"

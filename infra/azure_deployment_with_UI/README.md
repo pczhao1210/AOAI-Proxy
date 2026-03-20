@@ -8,7 +8,7 @@ The packaged portal experience is now database-first:
 - The custom UI exposes database server name, database name, admin username, admin password, and SKU selection
 - Leaving the database name empty auto-creates `aoaiproxy`
 - The default PostgreSQL size is `Burstable` + `Standard_B1ms`
-- Storage account inputs stay hidden unless the user explicitly switches to Azure Files or Blob
+- Storage account inputs stay hidden unless the user explicitly switches to Azure Files
 
 Required package files:
 

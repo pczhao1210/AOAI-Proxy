@@ -397,19 +397,13 @@ export function describePersistenceRuntime(persistenceRuntime, t) {
     `${t("runtime.activeMode", "Active Mode")}: ${activeMode}`,
     `${t("runtime.configPath", "Config Path")}: ${runtime.configPath || "-"}`,
     `${t("runtime.compatibilityPath", "Compatibility Path")}: ${runtime.compatibilityPath || "-"}`,
-    `${t("runtime.pendingSync", "Pending Sync")}: ${formatBool(runtime.pendingBlobSync || runtime.pendingDatabaseSync, t)}`,
-    `${t("runtime.blobAccessStateLabel", "Blob Access State")}: ${runtime.blobAccessState || "disabled"}`,
+    `${t("runtime.dataDirMode", "Data Dir Mode")}: ${runtime.dataDirMode || "ephemeral"}`,
+    `${t("runtime.pendingSync", "Pending Sync")}: ${formatBool(runtime.pendingDatabaseSync, t)}`,
     `${t("runtime.databaseAccessStateLabel", "Database Access State")}: ${runtime.databaseAccessState || "disabled"}`
   ];
 
-  if (runtime.blobAccountUrl || runtime.blobContainerName || runtime.configBlobName) {
-    lines.push(`${t("runtime.blobTarget", "Blob Target")}: ${runtime.blobAccountUrl || "-"} / ${runtime.blobContainerName || "-"} / ${runtime.configBlobName || "-"}`);
-  }
   if (runtime.databaseProvider || runtime.databaseSchema || runtime.databaseTableName) {
     lines.push(`${t("runtime.databaseTarget", "Database Target")}: ${runtime.databaseProvider || "postgresql"}.${runtime.databaseSchema || "public"}.${runtime.databaseTableName || "proxy_configs"} (${runtime.databaseConfigKey || "active"})`);
-  }
-  if (runtime.lastBlobError) {
-    lines.push(`${t("runtime.lastBlobError", "Last Blob Error")}: ${formatRuntimeError(runtime.lastBlobError)}`);
   }
   if (runtime.lastDatabaseError) {
     lines.push(`${t("runtime.lastDatabaseError", "Last Database Error")}: ${formatRuntimeError(runtime.lastDatabaseError)}`);

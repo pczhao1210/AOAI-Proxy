@@ -20,54 +20,41 @@ param memoryInGb int = 2
 
 @allowed([
   'database'
+  'database+azureFile'
   'azureFile'
-  'blob'
 ])
-@description('Persistence mode. database is the default and stores config in Azure Database for PostgreSQL. azureFile keeps the Azure Files mount. blob stores config via Blob SDK and managed identity.')
-param persistenceMode string = 'database'
+@description('Persistence mode. database+azureFile is the default and stores config in Azure Database for PostgreSQL while mounting /app/data from Azure Files. database keeps PostgreSQL-backed config only. azureFile keeps only the Azure Files mount.')
+param persistenceMode string = 'database+azureFile'
 
 @allowed([
   'new'
   'existing'
 ])
-@description('Whether to create a new storage account or use an existing one when persistenceMode=azureFile or blob.')
+@description('Whether to create a new storage account or use an existing one when persistenceMode includes azureFile.')
 param storageAccountMode string = 'new'
 
-@description('Name of the storage account to create or use for Azure Files or Blob persistence. Leave empty to auto-generate only when storageAccountMode=new.')
+@description('Name of the storage account to create or use for Azure Files persistence. Leave empty to auto-generate only when storageAccountMode=new.')
 param storageAccountName string = ''
 
 @allowed([
   'new'
   'existing'
 ])
-@description('Whether to create the Azure Files share or use an existing one when persistenceMode=azureFile and storageAccountMode=existing. When storageAccountMode=new, the share is always created.')
+@description('Whether to create the Azure Files share or use an existing one when persistenceMode includes azureFile and storageAccountMode=existing. When storageAccountMode=new, the share is always created.')
 param fileShareMode string = 'new'
 
-@description('Azure Files share name used when persistenceMode=azureFile.')
+@description('Azure Files share name used when persistenceMode includes azureFile.')
 param fileShareName string = 'aoaiproxy'
 
 @secure()
-@description('Optional Azure Files storage account key used when persistenceMode=azureFile. When provided, the container group uses this key directly instead of calling listKeys during deployment.')
+@description('Optional Azure Files storage account key used when persistenceMode includes azureFile. When provided, the container group uses this key directly instead of calling listKeys during deployment.')
 param azureFileStorageAccountKey string = ''
 
 @allowed([
   'new'
   'existing'
 ])
-@description('Whether to create the Blob container or use an existing one when persistenceMode=blob and storageAccountMode=existing. When storageAccountMode=new, the container is always created.')
-param blobContainerMode string = 'new'
-
-@description('Blob container name used when persistenceMode=blob.')
-param blobContainerName string = 'aoai-proxy-config'
-
-@description('Blob path used for the persisted config file when persistenceMode=blob.')
-param configBlobName string = 'config/config.json'
-
-@allowed([
-  'new'
-  'existing'
-])
-@description('Whether to create a new PostgreSQL flexible server or use an existing one when persistenceMode=database.')
+@description('Whether to create a new PostgreSQL flexible server or use an existing one when persistenceMode includes database.')
 param databaseServerMode string = 'new'
 
 @description('Name of the PostgreSQL flexible server to create or use. Leave empty to auto-generate only when databaseServerMode=new.')
@@ -77,17 +64,17 @@ param databaseServerName string = ''
   'new'
   'existing'
 ])
-@description('Whether to create the PostgreSQL database or use an existing one when persistenceMode=database and databaseServerMode=existing. When databaseServerMode=new, the database is always created.')
+@description('Whether to create the PostgreSQL database or use an existing one when persistenceMode includes database and databaseServerMode=existing. When databaseServerMode=new, the database is always created.')
 param databaseMode string = 'new'
 
 @description('Name of the PostgreSQL database to create or use. Leave empty to auto-create aoaiproxy only when databaseMode=new.')
 param databaseName string = ''
 
-@description('PostgreSQL username used to build the application connection string when persistenceMode=database.')
+@description('PostgreSQL username used to build the application connection string when persistenceMode includes database.')
 param databaseAdminUsername string = 'aoaiproxyadmin'
 
 @secure()
-@description('PostgreSQL password used to build the application connection string when persistenceMode=database. Required only when persistenceMode=database.')
+@description('PostgreSQL password used to build the application connection string when persistenceMode includes database. Required only when persistenceMode includes database.')
 param databaseAdminPassword string = ''
 
 @allowed([
@@ -95,10 +82,10 @@ param databaseAdminPassword string = ''
   'GeneralPurpose'
   'MemoryOptimized'
 ])
-@description('PostgreSQL compute tier used when persistenceMode=database.')
+@description('PostgreSQL compute tier used when persistenceMode includes database.')
 param databaseTier string = 'Burstable'
 
-@description('PostgreSQL SKU used when persistenceMode=database. Standard_B1ms is the smallest documented Burstable development size.')
+@description('PostgreSQL SKU used when persistenceMode includes database. Standard_B1ms is the smallest documented Burstable development size.')
 param databaseSkuName string = 'Standard_B1ms'
 
 @allowed([
@@ -107,19 +94,19 @@ param databaseSkuName string = 'Standard_B1ms'
   '13'
   '14'
 ])
-@description('PostgreSQL server version used when persistenceMode=database.')
+@description('PostgreSQL server version used when persistenceMode includes database.')
 param databaseVersion string = '14'
 
-@description('PostgreSQL storage size in GB used when persistenceMode=database.')
+@description('PostgreSQL storage size in GB used when persistenceMode includes database.')
 param databaseStorageSizeGB int = 32
 
 @description('Allow connections from Azure services to the PostgreSQL server by creating a 0.0.0.0 firewall rule. This is recommended for ACI because egress IPs are not fixed by default.')
 param allowAzureServicesToDatabase bool = true
 
-@description('Database charset used when persistenceMode=database.')
+@description('Database charset used when persistenceMode includes database.')
 param databaseCharset string = 'UTF8'
 
-@description('Database collation used when persistenceMode=database.')
+@description('Database collation used when persistenceMode includes database.')
 param databaseCollation string = 'en_US.utf8'
 
 @minLength(2)
@@ -140,23 +127,18 @@ param acrUsername string = ''
 @description('Optional ACR password.')
 param acrPassword string = ''
 
-var storageBlobDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var cognitiveServicesOpenAiUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
 var azureFileShareContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb')
-var deployerPrincipal = deployer()
-var deployerBlobPrincipalType = empty(deployerPrincipal.userPrincipalName) ? 'ServicePrincipal' : 'User'
-var enableAzureFile = persistenceMode == 'azureFile'
-var enableBlob = persistenceMode == 'blob'
-var enableDatabase = persistenceMode == 'database'
-var useStorage = enableAzureFile || enableBlob
+var normalizedPersistenceMode = toLower(replace(replace(persistenceMode, ' ', ''), '_', ''))
+var enableAzureFile = contains(normalizedPersistenceMode, 'azurefile')
+var enableDatabase = contains(normalizedPersistenceMode, 'database')
+var useStorage = enableAzureFile
 var createStorageAccount = useStorage && storageAccountMode == 'new'
 var useExistingStorageAccount = useStorage && storageAccountMode == 'existing'
 var effectiveStorageAccountName = !empty(storageAccountName)
   ? toLower(storageAccountName)
   : (createStorageAccount ? take('st${toLower(replace(containerGroupName, '-', ''))}${uniqueString(resourceGroup().id, containerGroupName, 'storage')}', 24) : '')
 var createFileShare = enableAzureFile && (createStorageAccount || fileShareMode == 'new')
-var createBlobContainer = enableBlob && (createStorageAccount || blobContainerMode == 'new')
-var useExistingBlobContainer = enableBlob && useExistingStorageAccount && blobContainerMode == 'existing'
 var createDatabaseServer = enableDatabase && databaseServerMode == 'new'
 var useExistingDatabaseServer = enableDatabase && databaseServerMode == 'existing'
 var effectiveDatabaseServerName = !empty(databaseServerName)
@@ -164,7 +146,6 @@ var effectiveDatabaseServerName = !empty(databaseServerName)
   : (createDatabaseServer ? take('pg-${toLower(replace(containerGroupName, '_', '-'))}-${uniqueString(resourceGroup().id, containerGroupName, 'postgres')}', 63) : '')
 var effectiveDatabaseName = !empty(databaseName) ? databaseName : 'aoaiproxy'
 var createDatabase = enableDatabase && (createDatabaseServer || databaseMode == 'new')
-var storageAccountBlobUrl = useStorage ? 'https://${effectiveStorageAccountName}.blob.${environment().suffixes.storage}' : ''
 var databaseServerFqdn = enableDatabase ? '${effectiveDatabaseServerName}.postgres.database.azure.com' : ''
 var databaseConnectionString = enableDatabase
   ? 'postgresql://${databaseAdminUsername}:${uriComponent(databaseAdminPassword)}@${databaseServerFqdn}:5432/${effectiveDatabaseName}?sslmode=require'
@@ -196,18 +177,6 @@ var environmentVariables = enableDatabase
       {
         name: 'PERSISTENCE_MODE'
         value: persistenceMode
-      }
-      {
-        name: 'AZURE_STORAGE_ACCOUNT_URL'
-        value: storageAccountBlobUrl
-      }
-      {
-        name: 'CONFIG_BLOB_CONTAINER'
-        value: blobContainerName
-      }
-      {
-        name: 'CONFIG_BLOB_NAME'
-        value: configBlobName
       }
     ]
 var volumeMounts = enableAzureFile ? [
@@ -327,37 +296,6 @@ resource fileShareOnExistingStorage 'Microsoft.Storage/storageAccounts/fileServi
   parent: existingStorageFileService
 }
 
-resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = if (createBlobContainer && createStorageAccount) {
-  name: 'default'
-  parent: storageAccount
-}
-
-resource existingStorageBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' existing = if ((createBlobContainer || useExistingBlobContainer) && useExistingStorageAccount) {
-  name: 'default'
-  parent: existingStorageAccount
-}
-
-resource blobContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (createBlobContainer && createStorageAccount) {
-  name: blobContainerName
-  parent: blobService
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
-resource blobContainerOnExistingStorage 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (createBlobContainer && useExistingStorageAccount) {
-  name: blobContainerName
-  parent: existingStorageBlobService
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
-resource existingBlobContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' existing = if (useExistingBlobContainer) {
-  name: blobContainerName
-  parent: existingStorageBlobService
-}
-
 resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
   name: containerGroupName
   location: location
@@ -412,56 +350,6 @@ resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2023-05-01'
   }
 }
 
-resource blobRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (createBlobContainer && createStorageAccount) {
-  name: guid(blobContainer.id, containerGroup.id, storageBlobDataContributorRoleId)
-  scope: blobContainer
-  properties: {
-    principalId: containerGroup.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: storageBlobDataContributorRoleId
-  }
-}
-
-resource blobRoleAssignmentOnExistingStorage 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (createBlobContainer && useExistingStorageAccount) {
-  name: guid(blobContainerOnExistingStorage.id, containerGroup.id, storageBlobDataContributorRoleId)
-  scope: blobContainerOnExistingStorage
-  properties: {
-    principalId: containerGroup.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: storageBlobDataContributorRoleId
-  }
-}
-
-resource blobRoleAssignmentOnExistingContainer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (useExistingBlobContainer) {
-  name: guid(existingBlobContainer.id, containerGroup.id, storageBlobDataContributorRoleId)
-  scope: existingBlobContainer
-  properties: {
-    principalId: containerGroup.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: storageBlobDataContributorRoleId
-  }
-}
-
-resource deployerBlobRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (createBlobContainer && createStorageAccount) {
-  name: guid(blobContainer.id, deployerPrincipal.objectId, storageBlobDataContributorRoleId)
-  scope: blobContainer
-  properties: {
-    principalId: deployerPrincipal.objectId
-    principalType: deployerBlobPrincipalType
-    roleDefinitionId: storageBlobDataContributorRoleId
-  }
-}
-
-resource deployerBlobRoleAssignmentOnExistingStorage 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (createBlobContainer && useExistingStorageAccount) {
-  name: guid(blobContainerOnExistingStorage.id, deployerPrincipal.objectId, storageBlobDataContributorRoleId)
-  scope: blobContainerOnExistingStorage
-  properties: {
-    principalId: deployerPrincipal.objectId
-    principalType: deployerBlobPrincipalType
-    roleDefinitionId: storageBlobDataContributorRoleId
-  }
-}
-
 resource fileRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableAzureFile && createStorageAccount) {
   name: guid(storageAccount.id, containerGroup.id, azureFileShareContributorRoleId)
   scope: storageAccount
@@ -488,10 +376,7 @@ output persistenceModeOutput string = persistenceMode
 output storageAccountModeOutput string = useStorage ? storageAccountMode : ''
 output storageAccountNameOutput string = useStorage ? effectiveStorageAccountName : ''
 output fileShareModeOutput string = enableAzureFile ? (createFileShare ? 'new' : 'existing') : ''
-output blobAccountUrl string = enableBlob ? storageAccountBlobUrl : ''
 output azureFileShareName string = enableAzureFile ? fileShareName : ''
-output blobContainerModeOutput string = enableBlob ? (createBlobContainer ? 'new' : 'existing') : ''
-output blobContainerOutput string = enableBlob ? blobContainerName : ''
 output databaseServerModeOutput string = enableDatabase ? databaseServerMode : ''
 output databaseServerNameOutput string = enableDatabase ? effectiveDatabaseServerName : ''
 output databaseServerFqdnOutput string = enableDatabase ? databaseServerFqdn : ''

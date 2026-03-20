@@ -24,15 +24,23 @@
 
 说明：Deploy to Azure 按钮指向 ARM JSON 模板，因为 Azure Portal 的远程模板按钮当前不直接支持远程 Bicep 文件。
 补充：标准的原始模板 Deploy to Azure 流程不会自动使用 `createUiDefinition.json`。如果需要 Portal 中更友好的资源选择界面，需要使用 Azure Managed Application 打包与发布流程。
-补充：当前部署模板已经区分 `new` 和 `existing` 资源路径，在受 Azure Policy 限制的环境里可以复用预先创建好的 Azure Files、Blob 或 PostgreSQL 资源，而不是强制新建。
+补充：当前部署模板已经区分 `new` 和 `existing` 资源路径，在受 Azure Policy 限制的环境里可以复用预先创建好的 Azure Files 或 PostgreSQL 资源，而不是强制新建。
 
 ## 持久化方式
 
-当前支持在部署时选择持久化方式，且 Azure 模板默认使用 `database`。
+当前支持在部署时选择持久化方式，且 Azure 模板默认使用 `database+azureFile`。
+
+### `database+azureFile`
+
+- Bicep、ARM 和 Portal 自定义 UI 的默认模式
+- 代理配置存到 Azure Database for PostgreSQL，同时把 `/app/data` 挂到 Azure Files
+- 生成的 Caddyfile、ACME 证书、Pricing 同步输出以及其他 `/app/data` 文件会在容器替换后继续保留
+- 部署时可以同时选择新建或复用 PostgreSQL 与存储资源
+- 适合需要“配置持久化 + 文件系统状态持久化”同时成立的 ACI 场景
 
 ### `database`
 
-- Bicep、ARM 和 Portal 自定义 UI 的默认模式
+- 仅启用 PostgreSQL 配置持久化，不创建也不挂载 Azure Files
 - 自动创建 Azure Database for PostgreSQL Flexible Server，并以安全环境变量方式注入连接串
 - 部署时可以选择新建 PostgreSQL 资源，或复用现有 server/database
 - Azure 模板中如果 `databaseName` 为空，会自动创建 `aoaiproxy`
@@ -57,19 +65,9 @@
 - 这个能力主要用于“存储账号和文件共享已经预创建，但不希望部署过程再额外做一次 key 查询”的场景
 - 如果选择的是 existing file share，`fileShareName` 仍然必须是已经存在的共享；手填 key 只改变凭据来源，不会替你创建共享
 
-### `blob`
-
-- 使用 Blob SDK 在应用层保存和读取配置文件
-- 通过 `DefaultAzureCredential` 和托管身份访问 Blob
-- 部署时可以选择新建 storage/container，或复用现有资源
-- 不替代 `/app/data` 的 Azure Files 挂载语义，只解决配置读写与恢复问题
-- 如果 Blob RBAC 还未生效，启动时会先回退到本地缓存配置 `/app/data/config.json`
-- 在 Blob 暂时不可用期间，配置写入会先落到本地文件，并在后台持续重试同步到 Blob
-- RBAC 生效后，应用会自动恢复到 Blob 持久化，不需要重启容器
-
 ### 关键约束
 
-ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用于 Blob SDK 的应用层访问，但不能把 Azure Files 卷挂载直接改造成 AAD-only 认证。如果你的目标是“完全禁用 Key Authentication 且仍保留 `/app/data` 挂载语义”，需要评估 ACA、AKS 或 VM 等替代平台。
+ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应用层 Azure 访问时，也不能把 Azure Files 卷挂载直接改造成 AAD-only 认证。如果你的目标是“完全禁用 Key Authentication 且仍保留 `/app/data` 挂载语义”，需要评估 ACA、AKS 或 VM 等替代平台。
 
 落地上可以这样理解：
 
@@ -155,16 +153,12 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 
 ### 持久化模式
 
-- `PERSISTENCE_MODE=database|azureFile|blob`
-- `CONFIG_DB_CONNECTION_STRING` 或 `DATABASE_URL`，用于 `database` 模式
-- `AZURE_STORAGE_ACCOUNT_URL=https://<storage>.blob.core.windows.net`
-- `CONFIG_BLOB_CONTAINER=<container-name>`
-- `CONFIG_BLOB_NAME=config/config.json`
-- `BLOB_RECOVERY_INTERVAL_MS=30000`，控制回退到本地缓存后重试 Blob 的间隔
+- `PERSISTENCE_MODE=database|database+azureFile|azureFile`
+- `CONFIG_DB_CONNECTION_STRING` 或 `DATABASE_URL`，用于 `database` 与 `database+azureFile` 模式
 
 在 `database` 模式下，应用会优先从 PostgreSQL 读取配置，并保留本地缓存用于启动引导和降级回退。
 
-在 `blob` 模式下，应用会优先从 Blob 读取配置；如果 Blob 中还没有配置文件，则回退到本地缓存配置。
+在 `database+azureFile` 模式下，应用同样会优先从 PostgreSQL 读取配置，但同时要求 `/app/data` 挂载到 Azure Files，这样 Caddy 状态和其他文件系统产物也能跨容器保留。
 
 ## 管理页
 
@@ -178,7 +172,6 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 - Caddy 响应头超时
 - Caddy keepalive
 - 运行时持久化模式摘要，区分配置模式与当前实际生效模式
-- Blob 访问状态、是否存在待同步写入、最近一次 Blob 错误
 - 最近日志查看，支持 `warn`、`error`、可选 `info` 级别筛选，以及关键词、request id 过滤和摘要复制
 
 日志区域使用“常用筛选常驻 + 高级筛选折叠”的方式，而不是吸顶筛选栏。
@@ -211,18 +204,16 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 
 - `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:latest`
 
-使用 Blob 配置持久化运行：
+使用 PostgreSQL 配置持久化运行：
 
 ```bash
 docker run --rm -p 3000:3000 -p 443:443 \
-  -e PERSISTENCE_MODE=blob \
-  -e AZURE_STORAGE_ACCOUNT_URL=https://<storage>.blob.core.windows.net \
-  -e CONFIG_BLOB_CONTAINER=aoai-proxy-config \
-  -e CONFIG_BLOB_NAME=config/config.json \
+  -e PERSISTENCE_MODE=database \
+  -e CONFIG_DB_CONNECTION_STRING='postgresql://<user>:<password>@<server>.postgres.database.azure.com:5432/<database>?sslmode=require' \
   aoai-proxy:latest
 ```
 
-容器仍使用 `DefaultAzureCredential`，因此本地开发请提供服务主体凭据，在 Azure 中请使用托管身份。
+如果容器需要 AAD 上游访问，仍会使用 `DefaultAzureCredential`，因此本地开发请提供服务主体凭据，在 Azure 中请使用托管身份。
 
 ## 上游认证模式
 
@@ -262,12 +253,10 @@ az deployment group create \
 模板会创建或配置：
 
 - 启用系统分配托管身份的 Container Group
-- `persistenceMode=database` 时的 Azure Database for PostgreSQL Flexible Server、允许 Azure 服务访问的防火墙规则，以及数据库子资源
-- 仅在 `persistenceMode=azureFile` 或 `persistenceMode=blob` 时创建 Storage Account
-- `persistenceMode=azureFile` 时的 Azure Files 共享
-- `persistenceMode=blob` 时的 Blob Container
-- `persistenceMode=database` 时向容器安全注入 `CONFIG_DB_CONNECTION_STRING`
-- `blob` 模式下会给容器托管身份和当前部署发起者同时授予 Blob 容器级别的 `Storage Blob Data Contributor` 角色
+- `persistenceMode=database` 或 `persistenceMode=database+azureFile` 时的 Azure Database for PostgreSQL Flexible Server、允许 Azure 服务访问的防火墙规则，以及数据库子资源
+- 仅在 `persistenceMode=azureFile` 或 `persistenceMode=database+azureFile` 时创建 Storage Account
+- `persistenceMode=azureFile` 或 `persistenceMode=database+azureFile` 时的 Azure Files 共享
+- `persistenceMode=database` 或 `persistenceMode=database+azureFile` 时向容器安全注入 `CONFIG_DB_CONNECTION_STRING`
 - 面向目标 Azure OpenAI 资源的 `Cognitive Services OpenAI User` 角色授权
 
 目标 Azure OpenAI / Foundry 资源可以位于同一订阅下的不同资源组；不在当前部署资源组时，设置 `cognitiveServicesAccountResourceGroup` 即可。
@@ -289,7 +278,7 @@ Azure Files 凭据补充说明：
 
 如果希望在 Azure Portal 中使用资源选择器，而不是原始参数页，请使用 [../infra/azure_deployment_with_UI](../infra/azure_deployment_with_UI) 里的 Managed Application 包源文件。
 
-这套自定义 UI 现在默认走 PostgreSQL 配置持久化，并暴露数据库服务器名、数据库名、管理员账号和 SKU 选择；只有切换到 Azure Files 或 Blob 时才显示存储相关输入。
+这套自定义 UI 现在默认走 PostgreSQL 配置持久化，并暴露数据库服务器名、数据库名、管理员账号和 SKU 选择；只有切换到 Azure Files 时才显示存储相关输入。
 
 当选择 Azure Files 时，UI 还会显示一个可选的 `Azure Files storage account key` 密码框：
 

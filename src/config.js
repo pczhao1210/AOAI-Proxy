@@ -2,6 +2,7 @@ import { getLogRuntimeInfo } from "./logs.js";
 import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
 import { hasLegacyRouteCapabilities, resolveNativeModelCapabilities } from "./pricing-library.js";
 import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
+import { isSupportedPersistenceMode } from "./persistence-mode.js";
 
 // Default config values
 const DEFAULTS = {
@@ -269,12 +270,6 @@ const DEFAULTS = {
     configStore: {
       mode: "file",
       filePath: "./config/config.json",
-      blob: {
-        accountUrl: "",
-        container: "",
-        path: "config/config.json",
-        healthProbeIntervalMs: 30000
-      },
       database: {
         enabled: false,
         provider: "postgresql",
@@ -876,8 +871,8 @@ function validateConfig(cfg) {
       if (typeof configStore !== "object") {
         throw new Error("persistence.configStore must be an object");
       }
-      if (configStore.mode != null && !["file", "blob", "database"].includes(configStore.mode)) {
-        throw new Error("persistence.configStore.mode must be file, blob, or database");
+      if (configStore.mode != null && !isSupportedPersistenceMode(configStore.mode)) {
+        throw new Error("persistence.configStore.mode must be file, azureFile, database, or database+azureFile");
       }
       if (configStore.filePath != null && typeof configStore.filePath !== "string") {
         throw new Error("persistence.configStore.filePath must be a string");

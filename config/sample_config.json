@@ -208,12 +208,6 @@
     "configStore": {
       "mode": "file",
       "filePath": "./config/config.json",
-      "blob": {
-        "accountUrl": "",
-        "container": "",
-        "path": "config/config.json",
-        "healthProbeIntervalMs": 30000
-      },
       "database": {
         "enabled": false,
         "provider": "postgresql",

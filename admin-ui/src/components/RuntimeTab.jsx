@@ -117,7 +117,7 @@ export default function RuntimeTab({
   const modelCount = Object.keys(modelStats).length;
   const observedKeyCount = visibleGovernanceKeys.length;
   const persistenceMode = persistenceRuntime.activeMode || persistenceRuntime.mode || "file";
-  const syncState = persistenceRuntime.pendingBlobSync || persistenceRuntime.pendingDatabaseSync ? "pending" : "clean";
+  const syncState = persistenceRuntime.pendingDatabaseSync ? "pending" : "clean";
   const logSinkState = loggingRuntime.configured ? "configured" : (loggingRuntime.enabled ? "incomplete" : "disabled");
   const hourlyRollups = Array.isArray(analytics?.rollups?.hourly) ? analytics.rollups.hourly : [];
   const dailyRollups = Array.isArray(analytics?.rollups?.daily) ? analytics.rollups.daily : [];
@@ -178,9 +178,9 @@ export default function RuntimeTab({
             note={persistenceRuntime.configPath || "-"}
           />
           <StatCard
-            label={t("runtime.blobDb", "Blob / DB")}
-            value={persistenceRuntime.blobAccessState || persistenceRuntime.databaseAccessState || "disabled"}
-            note={`${persistenceRuntime.databaseAccessState || "disabled"} / ${persistenceRuntime.blobAccessState || "disabled"}`}
+            label={t("runtime.database", "Database")}
+            value={persistenceRuntime.databaseAccessState || "disabled"}
+            note={persistenceRuntime.databaseProvider || "postgresql"}
           />
           <StatCard
             label={t("runtime.logSink", "Log Sink")}
@@ -215,7 +215,7 @@ export default function RuntimeTab({
         </div>
       </Section>
 
-      <AccordionSection id="runtime-persistence" group="runtime-sections" defaultOpen title={t("runtime.title", "Persistence / Logging Runtime")} desc={t("runtime.desc", "Read runtime API directly to inspect file/blob/database state and Log Analytics sink health.")}>
+      <AccordionSection id="runtime-persistence" group="runtime-sections" defaultOpen title={t("runtime.title", "Persistence / Logging Runtime")} desc={t("runtime.desc", "Read runtime API directly to inspect file, Azure Files, and database state plus Log Analytics sink health.")}>
         <div className="detail-grid runtime-detail-grid">
           <div className="code-block">
             <div className="code-block-head">{t("runtime.persistenceDetail", "Persistence Runtime")}</div>

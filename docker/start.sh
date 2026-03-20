@@ -45,7 +45,7 @@ emit_startup_log() {
 }
 
 normalized_persistence_mode() {
-  printf '%s' "${PERSISTENCE_MODE:-${CONFIG_PERSISTENCE_MODE:-}}" | tr '[:upper:]' '[:lower:]'
+  printf '%s' "${PERSISTENCE_MODE:-${CONFIG_PERSISTENCE_MODE:-}}" | tr '[:upper:]' '[:lower:]' | sed 's/[ _-]//g'
 }
 
 get_mount_entry() {
@@ -128,7 +128,7 @@ log_data_mount_diagnostics() {
     closestMountSource "$closest_mount_source"
 
   case "$requested_mode" in
-    azurefile|azurefiles)
+    azurefile|azurefiles|*+azurefile|azurefile+*)
       emit_startup_log warn startup.azure_files_mount_missing \
         dataDir "$DATA_DIR" \
         requestedMode "$requested_mode" \

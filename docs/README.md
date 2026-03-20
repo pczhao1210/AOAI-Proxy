@@ -27,5 +27,5 @@ This directory contains the project documentation and deployment guides.
 ## Notes
 
 - The root [../README.md](../README.md) is the primary English entry point.
-- Azure deployment defaults are now database-first and support both new and existing storage/database resource paths. The ACI persistence guides explain when to choose PostgreSQL, Azure Files, or Blob.
+- Azure deployment defaults are now database-first and support both new and existing storage/database resource paths. The ACI persistence guides explain when to choose PostgreSQL, Azure Files, or the combined database+azureFile mode.
 - Process and scratch documents are intentionally excluded from version control and are not part of the public docs set.
