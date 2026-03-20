@@ -1,0 +1,54 @@
+{
+  "id": "GLM-5",
+  "displayName": "GLM 5",
+  "provider": "zhipu-ai",
+  "family": "glm-5",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "fireworks-official",
+    "status": "published",
+    "inputPer1mTokens": 1,
+    "cachedInputPer1mTokens": 0.2,
+    "outputPer1mTokens": 3.2,
+    "inputPer1kTokens": 0.001,
+    "cachedInputPer1kTokens": 0.0002,
+    "outputPer1kTokens": 0.0032
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.001,
+    "cachedInputPer1kTokens": 0.0002,
+    "outputPer1kTokens": 0.0032
+  },
+  "proxyTemplate": {
+    "id": "GLM-5",
+    "displayName": "GLM 5",
+    "targetModel": "GLM-5",
+    "capabilities": [
+      "reasoning"
+    ],
+    "pricingRef": "GLM-5"
+  },
+  "sources": {
+    "pricing": "https://fireworks.ai/pricing"
+  },
+  "notes": [
+    "Fireworks Serverless 定价页公开了 GLM-5 单独价格，这里按该页面的美元单价回填。",
+    "公开资料里不同厂商对 GLM-5 能力标签表述不完全一致，因此这里先使用保守的 reasoning 能力集合。"
+  ]
+}

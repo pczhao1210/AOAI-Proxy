@@ -1,0 +1,54 @@
+{
+  "id": "MiniMax-M2.5",
+  "displayName": "MiniMax M2.5",
+  "provider": "minimax",
+  "family": "minimax-m2.5",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "fireworks-official",
+    "status": "published",
+    "inputPer1mTokens": 0.3,
+    "cachedInputPer1mTokens": 0.03,
+    "outputPer1mTokens": 1.2,
+    "inputPer1kTokens": 0.0003,
+    "cachedInputPer1kTokens": 0.00003,
+    "outputPer1kTokens": 0.0012
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.0003,
+    "cachedInputPer1kTokens": 0.00003,
+    "outputPer1kTokens": 0.0012
+  },
+  "proxyTemplate": {
+    "id": "MiniMax-M2.5",
+    "displayName": "MiniMax M2.5",
+    "targetModel": "MiniMax-M2.5",
+    "capabilities": [
+      "reasoning"
+    ],
+    "pricingRef": "MiniMax-M2.5"
+  },
+  "sources": {
+    "pricing": "https://fireworks.ai/pricing"
+  },
+  "notes": [
+    "Fireworks Serverless 定价页公开的是 MiniMax M2 family 价格，这里先将 MiniMax M2.5 映射到该 family 单价。",
+    "如果后续拿到 MiniMax M2.5 的独立官方定价，应优先替换当前 family 级别价格。"
+  ]
+}
