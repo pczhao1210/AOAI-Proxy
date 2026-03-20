@@ -14,7 +14,11 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           style: {
             background: "var(--panel-strong)",
             color: "var(--ink)",
-            border: "1px solid var(--line)"
+            border: "1px solid var(--line)",
+            maxWidth: "min(92vw, 720px)",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            overflowWrap: "anywhere"
           }
         }}
       />

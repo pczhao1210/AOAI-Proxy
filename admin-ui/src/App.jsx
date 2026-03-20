@@ -69,6 +69,15 @@ const DEFAULT_RUNTIME_FILTERS = {
   timeRange: "all"
 };
 
+function pricingSyncSourceFromStatus(status) {
+  return {
+    owner: String(status?.githubOwner || ""),
+    repo: String(status?.githubRepo || ""),
+    path: String(status?.githubPath || "pricing"),
+    ref: String(status?.githubRef || "")
+  };
+}
+
 export default function App() {
   const { language, languages, setLanguage, t } = useI18n();
   const [config, setConfig] = useState(null);
@@ -77,6 +86,7 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [pricingLibrary, setPricingLibrary] = useState([]);
   const [pricingLibraryStatus, setPricingLibraryStatus] = useState(null);
+  const [pricingSyncSource, setPricingSyncSource] = useState({ owner: "", repo: "", path: "pricing", ref: "" });
   const [logs, setLogs] = useState({ total: 0, limit: 100, items: [] });
   const [caddyStatus, setCaddyStatus] = useState(null);
   const [message, setMessage] = useState("");
@@ -278,6 +288,7 @@ export default function App() {
         setCaddyStatus(caddyJson.status || null);
         setPricingLibrary(pricingItems);
         setPricingLibraryStatus(pricingJson.status || null);
+        setPricingSyncSource(pricingSyncSourceFromStatus(pricingJson.status || null));
       });
       setMessage(mode === "reload" ? t("messages.reloaded", "Configuration reloaded from persistent store.") : t("messages.loaded", "Configuration loaded."));
     } catch (loadError) {
@@ -618,10 +629,16 @@ export default function App() {
     setDiagnosticsBusy((current) => ({ ...current, pricingSync: true }));
     setError("");
     try {
-      const result = await syncPricingLibrary();
+      const result = await syncPricingLibrary({
+        owner: String(pricingSyncSource.owner || "").trim(),
+        repo: String(pricingSyncSource.repo || "").trim(),
+        path: String(pricingSyncSource.path || "").trim(),
+        ref: String(pricingSyncSource.ref || "").trim()
+      });
       startTransition(() => {
         setPricingLibrary(Array.isArray(result.items) && result.items.length ? result.items : bundledPricingLibrary);
         setPricingLibraryStatus(result.status || null);
+        setPricingSyncSource(pricingSyncSourceFromStatus(result.status || null));
       });
       setMessage(t("messages.pricingSyncSuccess", "Pricing library synced from GitHub ({count} files).", { count: result.syncedFiles || 0 }));
     } catch (syncError) {
@@ -1108,6 +1125,8 @@ export default function App() {
           config={config}
           updateField={updateField}
           pricingLibraryStatus={pricingLibraryStatus}
+          pricingSyncSource={pricingSyncSource}
+          setPricingSyncSource={setPricingSyncSource}
           pricingLibraryCount={pricingLibrary.length}
           caddyStatus={caddyStatus}
           aadStatus={aadStatus}

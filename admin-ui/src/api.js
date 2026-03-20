@@ -31,8 +31,12 @@ export async function fetchPricingLibrary() {
   return readJson(await fetch("/admin/api/pricing-library"));
 }
 
-export async function syncPricingLibrary() {
-  return readJson(await fetch("/admin/api/pricing-library/sync", { method: "POST" }));
+export async function syncPricingLibrary(source = {}) {
+  return readJson(await fetch("/admin/api/pricing-library/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(source)
+  }));
 }
 
 export async function fetchStats(params = {}) {

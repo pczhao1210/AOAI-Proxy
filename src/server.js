@@ -306,7 +306,14 @@ app.get("/admin/api/pricing-library", async () => {
 
 app.post("/admin/api/pricing-library/sync", async (req, reply) => {
   try {
-    const result = await syncPricingDefinitionsFromGitHub();
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const overrides = {
+      owner: typeof body.owner === "string" ? body.owner : undefined,
+      repo: typeof body.repo === "string" ? body.repo : undefined,
+      path: typeof body.path === "string" ? body.path : undefined,
+      ref: typeof body.ref === "string" ? body.ref : undefined
+    };
+    const result = await syncPricingDefinitionsFromGitHub(overrides);
     app.log.info({
       source: "admin",
       event: "admin.pricing_library_synced",

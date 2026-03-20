@@ -4,6 +4,8 @@ export default function OpsTab({
   config,
   updateField,
   pricingLibraryStatus,
+  pricingSyncSource,
+  setPricingSyncSource,
   pricingLibraryCount,
   caddyStatus,
   aadStatus,
@@ -115,6 +117,36 @@ export default function OpsTab({
             {diagnosticsBusy.pricingSync ? t("ops.syncingPricing", "Syncing...") : t("ops.syncPricing", "Sync From GitHub")}
           </button>
         </div>
+        <div className="form-grid" style={{ marginBottom: "1rem" }}>
+          <Field label={t("ops.pricingRepoOwner", "GitHub Owner")}>
+            <input
+              value={pricingSyncSource?.owner || ""}
+              onChange={(event) => setPricingSyncSource((current) => ({ ...current, owner: event.target.value }))}
+              placeholder="pczhao1210"
+            />
+          </Field>
+          <Field label={t("ops.pricingRepoName", "GitHub Repo")}>
+            <input
+              value={pricingSyncSource?.repo || ""}
+              onChange={(event) => setPricingSyncSource((current) => ({ ...current, repo: event.target.value }))}
+              placeholder="AOAI-Proxy"
+            />
+          </Field>
+          <Field label={t("ops.pricingRepoPath", "Repo Path")}>
+            <input
+              value={pricingSyncSource?.path || "pricing"}
+              onChange={(event) => setPricingSyncSource((current) => ({ ...current, path: event.target.value }))}
+              placeholder="pricing"
+            />
+          </Field>
+          <Field label={t("ops.pricingRepoRef", "Branch / Tag / Commit")}>
+            <input
+              value={pricingSyncSource?.ref || ""}
+              onChange={(event) => setPricingSyncSource((current) => ({ ...current, ref: event.target.value }))}
+              placeholder={t("ops.pricingRepoRefAuto", "Leave blank to use the default branch")}
+            />
+          </Field>
+        </div>
         <div className="status-grid">
           <StatCard
             label={t("ops.pricingSource", "Active Source")}
@@ -141,6 +173,9 @@ export default function OpsTab({
         </div>
         <div className="muted" style={{ marginTop: "0.75rem" }}>
           {t("ops.pricingPersistDesc", "Successful sync writes pricing files into the data volume first, so Azure Files deployments keep the updated prices across container restarts.")}
+        </div>
+        <div className="muted" style={{ marginTop: "0.35rem" }}>
+          {t("ops.pricingSourceHint", "If you published this project to your own GitHub repository, update owner/repo/path here before syncing.")}
         </div>
       </AccordionSection>
 

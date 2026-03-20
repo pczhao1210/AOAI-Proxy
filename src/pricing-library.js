@@ -48,12 +48,12 @@ function getBundledPricingDir() {
   return DEFAULT_BUNDLED_PRICING_DIR;
 }
 
-function getPricingSyncSettings() {
+function getPricingSyncSettings(overrides = {}) {
   return {
-    owner: String(process.env.PRICING_SYNC_GITHUB_OWNER || DEFAULT_GITHUB_OWNER).trim() || DEFAULT_GITHUB_OWNER,
-    repo: String(process.env.PRICING_SYNC_GITHUB_REPO || DEFAULT_GITHUB_REPO).trim() || DEFAULT_GITHUB_REPO,
-    path: String(process.env.PRICING_SYNC_GITHUB_PATH || DEFAULT_GITHUB_PATH).trim() || DEFAULT_GITHUB_PATH,
-    ref: String(process.env.PRICING_SYNC_GITHUB_REF || "").trim(),
+    owner: String(overrides.owner ?? process.env.PRICING_SYNC_GITHUB_OWNER ?? DEFAULT_GITHUB_OWNER).trim() || DEFAULT_GITHUB_OWNER,
+    repo: String(overrides.repo ?? process.env.PRICING_SYNC_GITHUB_REPO ?? DEFAULT_GITHUB_REPO).trim() || DEFAULT_GITHUB_REPO,
+    path: String(overrides.path ?? process.env.PRICING_SYNC_GITHUB_PATH ?? DEFAULT_GITHUB_PATH).trim() || DEFAULT_GITHUB_PATH,
+    ref: String(overrides.ref ?? process.env.PRICING_SYNC_GITHUB_REF ?? "").trim(),
     token: String(process.env.PRICING_SYNC_GITHUB_TOKEN || process.env.GITHUB_TOKEN || "").trim()
   };
 }
@@ -322,7 +322,15 @@ async function fetchGitHubText(url, token) {
 async function resolveGitHubRef(syncSettings) {
   if (syncSettings.ref) return syncSettings.ref;
   const repoUrl = `https://api.github.com/repos/${encodeURIComponent(syncSettings.owner)}/${encodeURIComponent(syncSettings.repo)}`;
-  const repoInfo = await fetchGitHubJson(repoUrl, syncSettings.token);
+  let repoInfo;
+  try {
+    repoInfo = await fetchGitHubJson(repoUrl, syncSettings.token);
+  } catch (error) {
+    if (String(error?.message || "").includes("(404)")) {
+      throw new Error(`GitHub repository not found: ${syncSettings.owner}/${syncSettings.repo}. Update the pricing sync source in /admin or set PRICING_SYNC_GITHUB_OWNER and PRICING_SYNC_GITHUB_REPO.`);
+    }
+    throw error;
+  }
   return String(repoInfo?.default_branch || "main").trim() || "main";
 }
 
@@ -351,12 +359,20 @@ async function replacePricingDirectory(targetDir, stagingDir) {
   }
 }
 
-export async function syncPricingDefinitionsFromGitHub() {
-  const syncSettings = getPricingSyncSettings();
+export async function syncPricingDefinitionsFromGitHub(overrides = {}) {
+  const syncSettings = getPricingSyncSettings(overrides);
   const githubRef = await resolveGitHubRef(syncSettings);
   const encodedPath = buildGitHubPathFragment(syncSettings.path);
   const contentsUrl = `https://api.github.com/repos/${encodeURIComponent(syncSettings.owner)}/${encodeURIComponent(syncSettings.repo)}/contents/${encodedPath}?ref=${encodeURIComponent(githubRef)}`;
-  const contents = await fetchGitHubJson(contentsUrl, syncSettings.token);
+  let contents;
+  try {
+    contents = await fetchGitHubJson(contentsUrl, syncSettings.token);
+  } catch (error) {
+    if (String(error?.message || "").includes("(404)")) {
+      throw new Error(`GitHub pricing path not found: ${syncSettings.owner}/${syncSettings.repo}/${syncSettings.path}@${githubRef}. Check owner, repo, path, and ref in the Pricing Library panel.`);
+    }
+    throw error;
+  }
 
   if (!Array.isArray(contents)) {
     throw new Error("GitHub pricing path did not return a file list.");

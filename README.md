@@ -150,6 +150,8 @@ Guidance:
 - `PRICING_SYNC_GITHUB_REF`: optional branch, tag, or commit. When omitted, the proxy resolves the repository default branch through the GitHub API.
 - `PRICING_SYNC_GITHUB_TOKEN`: optional GitHub token for higher API limits or private repositories
 
+The admin Operations page can override owner, repo, path, and ref per sync request. Successful syncs persist the selected GitHub source into pricing sync metadata so the same source shows up on the next load.
+
 When you trigger `Sync From GitHub` from `/admin`, the proxy downloads pricing JSON files into the persistent pricing directory first. In Azure Files-style deployments, this means updated prices survive container replacement without rebuilding the image.
 
 ### Optional Upstream Pool Overrides
