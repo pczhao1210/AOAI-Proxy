@@ -344,6 +344,7 @@ code {
 }
 
 .stat-card {
+  min-width: 0;
   min-height: 136px;
   border-radius: 22px;
   padding: 1.15rem 1.2rem;
@@ -362,12 +363,17 @@ code {
   font-size: clamp(1.6rem, 2vw, 2.2rem);
   font-weight: 700;
   letter-spacing: -0.03em;
+  line-height: 1.15;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .stat-note {
   margin-top: 0.55rem;
   color: var(--muted);
   line-height: 1.55;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .tabs-header {
@@ -599,6 +605,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
+  min-width: 0;
 }
 
 .field-label {
@@ -619,6 +626,10 @@ code {
 
 .form-grid.compact {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.endpoint-select {
+  min-width: 0;
 }
 
 .checkbox-row {

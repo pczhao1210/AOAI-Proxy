@@ -200,6 +200,8 @@ export function applyPricingTemplateToModel(config, model, definition) {
   const templateModel = buildModelFromPricingTemplate(definition, model?.upstream || "", config);
   const normalizedModel = asPlainObject(model);
   const normalizedRequestPolicy = asPlainObject(normalizedModel.requestPolicy);
+  const explicitTargetModel = String(normalizedModel.targetModel || "").trim();
+  const explicitPricingRef = String(normalizedModel.pricingRef || "").trim();
 
   return {
     ...cloneJson(DEFAULT_MODEL_TEMPLATE),
@@ -208,9 +210,9 @@ export function applyPricingTemplateToModel(config, model, definition) {
     displayName: String(normalizedModel.displayName || templateModel.displayName || normalizedModel.id || ""),
     status: String(normalizedModel.status || templateModel.status || "active"),
     upstream: String(normalizedModel.upstream || templateModel.upstream || ""),
-    targetModel: String(templateModel.targetModel || normalizedModel.targetModel || ""),
+    targetModel: String(explicitTargetModel || templateModel.targetModel || ""),
     capabilities: [...templateModel.capabilities],
-    pricingRef: String(templateModel.pricingRef || normalizedModel.pricingRef || ""),
+    pricingRef: String(explicitPricingRef || templateModel.pricingRef || ""),
     accessTags: normalizeStringArray(normalizedModel.accessTags),
     fallbackModels: normalizeStringArray(normalizedModel.fallbackModels),
     defaultParams: cloneJson(asPlainObject(normalizedModel.defaultParams)),

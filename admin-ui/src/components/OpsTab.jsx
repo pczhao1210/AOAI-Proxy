@@ -316,7 +316,7 @@ export default function OpsTab({
         </div>
         <div className="form-grid compact">
           <Field label={t("field.endpointLabel", "Endpoint")}>
-            <select value={testEndpoint} onChange={(event) => setTestEndpoint(event.target.value)}>
+            <select className="endpoint-select" value={testEndpoint} onChange={(event) => setTestEndpoint(event.target.value)}>
               {testEndpoints.map((endpoint) => <option key={endpoint} value={endpoint}>{endpoint}</option>)}
             </select>
           </Field>
