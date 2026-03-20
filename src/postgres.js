@@ -1,6 +1,8 @@
 import { Pool } from "pg";
 
 const sharedPools = new Map();
+const WEAK_SSL_MODES = new Set(["prefer", "require", "verify-ca"]);
+let sslModeRewriteLogged = false;
 
 function resolveInt(value, fallback, minimum = 0) {
   const numeric = Number(value);
@@ -8,6 +10,42 @@ function resolveInt(value, fallback, minimum = 0) {
     return numeric;
   }
   return fallback;
+}
+
+function normalizeConnectionString(connectionString) {
+  const normalized = String(connectionString || "").trim();
+  if (!normalized) return normalized;
+
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return normalized;
+  }
+
+  const protocol = String(parsed.protocol || "").toLowerCase();
+  if (protocol !== "postgres:" && protocol !== "postgresql:") {
+    return normalized;
+  }
+
+  const sslMode = String(parsed.searchParams.get("sslmode") || "").trim().toLowerCase();
+  const useLibpqCompat = String(parsed.searchParams.get("uselibpqcompat") || "").trim().toLowerCase() === "true";
+  if (!WEAK_SSL_MODES.has(sslMode) || useLibpqCompat) {
+    return normalized;
+  }
+
+  parsed.searchParams.set("sslmode", "verify-full");
+  if (!sslModeRewriteLogged) {
+    sslModeRewriteLogged = true;
+    console.warn(JSON.stringify({
+      ts: new Date().toISOString(),
+      source: "proxy",
+      event: "postgres.sslmode_normalized",
+      previousSslMode: sslMode,
+      nextSslMode: "verify-full"
+    }));
+  }
+  return parsed.toString();
 }
 
 export function quoteIdentifier(identifier, label) {
@@ -19,7 +57,7 @@ export function quoteIdentifier(identifier, label) {
 
 export function buildPostgresPoolOptions(databaseSettings = {}) {
   return {
-    connectionString: String(databaseSettings.connectionString || "").trim(),
+    connectionString: normalizeConnectionString(databaseSettings.connectionString),
     max: resolveInt(databaseSettings.pool?.max, 10, 1),
     min: resolveInt(databaseSettings.pool?.min, 0, 0),
     idleTimeoutMillis: resolveInt(databaseSettings.pool?.idleTimeoutMs, 30000, 0),

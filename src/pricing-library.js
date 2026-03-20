@@ -1,7 +1,15 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const PRICING_DIR = path.resolve(process.cwd(), "pricing");
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_BUNDLED_PRICING_DIR = path.resolve(MODULE_DIR, "..", "pricing");
+const DEFAULT_DATA_DIR = path.resolve(process.cwd(), "data");
+const DEFAULT_GITHUB_OWNER = "pczhao1210";
+const DEFAULT_GITHUB_REPO = "AOAI-Proxy";
+const DEFAULT_GITHUB_PATH = "pricing";
+const PRICING_SYNC_METADATA_FILE = ".pricing-sync-meta";
 const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "stream", "images", "image"]);
 const DEFAULT_UPSTREAM_ROUTES = {
   "chat/completions": "/openai/v1/chat/completions",
@@ -11,6 +19,8 @@ const DEFAULT_UPSTREAM_ROUTES = {
 
 let pricingDefinitionsCache = null;
 let pricingLookupCache = null;
+let pricingCacheDir = "";
+let missingPricingDirLogged = false;
 
 function asPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -24,6 +34,114 @@ function normalizeStringArray(value) {
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function getResolvedDataDir() {
+  return process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : DEFAULT_DATA_DIR;
+}
+
+function getPersistedPricingDir() {
+  return path.resolve(getResolvedDataDir(), "pricing");
+}
+
+function getBundledPricingDir() {
+  return DEFAULT_BUNDLED_PRICING_DIR;
+}
+
+function getPricingSyncSettings() {
+  return {
+    owner: String(process.env.PRICING_SYNC_GITHUB_OWNER || DEFAULT_GITHUB_OWNER).trim() || DEFAULT_GITHUB_OWNER,
+    repo: String(process.env.PRICING_SYNC_GITHUB_REPO || DEFAULT_GITHUB_REPO).trim() || DEFAULT_GITHUB_REPO,
+    path: String(process.env.PRICING_SYNC_GITHUB_PATH || DEFAULT_GITHUB_PATH).trim() || DEFAULT_GITHUB_PATH,
+    ref: String(process.env.PRICING_SYNC_GITHUB_REF || "").trim(),
+    token: String(process.env.PRICING_SYNC_GITHUB_TOKEN || process.env.GITHUB_TOKEN || "").trim()
+  };
+}
+
+function buildGitHubHeaders(token, accept = "application/vnd.github+json") {
+  const headers = {
+    accept,
+    "user-agent": "aoai-proxy-pricing-sync"
+  };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+function buildGitHubPathFragment(pathValue) {
+  return String(pathValue || "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+function buildGitHubRawUrl(owner, repo, ref, pathValue, fileName) {
+  const encodedPath = buildGitHubPathFragment(pathValue);
+  return `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(ref)}/${encodedPath}/${encodeURIComponent(fileName)}`;
+}
+
+function sanitizePricingFileName(fileName) {
+  const name = path.basename(String(fileName || "").trim());
+  if (!name || !name.endsWith(".json")) {
+    throw new Error(`Invalid pricing file name: ${fileName || "<empty>"}`);
+  }
+  return name;
+}
+
+function listPricingFileNames(dirPath) {
+  if (!dirPath || !fs.existsSync(dirPath)) return [];
+  return fs.readdirSync(dirPath, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function resolveActivePricingLocation() {
+  const customDir = String(process.env.PRICING_DIR || "").trim();
+  if (customDir) {
+    return {
+      source: "custom",
+      dir: path.resolve(customDir)
+    };
+  }
+
+  const persistedDir = getPersistedPricingDir();
+  if (listPricingFileNames(persistedDir).length > 0) {
+    return {
+      source: "persisted",
+      dir: persistedDir
+    };
+  }
+
+  return {
+    source: "bundled",
+    dir: getBundledPricingDir()
+  };
+}
+
+function readSyncMetadata(dirPath = getPersistedPricingDir()) {
+  const metadataPath = path.join(dirPath, PRICING_SYNC_METADATA_FILE);
+  try {
+    const text = fs.readFileSync(metadataPath, "utf8");
+    const parsed = JSON.parse(text);
+    return asPlainObject(parsed);
+  } catch {
+    return {};
+  }
+}
+
+function emitPricingEvent(level, event, fields = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    source: "proxy",
+    event,
+    ...fields
+  };
+  const logger = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
+  logger(JSON.stringify(payload));
 }
 
 function rememberLookup(lookup, key, definition) {
@@ -69,29 +187,61 @@ function normalizePricingDefinition(rawDefinition) {
   };
 }
 
-function loadPricingDefinitions() {
-  if (pricingDefinitionsCache) return pricingDefinitionsCache;
+function parsePricingDefinition(text, fileName) {
+  const definition = normalizePricingDefinition(JSON.parse(text));
+  if (!definition.id) {
+    throw new Error(`Pricing definition ${fileName} is missing required id`);
+  }
+  definition.fileName = fileName;
+  return definition;
+}
 
-  const entries = fs.readdirSync(PRICING_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => {
-      const filePath = path.join(PRICING_DIR, entry.name);
+function resetPricingCaches() {
+  pricingDefinitionsCache = null;
+  pricingLookupCache = null;
+  pricingCacheDir = "";
+}
+
+function loadPricingDefinitions() {
+  const activeLocation = resolveActivePricingLocation();
+  if (pricingDefinitionsCache !== null && pricingCacheDir === activeLocation.dir) {
+    return pricingDefinitionsCache;
+  }
+
+  if (!fs.existsSync(activeLocation.dir)) {
+    if (!missingPricingDirLogged) {
+      missingPricingDirLogged = true;
+      emitPricingEvent("warn", "pricing.directory_missing", {
+        pricingDir: activeLocation.dir,
+        activeSource: activeLocation.source
+      });
+    }
+    pricingDefinitionsCache = [];
+    pricingLookupCache = null;
+    pricingCacheDir = activeLocation.dir;
+    return pricingDefinitionsCache;
+  }
+
+  const entries = listPricingFileNames(activeLocation.dir)
+    .map((fileName) => {
+      const filePath = path.join(activeLocation.dir, fileName);
       const text = fs.readFileSync(filePath, "utf8");
-      const definition = normalizePricingDefinition(JSON.parse(text));
-      definition.fileName = entry.name;
-      return definition;
+      return parsePricingDefinition(text, fileName);
     })
     .sort((left, right) => left.displayName.localeCompare(right.displayName));
 
   pricingDefinitionsCache = entries;
+  pricingLookupCache = null;
+  pricingCacheDir = activeLocation.dir;
   return pricingDefinitionsCache;
 }
 
 function getPricingLookup() {
+  const definitions = loadPricingDefinitions();
   if (pricingLookupCache) return pricingLookupCache;
 
   pricingLookupCache = new Map();
-  for (const definition of loadPricingDefinitions()) {
+  for (const definition of definitions) {
     rememberLookup(pricingLookupCache, definition.id, definition);
     rememberLookup(pricingLookupCache, definition.displayName, definition);
     rememberLookup(pricingLookupCache, definition.proxyTemplate?.id, definition);
@@ -122,6 +272,150 @@ function buildRouterAggregateCapabilities(model, models) {
 
 export function listPricingDefinitions() {
   return loadPricingDefinitions().map((definition) => cloneJson(definition));
+}
+
+export function getPricingLibraryStatus() {
+  const activeLocation = resolveActivePricingLocation();
+  const syncSettings = getPricingSyncSettings();
+  const syncMetadata = readSyncMetadata(
+    activeLocation.source === "custom" ? activeLocation.dir : getPersistedPricingDir()
+  );
+  const definitions = loadPricingDefinitions();
+
+  return {
+    activeSource: activeLocation.source,
+    activeDir: activeLocation.dir,
+    persistedDir: getPersistedPricingDir(),
+    bundledDir: getBundledPricingDir(),
+    definitionCount: definitions.length,
+    githubOwner: String(syncMetadata.githubOwner || syncSettings.owner || DEFAULT_GITHUB_OWNER),
+    githubRepo: String(syncMetadata.githubRepo || syncSettings.repo || DEFAULT_GITHUB_REPO),
+    githubPath: String(syncMetadata.githubPath || syncSettings.path || DEFAULT_GITHUB_PATH),
+    githubRef: String(syncMetadata.githubRef || syncSettings.ref || ""),
+    lastSyncedAt: syncMetadata.lastSyncedAt || null,
+    lastSyncFileCount: Number(syncMetadata.fileCount || 0) || 0
+  };
+}
+
+async function fetchGitHubJson(url, token) {
+  const response = await fetch(url, {
+    headers: buildGitHubHeaders(token)
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`GitHub API request failed (${response.status}): ${text.slice(0, 240)}`);
+  }
+  return text ? JSON.parse(text) : null;
+}
+
+async function fetchGitHubText(url, token) {
+  const response = await fetch(url, {
+    headers: buildGitHubHeaders(token, "application/vnd.github.raw")
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`GitHub file download failed (${response.status}): ${text.slice(0, 240)}`);
+  }
+  return text;
+}
+
+async function resolveGitHubRef(syncSettings) {
+  if (syncSettings.ref) return syncSettings.ref;
+  const repoUrl = `https://api.github.com/repos/${encodeURIComponent(syncSettings.owner)}/${encodeURIComponent(syncSettings.repo)}`;
+  const repoInfo = await fetchGitHubJson(repoUrl, syncSettings.token);
+  return String(repoInfo?.default_branch || "main").trim() || "main";
+}
+
+async function replacePricingDirectory(targetDir, stagingDir) {
+  const parentDir = path.dirname(targetDir);
+  const backupDir = `${targetDir}.backup-${Date.now()}`;
+  const targetExists = fs.existsSync(targetDir);
+
+  await fsp.mkdir(parentDir, { recursive: true });
+
+  if (targetExists) {
+    await fsp.rename(targetDir, backupDir);
+  }
+
+  try {
+    await fsp.rename(stagingDir, targetDir);
+  } catch (error) {
+    if (targetExists && fs.existsSync(backupDir) && !fs.existsSync(targetDir)) {
+      await fsp.rename(backupDir, targetDir).catch(() => {});
+    }
+    throw error;
+  }
+
+  if (targetExists && fs.existsSync(backupDir)) {
+    await fsp.rm(backupDir, { recursive: true, force: true });
+  }
+}
+
+export async function syncPricingDefinitionsFromGitHub() {
+  const syncSettings = getPricingSyncSettings();
+  const githubRef = await resolveGitHubRef(syncSettings);
+  const encodedPath = buildGitHubPathFragment(syncSettings.path);
+  const contentsUrl = `https://api.github.com/repos/${encodeURIComponent(syncSettings.owner)}/${encodeURIComponent(syncSettings.repo)}/contents/${encodedPath}?ref=${encodeURIComponent(githubRef)}`;
+  const contents = await fetchGitHubJson(contentsUrl, syncSettings.token);
+
+  if (!Array.isArray(contents)) {
+    throw new Error("GitHub pricing path did not return a file list.");
+  }
+
+  const files = contents.filter((entry) => entry?.type === "file" && String(entry.name || "").endsWith(".json"));
+  if (!files.length) {
+    throw new Error("No pricing JSON files were found in the configured GitHub source.");
+  }
+
+  const targetDir = String(process.env.PRICING_DIR || "").trim()
+    ? path.resolve(process.env.PRICING_DIR)
+    : getPersistedPricingDir();
+  const stagingDir = path.join(path.dirname(targetDir), `.pricing-sync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+
+  await fsp.rm(stagingDir, { recursive: true, force: true });
+  await fsp.mkdir(stagingDir, { recursive: true });
+
+  try {
+    for (const file of files) {
+      const fileName = sanitizePricingFileName(file.name);
+      const downloadUrl = file.download_url || buildGitHubRawUrl(syncSettings.owner, syncSettings.repo, githubRef, syncSettings.path, fileName);
+      const text = await fetchGitHubText(downloadUrl, syncSettings.token);
+      const rawDefinition = JSON.parse(text);
+      parsePricingDefinition(text, fileName);
+      await fsp.writeFile(path.join(stagingDir, fileName), `${JSON.stringify(rawDefinition, null, 2)}\n`, "utf8");
+    }
+
+    const metadata = {
+      lastSyncedAt: new Date().toISOString(),
+      githubOwner: syncSettings.owner,
+      githubRepo: syncSettings.repo,
+      githubPath: syncSettings.path,
+      githubRef,
+      fileCount: files.length
+    };
+    await fsp.writeFile(path.join(stagingDir, PRICING_SYNC_METADATA_FILE), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+
+    await replacePricingDirectory(targetDir, stagingDir);
+    resetPricingCaches();
+
+    const status = getPricingLibraryStatus();
+    const items = listPricingDefinitions();
+    emitPricingEvent("info", "pricing.library_synced", {
+      githubRepo: `${syncSettings.owner}/${syncSettings.repo}`,
+      githubRef,
+      pricingDir: targetDir,
+      fileCount: files.length
+    });
+
+    return {
+      items,
+      status,
+      syncedFiles: files.length
+    };
+  } catch (error) {
+    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 export function getPricingDefinition(definitionId) {

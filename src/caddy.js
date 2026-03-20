@@ -85,6 +85,12 @@ export function renderCaddyfile(config) {
 ${hostPort} {
   log {
     output stdout
+    format json {
+      time_key ts
+      time_format iso8601
+      level_key level
+      message_key msg
+    }
     level INFO
   }
   encode zstd gzip

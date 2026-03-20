@@ -143,6 +143,17 @@ Guidance:
 - `BODY_LIMIT`: request body limit in bytes, default `52428800`
 - `CADDY_BIN`: optional Caddy binary path override
 - `ADMIN_LOG_BUFFER_SIZE`: in-memory admin log ring buffer size, default `1000`
+- `PRICING_DIR`: optional pricing library directory override. By default the app reads from `/app/data/pricing` when synced files exist, otherwise it falls back to the bundled `pricing/` directory inside the image.
+
+### Pricing Sync
+
+- `PRICING_SYNC_GITHUB_OWNER`: GitHub owner for pricing sync, default `pczhao1210`
+- `PRICING_SYNC_GITHUB_REPO`: GitHub repository for pricing sync, default `AOAI-Proxy`
+- `PRICING_SYNC_GITHUB_PATH`: repository path containing pricing JSON files, default `pricing`
+- `PRICING_SYNC_GITHUB_REF`: optional branch, tag, or commit. When omitted, the proxy resolves the repository default branch through the GitHub API.
+- `PRICING_SYNC_GITHUB_TOKEN`: optional GitHub token for higher API limits or private repositories
+
+When you trigger `Sync From GitHub` from `/admin`, the proxy downloads pricing JSON files into the persistent pricing directory first. In Azure Files-style deployments, this means updated prices survive container replacement without rebuilding the image.
 
 ### Optional Upstream Pool Overrides
 
@@ -176,6 +187,7 @@ The admin page now exposes:
 
 - Top-level status cards for proxy health, AAD verification status, config state, and runtime state
 - Config dirty-state badges, basic structure reminders, and a local diff preview before save
+- A pricing library sync panel that can pull the latest pricing JSON files from GitHub into the persistent data volume
 - Caddy dial timeout
 - Caddy response header timeout
 - Caddy keepalive timeout

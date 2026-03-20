@@ -10,6 +10,7 @@ import {
   restartService,
   saveConfig,
   sendProxyRequest,
+  syncPricingLibrary,
   verifyAad
 } from "./api.js";
 import AdvancedTab from "./components/AdvancedTab.jsx";
@@ -75,6 +76,7 @@ export default function App() {
   const [runtime, setRuntime] = useState(null);
   const [stats, setStats] = useState(null);
   const [pricingLibrary, setPricingLibrary] = useState([]);
+  const [pricingLibraryStatus, setPricingLibraryStatus] = useState(null);
   const [logs, setLogs] = useState({ total: 0, limit: 100, items: [] });
   const [caddyStatus, setCaddyStatus] = useState(null);
   const [message, setMessage] = useState("");
@@ -89,7 +91,7 @@ export default function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logFilters, setLogFilters] = useState(DEFAULT_LOG_FILTERS);
   const [aadStatus, setAadStatus] = useState(null);
-  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false });
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false });
   const [testEndpoint, setTestEndpoint] = useState(TEST_ENDPOINTS[0]);
   const [testApiKey, setTestApiKey] = useState("");
   const [testPayloadText, setTestPayloadText] = useState(JSON.stringify(buildDefaultTestPayload(TEST_ENDPOINTS[0], null), null, 2));
@@ -275,6 +277,7 @@ export default function App() {
         setStats(statsJson || null);
         setCaddyStatus(caddyJson.status || null);
         setPricingLibrary(pricingItems);
+        setPricingLibraryStatus(pricingJson.status || null);
       });
       setMessage(mode === "reload" ? t("messages.reloaded", "Configuration reloaded from persistent store.") : t("messages.loaded", "Configuration loaded."));
     } catch (loadError) {
@@ -334,13 +337,18 @@ export default function App() {
 
   useEffect(() => {
     if (activeTab !== "ops") return;
-    if (!logs.items.length) {
-      void loadLogsAction();
-    }
     if (!caddyStatus) {
       void loadCaddyStatusAction();
     }
-  }, [activeTab]);
+  }, [activeTab, caddyStatus]);
+
+  useEffect(() => {
+    if (activeTab !== "ops") return undefined;
+    const timer = setTimeout(() => {
+      void loadLogsAction(logFilters);
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [activeTab, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit]);
 
   useEffect(() => {
     if (activeTab !== "ops" || !logFilters.autoRefresh) return undefined;
@@ -606,6 +614,23 @@ export default function App() {
     }
   }
 
+  async function handleSyncPricingLibrary() {
+    setDiagnosticsBusy((current) => ({ ...current, pricingSync: true }));
+    setError("");
+    try {
+      const result = await syncPricingLibrary();
+      startTransition(() => {
+        setPricingLibrary(Array.isArray(result.items) && result.items.length ? result.items : bundledPricingLibrary);
+        setPricingLibraryStatus(result.status || null);
+      });
+      setMessage(t("messages.pricingSyncSuccess", "Pricing library synced from GitHub ({count} files).", { count: result.syncedFiles || 0 }));
+    } catch (syncError) {
+      setError(syncError.message || t("messages.pricingSyncFailed", "Failed to sync pricing library from GitHub."));
+    } finally {
+      setDiagnosticsBusy((current) => ({ ...current, pricingSync: false }));
+    }
+  }
+
   function resetTestPayload() {
     setTestPayloadText(JSON.stringify(buildDefaultTestPayload(testEndpoint, config), null, 2));
     setPayloadNote("");
@@ -779,6 +804,7 @@ export default function App() {
       ...modelSectionLinks
     ],
     ops: [
+      { id: "ops-pricing", label: t("ops.nav.pricing", "Pricing 库") },
       { id: "ops-caddy", label: t("ops.nav.caddy", "Caddy 与服务") },
       { id: "ops-logs", label: t("ops.nav.logs", "运行日志") },
       { id: "ops-test", label: t("ops.nav.test", "代理测试") }
@@ -1081,9 +1107,12 @@ export default function App() {
         <OpsTab
           config={config}
           updateField={updateField}
+          pricingLibraryStatus={pricingLibraryStatus}
+          pricingLibraryCount={pricingLibrary.length}
           caddyStatus={caddyStatus}
           aadStatus={aadStatus}
           diagnosticsBusy={diagnosticsBusy}
+          handleSyncPricingLibrary={handleSyncPricingLibrary}
           loadCaddyStatusAction={loadCaddyStatusAction}
           handleVerifyAad={handleVerifyAad}
           handleRestartService={handleRestartService}

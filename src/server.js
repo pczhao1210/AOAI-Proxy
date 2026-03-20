@@ -13,7 +13,7 @@ import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus,
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, queryLogs, setLogConfig } from "./logs.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
-import { listPricingDefinitions } from "./pricing-library.js";
+import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
 
 // Fastify server entry
@@ -201,7 +201,7 @@ app.addHook("onResponse", async (req, reply) => {
   const level = status >= 400 ? "error" : "info";
   const config = getConfig();
   const networkContext = getRequestNetworkContext(config, req);
-  req.log[level]({
+  const payload = {
     source: "http",
     event: "http.request_completed",
     requestId: req.id,
@@ -210,7 +210,12 @@ app.addHook("onResponse", async (req, reply) => {
     status,
     latencyMs: Math.round(reply.elapsedTime || 0),
     ...networkContext
-  }, status >= 400 ? "request completed with error" : "request completed");
+  };
+  if (level === "info") {
+    appendStructuredLog("info", payload);
+    return;
+  }
+  req.log[level](payload, status >= 400 ? "request completed with error" : "request completed");
 });
 
 app.get("/healthz", async () => ({ status: "ok" }));
@@ -294,8 +299,29 @@ app.get("/admin/api/runtime", async () => {
 app.get("/admin/api/pricing-library", async () => {
   return {
     ok: true,
-    items: listPricingDefinitions()
+    items: listPricingDefinitions(),
+    status: getPricingLibraryStatus()
   };
+});
+
+app.post("/admin/api/pricing-library/sync", async (req, reply) => {
+  try {
+    const result = await syncPricingDefinitionsFromGitHub();
+    app.log.info({
+      source: "admin",
+      event: "admin.pricing_library_synced",
+      syncedFiles: result.syncedFiles,
+      definitionCount: result.status?.definitionCount || 0,
+      activeSource: result.status?.activeSource || "persisted"
+    }, "pricing library synced from GitHub");
+    reply.send({ ok: true, ...result });
+  } catch (error) {
+    logAdminApiError("admin.pricing_library_sync_failed", error, {
+      route: "/admin/api/pricing-library/sync",
+      status: 502
+    });
+    reply.code(502).send({ ok: false, error: error.message });
+  }
 });
 
 app.get("/admin/api/stats", async (req) => {

@@ -83,7 +83,7 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
               return (
                 <EntityCard
                   id={`upstream-card-${index}`}
-                  key={`${item.name || "upstream"}-${index}`}
+                  key={`upstream-${index}`}
                   title={item.name || `upstream-${index + 1}`}
                   subtitle={item.baseUrl || t("status.upstreamSubtitleFallback", "Base URL not configured")}
                   meta={`${t("field.provider", "Provider")}: ${item.provider || "azure-openai"} · ${t("field.status", "Status")}: ${statusLabel} · ${t("field.capabilities", "Capabilities")}: ${capabilityCount}`}
@@ -118,7 +118,7 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
               return (
                 <EntityCard
                   id={`model-card-${index}`}
-                  key={`${item.id || "model"}-${index}`}
+                  key={`model-${index}`}
                   title={item.displayName || item.id || `model-${index + 1}`}
                   subtitle={item.upstream || t("status.modelSubtitleFallback", "Upstream not bound")}
                   meta={`${t("field.targetModel", "Target Model")}: ${item.targetModel || "-"} · ${t("field.status", "Status")}: ${statusLabel}`}

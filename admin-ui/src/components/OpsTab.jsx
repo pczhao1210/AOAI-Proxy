@@ -1,11 +1,14 @@
-import { Field, Section, StatCard } from "./ui.jsx";
+import { AccordionSection, Field, Section, StatCard } from "./ui.jsx";
 
 export default function OpsTab({
   config,
   updateField,
+  pricingLibraryStatus,
+  pricingLibraryCount,
   caddyStatus,
   aadStatus,
   diagnosticsBusy,
+  handleSyncPricingLibrary,
   loadCaddyStatusAction,
   handleVerifyAad,
   handleRestartService,
@@ -53,21 +56,105 @@ export default function OpsTab({
     { key: "info", label: t("logs.level.info", "Info") }
   ];
   const advancedFiltersOpen = Boolean(logFilters.event || logFilters.modelId || logFilters.requestId || logFilters.keyword || Number(logFilters.limit || 100) !== 100);
+  const pricingRepoLabel = pricingLibraryStatus?.githubOwner && pricingLibraryStatus?.githubRepo
+    ? `${pricingLibraryStatus.githubOwner}/${pricingLibraryStatus.githubRepo}`
+    : "-";
+  const pricingRefLabel = pricingLibraryStatus?.githubRef
+    ? `${pricingLibraryStatus.githubPath || "pricing"}@${pricingLibraryStatus.githubRef}`
+    : pricingLibraryStatus?.githubPath || "pricing";
+  const activeLevelSummary = logFilters.level.length ? logFilters.level.join(" / ") : t("status.disabled", "disabled");
+  const latestResponseNote = testResponseText
+    ? String(testResponseText).split("\n")[0].slice(0, 96)
+    : t("ops.noRequestYet", "No request sent yet.");
 
   return (
     <div className="stack-lg">
       <Section
+        id="ops-overview"
+        title={t("ops.overview", "Operations Overview")}
+        desc={t("ops.overviewDesc", "Monitor the active pricing source, service state, log pipeline, and request diagnostics from one place.")}
+      >
+        <div className="panel-summary-grid">
+          <StatCard
+            label={t("ops.pricingSource", "Active Source")}
+            value={t(`pricing.source.${pricingLibraryStatus?.activeSource || "bundled"}`, pricingLibraryStatus?.activeSource || "bundled")}
+            note={pricingLibraryStatus?.definitionCount != null ? `${pricingLibraryStatus.definitionCount} ${t("ops.pricingDefinitionsNote", "Loaded pricing entries")}` : "-"}
+          />
+          <StatCard
+            label={t("status.caddyState", "Caddy State")}
+            value={caddyStatus?.state ? t(`caddy.state.${caddyStatus.state}`, caddyStatus.state) : t("status.disabled", "disabled")}
+            note={formatDateTime(caddyStatus?.lastReloadAt)}
+          />
+          <StatCard
+            label={t("status.aad", "AAD")}
+            value={aadStatus?.state ? t(`status.aad.${aadStatus.state}`, aadStatus.state) : t("status.idle", "idle")}
+            note={aadStatus?.detail || formatDateTime(aadStatus?.checkedAt)}
+          />
+          <StatCard
+            label={t("ops.logsTitle", "Runtime Logs")}
+            value={logs.total || 0}
+            note={`${t("logs.level.info", "Info")}/${t("logs.level.warn", "Warn")}/${t("logs.level.error", "Error")}: ${activeLevelSummary}`}
+          />
+          <StatCard
+            label={t("ops.testTitle", "Proxy Test")}
+            value={testEndpoint}
+            note={latestResponseNote}
+          />
+        </div>
+      </Section>
+
+      <AccordionSection
+        id="ops-pricing"
+        title={t("ops.pricingTitle", "Pricing Library")}
+        desc={t("ops.pricingDesc", "Sync pricing JSON files from GitHub into the persistent pricing directory so the admin and runtime use updated prices without rebuilding the container.")}
+        defaultOpen
+        group="ops-sections"
+      >
+        <div className="toolbar" style={{ marginBottom: "1rem" }}>
+          <button type="button" onClick={handleSyncPricingLibrary} disabled={diagnosticsBusy.pricingSync}>
+            {diagnosticsBusy.pricingSync ? t("ops.syncingPricing", "Syncing...") : t("ops.syncPricing", "Sync From GitHub")}
+          </button>
+        </div>
+        <div className="status-grid">
+          <StatCard
+            label={t("ops.pricingSource", "Active Source")}
+            value={t(`pricing.source.${pricingLibraryStatus?.activeSource || "bundled"}`, pricingLibraryStatus?.activeSource || "bundled")}
+            note={pricingLibraryStatus?.activeDir || "-"}
+          />
+          <StatCard
+            label={t("ops.pricingDefinitions", "Definitions")}
+            value={pricingLibraryStatus?.definitionCount ?? pricingLibraryCount ?? 0}
+            note={t("ops.pricingDefinitionsNote", "Loaded pricing entries")}
+          />
+          <StatCard
+            label={t("ops.pricingRepo", "GitHub Source")}
+            value={pricingRepoLabel}
+            note={pricingRefLabel || "-"}
+          />
+          <StatCard
+            label={t("ops.pricingLastSync", "Last Sync")}
+            value={formatDateTime(pricingLibraryStatus?.lastSyncedAt)}
+            note={pricingLibraryStatus?.lastSyncFileCount
+              ? t("ops.pricingLastSyncNote", "{count} files synced", { count: pricingLibraryStatus.lastSyncFileCount })
+              : t("ops.pricingNoSyncYet", "Not synced yet")}
+          />
+        </div>
+        <div className="muted" style={{ marginTop: "0.75rem" }}>
+          {t("ops.pricingPersistDesc", "Successful sync writes pricing files into the data volume first, so Azure Files deployments keep the updated prices across container restarts.")}
+        </div>
+      </AccordionSection>
+
+      <AccordionSection
         id="ops-caddy"
         title={t("ops.caddyTitle", "Caddy / Operations")}
         desc={t("ops.caddyDesc", "Inspect Caddy state, edit reverse-proxy parameters, and run AAD verification or service restart from React.")}
-        actions={
-          <>
-            <button type="button" className="ghost" onClick={() => loadCaddyStatusAction()}>{t("ops.refreshStatus", "Refresh Status")}</button>
-            <button type="button" className="ghost" onClick={handleVerifyAad} disabled={diagnosticsBusy.verify}>{diagnosticsBusy.verify ? t("ops.verifyingAad", "Verifying...") : t("ops.verifyAad", "Verify AAD")}</button>
-            <button type="button" onClick={handleRestartService} disabled={diagnosticsBusy.restart}>{diagnosticsBusy.restart ? t("ops.restarting", "Restarting...") : t("ops.restart", "Restart")}</button>
-          </>
-        }
+        group="ops-sections"
       >
+        <div className="toolbar" style={{ marginBottom: "1rem" }}>
+          <button type="button" className="ghost" onClick={() => loadCaddyStatusAction()}>{t("ops.refreshStatus", "Refresh Status")}</button>
+          <button type="button" className="ghost" onClick={handleVerifyAad} disabled={diagnosticsBusy.verify}>{diagnosticsBusy.verify ? t("ops.verifyingAad", "Verifying...") : t("ops.verifyAad", "Verify AAD")}</button>
+          <button type="button" onClick={handleRestartService} disabled={diagnosticsBusy.restart}>{diagnosticsBusy.restart ? t("ops.restarting", "Restarting...") : t("ops.restart", "Restart")}</button>
+        </div>
         <div className="status-grid">
           <StatCard label={t("status.caddyState", "Caddy State")} value={caddyStatus?.state ? t(`caddy.state.${caddyStatus.state}`, caddyStatus.state) : t("status.disabled", "disabled")} note={caddyStatus?.message || "-"} />
           <StatCard label={t("status.lastWrite", "Last Write")} value={formatDateTime(caddyStatus?.lastWriteAt)} note={t("status.caddyWriteNote", "Caddyfile write time")} />
@@ -95,14 +182,17 @@ export default function OpsTab({
           <pre>{caddyPreview}</pre>
         </div>
         {caddyStatus?.lastError ? <div className="inline-error" style={{ marginTop: "1rem" }}>{caddyStatus.lastError}</div> : null}
-      </Section>
+      </AccordionSection>
 
-      <Section
+      <AccordionSection
         id="ops-logs"
         title={t("ops.logsTitle", "Runtime Logs")}
         desc={t("ops.logsDesc", "Filter admin / proxy / upstream logs to diagnose governance rejections, timeouts, auth, and upload issues.")}
-        actions={<button type="button" onClick={() => loadLogsAction()} disabled={logsLoading}>{logsLoading ? t("ops.loadingLogs", "Loading...") : t("ops.refreshLogs", "Refresh Logs")}</button>}
+        group="ops-sections"
       >
+        <div className="toolbar" style={{ marginBottom: "1rem" }}>
+          <button type="button" onClick={() => loadLogsAction()} disabled={logsLoading}>{logsLoading ? t("ops.loadingLogs", "Loading...") : t("ops.refreshLogs", "Refresh Logs")}</button>
+        </div>
         <div className="log-controls-react">
           <div className="toolbar">
             {levelOptions.map((item) => (
@@ -178,14 +268,17 @@ export default function OpsTab({
             );
           }) : <div className="empty-state">{t("ops.noLogs", "No logs yet. Adjust filters and refresh.")}</div>}
         </div>
-      </Section>
+      </AccordionSection>
 
-      <Section
+      <AccordionSection
         id="ops-test"
         title={t("ops.testTitle", "Proxy Test")}
         desc={t("ops.testDesc", "Send requests to proxy endpoints from the admin UI to verify routing, auth, and streaming.")}
-        actions={<button type="button" className="ghost" onClick={resetTestPayload}>{t("ops.resetExample", "Reset Example")}</button>}
+        group="ops-sections"
       >
+        <div className="toolbar" style={{ marginBottom: "1rem" }}>
+          <button type="button" className="ghost" onClick={resetTestPayload}>{t("ops.resetExample", "Reset Example")}</button>
+        </div>
         <div className="form-grid compact">
           <Field label={t("field.endpointLabel", "Endpoint")}>
             <select value={testEndpoint} onChange={(event) => setTestEndpoint(event.target.value)}>
@@ -234,7 +327,7 @@ export default function OpsTab({
           <div className="code-block-head">{t("ops.response", "Response")}</div>
           <pre>{testResponseText || t("ops.noRequestYet", "No request sent yet.")}</pre>
         </div>
-      </Section>
+      </AccordionSection>
     </div>
   );
 }

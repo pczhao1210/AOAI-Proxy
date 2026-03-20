@@ -31,6 +31,10 @@ export async function fetchPricingLibrary() {
   return readJson(await fetch("/admin/api/pricing-library"));
 }
 
+export async function syncPricingLibrary() {
+  return readJson(await fetch("/admin/api/pricing-library/sync", { method: "POST" }));
+}
+
 export async function fetchStats(params = {}) {
   const search = new URLSearchParams();
   ["keyId", "timeRange"].forEach((key) => {

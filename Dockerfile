@@ -13,6 +13,7 @@ ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
+COPY pricing ./pricing
 COPY public ./public
 COPY docker/start.sh /app/start.sh
 

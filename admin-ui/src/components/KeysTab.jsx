@@ -53,7 +53,7 @@ export default function KeysTab({ config, updateConfig, addApiKey, t }) {
           return (
             <EntityCard
               id={`key-card-${index}`}
-              key={`${item.id || "key"}-${index}`}
+              key={`key-${index}`}
               title={item.displayName || item.id || `key-${index + 1}`}
               subtitle={item.owner || t("status.keySubtitleFallback", "Owner not set")}
               meta={`${t("field.status", "Status")}: ${statusLabel} · ${t("field.allowedModels", "Allowed Models")}: ${allowedModelsCount} · ${t("field.budgetLimit", "Budget Limit")}: ${budgetText}`}
