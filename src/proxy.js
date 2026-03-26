@@ -333,8 +333,34 @@ export async function proxyRequest({
 
   if (nextBody && typeof nextBody === "object") {
     normalizeReasoningConfig(nextBody, backendRouteKey);
+    const unsupportedWebSearch = sanitizeWebSearchRequest(nextBody, {
+      backendRouteKey,
+      upstream,
+      model
+    });
+    if (unsupportedWebSearch) {
+      log.error({
+        source: "proxy",
+        requestId,
+        ...requestNetworkContext,
+        modelId,
+        routeKey,
+        backendRouteKey,
+        status: 400,
+        event: "proxy.request_rejected",
+        errorCode: "UNSUPPORTED_PARAMETER",
+        param: unsupportedWebSearch.param,
+        failureReason: unsupportedWebSearch.message
+      }, unsupportedWebSearch.message);
+      sendProxyError(400, {
+        code: "UNSUPPORTED_PARAMETER",
+        exposedCode: "UnsupportedParameter",
+        message: unsupportedWebSearch.message,
+        param: unsupportedWebSearch.param
+      });
+      return;
+    }
     const unsupportedRequest = sanitizeModernModelRequest(nextBody, {
-      routeKey,
       backendRouteKey,
       modelId: deployment || modelId
     });
@@ -899,37 +925,116 @@ function normalizeModernReasoningEffort(value) {
   return undefined;
 }
 
-function findUnsupportedWebSearchParam(body) {
+function normalizeCapabilityName(value) {
+  return typeof value === "string"
+    ? value.trim().toLowerCase().replaceAll("_", "-")
+    : "";
+}
+
+function collectCapabilityNames(...values) {
+  const names = new Set();
+  for (const value of values) {
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      const normalized = normalizeCapabilityName(item);
+      if (normalized) names.add(normalized);
+    }
+  }
+  return names;
+}
+
+function normalizeWebSearchToolType(type) {
+  const normalized = typeof type === "string" ? type.trim().toLowerCase() : "";
+  if (
+    normalized === "web_search_preview"
+    || normalized === "web_search_preview_2025_03_11"
+  ) {
+    return "web_search";
+  }
+  return normalized;
+}
+
+function findWebSearchParam(body) {
   if (Array.isArray(body?.tools)) {
     for (const tool of body.tools) {
-      const type = typeof tool?.type === "string" ? tool.type.toLowerCase() : "";
-      if (type === "web_search" || type === "web_search_preview" || type === "web_search_preview_2025_03_11") {
+      const type = normalizeWebSearchToolType(tool?.type);
+      if (type === "web_search") {
         return "tools";
       }
     }
   }
 
   const toolChoiceType = typeof body?.tool_choice?.type === "string"
-    ? body.tool_choice.type.toLowerCase()
+    ? normalizeWebSearchToolType(body.tool_choice.type)
     : "";
-  if (toolChoiceType === "web_search" || toolChoiceType === "web_search_preview" || toolChoiceType === "web_search_preview_2025_03_11") {
+  if (toolChoiceType === "web_search") {
     return "tool_choice";
   }
 
   return null;
 }
 
-function sanitizeModernModelRequest(body, { backendRouteKey, modelId }) {
-  if (!body || typeof body !== "object" || !isModernModel(modelId)) {
+function normalizeWebSearchRequest(body) {
+  if (Array.isArray(body?.tools)) {
+    for (const tool of body.tools) {
+      if (!tool || typeof tool !== "object") continue;
+      const normalizedType = normalizeWebSearchToolType(tool.type);
+      if (normalizedType === "web_search" && tool.type !== "web_search") {
+        tool.type = "web_search";
+      }
+    }
+  }
+
+  if (body?.tool_choice && typeof body.tool_choice === "object") {
+    const normalizedType = normalizeWebSearchToolType(body.tool_choice.type);
+    if (normalizedType === "web_search" && body.tool_choice.type !== "web_search") {
+      body.tool_choice.type = "web_search";
+    }
+  }
+}
+
+function supportsWebSearchRequest({ backendRouteKey, upstream, model }) {
+  if (backendRouteKey !== "responses") {
+    return false;
+  }
+
+  const capabilityNames = collectCapabilityNames(model?.capabilities, upstream?.capabilities);
+  if (capabilityNames.has("web-search")) {
+    return true;
+  }
+
+  try {
+    const hostname = new URL(String(upstream?.baseUrl || "")).hostname.toLowerCase();
+    return hostname.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeWebSearchRequest(body, { backendRouteKey, upstream, model }) {
+  if (!body || typeof body !== "object") {
     return null;
   }
 
-  const unsupportedWebSearchParam = findUnsupportedWebSearchParam(body);
-  if (unsupportedWebSearchParam) {
+  const webSearchParam = findWebSearchParam(body);
+  if (!webSearchParam) {
+    return null;
+  }
+
+  if (!supportsWebSearchRequest({ backendRouteKey, upstream, model })) {
     return {
-      param: unsupportedWebSearchParam,
-      message: "Azure Foundry 当前不支持 web_search 工具，请移除 web_search_preview 相关 tools 或 tool_choice。"
+      param: webSearchParam,
+      message: "web_search 仅在 Azure OpenAI Responses API 后端受支持；请使用 *.openai.azure.com 的 responses 路由，或移除 tools/tool_choice。"
     };
+  }
+
+  normalizeWebSearchRequest(body);
+  return null;
+}
+
+function sanitizeModernModelRequest(body, { backendRouteKey, modelId }) {
+  if (!body || typeof body !== "object" || !isModernModel(modelId)) {
+    return null;
   }
 
   delete body.serviceTier;
