@@ -401,7 +401,9 @@ export function describePersistenceRuntime(persistenceRuntime, t) {
     `${t("runtime.compatibilityPath", "Compatibility Path")}: ${runtime.compatibilityPath || "-"}`,
     `${t("runtime.dataDirMode", "Data Dir Mode")}: ${runtime.dataDirMode || "ephemeral"}`,
     `${t("runtime.pendingSync", "Pending Sync")}: ${formatBool(runtime.pendingDatabaseSync, t)}`,
-    `${t("runtime.databaseAccessStateLabel", "Database Access State")}: ${runtime.databaseAccessState || "disabled"}`
+    `${t("runtime.databaseAccessStateLabel", "Database Access State")}: ${runtime.databaseAccessState || "disabled"}`,
+    `${t("runtime.databaseRecoveryIntervalMs", "Database Recovery Interval")}: ${runtime.databaseRecoveryIntervalMs ?? 0}`,
+    `${t("runtime.nextDatabaseRecoveryAttemptAt", "Next Database Recovery")}: ${runtime.nextDatabaseRecoveryAttemptAt || "-"}`
   ];
 
   if (runtime.databaseProvider || runtime.databaseSchema || runtime.databaseTableName) {
@@ -443,6 +445,9 @@ export function describeLoggingRuntime(loggingRuntime, t) {
   }
   if (runtime.lastSuccessTs) {
     lines.push(`${t("runtime.lastSuccessTs", "Last Success")}: ${runtime.lastSuccessTs}`);
+  }
+  if (runtime.nextFlushAt) {
+    lines.push(`${t("runtime.nextFlushAt", "Next Flush")}: ${runtime.nextFlushAt}`);
   }
   if (runtime.lastError) {
     lines.push(`${t("runtime.lastError", "Last Error")}: ${formatRuntimeError(runtime.lastError)}`);

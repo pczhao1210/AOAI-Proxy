@@ -11,6 +11,7 @@ import {
   restartService,
   saveConfig,
   sendProxyRequest,
+  syncRuntime,
   syncPricingLibrary,
   testDatabaseConnection,
   verifyAad
@@ -116,7 +117,7 @@ export default function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logFilters, setLogFilters] = useState(DEFAULT_LOG_FILTERS);
   const [aadStatus, setAadStatus] = useState(null);
-  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false, databaseTest: false, databaseDefaults: false });
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false, databaseTest: false, databaseDefaults: false, runtimeSync: false });
   const [testEndpoint, setTestEndpoint] = useState(TEST_ENDPOINTS[0]);
   const [testApiKey, setTestApiKey] = useState("");
   const [testPayloadText, setTestPayloadText] = useState(JSON.stringify(buildDefaultTestPayload(TEST_ENDPOINTS[0], null), null, 2));
@@ -145,6 +146,7 @@ export default function App() {
   const perKeyStats = stats?.perKey || {};
   const persistenceRuntime = runtime?.persistence || {};
   const loggingRuntime = runtime?.logging || {};
+  const runtimeStore = runtime?.runtimeStore || {};
   const logLevelKey = logFilters.level.join(",");
   const caddyPreview = useMemo(
     () => buildCaddyPreview(config?.server?.caddy || {}, config?.server?.port),
@@ -328,6 +330,22 @@ export default function App() {
       await refreshRuntimeAndStats(nextFilters);
     } catch (loadError) {
       setError(loadError.message || t("messages.loadFailed", "Load failed."));
+    }
+  }
+
+  async function handleRuntimeSync() {
+    setDiagnosticsBusy((current) => ({ ...current, runtimeSync: true }));
+    try {
+      const result = await syncRuntime();
+      startTransition(() => {
+        setRuntime(result.runtime || null);
+      });
+      await refreshRuntimeAndStats(runtimeFilters);
+      setMessage(t("messages.runtimeSyncSuccess", "Runtime sync completed."));
+    } catch (syncError) {
+      setError(syncError.message || t("messages.runtimeSyncFailed", "Runtime sync failed."));
+    } finally {
+      setDiagnosticsBusy((current) => ({ ...current, runtimeSync: false }));
     }
   }
 
@@ -1182,6 +1200,7 @@ export default function App() {
         <RuntimeTab
           persistenceRuntime={persistenceRuntime}
           loggingRuntime={loggingRuntime}
+                runtimeStore={runtimeStore}
           persistenceRuntimeText={persistenceRuntimeText}
           loggingRuntimeText={loggingRuntimeText}
           governanceKeys={governanceKeys}
@@ -1192,6 +1211,8 @@ export default function App() {
           runtimeFilters={runtimeFilters}
           runtimeKeyOptions={runtimeKeyOptions}
           onRuntimeFilterChange={handleRuntimeFilterChange}
+                onSyncRuntime={handleRuntimeSync}
+                runtimeSyncBusy={diagnosticsBusy.runtimeSync === true}
           formatDateTime={formatDateTime}
           t={t}
         />

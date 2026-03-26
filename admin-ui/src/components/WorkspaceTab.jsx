@@ -12,6 +12,10 @@ function updateDatabaseForm(setDatabaseConfigForm, path, value) {
   }));
 }
 
+function formatBool(value, t) {
+  return value ? t("common.yes", "Yes") : t("common.no", "No");
+}
+
 export default function WorkspaceTab({
   config,
   updateField,
@@ -30,6 +34,18 @@ export default function WorkspaceTab({
   const databaseResultText = databaseTestResult?.ok
     ? JSON.stringify(databaseTestResult.result || {}, null, 2)
     : (databaseTestResult?.error || "");
+  const databaseProbeFacts = databaseTestResult?.ok
+    ? [
+        { label: t("workspace.databaseProbe.host", "Host"), value: databaseTestResult?.result?.connection?.host || "-" },
+        { label: t("workspace.databaseProbe.database", "Database"), value: databaseTestResult?.result?.server?.currentDatabase || "-" },
+        { label: t("workspace.databaseProbe.user", "User"), value: databaseTestResult?.result?.server?.currentUser || "-" },
+        { label: t("workspace.databaseProbe.sslMode", "SSL Mode"), value: databaseTestResult?.result?.connection?.sslMode || "-" },
+        { label: t("workspace.databaseProbe.schemaUsage", "Schema Usage"), value: formatBool(databaseTestResult?.result?.privileges?.schemaUsage, t) },
+        { label: t("workspace.databaseProbe.schemaCreate", "Schema Create"), value: formatBool(databaseTestResult?.result?.privileges?.schemaCreate, t) },
+        { label: t("workspace.databaseProbe.tableExists", "Table Exists"), value: formatBool(databaseTestResult?.result?.objects?.tableExists, t) },
+        { label: t("workspace.databaseProbe.configExists", "Config Row Exists"), value: formatBool(databaseTestResult?.result?.objects?.configRowExists, t) }
+      ]
+    : [];
 
   return (
     <div className="stack-lg">
@@ -148,49 +164,72 @@ export default function WorkspaceTab({
               <label><input type="checkbox" checked={getValueByPath(config, "persistence.compatibilityExport.exportLegacyConfigOnChange") !== false} onChange={(event) => updateField("persistence.compatibilityExport.exportLegacyConfigOnChange", event.target.checked)} /> {t("field.compatibilityExportLegacy", "Export legacy config on change")}</label>
             </div>
 
-            <div className="detail-grid runtime-detail-grid">
-              <div className="code-block">
+            <div className="database-probe-panel">
+              <div className="database-probe-header">
                 <div className="code-block-head">{t("workspace.databaseProbe.title", "Database Connection Test")}</div>
-                <p className="muted">{t("workspace.databaseProbe.desc", "Load the current connection string from environment-backed runtime settings, edit it temporarily, and verify connectivity without saving secrets into config.json.")}</p>
-                <div className="form-grid">
+                <p className="muted database-probe-desc">{t("workspace.databaseProbe.desc", "Load the current connection string from environment-backed runtime settings, edit it temporarily, and verify connectivity without saving secrets into config.json.")}</p>
+                <p className="field-hint database-probe-note">{t("workspace.databaseProbe.note", "This panel is for diagnostics only. Testing uses the temporary value here and does not write secrets back into persistence config.")}</p>
+              </div>
+
+              <div className="database-probe-form">
+                <div className="database-probe-span-full">
                   <Field label={t("field.databaseConnectionString", "Connection String")} hint={t("field.databaseConnectionStringHint", "Defaults come from CONFIG_DB_CONNECTION_STRING, DATABASE_URL, or a configured connectionRef when available.")}>
-                    <textarea rows={4} value={databaseConfigForm?.connectionString || ""} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "connectionString", event.target.value)} />
-                  </Field>
-                  <Field label={t("field.databaseConnectionRefResolved", "Resolved Connection Ref") }>
-                    <input value={databaseConfigForm?.connectionRef || ""} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "connectionRef", event.target.value)} />
-                  </Field>
-                  <Field label={t("field.databaseProvider", "Database Provider")}>
-                    <input value={databaseConfigForm?.provider || "postgresql"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "provider", event.target.value)} />
-                  </Field>
-                  <Field label={t("field.databaseSchema", "Schema")}>
-                    <input value={databaseConfigForm?.schemaName || "public"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "schemaName", event.target.value)} />
-                  </Field>
-                  <Field label={t("field.databaseTable", "Table Name")}>
-                    <input value={databaseConfigForm?.tableName || "proxy_configs"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "tableName", event.target.value)} />
-                  </Field>
-                  <Field label={t("field.databaseConfigKey", "Config Key")}>
-                    <input value={databaseConfigForm?.configKey || "active"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "configKey", event.target.value)} />
+                    <textarea className="database-probe-connection-string" rows={5} value={databaseConfigForm?.connectionString || ""} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "connectionString", event.target.value)} />
                   </Field>
                 </div>
-                <div className="toolbar">
+                <Field label={t("field.databaseConnectionRefResolved", "Resolved Connection Ref")} hint={t("field.databaseConnectionRefResolvedHint", "If Connection String is empty, the test will try to resolve this environment variable on the server.")}>
+                    <input value={databaseConfigForm?.connectionRef || ""} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "connectionRef", event.target.value)} />
+                </Field>
+                <Field label={t("field.databaseProvider", "Database Provider")}>
+                  <select value={databaseConfigForm?.provider || "postgresql"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "provider", event.target.value)}>
+                    <option value="postgresql">postgresql</option>
+                  </select>
+                </Field>
+                <Field label={t("field.databaseSchema", "Schema")}>
+                  <input value={databaseConfigForm?.schemaName || "public"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "schemaName", event.target.value)} />
+                </Field>
+                <Field label={t("field.databaseTable", "Table Name")}>
+                  <input value={databaseConfigForm?.tableName || "proxy_configs"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "tableName", event.target.value)} />
+                </Field>
+                <Field label={t("field.databaseConfigKey", "Config Key")}>
+                  <input value={databaseConfigForm?.configKey || "active"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "configKey", event.target.value)} />
+                </Field>
+              </div>
+
+              <div className="toolbar database-probe-actions">
                   <button type="button" className="ghost" onClick={onReloadDatabaseDefaults} disabled={diagnosticsBusy?.databaseDefaults === true || diagnosticsBusy?.databaseTest === true}>
                     {diagnosticsBusy?.databaseDefaults === true ? t("common.loading", "Loading...") : t("workspace.databaseProbe.reload", "Load Runtime Defaults")}
                   </button>
                   <button type="button" onClick={onTestDatabaseConnection} disabled={diagnosticsBusy?.databaseTest === true}>
                     {diagnosticsBusy?.databaseTest === true ? t("workspace.databaseProbe.testing", "Testing...") : t("workspace.databaseProbe.test", "Test Connection")}
                   </button>
-                </div>
-                {databaseTestResult ? (
-                  <div className="stack-sm" style={{ marginTop: "1rem" }}>
-                    <div className={databaseTestResult.ok ? "muted" : "inline-error"}>
+              </div>
+
+              {databaseTestResult ? (
+                <div className="database-probe-result">
+                  <div className={databaseTestResult.ok ? "database-probe-status success" : "database-probe-status error"}>
                       {databaseTestResult.ok
                         ? t("workspace.databaseProbe.ok", "Connection succeeded at {time}.", { time: formatDateTime(databaseTestResult.checkedAt) })
                         : t("workspace.databaseProbe.failed", "Connection failed at {time}.", { time: formatDateTime(databaseTestResult.checkedAt) })}
-                    </div>
-                    <pre>{databaseResultText}</pre>
                   </div>
-                ) : null}
-              </div>
+
+                  {databaseProbeFacts.length ? (
+                    <div className="database-probe-summary-grid">
+                      {databaseProbeFacts.map((item) => (
+                        <div key={item.label} className="database-probe-summary-item">
+                          <div className="database-probe-summary-label">{item.label}</div>
+                          <div className="database-probe-summary-value">{item.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <details className="database-probe-raw" open={!databaseTestResult.ok}>
+                    <summary>{t("workspace.databaseProbe.raw", "Raw Result")}</summary>
+                    <pre>{databaseResultText}</pre>
+                  </details>
+                </div>
+              ) : null}
             </div>
           </AccordionSection>
 

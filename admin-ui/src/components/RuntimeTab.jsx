@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { AccordionSection, Section, StatCard } from "./ui.jsx";
 
 function formatMoney(amount, currency = "USD", digits = 4) {
@@ -94,9 +94,31 @@ function TrendTable({ title, rows, formatDateTime, t }) {
   );
 }
 
+function formatDurationMs(ms, t) {
+  const numeric = Number(ms);
+  if (!Number.isFinite(numeric) || numeric < 0) return "-";
+  if (numeric < 1000) return `${numeric}${t("runtime.time.ms", "ms")}`;
+  const totalSeconds = Math.ceil(numeric / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}${t("runtime.time.sec", "s")}`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds > 0
+    ? `${minutes}${t("runtime.time.min", "m")} ${seconds}${t("runtime.time.sec", "s")}`
+    : `${minutes}${t("runtime.time.min", "m")}`;
+}
+
+function formatCountdown(targetValue, nowTs, t) {
+  const targetTs = Date.parse(targetValue || "");
+  if (Number.isNaN(targetTs)) return t("runtime.countdown.none", "not scheduled");
+  const diff = targetTs - nowTs;
+  if (diff <= 0) return t("runtime.countdown.now", "now");
+  return formatDurationMs(diff, t);
+}
+
 export default function RuntimeTab({
   persistenceRuntime,
   loggingRuntime,
+  runtimeStore,
   persistenceRuntimeText,
   loggingRuntimeText,
   governanceKeys,
@@ -107,10 +129,13 @@ export default function RuntimeTab({
   runtimeFilters,
   runtimeKeyOptions,
   onRuntimeFilterChange,
+  onSyncRuntime,
+  runtimeSyncBusy,
   formatDateTime,
   t
 }) {
   const [expandedModels, setExpandedModels] = useState({});
+  const [nowTs, setNowTs] = useState(() => Date.now());
   const visibleGovernanceKeys = runtimeFilters?.keyId
     ? governanceKeys.filter((entry) => entry?.keyId === runtimeFilters.keyId)
     : governanceKeys;
@@ -129,6 +154,17 @@ export default function RuntimeTab({
   const latestHourly = hourlyRollups[hourlyRollups.length - 1] || {};
   const latestDaily = dailyRollups[dailyRollups.length - 1] || {};
   const latestWeekly = weeklyRollups[weeklyRollups.length - 1] || {};
+  const recoveryIntervalText = formatDurationMs(persistenceRuntime.databaseRecoveryIntervalMs, t);
+  const runtimeFlushIntervalText = formatDurationMs(runtimeStore.flushIntervalMs, t);
+  const nextRecoveryCountdown = formatCountdown(persistenceRuntime.nextDatabaseRecoveryAttemptAt, nowTs, t);
+  const nextFlushCountdown = formatCountdown(runtimeStore.nextFlushAt, nowTs, t);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNowTs(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   function toggleModelBreakdown(modelId) {
     setExpandedModels((current) => ({
@@ -145,6 +181,11 @@ export default function RuntimeTab({
         desc={t("runtime.overviewDesc", "Watch persistence health, logging state, active governance activity, and model traffic from one place.")}
         actions={(
           <div className="toolbar-cluster runtime-filter-toolbar">
+            <button type="button" className="ghost" onClick={onSyncRuntime} disabled={runtimeSyncBusy}>
+              {runtimeSyncBusy
+                ? t("runtime.syncNowRunning", "Syncing...")
+                : t("runtime.syncNow", "Sync Now")}
+            </button>
             <label className="field runtime-filter-field">
               <span className="field-label">{t("runtime.filterKey", "Key")}</span>
               <select value={runtimeFilters?.keyId || ""} onChange={(event) => onRuntimeFilterChange?.({ keyId: event.target.value })}>
@@ -166,6 +207,24 @@ export default function RuntimeTab({
           </div>
         )}
       >
+        <div className="code-block runtime-mini-panel">
+          <div className="code-block-head">{t("runtime.syncPlan", "Recovery & Sync")}</div>
+          <p className="muted">
+            {t("runtime.syncPlanRecovery", "Database recovery probes run every {interval}. Next attempt: {countdown}.", {
+              interval: recoveryIntervalText,
+              countdown: nextRecoveryCountdown
+            })}
+          </p>
+          <p className="field-hint">
+            {t("runtime.syncPlanFlush", "Runtime event flush runs every {interval} while the queue is non-empty. Next flush: {countdown}.", {
+              interval: runtimeFlushIntervalText,
+              countdown: nextFlushCountdown
+            })}
+          </p>
+          <p className="field-hint">
+            {t("runtime.syncPlanManual", "Manual sync triggers an immediate database recovery probe and a runtime queue flush, then the page refreshes the latest stats.")}
+          </p>
+        </div>
         <div className="panel-summary-grid">
           <StatCard
             label={t("runtime.persistence", "Persistence")}
@@ -175,12 +234,12 @@ export default function RuntimeTab({
           <StatCard
             label={t("runtime.sync", "Sync")}
             value={t(`status.${syncState}`, syncState)}
-            note={persistenceRuntime.configPath || "-"}
+            note={t("runtime.nextRecoveryShort", "Next recovery: {countdown}", { countdown: nextRecoveryCountdown })}
           />
           <StatCard
             label={t("runtime.database", "Database")}
             value={persistenceRuntime.databaseAccessState || "disabled"}
-            note={persistenceRuntime.databaseProvider || "postgresql"}
+            note={`${persistenceRuntime.databaseProvider || "postgresql"} · ${t("runtime.recoveryEvery", "probe every {interval}", { interval: recoveryIntervalText })}`}
           />
           <StatCard
             label={t("runtime.logSink", "Log Sink")}
@@ -200,7 +259,7 @@ export default function RuntimeTab({
           <StatCard
             label={t("runtime.rollupHourly", "Latest Hour")}
             value={latestHourly.requests || 0}
-            note={`${t("table.errors", "Errors")} ${latestHourly.errors || 0} · ${t("table.blockedCount", "Blocked")} ${latestHourly.blockedCount || 0}`}
+            note={`${t("table.errors", "Errors")} ${latestHourly.errors || 0} · ${t("runtime.nextFlushShort", "Next flush: {countdown}", { countdown: nextFlushCountdown })}`}
           />
           <StatCard
             label={t("runtime.rollupDaily", "Latest Day")}

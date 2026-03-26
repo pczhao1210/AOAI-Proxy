@@ -9,7 +9,7 @@ import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
 import { flushRuntimeEvents, getRuntimeStatsSnapshot } from "./runtime-store.js";
-import { getDatabaseConnectionDefaults, testDatabaseConnection } from "./persistence.js";
+import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, queryLogs, setLogConfig } from "./logs.js";
@@ -295,6 +295,26 @@ app.post("/admin/api/verify-aad", async (req, reply) => {
 
 app.get("/admin/api/runtime", async () => {
   return { ok: true, runtime: getConfigRuntimeInfo() };
+});
+
+app.post("/admin/api/runtime/sync", async (req, reply) => {
+  const config = getConfig();
+  try {
+    const persistence = await syncPersistenceState(config);
+    const runtimeStore = await flushRuntimeEvents();
+    reply.send({
+      ok: true,
+      persistence,
+      runtimeStore,
+      runtime: getConfigRuntimeInfo()
+    });
+  } catch (error) {
+    logAdminApiError("admin.runtime_sync_failed", error, {
+      route: "/admin/api/runtime/sync",
+      status: 502
+    });
+    reply.code(502).send({ ok: false, error: error.message || "Runtime sync failed" });
+  }
 });
 
 app.get("/admin/api/database/config", async () => {

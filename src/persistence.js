@@ -20,7 +20,8 @@ const persistenceState = {
   activeMode: DEFAULT_PERSISTENCE_MODE,
   databaseAccessState: "disabled",
   pendingDatabaseSync: false,
-  lastDatabaseError: null
+  lastDatabaseError: null,
+  nextDatabaseRecoveryAttemptAt: null
 };
 
 function asPlainObject(value) {
@@ -144,6 +145,7 @@ function applyConfiguredMode(settings) {
     patch.databaseAccessState = "disabled";
     patch.pendingDatabaseSync = false;
     patch.lastDatabaseError = null;
+    patch.nextDatabaseRecoveryAttemptAt = null;
   }
 
   if (settings.configStoreMode === "file") {
@@ -278,7 +280,8 @@ function markDatabaseReady(settings, reason) {
     activeMode: "database",
     databaseAccessState: "ready",
     pendingDatabaseSync: false,
-    lastDatabaseError: null
+    lastDatabaseError: null,
+    nextDatabaseRecoveryAttemptAt: null
   });
   emitPersistenceEvent("log", "persistence.database_ready", {
     reason,
@@ -307,8 +310,12 @@ function scheduleDatabaseRecovery(settings) {
     return;
   }
 
+  const nextAttemptAt = new Date(Date.now() + DEFAULT_DATABASE_RECOVERY_INTERVAL_MS).toISOString();
+  updatePersistenceState({ nextDatabaseRecoveryAttemptAt: nextAttemptAt });
+
   databaseRecoveryTimer = setTimeout(() => {
     databaseRecoveryTimer = null;
+    updatePersistenceState({ nextDatabaseRecoveryAttemptAt: null });
     void recoverDatabaseAccess();
   }, DEFAULT_DATABASE_RECOVERY_INTERVAL_MS);
 }
@@ -515,6 +522,8 @@ export function getPersistenceSummary(config = runtimeConfig) {
     activeMode: persistenceState.activeMode,
     databaseAccessState: persistenceState.databaseAccessState,
     pendingDatabaseSync: persistenceState.pendingDatabaseSync,
+    databaseRecoveryIntervalMs: DEFAULT_DATABASE_RECOVERY_INTERVAL_MS,
+    nextDatabaseRecoveryAttemptAt: persistenceState.nextDatabaseRecoveryAttemptAt,
     lastDatabaseError: persistenceState.lastDatabaseError,
     configPath: settings.configPath,
     compatibilityPath: settings.compatibilityPath,
@@ -523,6 +532,22 @@ export function getPersistenceSummary(config = runtimeConfig) {
     databaseTableName: settings.database.tableName,
     databaseConfigKey: settings.database.configKey
   };
+}
+
+export async function syncPersistenceState(config = runtimeConfig) {
+  const settings = resolvePersistenceSettings(config);
+
+  if (databaseRecoveryTimer) {
+    clearTimeout(databaseRecoveryTimer);
+    databaseRecoveryTimer = null;
+  }
+  updatePersistenceState({ nextDatabaseRecoveryAttemptAt: null });
+
+  if (settings.configStoreMode === "database") {
+    await recoverDatabaseAccess();
+  }
+
+  return getPersistenceSummary(config);
 }
 
 export function getDatabaseConnectionDefaults(config = runtimeConfig) {
@@ -546,7 +571,10 @@ export async function testDatabaseConnection(input = {}, config = runtimeConfig)
     throw new Error("Only postgresql database provider is supported");
   }
 
-  const connectionString = String(input.connectionString || settings.database.connectionString || "").trim();
+  const resolvedConnectionRef = String(input.connectionRef || settings.database.connectionRef || "").trim();
+  const connectionString = String(input.connectionString || "").trim()
+    || (resolvedConnectionRef ? getEnvOverride(resolvedConnectionRef) : "")
+    || settings.database.connectionString;
   if (!connectionString) {
     throw new Error("connectionString is required");
   }
@@ -566,6 +594,7 @@ export async function testDatabaseConnection(input = {}, config = runtimeConfig)
 
   return {
     provider,
+    connectionRef: resolvedConnectionRef,
     ...result
   };
 }

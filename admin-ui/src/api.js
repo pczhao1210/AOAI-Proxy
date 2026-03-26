@@ -27,6 +27,10 @@ export async function fetchRuntime() {
   return readJson(await fetch("/admin/api/runtime"));
 }
 
+export async function syncRuntime() {
+  return readJson(await fetch("/admin/api/runtime/sync", { method: "POST" }));
+}
+
 export async function fetchDatabaseConfig() {
   return readJson(await fetch("/admin/api/database/config"));
 }

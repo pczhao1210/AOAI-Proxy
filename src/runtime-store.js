@@ -41,7 +41,8 @@ const runtimeStoreState = {
   lastRollupTs: "",
   lastRolledEventId: 0,
   lastError: null,
-  flushing: false
+  flushing: false,
+  nextFlushAt: null
 };
 
 function asPlainObject(value) {
@@ -261,8 +262,10 @@ function scheduleFlush(settings) {
     return;
   }
   const delay = runtimeEventQueue.length >= settings.batchSize ? 0 : settings.flushIntervalMs;
+  updateRuntimeStoreState({ nextFlushAt: toIsoString(Date.now() + delay) });
   flushTimer = setTimeout(() => {
     flushTimer = null;
+    updateRuntimeStoreState({ nextFlushAt: null });
     void flushRuntimeEvents();
   }, delay);
 }
@@ -678,7 +681,7 @@ async function rollupRuntimeEvents(settings) {
 export async function flushRuntimeEvents() {
   const settings = resolveRuntimeStoreSettings(runtimeStoreConfig);
   if (!settings.configured || runtimeEventQueue.length === 0) {
-    updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured, flushing: false });
+    updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured, flushing: false, nextFlushAt: null });
     return { flushed: 0 };
   }
   if (flushRunning) {
@@ -686,7 +689,7 @@ export async function flushRuntimeEvents() {
   }
 
   flushRunning = true;
-  updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured, flushing: true });
+  updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured, flushing: true, nextFlushAt: null });
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
@@ -776,7 +779,8 @@ export function getRuntimeStoreInfo(config = runtimeStoreConfig) {
     lastRollupTs: runtimeStoreState.lastRollupTs,
     lastRolledEventId: runtimeStoreState.lastRolledEventId,
     lastError: runtimeStoreState.lastError,
-    flushing: runtimeStoreState.flushing
+    flushing: runtimeStoreState.flushing,
+    nextFlushAt: runtimeStoreState.nextFlushAt
   };
 }
 
