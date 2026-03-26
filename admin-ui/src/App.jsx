@@ -2,6 +2,7 @@ import { startTransition, useEffect, useMemo, useState } from "react";
 import {
   fetchCaddyStatus,
   fetchConfig,
+  fetchDatabaseConfig,
   fetchLogs,
   fetchPricingLibrary,
   fetchRuntime,
@@ -11,6 +12,7 @@ import {
   saveConfig,
   sendProxyRequest,
   syncPricingLibrary,
+  testDatabaseConnection,
   verifyAad
 } from "./api.js";
 import AdvancedTab from "./components/AdvancedTab.jsx";
@@ -78,6 +80,17 @@ function pricingSyncSourceFromStatus(status) {
   };
 }
 
+function normalizeDatabaseConfigForm(value = {}) {
+  return {
+    provider: String(value.provider || "postgresql").trim() || "postgresql",
+    connectionRef: String(value.connectionRef || "").trim(),
+    connectionString: String(value.connectionString || "").trim(),
+    schemaName: String(value.schemaName || "public").trim() || "public",
+    tableName: String(value.tableName || "proxy_configs").trim() || "proxy_configs",
+    configKey: String(value.configKey || "active").trim() || "active"
+  };
+}
+
 export default function App() {
   const { language, languages, setLanguage, t } = useI18n();
   const [config, setConfig] = useState(null);
@@ -87,6 +100,8 @@ export default function App() {
   const [pricingLibrary, setPricingLibrary] = useState([]);
   const [pricingLibraryStatus, setPricingLibraryStatus] = useState(null);
   const [pricingSyncSource, setPricingSyncSource] = useState({ owner: "", repo: "", path: "pricing", ref: "" });
+  const [databaseConfigForm, setDatabaseConfigForm] = useState(() => normalizeDatabaseConfigForm());
+  const [databaseTestResult, setDatabaseTestResult] = useState(null);
   const [logs, setLogs] = useState({ total: 0, limit: 100, items: [] });
   const [caddyStatus, setCaddyStatus] = useState(null);
   const [message, setMessage] = useState("");
@@ -101,7 +116,7 @@ export default function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logFilters, setLogFilters] = useState(DEFAULT_LOG_FILTERS);
   const [aadStatus, setAadStatus] = useState(null);
-  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false });
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false, databaseTest: false, databaseDefaults: false });
   const [testEndpoint, setTestEndpoint] = useState(TEST_ENDPOINTS[0]);
   const [testApiKey, setTestApiKey] = useState("");
   const [testPayloadText, setTestPayloadText] = useState(JSON.stringify(buildDefaultTestPayload(TEST_ENDPOINTS[0], null), null, 2));
@@ -272,6 +287,7 @@ export default function App() {
         fetchCaddyStatus(),
         fetchPricingLibrary().catch(() => ({ items: bundledPricingLibrary }))
       ]);
+      const databaseJson = await fetchDatabaseConfig().catch(() => ({ config: null }));
       const pricingItems = Array.isArray(pricingJson.items) && pricingJson.items.length
         ? pricingJson.items
         : bundledPricingLibrary;
@@ -289,6 +305,10 @@ export default function App() {
         setPricingLibrary(pricingItems);
         setPricingLibraryStatus(pricingJson.status || null);
         setPricingSyncSource(pricingSyncSourceFromStatus(pricingJson.status || null));
+        if (databaseJson?.config) {
+          setDatabaseConfigForm(normalizeDatabaseConfigForm(databaseJson.config));
+        }
+        setDatabaseTestResult(null);
       });
       setMessage(mode === "reload" ? t("messages.reloaded", "Configuration reloaded from persistent store.") : t("messages.loaded", "Configuration loaded."));
     } catch (loadError) {
@@ -422,8 +442,58 @@ export default function App() {
       setAdvancedJson(text);
       setLastLoadedText(text);
     });
+    const databaseJson = await fetchDatabaseConfig().catch(() => ({ config: null }));
     await Promise.all([refreshRuntimeAndStats(), loadCaddyStatusAction()]);
+    if (databaseJson?.config) {
+      startTransition(() => {
+        setDatabaseConfigForm(normalizeDatabaseConfigForm(databaseJson.config));
+      });
+    }
     setMessage(successMessage);
+  }
+
+  async function handleReloadDatabaseDefaults() {
+    setDiagnosticsBusy((current) => ({ ...current, databaseDefaults: true }));
+    setError("");
+    try {
+      const json = await fetchDatabaseConfig();
+      startTransition(() => {
+        setDatabaseConfigForm(normalizeDatabaseConfigForm(json.config || {}));
+        setDatabaseTestResult(null);
+      });
+      setMessage(t("messages.databaseDefaultsLoaded", "Database defaults loaded from the current environment."));
+    } catch (loadError) {
+      setError(loadError.message || t("messages.databaseDefaultsLoadFailed", "Failed to load database defaults."));
+    } finally {
+      setDiagnosticsBusy((current) => ({ ...current, databaseDefaults: false }));
+    }
+  }
+
+  async function handleTestDatabaseConnection() {
+    setDiagnosticsBusy((current) => ({ ...current, databaseTest: true }));
+    setError("");
+    try {
+      const json = await testDatabaseConnection(databaseConfigForm);
+      startTransition(() => {
+        setDatabaseTestResult({
+          ok: true,
+          checkedAt: new Date().toISOString(),
+          result: json.result || null
+        });
+      });
+      setMessage(t("messages.databaseTestSuccess", "Database connection test succeeded."));
+    } catch (testError) {
+      startTransition(() => {
+        setDatabaseTestResult({
+          ok: false,
+          checkedAt: new Date().toISOString(),
+          error: testError.message || t("messages.databaseTestFailed", "Database connection test failed.")
+        });
+      });
+      setError(testError.message || t("messages.databaseTestFailed", "Database connection test failed."));
+    } finally {
+      setDiagnosticsBusy((current) => ({ ...current, databaseTest: false }));
+    }
   }
 
   async function handleSave() {
@@ -1076,6 +1146,13 @@ export default function App() {
           pricingCatalogText={pricingCatalogText}
           updatePricingCatalog={updatePricingCatalog}
           pricingCatalogError={pricingCatalogError}
+          databaseConfigForm={databaseConfigForm}
+          setDatabaseConfigForm={setDatabaseConfigForm}
+          databaseTestResult={databaseTestResult}
+          diagnosticsBusy={diagnosticsBusy}
+          onReloadDatabaseDefaults={handleReloadDatabaseDefaults}
+          onTestDatabaseConnection={handleTestDatabaseConnection}
+          formatDateTime={formatDateTime}
           t={t}
         />
       ) : null}

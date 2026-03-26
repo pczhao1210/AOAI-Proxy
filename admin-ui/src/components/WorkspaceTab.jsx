@@ -5,7 +5,32 @@ function asNumber(value) {
   return Number(value || 0);
 }
 
-export default function WorkspaceTab({ config, updateField, pricingCatalogText, updatePricingCatalog, pricingCatalogError, t }) {
+function updateDatabaseForm(setDatabaseConfigForm, path, value) {
+  setDatabaseConfigForm((current) => ({
+    ...(current || {}),
+    [path]: value
+  }));
+}
+
+export default function WorkspaceTab({
+  config,
+  updateField,
+  pricingCatalogText,
+  updatePricingCatalog,
+  pricingCatalogError,
+  databaseConfigForm,
+  setDatabaseConfigForm,
+  databaseTestResult,
+  diagnosticsBusy,
+  onReloadDatabaseDefaults,
+  onTestDatabaseConnection,
+  formatDateTime,
+  t
+}) {
+  const databaseResultText = databaseTestResult?.ok
+    ? JSON.stringify(databaseTestResult.result || {}, null, 2)
+    : (databaseTestResult?.error || "");
+
   return (
     <div className="stack-lg">
       <Section title={t("workspace.title", "Configuration Workspace")} desc={t("workspace.desc", "Bring persistence, Log Analytics, media, and routing domains into structured editing.")}>
@@ -121,6 +146,51 @@ export default function WorkspaceTab({ config, updateField, pricingCatalogText, 
               <label><input type="checkbox" checked={getValueByPath(config, "persistence.configStore.database.enabled") === true} onChange={(event) => updateField("persistence.configStore.database.enabled", event.target.checked)} /> {t("field.databaseEnabled", "Enable Database Store")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "persistence.compatibilityExport.enabled") !== false} onChange={(event) => updateField("persistence.compatibilityExport.enabled", event.target.checked)} /> {t("field.compatibilityExportEnabled", "Enable compatibility export")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "persistence.compatibilityExport.exportLegacyConfigOnChange") !== false} onChange={(event) => updateField("persistence.compatibilityExport.exportLegacyConfigOnChange", event.target.checked)} /> {t("field.compatibilityExportLegacy", "Export legacy config on change")}</label>
+            </div>
+
+            <div className="detail-grid runtime-detail-grid">
+              <div className="code-block">
+                <div className="code-block-head">{t("workspace.databaseProbe.title", "Database Connection Test")}</div>
+                <p className="muted">{t("workspace.databaseProbe.desc", "Load the current connection string from environment-backed runtime settings, edit it temporarily, and verify connectivity without saving secrets into config.json.")}</p>
+                <div className="form-grid">
+                  <Field label={t("field.databaseConnectionString", "Connection String")} hint={t("field.databaseConnectionStringHint", "Defaults come from CONFIG_DB_CONNECTION_STRING, DATABASE_URL, or a configured connectionRef when available.")}>
+                    <textarea rows={4} value={databaseConfigForm?.connectionString || ""} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "connectionString", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseConnectionRefResolved", "Resolved Connection Ref") }>
+                    <input value={databaseConfigForm?.connectionRef || ""} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "connectionRef", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseProvider", "Database Provider")}>
+                    <input value={databaseConfigForm?.provider || "postgresql"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "provider", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseSchema", "Schema")}>
+                    <input value={databaseConfigForm?.schemaName || "public"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "schemaName", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseTable", "Table Name")}>
+                    <input value={databaseConfigForm?.tableName || "proxy_configs"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "tableName", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseConfigKey", "Config Key")}>
+                    <input value={databaseConfigForm?.configKey || "active"} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "configKey", event.target.value)} />
+                  </Field>
+                </div>
+                <div className="toolbar">
+                  <button type="button" className="ghost" onClick={onReloadDatabaseDefaults} disabled={diagnosticsBusy?.databaseDefaults === true || diagnosticsBusy?.databaseTest === true}>
+                    {diagnosticsBusy?.databaseDefaults === true ? t("common.loading", "Loading...") : t("workspace.databaseProbe.reload", "Load Runtime Defaults")}
+                  </button>
+                  <button type="button" onClick={onTestDatabaseConnection} disabled={diagnosticsBusy?.databaseTest === true}>
+                    {diagnosticsBusy?.databaseTest === true ? t("workspace.databaseProbe.testing", "Testing...") : t("workspace.databaseProbe.test", "Test Connection")}
+                  </button>
+                </div>
+                {databaseTestResult ? (
+                  <div className="stack-sm" style={{ marginTop: "1rem" }}>
+                    <div className={databaseTestResult.ok ? "muted" : "inline-error"}>
+                      {databaseTestResult.ok
+                        ? t("workspace.databaseProbe.ok", "Connection succeeded at {time}.", { time: formatDateTime(databaseTestResult.checkedAt) })
+                        : t("workspace.databaseProbe.failed", "Connection failed at {time}.", { time: formatDateTime(databaseTestResult.checkedAt) })}
+                    </div>
+                    <pre>{databaseResultText}</pre>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </AccordionSection>
 

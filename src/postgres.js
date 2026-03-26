@@ -65,6 +65,109 @@ export function buildPostgresPoolOptions(databaseSettings = {}) {
   };
 }
 
+function getConnectionMetadata(connectionString) {
+  const normalized = normalizeConnectionString(connectionString);
+  try {
+    const parsed = new URL(normalized);
+    return {
+      host: parsed.hostname || "",
+      port: parsed.port ? Number(parsed.port) : null,
+      databaseName: decodeURIComponent(String(parsed.pathname || "").replace(/^\//, "")) || "",
+      sslMode: String(parsed.searchParams.get("sslmode") || "").trim() || ""
+    };
+  } catch {
+    return {
+      host: "",
+      port: null,
+      databaseName: "",
+      sslMode: ""
+    };
+  }
+}
+
+export async function probePostgresConnection(databaseSettings = {}, options = {}) {
+  const normalizedOptions = buildPostgresPoolOptions(databaseSettings);
+  const pool = new Pool(normalizedOptions);
+  const schemaName = String(options.schemaName || "").trim();
+  const tableName = String(options.tableName || "").trim();
+  const configKey = String(options.configKey || "").trim();
+  const relationName = schemaName && tableName ? `${schemaName}.${tableName}` : "";
+
+  try {
+    const serverResult = await pool.query(`
+      SELECT
+        current_database() AS current_database,
+        current_user AS current_user,
+        NOW() AS server_time,
+        version() AS server_version
+    `);
+    const serverRow = serverResult.rows[0] || {};
+    let privilegeRow = {};
+    let relationRow = {};
+    let configRow = {};
+
+    if (schemaName) {
+      const privilegeResult = await pool.query(`
+        SELECT
+          has_schema_privilege(current_user, $1, 'USAGE') AS schema_usage,
+          has_schema_privilege(current_user, $1, 'CREATE') AS schema_create
+      `, [schemaName]);
+      privilegeRow = privilegeResult.rows[0] || {};
+    }
+
+    if (relationName) {
+      const relationResult = await pool.query(`
+        SELECT
+          to_regclass($1) AS relation_name,
+          EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = $2 AND table_name = $3
+          ) AS table_exists
+      `, [relationName, schemaName || "public", tableName]);
+      relationRow = relationResult.rows[0] || {};
+    }
+
+    if (schemaName && tableName && configKey && relationRow.table_exists === true) {
+      const schemaIdentifier = quoteIdentifier(schemaName, "database schema");
+      const tableIdentifier = quoteIdentifier(tableName, "database table");
+      const configResult = await pool.query(
+        `SELECT EXISTS (SELECT 1 FROM ${schemaIdentifier}.${tableIdentifier} WHERE config_key = $1) AS config_exists`,
+        [configKey]
+      );
+      configRow = configResult.rows[0] || {};
+    }
+
+    return {
+      connected: true,
+      connection: {
+        ...getConnectionMetadata(normalizedOptions.connectionString),
+        timeoutMs: normalizedOptions.connectionTimeoutMillis
+      },
+      server: {
+        currentDatabase: String(serverRow.current_database || "").trim(),
+        currentUser: String(serverRow.current_user || "").trim(),
+        serverTime: serverRow.server_time instanceof Date ? serverRow.server_time.toISOString() : String(serverRow.server_time || ""),
+        serverVersion: String(serverRow.server_version || "").trim()
+      },
+      privileges: {
+        schemaUsage: privilegeRow.schema_usage === true,
+        schemaCreate: privilegeRow.schema_create === true
+      },
+      objects: {
+        schemaName,
+        tableName,
+        relationName: relationRow.relation_name ? String(relationRow.relation_name) : null,
+        tableExists: relationRow.table_exists === true,
+        configKey: configKey || "",
+        configRowExists: configRow.config_exists === true
+      }
+    };
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
 export function getSharedPostgresPool(poolOptions) {
   const normalizedOptions = {
     connectionString: String(poolOptions?.connectionString || "").trim(),

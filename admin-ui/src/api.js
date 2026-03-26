@@ -27,6 +27,18 @@ export async function fetchRuntime() {
   return readJson(await fetch("/admin/api/runtime"));
 }
 
+export async function fetchDatabaseConfig() {
+  return readJson(await fetch("/admin/api/database/config"));
+}
+
+export async function testDatabaseConnection(payload = {}) {
+  return readJson(await fetch("/admin/api/database/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }));
+}
+
 export async function fetchPricingLibrary() {
   return readJson(await fetch("/admin/api/pricing-library"));
 }

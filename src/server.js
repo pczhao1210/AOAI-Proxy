@@ -9,6 +9,7 @@ import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
 import { flushRuntimeEvents, getRuntimeStatsSnapshot } from "./runtime-store.js";
+import { getDatabaseConnectionDefaults, testDatabaseConnection } from "./persistence.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, queryLogs, setLogConfig } from "./logs.js";
@@ -294,6 +295,27 @@ app.post("/admin/api/verify-aad", async (req, reply) => {
 
 app.get("/admin/api/runtime", async () => {
   return { ok: true, runtime: getConfigRuntimeInfo() };
+});
+
+app.get("/admin/api/database/config", async () => {
+  const config = getConfig();
+  return { ok: true, config: getDatabaseConnectionDefaults(config) };
+});
+
+app.post("/admin/api/database/test", async (req, reply) => {
+  const config = getConfig();
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  try {
+    const result = await testDatabaseConnection(body, config);
+    reply.send({ ok: true, result });
+  } catch (error) {
+    logAdminApiError("admin.database_test_failed", error, {
+      route: "/admin/api/database/test",
+      provider: typeof body.provider === "string" ? body.provider : undefined,
+      status: 400
+    });
+    reply.code(400).send({ ok: false, error: error.message || "Database connection test failed" });
+  }
 });
 
 app.get("/admin/api/pricing-library", async () => {

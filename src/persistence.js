@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
-import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
+import { buildPostgresPoolOptions, getSharedPostgresPool, probePostgresConnection, quoteIdentifier } from "./postgres.js";
 import { parsePersistenceMode } from "./persistence-mode.js";
 
 const DEFAULT_PERSISTENCE_MODE = "file";
@@ -522,5 +522,50 @@ export function getPersistenceSummary(config = runtimeConfig) {
     databaseSchema: settings.database.schemaName,
     databaseTableName: settings.database.tableName,
     databaseConfigKey: settings.database.configKey
+  };
+}
+
+export function getDatabaseConnectionDefaults(config = runtimeConfig) {
+  const settings = resolvePersistenceSettings(config);
+  return {
+    mode: settings.mode,
+    configStoreMode: settings.configStoreMode,
+    provider: settings.database.provider,
+    connectionRef: settings.database.connectionRef,
+    connectionString: settings.database.connectionString,
+    schemaName: settings.database.schemaName,
+    tableName: settings.database.tableName,
+    configKey: settings.database.configKey
+  };
+}
+
+export async function testDatabaseConnection(input = {}, config = runtimeConfig) {
+  const settings = resolvePersistenceSettings(config);
+  const provider = String(input.provider || settings.database.provider || "postgresql").trim() || "postgresql";
+  if (provider !== "postgresql") {
+    throw new Error("Only postgresql database provider is supported");
+  }
+
+  const connectionString = String(input.connectionString || settings.database.connectionString || "").trim();
+  if (!connectionString) {
+    throw new Error("connectionString is required");
+  }
+
+  const schemaName = String(input.schemaName || settings.database.schemaName || DEFAULT_DATABASE_SCHEMA).trim() || DEFAULT_DATABASE_SCHEMA;
+  const tableName = String(input.tableName || settings.database.tableName || DEFAULT_DATABASE_TABLE_NAME).trim() || DEFAULT_DATABASE_TABLE_NAME;
+  const configKey = String(input.configKey || settings.database.configKey || DEFAULT_DATABASE_CONFIG_KEY).trim() || DEFAULT_DATABASE_CONFIG_KEY;
+
+  const result = await probePostgresConnection({
+    connectionString,
+    pool: settings.database.pool
+  }, {
+    schemaName,
+    tableName,
+    configKey
+  });
+
+  return {
+    provider,
+    ...result
   };
 }
