@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
 import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
 import { parsePersistenceMode } from "./persistence-mode.js";
@@ -6,9 +8,11 @@ const DEFAULT_DATABASE_SCHEMA = "public";
 const DEFAULT_RUNTIME_EVENTS_TABLE_NAME = "runtime_events";
 const DEFAULT_RUNTIME_ROLLUPS_TABLE_NAME = "runtime_rollups";
 const DEFAULT_RUNTIME_META_TABLE_NAME = "runtime_store_meta";
+const DEFAULT_LOCAL_BUFFER_FILE_NAME = "runtime-store-pending.ndjson";
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_FLUSH_INTERVAL_MS = 1000;
 const DEFAULT_MAX_QUEUE_SIZE = 5000;
+const DEFAULT_MAX_PERSISTED_EVENTS = 50000;
 const DEFAULT_DETAIL_RETENTION_DAYS = 30;
 const DEFAULT_ROLLUP_RETENTION_DAYS = 365;
 const DEFAULT_ROLLUP_BATCH_SIZE = 5000;
@@ -29,11 +33,13 @@ let flushTimer = null;
 let flushRunning = false;
 let lastEnsureKey = "";
 let cleanupAfterTs = 0;
+let localBufferOperation = Promise.resolve();
 
 const runtimeStoreState = {
   enabled: false,
   configured: false,
   queueLength: 0,
+  persistedEventCount: 0,
   flushFailures: 0,
   rollupFailures: 0,
   droppedEvents: 0,
@@ -42,7 +48,10 @@ const runtimeStoreState = {
   lastRolledEventId: 0,
   lastError: null,
   flushing: false,
-  nextFlushAt: null
+  nextFlushAt: null,
+  localBufferPath: "",
+  maxPersistedEvents: DEFAULT_MAX_PERSISTED_EVENTS,
+  spilloverActive: false
 };
 
 function asPlainObject(value) {
@@ -93,6 +102,15 @@ function updateRuntimeStoreState(patch) {
   runtimeStoreState.queueLength = runtimeEventQueue.length;
 }
 
+function resolveLocalBufferPath(configStore, runtimeStore) {
+  const configuredPath = getEnvOverride("RUNTIME_STORE_LOCAL_BUFFER_PATH") || String(runtimeStore.localBufferPath || "").trim();
+  if (configuredPath) {
+    return path.resolve(process.cwd(), configuredPath);
+  }
+  const configFilePath = String(configStore.filePath || "./config/config.json").trim() || "./config/config.json";
+  return path.resolve(path.dirname(path.resolve(process.cwd(), configFilePath)), DEFAULT_LOCAL_BUFFER_FILE_NAME);
+}
+
 function resolveRuntimeStoreSettings(config = runtimeStoreConfig) {
   const observability = asPlainObject(config?.observability);
   const runtimeStore = asPlainObject(observability.runtimeStore);
@@ -120,11 +138,148 @@ function resolveRuntimeStoreSettings(config = runtimeStoreConfig) {
     flushIntervalMs: resolveInt(runtimeStore.flushIntervalMs, DEFAULT_FLUSH_INTERVAL_MS, 100),
     batchSize: resolveInt(runtimeStore.batchSize, DEFAULT_BATCH_SIZE, 1),
     maxQueueSize: resolveInt(runtimeStore.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE, 100),
+    localBufferPath: resolveLocalBufferPath(configStore, runtimeStore),
+    maxPersistedEvents: resolveInt(runtimeStore.maxPersistedEvents, DEFAULT_MAX_PERSISTED_EVENTS, 100),
     poolOptions: buildPostgresPoolOptions({
       connectionString,
       pool: database.pool
     })
   };
+}
+
+function queueLocalBufferOperation(operation) {
+  const nextOperation = localBufferOperation
+    .catch(() => undefined)
+    .then(operation);
+  localBufferOperation = nextOperation.catch(() => undefined);
+  return nextOperation;
+}
+
+async function ensureLocalBufferDirectory(settings) {
+  await fs.mkdir(path.dirname(settings.localBufferPath), { recursive: true });
+}
+
+function normalizeBufferedEvent(entry = {}) {
+  return buildEventRow(String(entry.eventType || entry.event_type || "warning").trim() || "warning", {
+    signalName: entry.signalName ?? entry.signal_name,
+    requestId: entry.requestId ?? entry.request_id,
+    occurredAt: entry.occurredAt ?? entry.occurred_at,
+    keyId: entry.keyId ?? entry.key_id,
+    modelId: entry.modelId ?? entry.model_id,
+    actualModelName: entry.actualModelId ?? entry.actual_model_id,
+    routeKey: entry.routeKey ?? entry.route_key,
+    backendRouteKey: entry.backendRouteKey ?? entry.backend_route_key,
+    blockedReason: entry.blockedReason ?? entry.blocked_reason,
+    promptTokens: entry.promptTokens ?? entry.prompt_tokens,
+    completionTokens: entry.completionTokens ?? entry.completion_tokens,
+    totalTokens: entry.totalTokens ?? entry.total_tokens,
+    cachedTokens: entry.cachedTokens ?? entry.cached_tokens,
+    estimatedCostAmount: entry.estimatedCostAmount ?? entry.estimated_cost_amount,
+    modelRouterCostAmount: entry.modelRouterCostAmount ?? entry.model_router_cost_amount,
+    actualModelCostAmount: entry.actualModelCostAmount ?? entry.actual_model_cost_amount,
+    currency: entry.currency,
+    payload: asPlainObject(entry.payload)
+  });
+}
+
+async function readLocalBufferEventsUnsafe(settings) {
+  try {
+    const text = await fs.readFile(settings.localBufferPath, "utf8");
+    if (!text.trim()) {
+      return [];
+    }
+    return text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return normalizeBufferedEvent(JSON.parse(line));
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function writeLocalBufferEventsUnsafe(settings, events) {
+  if (!events.length) {
+    try {
+      await fs.unlink(settings.localBufferPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+    return;
+  }
+  await ensureLocalBufferDirectory(settings);
+  const tempPath = `${settings.localBufferPath}.tmp`;
+  const payload = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+  await fs.writeFile(tempPath, payload, "utf8");
+  await fs.rename(tempPath, settings.localBufferPath);
+}
+
+function updateLocalBufferState(settings, events) {
+  updateRuntimeStoreState({
+    localBufferPath: settings.localBufferPath,
+    maxPersistedEvents: settings.maxPersistedEvents,
+    persistedEventCount: events.length,
+    spilloverActive: events.length > 0
+  });
+}
+
+async function appendLocalBufferEvents(settings, events) {
+  if (!events.length) {
+    return { persistedEventCount: runtimeStoreState.persistedEventCount, dropped: 0 };
+  }
+  return queueLocalBufferOperation(async () => {
+    const existingEvents = await readLocalBufferEventsUnsafe(settings);
+    const nextEvents = existingEvents.concat(events.map(normalizeBufferedEvent));
+    let dropped = 0;
+    if (nextEvents.length > settings.maxPersistedEvents) {
+      dropped = nextEvents.length - settings.maxPersistedEvents;
+      nextEvents.splice(0, dropped);
+    }
+    await writeLocalBufferEventsUnsafe(settings, nextEvents);
+    updateLocalBufferState(settings, nextEvents);
+    return { persistedEventCount: nextEvents.length, dropped };
+  });
+}
+
+async function peekLocalBufferBatch(settings, limit) {
+  return queueLocalBufferOperation(async () => {
+    const existingEvents = await readLocalBufferEventsUnsafe(settings);
+    updateLocalBufferState(settings, existingEvents);
+    return existingEvents.slice(0, limit);
+  });
+}
+
+async function ackLocalBufferBatch(settings, count) {
+  if (count <= 0) {
+    return { persistedEventCount: runtimeStoreState.persistedEventCount };
+  }
+  return queueLocalBufferOperation(async () => {
+    const existingEvents = await readLocalBufferEventsUnsafe(settings);
+    const nextEvents = existingEvents.slice(count);
+    await writeLocalBufferEventsUnsafe(settings, nextEvents);
+    updateLocalBufferState(settings, nextEvents);
+    return { persistedEventCount: nextEvents.length };
+  });
+}
+
+async function refreshLocalBufferState(settings) {
+  return queueLocalBufferOperation(async () => {
+    const existingEvents = await readLocalBufferEventsUnsafe(settings);
+    updateLocalBufferState(settings, existingEvents);
+    return existingEvents.length;
+  });
 }
 
 function getRuntimeStorePool(settings) {
@@ -258,10 +413,12 @@ async function cleanupRuntimeData(settings) {
 }
 
 function scheduleFlush(settings) {
-  if (!settings.configured || runtimeEventQueue.length === 0 || flushRunning || flushTimer) {
+  if (!settings.configured || (runtimeEventQueue.length === 0 && runtimeStoreState.persistedEventCount === 0) || flushRunning || flushTimer) {
     return;
   }
-  const delay = runtimeEventQueue.length >= settings.batchSize ? 0 : settings.flushIntervalMs;
+  const delay = runtimeStoreState.persistedEventCount > 0 || runtimeEventQueue.length >= settings.batchSize
+    ? 0
+    : settings.flushIntervalMs;
   updateRuntimeStoreState({ nextFlushAt: toIsoString(Date.now() + delay) });
   flushTimer = setTimeout(() => {
     flushTimer = null;
@@ -297,6 +454,34 @@ function buildEventRow(eventType, fields = {}) {
 }
 
 function enqueueRuntimeEvent(settings, event) {
+  if (!settings.enabled) {
+    return;
+  }
+  if (runtimeStoreState.spilloverActive) {
+    void appendLocalBufferEvents(settings, [event])
+      .then(({ dropped }) => {
+        if (dropped > 0) {
+          updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + dropped });
+        }
+        scheduleFlush(settings);
+      })
+      .catch((error) => {
+        appendStructuredLog("warn", {
+          source: "runtime-store",
+          event: "runtime_store.local_buffer_append_failed",
+          failureReason: error?.message || "Failed to append runtime event to local buffer",
+          target: settings.localBufferPath
+        });
+        if (runtimeEventQueue.length >= settings.maxQueueSize) {
+          runtimeEventQueue.shift();
+          updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + 1 });
+        }
+        runtimeEventQueue.push(event);
+        updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured });
+        scheduleFlush(settings);
+      });
+    return;
+  }
   if (!settings.configured) {
     return;
   }
@@ -680,8 +865,11 @@ async function rollupRuntimeEvents(settings) {
 
 export async function flushRuntimeEvents() {
   const settings = resolveRuntimeStoreSettings(runtimeStoreConfig);
-  if (!settings.configured || runtimeEventQueue.length === 0) {
-    updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured, flushing: false, nextFlushAt: null });
+  if (runtimeStoreState.localBufferPath !== settings.localBufferPath || runtimeStoreState.maxPersistedEvents !== settings.maxPersistedEvents) {
+    await refreshLocalBufferState(settings);
+  }
+  if (!settings.configured || (runtimeEventQueue.length === 0 && runtimeStoreState.persistedEventCount === 0)) {
+    updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured, flushing: false, nextFlushAt: null, localBufferPath: settings.localBufferPath, maxPersistedEvents: settings.maxPersistedEvents });
     return { flushed: 0 };
   }
   if (flushRunning) {
@@ -695,25 +883,62 @@ export async function flushRuntimeEvents() {
     flushTimer = null;
   }
 
-  const batchItems = runtimeEventQueue.splice(0, settings.batchSize);
-  updateRuntimeStoreState({});
+  let batchItems = [];
+  let batchSource = "memory";
+  if (runtimeStoreState.persistedEventCount > 0) {
+    batchItems = await peekLocalBufferBatch(settings, settings.batchSize);
+    batchSource = "local";
+  } else {
+    batchItems = runtimeEventQueue.splice(0, settings.batchSize);
+    updateRuntimeStoreState({});
+  }
+
+  if (!batchItems.length) {
+    updateRuntimeStoreState({ flushing: false });
+    flushRunning = false;
+    if (runtimeEventQueue.length > 0 || runtimeStoreState.persistedEventCount > 0) {
+      scheduleFlush(settings);
+    }
+    return { flushed: 0 };
+  }
 
   try {
     await ensureRuntimeTables(settings);
     await insertRuntimeEvents(settings, batchItems);
+    if (batchSource === "local") {
+      await ackLocalBufferBatch(settings, batchItems.length);
+    }
     await rollupRuntimeEvents(settings);
     await cleanupRuntimeData(settings);
     updateRuntimeStoreState({
       lastSuccessTs: toIsoString(),
       lastError: null,
-      flushing: false
+      flushing: false,
+      spilloverActive: runtimeStoreState.persistedEventCount > 0
     });
-    if (runtimeEventQueue.length > 0) {
+    if (runtimeEventQueue.length > 0 || runtimeStoreState.persistedEventCount > 0) {
       scheduleFlush(settings);
     }
     return { flushed: batchItems.length };
   } catch (error) {
-    runtimeEventQueue.unshift(...batchItems);
+    if (batchSource === "memory") {
+      const backlog = batchItems.concat(runtimeEventQueue.splice(0, runtimeEventQueue.length));
+      try {
+        const { dropped } = await appendLocalBufferEvents(settings, backlog);
+        updateRuntimeStoreState({
+          droppedEvents: runtimeStoreState.droppedEvents + dropped,
+          spilloverActive: true
+        });
+      } catch (persistError) {
+        runtimeEventQueue.unshift(...backlog);
+        appendStructuredLog("warn", {
+          source: "runtime-store",
+          event: "runtime_store.local_buffer_persist_failed",
+          failureReason: persistError?.message || "Failed to persist runtime backlog locally",
+          target: settings.localBufferPath
+        });
+      }
+    }
     updateRuntimeStoreState({
       flushFailures: runtimeStoreState.flushFailures + 1,
       lastError: snapshotError(error),
@@ -725,7 +950,9 @@ export async function flushRuntimeEvents() {
       failureReason: error?.message || "Runtime store flush failed",
       target: describeRuntimeTarget(settings)
     });
-    scheduleFlush(settings);
+    if (runtimeEventQueue.length > 0 || runtimeStoreState.persistedEventCount > 0) {
+      scheduleFlush(settings);
+    }
     return { flushed: 0, error };
   } finally {
     flushRunning = false;
@@ -739,6 +966,8 @@ export function setRuntimeStoreConfig(config) {
   updateRuntimeStoreState({
     enabled: settings.enabled,
     configured: settings.configured,
+    localBufferPath: settings.localBufferPath,
+    maxPersistedEvents: settings.maxPersistedEvents,
     lastError: settings.enabled && !settings.configured
       ? {
           code: "RUNTIME_STORE_CONFIG_INCOMPLETE",
@@ -751,9 +980,20 @@ export function setRuntimeStoreConfig(config) {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
-  if (settings.configured && runtimeEventQueue.length > 0) {
-    scheduleFlush(settings);
-  }
+  void refreshLocalBufferState(settings)
+    .then(() => {
+      if (settings.configured && (runtimeEventQueue.length > 0 || runtimeStoreState.persistedEventCount > 0)) {
+        scheduleFlush(settings);
+      }
+    })
+    .catch((error) => {
+      appendStructuredLog("warn", {
+        source: "runtime-store",
+        event: "runtime_store.local_buffer_state_failed",
+        failureReason: error?.message || "Failed to refresh runtime local buffer state",
+        target: settings.localBufferPath
+      });
+    });
 }
 
 export function getRuntimeStoreInfo(config = runtimeStoreConfig) {
@@ -771,7 +1011,10 @@ export function getRuntimeStoreInfo(config = runtimeStoreConfig) {
     flushIntervalMs: settings.flushIntervalMs,
     batchSize: settings.batchSize,
     maxQueueSize: settings.maxQueueSize,
+    localBufferPath: settings.localBufferPath,
+    maxPersistedEvents: settings.maxPersistedEvents,
     queueLength: runtimeEventQueue.length,
+    persistedEventCount: runtimeStoreState.persistedEventCount,
     droppedEvents: runtimeStoreState.droppedEvents,
     flushFailures: runtimeStoreState.flushFailures,
     rollupFailures: runtimeStoreState.rollupFailures,
@@ -780,7 +1023,8 @@ export function getRuntimeStoreInfo(config = runtimeStoreConfig) {
     lastRolledEventId: runtimeStoreState.lastRolledEventId,
     lastError: runtimeStoreState.lastError,
     flushing: runtimeStoreState.flushing,
-    nextFlushAt: runtimeStoreState.nextFlushAt
+    nextFlushAt: runtimeStoreState.nextFlushAt,
+    spilloverActive: runtimeStoreState.spilloverActive
   };
 }
 

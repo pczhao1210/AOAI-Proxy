@@ -246,12 +246,14 @@ const DEFAULTS = {
       eventsTableName: "runtime_events",
       rollupsTableName: "runtime_rollups",
       metaTableName: "runtime_store_meta",
+      localBufferPath: "",
       detailRetentionDays: 30,
       rollupRetentionDays: 365,
       rollupBatchSize: 5000,
       flushIntervalMs: 1000,
       batchSize: 100,
-      maxQueueSize: 5000
+      maxQueueSize: 5000,
+      maxPersistedEvents: 50000
     },
     metrics: {
       enabled: false,
@@ -958,12 +960,12 @@ function validateConfig(cfg) {
       if (runtimeStore.enabled != null && typeof runtimeStore.enabled !== "boolean") {
         throw new Error("observability.runtimeStore.enabled must be a boolean");
       }
-      for (const key of ["connectionRef", "schema", "eventsTableName", "rollupsTableName", "metaTableName"]) {
+      for (const key of ["connectionRef", "schema", "eventsTableName", "rollupsTableName", "metaTableName", "localBufferPath"]) {
         if (runtimeStore[key] != null && typeof runtimeStore[key] !== "string") {
           throw new Error(`observability.runtimeStore.${key} must be a string`);
         }
       }
-      for (const key of ["retentionDays", "detailRetentionDays", "rollupRetentionDays", "rollupBatchSize", "flushIntervalMs", "batchSize", "maxQueueSize"]) {
+      for (const key of ["retentionDays", "detailRetentionDays", "rollupRetentionDays", "rollupBatchSize", "flushIntervalMs", "batchSize", "maxQueueSize", "maxPersistedEvents"]) {
         if (runtimeStore[key] != null && (!Number.isInteger(runtimeStore[key]) || runtimeStore[key] <= 0)) {
           throw new Error(`observability.runtimeStore.${key} must be a positive integer`);
         }

@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchCaddyStatus,
   fetchConfig,
@@ -98,7 +98,7 @@ export default function App() {
   const [lastLoadedText, setLastLoadedText] = useState("");
   const [runtime, setRuntime] = useState(null);
   const [stats, setStats] = useState(null);
-  const [pricingLibrary, setPricingLibrary] = useState([]);
+  const [pricingLibrary, setPricingLibrary] = useState(() => bundledPricingLibrary);
   const [pricingLibraryStatus, setPricingLibraryStatus] = useState(null);
   const [pricingSyncSource, setPricingSyncSource] = useState({ owner: "", repo: "", path: "pricing", ref: "" });
   const [databaseConfigForm, setDatabaseConfigForm] = useState(() => normalizeDatabaseConfigForm());
@@ -138,6 +138,7 @@ export default function App() {
   const [selectedTemplateUpstreamName, setSelectedTemplateUpstreamName] = useState("");
   const [templateNewUpstreamName, setTemplateNewUpstreamName] = useState("");
   const [templateImportPricing, setTemplateImportPricing] = useState(true);
+  const loadRequestRef = useRef(0);
 
   const dirty = useMemo(() => JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText]);
   const advancedJsonEnabled = getValueByPath(config, "admin.features.enableLegacyJsonEditor") !== false;
@@ -276,47 +277,93 @@ export default function App() {
     });
   }
 
+  function applyLoadedConfig(configJson) {
+    const text = JSON.stringify(configJson, null, 2);
+    setConfig(configJson);
+    setAdvancedJson(text);
+    setLastLoadedText(text);
+    setPricingCatalogText(JSON.stringify(configJson?.access?.pricingCatalog || {}, null, 2));
+    setPricingCatalogError("");
+    setJsonError("");
+    setDatabaseTestResult(null);
+  }
+
+  async function loadSecondaryData(requestId, filters = runtimeFilters, options = {}) {
+    const { notifyOnError = false } = options;
+    const [runtimeResult, statsResult, caddyResult, pricingResult] = await Promise.allSettled([
+      fetchRuntime(),
+      fetchStats(filters),
+      fetchCaddyStatus(),
+      fetchPricingLibrary().catch(() => ({ items: bundledPricingLibrary }))
+    ]);
+
+    if (requestId !== loadRequestRef.current) {
+      return;
+    }
+
+    const errors = [];
+    startTransition(() => {
+      if (runtimeResult.status === "fulfilled") {
+        setRuntime(runtimeResult.value.runtime || null);
+      } else {
+        errors.push(runtimeResult.reason);
+      }
+
+      if (statsResult.status === "fulfilled") {
+        setStats(statsResult.value || null);
+      } else {
+        errors.push(statsResult.reason);
+      }
+
+      if (caddyResult.status === "fulfilled") {
+        setCaddyStatus(caddyResult.value.status || null);
+      } else {
+        errors.push(caddyResult.reason);
+      }
+
+      if (pricingResult.status === "fulfilled") {
+        const pricingJson = pricingResult.value || {};
+        const pricingItems = Array.isArray(pricingJson.items) && pricingJson.items.length
+          ? pricingJson.items
+          : bundledPricingLibrary;
+        setPricingLibrary(pricingItems);
+        setPricingLibraryStatus(pricingJson.status || null);
+        setPricingSyncSource(pricingSyncSourceFromStatus(pricingJson.status || null));
+      } else {
+        errors.push(pricingResult.reason);
+      }
+    });
+
+    if (notifyOnError && errors.length) {
+      const firstError = errors.find(Boolean);
+      setError(firstError?.message || t("messages.loadFailed", "Load failed."));
+    }
+  }
+
   async function loadAll(mode = "load") {
     setLoading(true);
     setError("");
+    const requestId = loadRequestRef.current + 1;
+    loadRequestRef.current = requestId;
     try {
       const configJson = mode === "reload"
         ? await reloadConfig().then((result) => result.config)
         : await fetchConfig();
-      const [runtimeJson, statsJson, caddyJson, pricingJson] = await Promise.all([
-        fetchRuntime(),
-        fetchStats(runtimeFilters),
-        fetchCaddyStatus(),
-        fetchPricingLibrary().catch(() => ({ items: bundledPricingLibrary }))
-      ]);
-      const databaseJson = await fetchDatabaseConfig().catch(() => ({ config: null }));
-      const pricingItems = Array.isArray(pricingJson.items) && pricingJson.items.length
-        ? pricingJson.items
-        : bundledPricingLibrary;
-      startTransition(() => {
-        setConfig(configJson);
-        const text = JSON.stringify(configJson, null, 2);
-        setAdvancedJson(text);
-        setLastLoadedText(text);
-        setPricingCatalogText(JSON.stringify(configJson?.access?.pricingCatalog || {}, null, 2));
-        setPricingCatalogError("");
-        setJsonError("");
-        setRuntime(runtimeJson.runtime || null);
-        setStats(statsJson || null);
-        setCaddyStatus(caddyJson.status || null);
-        setPricingLibrary(pricingItems);
-        setPricingLibraryStatus(pricingJson.status || null);
-        setPricingSyncSource(pricingSyncSourceFromStatus(pricingJson.status || null));
-        if (databaseJson?.config) {
-          setDatabaseConfigForm(normalizeDatabaseConfigForm(databaseJson.config));
-        }
-        setDatabaseTestResult(null);
-      });
+      if (requestId !== loadRequestRef.current) {
+        return;
+      }
+      applyLoadedConfig(configJson);
       setMessage(mode === "reload" ? t("messages.reloaded", "Configuration reloaded from persistent store.") : t("messages.loaded", "Configuration loaded."));
+      void loadSecondaryData(requestId, runtimeFilters, { notifyOnError: mode === "reload" });
     } catch (loadError) {
+      if (requestId !== loadRequestRef.current) {
+        return;
+      }
       setError(loadError.message || t("messages.loadFailed", "Load failed."));
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) {
+        setLoading(false);
+      }
     }
   }
 
@@ -454,19 +501,10 @@ export default function App() {
 
   async function persistConfig(nextConfig, successMessage) {
     const saved = await saveConfig(nextConfig).then((result) => result.config);
-    const text = JSON.stringify(saved, null, 2);
-    startTransition(() => {
-      setConfig(saved);
-      setAdvancedJson(text);
-      setLastLoadedText(text);
-    });
-    const databaseJson = await fetchDatabaseConfig().catch(() => ({ config: null }));
-    await Promise.all([refreshRuntimeAndStats(), loadCaddyStatusAction()]);
-    if (databaseJson?.config) {
-      startTransition(() => {
-        setDatabaseConfigForm(normalizeDatabaseConfigForm(databaseJson.config));
-      });
-    }
+    const requestId = loadRequestRef.current + 1;
+    loadRequestRef.current = requestId;
+    applyLoadedConfig(saved);
+    void loadSecondaryData(requestId, runtimeFilters, { notifyOnError: true });
     setMessage(successMessage);
   }
 
