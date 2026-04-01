@@ -1,0 +1,67 @@
+{
+  "id": "gpt-image-1.5",
+  "displayName": "GPT-Image-1.5",
+  "provider": "azure-openai",
+  "family": "gpt-image",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "images/generations"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "image",
+    "text"
+  ],
+  "capabilities": [
+    "image-generation",
+    "image-editing"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 5,
+    "cachedInputPer1mTokens": 1.25,
+    "outputPer1mTokens": 10,
+    "inputPer1kTokens": 0.005,
+    "cachedInputPer1kTokens": 0.00125,
+    "outputPer1kTokens": 0.01,
+    "channels": {
+      "image": {
+        "inputPer1mTokens": 8,
+        "cachedInputPer1mTokens": 2,
+        "outputPer1mTokens": 32,
+        "inputPer1kTokens": 0.008,
+        "cachedInputPer1kTokens": 0.002,
+        "outputPer1kTokens": 0.032
+      }
+    }
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "gpt-image-1.5",
+    "displayName": "GPT-Image-1.5",
+    "targetModel": "gpt-image-1.5",
+    "capabilities": [
+      "image-generation",
+      "image-editing"
+    ],
+    "pricingRef": "gpt-image-1.5",
+    "routes": {
+      "*": "images/generations"
+    }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  },
+  "notes": [
+    "Azure OpenAI 官方公开的是按 token 分通道计费: 文本输入 5 USD/1M、缓存文本输入 1.25 USD/1M、图片输入 8 USD/1M、缓存图片输入 2 USD/1M、文本输出 10 USD/1M、图片输出 32 USD/1M。",
+    "当前 AOAI Proxy 治理计费只支持标准 token 单价，不支持 image channel 的独立自动结算，因此 pricingCatalogEntry 保持为空，避免将图片生成请求误算为普通文本 token 成本。"
+  ]
+}

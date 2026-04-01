@@ -1,0 +1,63 @@
+{
+  "id": "flux-2-pro",
+  "displayName": "FLUX.2 [pro]",
+  "provider": "black-forest-labs",
+  "family": "flux-2",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "images/generations"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "image"
+  ],
+  "capabilities": [
+    "image-generation",
+    "image-editing"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "megapixels",
+    "sourceType": "bfl-official",
+    "status": "published",
+    "generatedImageFirstMegapixel": 0.03,
+    "generatedImageAdditionalMegapixel": 0.015,
+    "referenceImagePerMegapixel": 0.015,
+    "pixelRules": {
+      "megapixelBasePixels": 1048576,
+      "megapixelBaseResolution": "1024x1024",
+      "rounding": "ceil-per-image",
+      "maxMegapixelsPerImage": 4,
+      "minimumMegapixelsPerReferenceImage": 1
+    }
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "flux-2-pro",
+    "displayName": "FLUX.2 [pro]",
+    "targetModel": "flux-2-pro",
+    "capabilities": [
+      "image-generation",
+      "image-editing"
+    ],
+    "pricingRef": "flux-2-pro",
+    "routes": {
+      "*": "images/generations"
+    }
+  },
+  "sources": {
+    "capabilities": "https://docs.bfl.ai/flux_2",
+    "pricing": "https://bfl.ai/pricing"
+  },
+  "notes": [
+    "BFL 官方定价: 生成图首个 MP 收费 0.03 USD，后续每个 MP 收费 0.015 USD；参考图按每 MP 0.015 USD 计费。",
+    "计费时每张生成图与每张参考图分别按像素向上取整到下一整 MP。",
+    "BFL 以 1024x1024 像素计作 1 MP。",
+    "多张参考图时，每张参考图至少按 1 MP 计费。",
+    "超过 4 MP 的图片会先缩放到 4 MP 后再计费。"
+  ]
+}
