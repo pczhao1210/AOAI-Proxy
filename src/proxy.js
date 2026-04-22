@@ -21,6 +21,7 @@ import {
 import {
   chatToResponsesRequest,
   responsesToChatRequest,
+  sanitizeChatToolTranscript,
   mapResponsesJsonToChatCompletion,
   mapChatCompletionJsonToResponses
 } from "./proxy/shim.js";
@@ -200,6 +201,27 @@ export async function proxyRequest({
     });
     return;
   }
+
+  if (Array.isArray(body.messages)) {
+    const sanitizedToolTranscript = sanitizeChatToolTranscript(body.messages);
+    if (sanitizedToolTranscript.changed) {
+      body = {
+        ...body,
+        messages: sanitizedToolTranscript.messages
+      };
+      log.info({
+        source: "proxy",
+        requestId,
+        ...requestNetworkContext,
+        modelId,
+        routeKey,
+        event: "proxy.tool_transcript_sanitized",
+        droppedToolMessages: sanitizedToolTranscript.droppedToolMessages,
+        droppedAssistantTurns: sanitizedToolTranscript.droppedAssistantTurns
+      }, "sanitized malformed tool transcript in request messages");
+    }
+  }
+
   const modelAccess = checkConsumerModelAccess(consumer, model);
   if (!modelAccess.ok) {
     log.error({
@@ -263,12 +285,36 @@ export async function proxyRequest({
   const deployment = model.targetModel || model.id;
   const usesModelRouter = String(deployment || "").trim().toLowerCase() === "model-router";
   const override = resolveModelRoute(model, routeKey);
-  const effectiveRouteKey = override?.type === "routeKey"
+  let effectiveRouteKey = override?.type === "routeKey"
     ? override.value
     : (usesModelRouter ? "chat/completions" : routeKey);
-  const backendRouteKey = override
+  let backendRouteKey = override
     ? inferBackendRouteKey(routeKey, override)
     : effectiveRouteKey;
+  if (
+    routeKey === "chat/completions"
+    && backendRouteKey === "chat/completions"
+    && override?.type !== "path"
+    && findWebSearchParam(body)
+    && supportsWebSearchRequest({
+      backendRouteKey: "responses",
+      upstream,
+      model
+    })
+  ) {
+    effectiveRouteKey = "responses";
+    backendRouteKey = "responses";
+    log.info({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      event: "proxy.web_search_route_promoted"
+    }, "promoted chat/completions request with web_search to responses backend");
+  }
+
   const targetUrl = override?.type === "path"
     ? buildDirectUpstreamUrl(upstream, override.value, deployment)
     : buildUpstreamUrl(upstream, effectiveRouteKey, deployment);
@@ -1024,7 +1070,7 @@ function sanitizeWebSearchRequest(body, { backendRouteKey, upstream, model }) {
   if (!supportsWebSearchRequest({ backendRouteKey, upstream, model })) {
     return {
       param: webSearchParam,
-      message: "web_search 仅在 Azure OpenAI Responses API 后端受支持；请使用 *.openai.azure.com 的 responses 路由，或移除 tools/tool_choice。"
+      message: "web_search 仅在 Azure OpenAI Responses API 后端受支持；请使用 *.openai.azure.com 的 /openai/v1/responses 路由。若仍失败，请检查订阅是否禁用了 OpenAI.BlockedTools.web_search。"
     };
   }
 

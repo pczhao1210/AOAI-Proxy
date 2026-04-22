@@ -45,6 +45,115 @@ function normalizeMessageContentToText(content) {
   return "";
 }
 
+function collectToolCallIds(toolCalls) {
+  const ids = new Set();
+  for (const call of toolCalls) {
+    const id = call?.id || call?.call_id;
+    if (typeof id === "string" && id) {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
+
+export function sanitizeChatToolTranscript(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return {
+      messages,
+      changed: false,
+      droppedToolMessages: 0,
+      droppedAssistantTurns: 0
+    };
+  }
+
+  const sanitized = [];
+  let changed = false;
+  let droppedToolMessages = 0;
+  let droppedAssistantTurns = 0;
+  let pendingToolTurn = null;
+
+  const flushPendingToolTurn = () => {
+    if (!pendingToolTurn) return;
+    if (pendingToolTurn.isComplete) {
+      sanitized.push(pendingToolTurn.message, ...pendingToolTurn.toolMessages);
+    } else {
+      changed = true;
+      droppedAssistantTurns += 1;
+      droppedToolMessages += pendingToolTurn.toolMessages.length + pendingToolTurn.discardedToolMessages;
+    }
+    pendingToolTurn = null;
+  };
+
+  for (const message of messages) {
+    if (pendingToolTurn) {
+      if (message?.role === "tool") {
+        const toolCallId = typeof message.tool_call_id === "string" ? message.tool_call_id : "";
+        if (
+          toolCallId
+          && pendingToolTurn.expectedToolCallIds.has(toolCallId)
+          && !pendingToolTurn.seenToolCallIds.has(toolCallId)
+        ) {
+          pendingToolTurn.toolMessages.push(message);
+          pendingToolTurn.seenToolCallIds.add(toolCallId);
+          pendingToolTurn.isComplete =
+            pendingToolTurn.seenToolCallIds.size === pendingToolTurn.expectedToolCallIds.size;
+        } else {
+          changed = true;
+          pendingToolTurn.discardedToolMessages += 1;
+        }
+        continue;
+      }
+
+      flushPendingToolTurn();
+    }
+
+    if (message?.role === "assistant" && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+      const expectedToolCallIds = collectToolCallIds(message.tool_calls);
+      if (expectedToolCallIds.size === 0) {
+        changed = true;
+        droppedAssistantTurns += 1;
+        continue;
+      }
+
+      pendingToolTurn = {
+        message,
+        expectedToolCallIds,
+        seenToolCallIds: new Set(),
+        toolMessages: [],
+        discardedToolMessages: 0,
+        isComplete: false
+      };
+      continue;
+    }
+
+    if (message?.role === "tool") {
+      changed = true;
+      droppedToolMessages += 1;
+      continue;
+    }
+
+    sanitized.push(message);
+  }
+
+  flushPendingToolTurn();
+
+  if (!changed) {
+    return {
+      messages,
+      changed: false,
+      droppedToolMessages: 0,
+      droppedAssistantTurns: 0
+    };
+  }
+
+  return {
+    messages: sanitized,
+    changed,
+    droppedToolMessages,
+    droppedAssistantTurns
+  };
+}
+
 function buildResponsesInputFromMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return [];
   const input = [];
