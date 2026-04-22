@@ -6,6 +6,7 @@ This directory contains the project documentation and deployment guides.
 
 - English overview: [../README.md](../README.md)
 - 中文概览: [README.zh-CN.md](README.zh-CN.md)
+- Git 协作指南（中文）: [../GIT_WORKFLOW.zh-CN.md](../GIT_WORKFLOW.zh-CN.md)
 
 ## Deployment Guides
 
