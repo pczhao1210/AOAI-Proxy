@@ -13,6 +13,7 @@ import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnec
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, queryLogs, setLogConfig } from "./logs.js";
+import { validateConfiguredModels } from "./model-validation.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
@@ -344,6 +345,23 @@ app.get("/admin/api/pricing-library", async () => {
     items: listPricingDefinitions(),
     status: getPricingLibraryStatus()
   };
+});
+
+app.post("/admin/api/models/validate", async (req, reply) => {
+  const config = getConfig();
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  try {
+    const result = await validateConfiguredModels(config, {
+      probe: body.probe !== false
+    });
+    reply.send(result);
+  } catch (error) {
+    logAdminApiError("admin.model_validation_failed", error, {
+      route: "/admin/api/models/validate",
+      status: 502
+    });
+    reply.code(502).send({ ok: false, error: error.message || "Model validation failed" });
+  }
 });
 
 app.post("/admin/api/pricing-library/sync", async (req, reply) => {

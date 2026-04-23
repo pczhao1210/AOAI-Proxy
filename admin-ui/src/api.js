@@ -47,6 +47,14 @@ export async function fetchPricingLibrary() {
   return readJson(await fetch("/admin/api/pricing-library"));
 }
 
+export async function validateConfiguredModels(payload = {}) {
+  return readJson(await fetch("/admin/api/models/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }));
+}
+
 export async function syncPricingLibrary(source = {}) {
   return readJson(await fetch("/admin/api/pricing-library/sync", {
     method: "POST",

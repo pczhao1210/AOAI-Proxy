@@ -5,11 +5,30 @@ import {
   findPricingTemplateByHint,
   findPricingTemplateForModel,
   formatList,
+  getSuggestedModelRouteValues,
+  isKnownModelRouteValue,
   parseList,
   supportsPricingTemplate,
   syncUpstreamCapabilities,
   upsertPricingCatalogEntry
 } from "../utils.js";
+
+function getRouteOptionLabel(t, value) {
+  return t(`routing.route.${value}`, value);
+}
+
+function setModelWildcardRoute(next, modelIndex, value) {
+  const currentRoutes = next.models?.[modelIndex]?.routes && typeof next.models[modelIndex].routes === "object"
+    ? next.models[modelIndex].routes
+    : {};
+  const routes = { ...currentRoutes };
+  if (!value) {
+    delete routes["*"];
+  } else {
+    routes["*"] = value;
+  }
+  next.models[modelIndex].routes = routes;
+}
 
 export default function RoutingTab({ config, pricingLibrary, updateConfig, addUpstream, addModel, addBlankModel, t }) {
   const [search, setSearch] = useState("");
@@ -115,13 +134,17 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
             {filteredModels.map(({ item, index }) => {
               const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
               const matchedTemplate = findPricingTemplateForModel(templateOptions, item);
+              const wildcardRoute = typeof item?.routes?.["*"] === "string" ? item.routes["*"].trim() : "";
+              const routeOptions = getSuggestedModelRouteValues(matchedTemplate || item);
+              const hasCustomRoute = wildcardRoute && !isKnownModelRouteValue(wildcardRoute);
+              const allRouteOptions = hasCustomRoute ? [wildcardRoute, ...routeOptions] : routeOptions;
               return (
                 <EntityCard
                   id={`model-card-${index}`}
                   key={`model-${index}`}
                   title={item.displayName || item.id || `model-${index + 1}`}
                   subtitle={item.upstream || t("status.modelSubtitleFallback", "Upstream not bound")}
-                  meta={`${t("field.targetModel", "Target Model")}: ${item.targetModel || "-"} · ${t("field.status", "Status")}: ${statusLabel}`}
+                  meta={`${t("routing.field.azureDeployment", "Azure Deployment Name")}: ${item.targetModel || "-"} · ${t("field.status", "Status")}: ${statusLabel}`}
                   removeLabel={t("entity.delete", "Delete")}
                   collapsible
                   defaultOpen={false}
@@ -131,7 +154,10 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                   })}
                 >
                   <div className="form-grid compact">
-                    <Field label={t("field.id", "ID")}><input value={item.id || ""} onChange={(event) => updateConfig((next) => { next.models[index].id = event.target.value; autoMatchTemplate(next, index); })} /></Field>
+                    <Field
+                      label={t("routing.field.proxyModelId", "Proxy Model ID")}
+                      hint={t("routing.hint.proxyModelId", "Clients send this value in the model field when calling the proxy.")}
+                    ><input value={item.id || ""} onChange={(event) => updateConfig((next) => { next.models[index].id = event.target.value; autoMatchTemplate(next, index); })} /></Field>
                     <Field label={t("field.displayName", "Display Name")}><input value={item.displayName || ""} onChange={(event) => updateConfig((next) => { next.models[index].displayName = event.target.value; })} /></Field>
                     <Field label={t("routing.template.field", "Template")}>
                       <select
@@ -148,15 +174,33 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                         ))}
                       </select>
                     </Field>
-                    <Field label={t("field.targetModel", "Target Model")}><input value={item.targetModel || ""} onChange={(event) => updateConfig((next) => { next.models[index].targetModel = event.target.value; autoMatchTemplate(next, index); })} /></Field>
+                    <Field
+                      label={t("routing.field.azureDeployment", "Azure Deployment Name")}
+                      hint={t("routing.hint.azureDeployment", "This is the upstream deployment or target model actually sent to Azure.")}
+                    ><input value={item.targetModel || ""} onChange={(event) => updateConfig((next) => { next.models[index].targetModel = event.target.value; autoMatchTemplate(next, index); })} /></Field>
                     <Field label={t("field.upstream", "Upstream")}>
                       <select value={item.upstream || ""} onChange={(event) => updateConfig((next) => { next.models[index].upstream = event.target.value; })}>
                         <option value="">-</option>
                         {upstreamOptions.map((upstream) => <option key={upstream.name} value={upstream.name}>{upstream.name}</option>)}
                       </select>
                     </Field>
+                    <Field label={t("field.defaultRoute", "Default Route")}>
+                      <select value={wildcardRoute} onChange={(event) => updateConfig((next) => { setModelWildcardRoute(next, index, event.target.value); })}>
+                        <option value="">{t("routing.route.auto", "Use template default")}</option>
+                        {allRouteOptions.map((routeValue) => (
+                          <option key={routeValue} value={routeValue}>
+                            {hasCustomRoute && routeValue === wildcardRoute
+                              ? `${t("routing.route.custom", "Custom")}: ${routeValue}`
+                              : getRouteOptionLabel(t, routeValue)}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
                     <Field label={t("field.status", "Status")}><select value={item.status || "active"} onChange={(event) => updateConfig((next) => { next.models[index].status = event.target.value; })}><option value="active">{t("option.active", "active")}</option><option value="disabled">{t("option.disabled", "disabled")}</option></select></Field>
-                    <Field label={t("field.pricingRef", "Pricing Ref")}><input value={item.pricingRef || ""} onChange={(event) => updateConfig((next) => { next.models[index].pricingRef = event.target.value; autoMatchTemplate(next, index); })} /></Field>
+                    <Field
+                      label={t("routing.field.pricingTemplateId", "Pricing Template ID")}
+                      hint={t("routing.hint.pricingTemplateId", "Used to match pricing library metadata and governance pricing, not the Azure deployment name.")}
+                    ><input value={item.pricingRef || ""} onChange={(event) => updateConfig((next) => { next.models[index].pricingRef = event.target.value; autoMatchTemplate(next, index); })} /></Field>
                   </div>
                   <Field label={t("field.capabilities", "Capabilities")}><input value={formatList(item.capabilities)} onChange={(event) => updateConfig((next) => { next.models[index].capabilities = parseList(event.target.value); })} /></Field>
                   <Field label={t("field.accessTags", "Access Tags")}><input value={formatList(item.accessTags)} onChange={(event) => updateConfig((next) => { next.models[index].accessTags = parseList(event.target.value); })} /></Field>

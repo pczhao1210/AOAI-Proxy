@@ -1,4 +1,5 @@
 import { getLogRuntimeInfo } from "./logs.js";
+import { getConfiguredModelBindingIssues } from "./model-validation.js";
 import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
 import { hasLegacyRouteCapabilities, resolveNativeModelCapabilities } from "./pricing-library.js";
 import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
@@ -562,10 +563,18 @@ function applySchemaCompatibility(rawConfig, merged) {
       const next = deepMerge({
         provider: "azure-openai",
         apiVersion: "",
+        resourceName: "",
         status: "active",
         priority: 100,
         tags: [],
         capabilities: [],
+        routes: {
+          "chat/completions": "/openai/v1/chat/completions",
+          responses: "/openai/v1/responses",
+          "images/generations": "/openai/v1/images/generations",
+          "openai-image": "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview",
+          "blackforest-image": "/providers/blackforestlabs/v1/{deployment}?api-version=preview"
+        },
         timeoutProfile: {},
         retryProfile: {},
         headersTemplate: {},
@@ -1128,17 +1137,24 @@ function validateConfig(cfg) {
     if (!upstream?.name) {
       throw new Error(`upstreams[${idx}].name is required`);
     }
-    if (!upstream?.baseUrl || typeof upstream.baseUrl !== "string") {
-      throw new Error(`upstreams[${idx}].baseUrl is required`);
+    const hasBaseUrl = typeof upstream?.baseUrl === "string" && upstream.baseUrl.trim();
+    const hasResourceName = typeof upstream?.resourceName === "string" && upstream.resourceName.trim();
+    if (!hasBaseUrl && !hasResourceName) {
+      throw new Error(`upstreams[${idx}].baseUrl or upstreams[${idx}].resourceName is required`);
     }
-    let parsed;
-    try {
-      parsed = new URL(upstream.baseUrl);
-    } catch {
-      throw new Error(`upstreams[${idx}].baseUrl must be a valid URL`);
+    if (hasBaseUrl) {
+      let parsed;
+      try {
+        parsed = new URL(upstream.baseUrl);
+      } catch {
+        throw new Error(`upstreams[${idx}].baseUrl must be a valid URL`);
+      }
+      if (!/^https?:$/.test(parsed.protocol)) {
+        throw new Error(`upstreams[${idx}].baseUrl must be http(s)`);
+      }
     }
-    if (!/^https?:$/.test(parsed.protocol)) {
-      throw new Error(`upstreams[${idx}].baseUrl must be http(s)`);
+    if (upstream.resourceName != null && typeof upstream.resourceName !== "string") {
+      throw new Error(`upstreams[${idx}].resourceName must be a string`);
     }
     if (upstream.capabilities != null && (!Array.isArray(upstream.capabilities) || upstream.capabilities.some((value) => typeof value !== "string"))) {
       throw new Error(`upstreams[${idx}].capabilities must be an array of strings`);
@@ -1152,6 +1168,11 @@ function validateConfig(cfg) {
     if (upstream.routes && typeof upstream.routes !== "object") {
       throw new Error(`upstreams[${idx}].routes must be an object`);
     }
+  }
+  const bindingIssues = getConfiguredModelBindingIssues(cfg);
+  if (bindingIssues.length) {
+    const preview = bindingIssues.slice(0, 3).map((issue) => issue.message).join("; ");
+    throw new Error(preview);
   }
   return cfg;
 }

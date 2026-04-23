@@ -46,7 +46,7 @@
     ],
     "pricingRef": "flux-2-pro",
     "routes": {
-      "*": "images/generations"
+      "*": "blackforest-image"
     }
   },
   "sources": {

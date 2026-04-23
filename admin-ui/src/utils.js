@@ -26,13 +26,16 @@ export const DEFAULT_UPSTREAM_TEMPLATE = {
   name: "",
   provider: "azure-openai",
   baseUrl: "",
+  resourceName: "",
   status: "active",
   priority: 100,
   capabilities: [],
   routes: {
     "chat/completions": "/openai/v1/chat/completions",
     responses: "/openai/v1/responses",
-    "images/generations": "/openai/v1/images/generations"
+    "images/generations": "/openai/v1/images/generations",
+    "openai-image": "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview",
+    "blackforest-image": "/providers/blackforestlabs/v1/{deployment}?api-version=preview"
   }
 };
 
@@ -56,6 +59,13 @@ export const DEFAULT_MODEL_TEMPLATE = {
 };
 
 const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "stream", "images", "image"]);
+export const KNOWN_MODEL_ROUTE_VALUES = [
+  "chat/completions",
+  "responses",
+  "images/generations",
+  "openai-image",
+  "blackforest-image"
+];
 
 export const DEFAULT_LOG_FILTERS = {
   level: ["warn", "error", "info"],
@@ -116,6 +126,42 @@ export function ensureUniqueName(baseValue, existingValues) {
 export function hasLegacyRouteCapabilities(capabilities) {
   const normalized = normalizeStringArray(capabilities);
   return normalized.length > 0 && normalized.every((capability) => LEGACY_ROUTE_CAPABILITIES.has(capability));
+}
+
+export function isKnownModelRouteValue(value) {
+  return KNOWN_MODEL_ROUTE_VALUES.includes(String(value || "").trim());
+}
+
+export function getSuggestedModelRouteValues(source) {
+  const interfaces = normalizeStringArray(source?.interfaces);
+  const capabilities = normalizeStringArray(source?.capabilities);
+  const provider = String(source?.provider || "").trim().toLowerCase();
+  const values = [];
+
+  const isImageModel = interfaces.includes("images/generations")
+    || capabilities.includes("image-generation")
+    || capabilities.includes("image-editing");
+
+  if (interfaces.includes("chat/completions")) {
+    values.push("chat/completions");
+  }
+  if (interfaces.includes("responses")) {
+    values.push("responses");
+  }
+  if (isImageModel) {
+    values.push("images/generations");
+    if (provider === "black-forest-labs") {
+      values.push("blackforest-image");
+    } else {
+      values.push("openai-image");
+    }
+  }
+
+  if (!values.length) {
+    values.push(...KNOWN_MODEL_ROUTE_VALUES);
+  }
+
+  return Array.from(new Set(values));
 }
 
 export function buildSuggestedUpstreamName(definition, config) {

@@ -45,7 +45,7 @@
     ],
     "pricingRef": "flux-2-flex",
     "routes": {
-      "*": "images/generations"
+      "*": "blackforest-image"
     }
   },
   "sources": {

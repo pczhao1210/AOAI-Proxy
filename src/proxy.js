@@ -8,8 +8,11 @@ import {
   buildUpstreamUrl,
   buildDirectUpstreamUrl,
   resolveModelRoute,
+  resolveEffectiveRouteKey,
+  normalizeBackendRouteKey,
   inferBackendRouteKey,
-  isPlaceholderBaseUrl
+  resolveUpstreamBaseUrl,
+  hasUsableUpstreamBaseUrl
 } from "./proxy/routing.js";
 import {
   sanitizeIncomingHeaders,
@@ -18,6 +21,7 @@ import {
   extractProxyRequestControls,
   maybeCompressImages
 } from "./proxy/body.js";
+import { prepareImageGenerationRequest } from "./proxy/image-adapter.js";
 import {
   chatToResponsesRequest,
   responsesToChatRequest,
@@ -262,7 +266,7 @@ export async function proxyRequest({
     return;
   }
 
-  if (isPlaceholderBaseUrl(upstream.baseUrl)) {
+  if (!hasUsableUpstreamBaseUrl(upstream, { routeKey, model })) {
     log.error({
       source: "proxy",
       requestId,
@@ -278,19 +282,19 @@ export async function proxyRequest({
       code: "INVALID_UPSTREAM_CONFIG",
       exposedCode: "InvalidUpstreamConfig",
       message:
-        "upstreams[].baseUrl 仍是占位符或无效：请将 YOUR-RESOURCE-NAME 替换为真实 Azure OpenAI/Foundry 资源域名（*.openai.azure.com 或 *.services.ai.azure.com）"
+        "upstreams[].baseUrl 或 upstreams[].resourceName 无效：请填写真实 Azure 资源域名，或仅填写 resourceName 让代理自动拼接 *.openai.azure.com / *.services.ai.azure.com"
     });
     return;
   }
   const deployment = model.targetModel || model.id;
   const usesModelRouter = String(deployment || "").trim().toLowerCase() === "model-router";
   const override = resolveModelRoute(model, routeKey);
-  let effectiveRouteKey = override?.type === "routeKey"
-    ? override.value
-    : (usesModelRouter ? "chat/completions" : routeKey);
+  let effectiveRouteKey = usesModelRouter
+    ? "chat/completions"
+    : resolveEffectiveRouteKey(routeKey, model, upstream, override);
   let backendRouteKey = override
     ? inferBackendRouteKey(routeKey, override)
-    : effectiveRouteKey;
+    : normalizeBackendRouteKey(effectiveRouteKey);
   if (
     routeKey === "chat/completions"
     && backendRouteKey === "chat/completions"
@@ -316,8 +320,8 @@ export async function proxyRequest({
   }
 
   const targetUrl = override?.type === "path"
-    ? buildDirectUpstreamUrl(upstream, override.value, deployment)
-    : buildUpstreamUrl(upstream, effectiveRouteKey, deployment);
+    ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
+    : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
   const policy = resolveUpstreamPolicy(config, { routeKey, model, upstream, requestOverrides });
   let upstreamAuthHeaders;
   try {
@@ -376,6 +380,14 @@ export async function proxyRequest({
         model: deployment
       };
   }
+
+  nextBody = prepareImageGenerationRequest({
+    body: nextBody,
+    model,
+    routeKey,
+    backendRouteKey,
+    targetUrl
+  });
 
   if (nextBody && typeof nextBody === "object") {
     normalizeReasoningConfig(nextBody, backendRouteKey);
@@ -1050,7 +1062,7 @@ function supportsWebSearchRequest({ backendRouteKey, upstream, model }) {
   }
 
   try {
-    const hostname = new URL(String(upstream?.baseUrl || "")).hostname.toLowerCase();
+    const hostname = new URL(resolveUpstreamBaseUrl(upstream, { routeKey: backendRouteKey, model })).hostname.toLowerCase();
     return hostname.endsWith(".openai.azure.com");
   } catch {
     return false;

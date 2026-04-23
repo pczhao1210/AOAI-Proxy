@@ -7,10 +7,12 @@ export default function OpsTab({
   pricingSyncSource,
   setPricingSyncSource,
   pricingLibraryCount,
+  modelValidationResult,
   caddyStatus,
   aadStatus,
   diagnosticsBusy,
   handleSyncPricingLibrary,
+  handleValidateConfiguredModels,
   loadCaddyStatusAction,
   handleVerifyAad,
   handleRestartService,
@@ -68,6 +70,13 @@ export default function OpsTab({
   const latestResponseNote = testResponseText
     ? String(testResponseText).split("\n")[0].slice(0, 96)
     : t("ops.noRequestYet", "No request sent yet.");
+  const validationSummary = modelValidationResult?.summary || {};
+  const validationValue = modelValidationResult
+    ? `${validationSummary.ok || 0} / ${validationSummary.total || 0}`
+    : t("status.idle", "idle");
+  const validationNote = modelValidationResult
+    ? `${t("ops.validationFailed", "Failed")}: ${validationSummary.failed || 0} · ${t("ops.validationWarning", "Warnings")}: ${validationSummary.warning || 0}`
+    : t("ops.validationIdle", "No validation run yet.");
 
   return (
     <div className="stack-lg">
@@ -102,8 +111,37 @@ export default function OpsTab({
             value={testEndpoint}
             note={latestResponseNote}
           />
+          <StatCard
+            label={t("ops.validationTitle", "Configured Models")}
+            value={validationValue}
+            note={validationNote}
+          />
         </div>
       </Section>
+
+      <AccordionSection
+        id="ops-model-validation"
+        title={t("ops.validationTitle", "Configured Model Validation")}
+        desc={t("ops.validationDesc", "Run static and live checks for every configured model so route mismatches, auth issues, 404s, and connect timeouts are visible before client traffic hits them.")}
+        defaultOpen
+        group="ops-sections"
+      >
+        <div className="toolbar" style={{ marginBottom: "1rem" }}>
+          <button type="button" onClick={handleValidateConfiguredModels} disabled={diagnosticsBusy.modelValidation === true}>
+            {diagnosticsBusy.modelValidation === true ? t("ops.validationRunning", "Validating...") : t("ops.validationRun", "Validate Configured Models")}
+          </button>
+        </div>
+        <div className="status-grid">
+          <StatCard label={t("ops.validationTotal", "Total")} value={validationSummary.total ?? 0} note={t("ops.validationCheckedAt", "Last Check") + ": " + formatDateTime(modelValidationResult?.checkedAt)} />
+          <StatCard label={t("ops.validationOk", "Healthy")} value={validationSummary.ok ?? 0} note={t("ops.validationStaticProbe", "Static + probe checks")} />
+          <StatCard label={t("ops.validationWarning", "Warnings")} value={validationSummary.warning ?? 0} note={t("ops.validationWarningDesc", "Reachable but not fully clean")} />
+          <StatCard label={t("ops.validationFailed", "Failed")} value={validationSummary.failed ?? 0} note={t("ops.validationFailedDesc", "Needs config or network fix")} />
+        </div>
+        <div className="code-block" style={{ marginTop: "1rem" }}>
+          <div className="code-block-head">{t("ops.validationResult", "Validation Result")}</div>
+          <pre>{modelValidationResult ? JSON.stringify(modelValidationResult, null, 2) : t("ops.validationIdle", "No validation run yet.")}</pre>
+        </div>
+      </AccordionSection>
 
       <AccordionSection
         id="ops-pricing"

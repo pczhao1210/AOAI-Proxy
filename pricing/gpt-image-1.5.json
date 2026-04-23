@@ -53,7 +53,7 @@
     ],
     "pricingRef": "gpt-image-1.5",
     "routes": {
-      "*": "images/generations"
+      "*": "openai-image"
     }
   },
   "sources": {

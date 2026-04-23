@@ -50,7 +50,7 @@
     ],
     "pricingRef": "gpt-image-2",
     "routes": {
-      "*": "images/generations"
+      "*": "openai-image"
     }
   },
   "sources": {

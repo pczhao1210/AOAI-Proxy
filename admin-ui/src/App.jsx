@@ -14,6 +14,7 @@ import {
   syncRuntime,
   syncPricingLibrary,
   testDatabaseConnection,
+  validateConfiguredModels,
   verifyAad
 } from "./api.js";
 import AdvancedTab from "./components/AdvancedTab.jsx";
@@ -48,6 +49,7 @@ import {
   ensureUniqueName,
   formatDateTime,
   formatBytes,
+  getSuggestedModelRouteValues,
   getPayloadEditorNote,
   getLogDetails,
   getLocalizedLogEventLabel,
@@ -100,6 +102,7 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [pricingLibrary, setPricingLibrary] = useState(() => bundledPricingLibrary);
   const [pricingLibraryStatus, setPricingLibraryStatus] = useState(null);
+  const [modelValidationResult, setModelValidationResult] = useState(null);
   const [pricingSyncSource, setPricingSyncSource] = useState({ owner: "", repo: "", path: "pricing", ref: "" });
   const [databaseConfigForm, setDatabaseConfigForm] = useState(() => normalizeDatabaseConfigForm());
   const [databaseTestResult, setDatabaseTestResult] = useState(null);
@@ -117,7 +120,7 @@ export default function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logFilters, setLogFilters] = useState(DEFAULT_LOG_FILTERS);
   const [aadStatus, setAadStatus] = useState(null);
-  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false, databaseTest: false, databaseDefaults: false, runtimeSync: false });
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false, databaseTest: false, databaseDefaults: false, runtimeSync: false, modelValidation: false });
   const [testEndpoint, setTestEndpoint] = useState(TEST_ENDPOINTS[0]);
   const [testApiKey, setTestApiKey] = useState("");
   const [testPayloadText, setTestPayloadText] = useState(JSON.stringify(buildDefaultTestPayload(TEST_ENDPOINTS[0], null), null, 2));
@@ -137,6 +140,7 @@ export default function App() {
   const [templateUpstreamMode, setTemplateUpstreamMode] = useState("existing");
   const [selectedTemplateUpstreamName, setSelectedTemplateUpstreamName] = useState("");
   const [templateNewUpstreamName, setTemplateNewUpstreamName] = useState("");
+  const [templateRouteOverride, setTemplateRouteOverride] = useState("");
   const [templateImportPricing, setTemplateImportPricing] = useState(true);
   const loadRequestRef = useRef(0);
 
@@ -191,6 +195,10 @@ export default function App() {
   const selectedPricingTemplate = useMemo(
     () => supportedPricingTemplates.find((definition) => definition.id === selectedPricingTemplateId) || null,
     [supportedPricingTemplates, selectedPricingTemplateId]
+  );
+  const selectedTemplateRouteOptions = useMemo(
+    () => getSuggestedModelRouteValues(selectedPricingTemplate),
+    [selectedPricingTemplate]
   );
   const runtimeKeyOptions = useMemo(() => {
     const items = new Map();
@@ -627,6 +635,7 @@ export default function App() {
     setTemplateUpstreamMode((config?.upstreams || []).length > 0 ? "existing" : "new");
     setSelectedTemplateUpstreamName(config?.upstreams?.[0]?.name || "");
     setTemplateNewUpstreamName(buildSuggestedUpstreamName(defaultTemplate, config));
+    setTemplateRouteOverride("");
     setTemplateImportPricing(true);
     setShowModelTemplateModal(true);
   }
@@ -651,6 +660,12 @@ export default function App() {
       }
 
       const modelEntry = buildModelFromPricingTemplate(selectedPricingTemplate, upstreamName, next);
+      if (templateRouteOverride) {
+        modelEntry.routes = {
+          ...(modelEntry.routes && typeof modelEntry.routes === "object" ? modelEntry.routes : {}),
+          "*": templateRouteOverride
+        };
+      }
       next.models.push(modelEntry);
 
       if (templateImportPricing && selectedPricingTemplate.pricingCatalogEntry && modelEntry.pricingRef) {
@@ -771,6 +786,29 @@ export default function App() {
       setError(syncError.message || t("messages.pricingSyncFailed", "Failed to sync pricing library from GitHub."));
     } finally {
       setDiagnosticsBusy((current) => ({ ...current, pricingSync: false }));
+    }
+  }
+
+  async function handleValidateConfiguredModels() {
+    setDiagnosticsBusy((current) => ({ ...current, modelValidation: true }));
+    setError("");
+    try {
+      const result = await validateConfiguredModels({ probe: true });
+      startTransition(() => {
+        setModelValidationResult(result);
+      });
+      const summary = result?.summary || {};
+      if ((summary.failed || 0) > 0) {
+        setError(t("messages.modelValidationFailed", "Configured model validation found failures."));
+      } else if ((summary.warning || 0) > 0) {
+        setMessage(t("messages.modelValidationWarning", "Configured model validation completed with warnings."));
+      } else {
+        setMessage(t("messages.modelValidationSuccess", "Configured model validation succeeded."));
+      }
+    } catch (validationError) {
+      setError(validationError.message || t("messages.modelValidationRequestFailed", "Configured model validation failed to run."));
+    } finally {
+      setDiagnosticsBusy((current) => ({ ...current, modelValidation: false }));
     }
   }
 
@@ -1137,6 +1175,16 @@ export default function App() {
                 <input value={templateNewUpstreamName} onChange={(event) => setTemplateNewUpstreamName(event.target.value)} />
               </label>
             )}
+
+            <label className="field">
+              <span className="field-label">{t("routing.template.defaultRoute", "Default Route")}</span>
+              <select value={templateRouteOverride} onChange={(event) => setTemplateRouteOverride(event.target.value)}>
+                <option value="">{t("routing.route.auto", "Use template default")}</option>
+                {selectedTemplateRouteOptions.map((routeValue) => (
+                  <option key={routeValue} value={routeValue}>{t(`routing.route.${routeValue}`, routeValue)}</option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <label className="inline">
@@ -1264,10 +1312,12 @@ export default function App() {
           pricingSyncSource={pricingSyncSource}
           setPricingSyncSource={setPricingSyncSource}
           pricingLibraryCount={pricingLibrary.length}
+          modelValidationResult={modelValidationResult}
           caddyStatus={caddyStatus}
           aadStatus={aadStatus}
           diagnosticsBusy={diagnosticsBusy}
           handleSyncPricingLibrary={handleSyncPricingLibrary}
+          handleValidateConfiguredModels={handleValidateConfiguredModels}
           loadCaddyStatusAction={loadCaddyStatusAction}
           handleVerifyAad={handleVerifyAad}
           handleRestartService={handleRestartService}
