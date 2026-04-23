@@ -26,6 +26,7 @@ dist/
 tmp/
 data/
 Caddyfile
+test/output/
 
 # Local config (use config/sample_config.json instead)
 config/config.json

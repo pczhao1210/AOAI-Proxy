@@ -9,7 +9,13 @@
     "dev": "node --watch src/server.js",
     "admin:dev": "vite --config admin-ui/vite.config.js",
     "build:admin": "vite build --config admin-ui/vite.config.js",
-    "build": "npm run build:admin"
+    "build": "npm run build:admin",
+    "test:routes": "node test/run-all-routes.js",
+    "test:real": "node test/run-all-real-routes.js",
+    "test:real:chat": "node test/routes/real-chat-completion.js",
+    "test:real:response": "node test/routes/real-response.js",
+    "test:real:openai-image": "node test/routes/real-openai-image.js",
+    "test:real:blackforest-image": "node test/routes/real-blackforest-image.js"
   },
   "dependencies": {
     "@azure/identity": "^4.4.1",

@@ -39,7 +39,7 @@
   "proxyTemplate": {
     "id": "flux-2-pro",
     "displayName": "FLUX.2 [pro]",
-    "targetModel": "flux-2-pro",
+    "targetModel": "FLUX.2-pro",
     "capabilities": [
       "image-generation",
       "image-editing"

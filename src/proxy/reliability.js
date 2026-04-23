@@ -267,11 +267,19 @@ export function markErrorWithCode(error, code, message) {
   return e;
 }
 
-export async function fetchOnceWithConnectTimeout({ targetUrl, headers, bodyText, connectTimeoutMs }) {
+export async function fetchOnceWithConnectTimeout({
+  targetUrl,
+  headers,
+  bodyText,
+  connectTimeoutMs,
+  timeoutMs = connectTimeoutMs,
+  timeoutCode = "UPSTREAM_CONNECT_TIMEOUT",
+  timeoutLabel = "connect"
+}) {
   const controller = new AbortController();
   const timer = setTimeout(() => {
-    controller.abort("connect-timeout");
-  }, connectTimeoutMs);
+    controller.abort(timeoutCode);
+  }, timeoutMs);
   try {
     return await fetch(targetUrl, {
       method: "POST",
@@ -280,8 +288,8 @@ export async function fetchOnceWithConnectTimeout({ targetUrl, headers, bodyText
       signal: controller.signal
     });
   } catch (error) {
-    if (controller.signal.aborted && controller.signal.reason === "connect-timeout") {
-      throw markErrorWithCode(error, "UPSTREAM_CONNECT_TIMEOUT", `connect timeout after ${connectTimeoutMs}ms`);
+    if (controller.signal.aborted && controller.signal.reason === timeoutCode) {
+      throw markErrorWithCode(error, timeoutCode, `${timeoutLabel} timeout after ${timeoutMs}ms`);
     }
     throw error;
   } finally {
@@ -304,7 +312,10 @@ export async function fetchWithRetry({
         targetUrl,
         headers,
         bodyText,
-        connectTimeoutMs: policy.connectTimeoutMs
+        connectTimeoutMs: policy.connectTimeoutMs,
+        timeoutMs: policy.firstByteTimeoutMs,
+        timeoutCode: "UPSTREAM_FIRST_BYTE_TIMEOUT",
+        timeoutLabel: "first byte"
       });
       if (upstreamResponse.ok) {
         return { ok: true, upstreamResponse, attempt };

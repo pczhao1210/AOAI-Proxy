@@ -61,6 +61,20 @@ function isBlackForestLabsImageModel(model, definition = findPricingDefinitionFo
   return normalizeLower(definition?.provider) === "black-forest-labs";
 }
 
+function resolveRouteDeploymentSegment(routeKey, deployment, model = null) {
+  if (routeKey !== "blackforest-image") {
+    return deployment;
+  }
+
+  const definition = findPricingDefinitionForModel(model);
+  const providerSlug = normalizeString(definition?.id)
+    || normalizeString(model?.pricingRef)
+    || normalizeString(model?.id)
+    || normalizeString(deployment);
+
+  return providerSlug.toLowerCase();
+}
+
 export function normalizeBackendRouteKey(routeKey) {
   return IMAGE_ROUTE_KEY_ALIASES.has(routeKey) ? "images/generations" : routeKey;
 }
@@ -174,8 +188,9 @@ export function buildUpstreamUrl(upstream, routeKey, deployment, model = null) {
   if (!route) {
     throw new Error(`No route configured for ${routeKey}`);
   }
-  const renderedRoute = typeof route === "string" && deployment
-    ? route.replaceAll("{deployment}", encodeURIComponent(deployment))
+  const routeDeployment = resolveRouteDeploymentSegment(routeKey, deployment, model);
+  const renderedRoute = typeof route === "string" && routeDeployment
+    ? route.replaceAll("{deployment}", encodeURIComponent(routeDeployment))
     : route;
   return new URL(renderedRoute, resolveUpstreamBaseUrl(upstream, { routeKey, routePath: renderedRoute, model })).toString();
 }
