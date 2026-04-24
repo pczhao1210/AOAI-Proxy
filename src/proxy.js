@@ -112,6 +112,66 @@ function extractFailureDetails(detail) {
   };
 }
 
+function markTiming(timing, key) {
+  if (!Number.isFinite(timing[key])) {
+    timing[key] = Date.now();
+  }
+}
+
+function diffTiming(startAt, endAt) {
+  if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt < startAt) {
+    return null;
+  }
+  return endAt - startAt;
+}
+
+function buildTimingFields(timing) {
+  return {
+    preAuthMs: diffTiming(timing.startAt, timing.authStartAt),
+    authPrepareMs: diffTiming(timing.authStartAt, timing.authReadyAt),
+    requestPrepareMs: diffTiming(timing.authReadyAt, timing.requestPreparedAt),
+    governanceAcquireMs: diffTiming(timing.governanceStartAt, timing.governanceReadyAt),
+    preUpstreamMs: diffTiming(timing.startAt, timing.upstreamRequestAt),
+    upstreamHeadersMs: diffTiming(timing.upstreamRequestAt, timing.upstreamHeadersAt),
+    upstreamFirstChunkMs: diffTiming(timing.upstreamRequestAt, timing.firstChunkAt),
+    firstChunkLatencyMs: diffTiming(timing.startAt, timing.firstChunkAt),
+    totalDurationMs: diffTiming(timing.startAt, timing.completedAt),
+    upstreamAttempts: timing.upstreamAttempts || 0
+  };
+}
+
+function emitTimingLog({
+  requestId,
+  requestNetworkContext,
+  modelId,
+  routeKey,
+  backendRouteKey,
+  stream,
+  status,
+  outcome,
+  errorCode,
+  source = "proxy",
+  timing
+}) {
+  const timingFields = buildTimingFields(timing);
+  emitInfoLog({
+    requestId,
+    ...requestNetworkContext,
+    modelId,
+    routeKey,
+    backendRouteKey,
+    stream: !!stream,
+    status,
+    source,
+    event: "proxy.request_timing",
+    errorCode,
+    outcome,
+    latencyMs: timingFields.totalDurationMs,
+    ...timingFields,
+    message: "proxy request timing"
+  });
+}
+
 export async function proxyRequest({
   config,
   routeKey,
@@ -124,7 +184,44 @@ export async function proxyRequest({
     ? req.headers["x-request-id"]
     : req.id;
   const requestNetworkContext = getRequestNetworkContext(config, req);
+  const timing = {
+    startAt,
+    authStartAt: null,
+    authReadyAt: null,
+    requestPreparedAt: null,
+    governanceStartAt: null,
+    governanceReadyAt: null,
+    upstreamRequestAt: null,
+    upstreamHeadersAt: null,
+    firstChunkAt: null,
+    completedAt: null,
+    upstreamAttempts: 0
+  };
+  let isStream = false;
+  let governanceLease = null;
   const log = req.log;
+  const finishTiming = ({ status = null, outcome = "", errorCode = "", source = "proxy" } = {}) => {
+    const hasObservablePhase = Number.isFinite(timing.authStartAt)
+      || Number.isFinite(timing.governanceStartAt)
+      || Number.isFinite(timing.upstreamRequestAt);
+    if (!hasObservablePhase || Number.isFinite(timing.completedAt)) {
+      return;
+    }
+    markTiming(timing, "completedAt");
+    emitTimingLog({
+      requestId,
+      requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      stream: isStream,
+      status,
+      outcome,
+      errorCode,
+      source,
+      timing
+    });
+  };
   const sendProxyError = (status, options = {}) => {
     const classified = {
       code: options.code || "PROXY_ERROR",
@@ -325,7 +422,9 @@ export async function proxyRequest({
   const policy = resolveUpstreamPolicy(config, { routeKey, model, upstream, requestOverrides });
   let upstreamAuthHeaders;
   try {
+    markTiming(timing, "authStartAt");
     upstreamAuthHeaders = await getUpstreamAuthHeaders(config.auth.scope);
+    markTiming(timing, "authReadyAt");
   } catch (error) {
     recordError(model.id, consumer);
     noteGovernanceError(consumer);
@@ -357,10 +456,16 @@ export async function proxyRequest({
       code: "UPSTREAM_AUTH_PREPARE_FAILED",
       message: error?.message || "upstream authentication failed"
     });
+    finishTiming({
+      status: 500,
+      outcome: "auth_failed",
+      errorCode: "UPSTREAM_AUTH_PREPARE_FAILED",
+      source: "proxy"
+    });
     return;
   }
 
-  const isStream = getStreamFlag(body);
+  isStream = getStreamFlag(body);
   const needsChatResponsesShim =
     (routeKey === "chat/completions" && backendRouteKey === "responses")
     || (routeKey === "responses" && backendRouteKey === "chat/completions");
@@ -475,15 +580,24 @@ export async function proxyRequest({
         exposedCode: error?.code || "INVALID_MEDIA_INPUT",
         message: error?.message || "invalid media input"
       });
+      finishTiming({
+        status: error?.status || 400,
+        outcome: "request_rejected",
+        errorCode: error?.code || "INVALID_MEDIA_INPUT",
+        source: "proxy"
+      });
       return;
     }
   }
 
+  markTiming(timing, "requestPreparedAt");
+  markTiming(timing, "governanceStartAt");
   const governanceResult = await acquireRequestGovernance(config, consumer, model, Date.now(), {
     requestId,
     routeKey,
     backendRouteKey
   });
+  markTiming(timing, "governanceReadyAt");
   if (!governanceResult.ok) {
     log.error({
       source: "proxy",
@@ -502,8 +616,15 @@ export async function proxyRequest({
       exposedCode: governanceResult.error || governanceResult.code || "RequestRejected",
       message: governanceResult.message
     });
+    finishTiming({
+      status: governanceResult.status || 429,
+      outcome: "governance_rejected",
+      errorCode: governanceResult.code || "REQUEST_REJECTED",
+      source: "proxy"
+    });
     return;
   }
+  governanceLease = governanceResult.lease;
 
   const recordProxyError = ({ status = null, errorCode = "", failureReason = "", source = "proxy" } = {}) => {
     recordError(model.id, {
@@ -607,6 +728,8 @@ export async function proxyRequest({
       };
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        timing.upstreamAttempts = Math.max(timing.upstreamAttempts, attempt);
+        markTiming(timing, "upstreamRequestAt");
         let upstreamResponse;
         try {
           upstreamResponse = await fetchOnceWithConnectTimeout({
@@ -615,6 +738,7 @@ export async function proxyRequest({
             bodyText,
             connectTimeoutMs: policy.connectTimeoutMs
           });
+          markTiming(timing, "upstreamHeadersAt");
         } catch (error) {
           const classified = classifyFetchError(error);
           if (attempt < maxAttempts && classified.retryable) {
@@ -645,6 +769,12 @@ export async function proxyRequest({
             ...extractFailureDetails(classified.detail)
           }, "stream fetch failed");
           reply.code(classified.status || 502).send(errBody);
+          finishTiming({
+            status: classified.status || 502,
+            outcome: "upstream_fetch_failed",
+            errorCode: classified.code,
+            source: "upstream"
+          });
           return;
         }
 
@@ -685,6 +815,12 @@ export async function proxyRequest({
             ...extractFailureDetails(detail)
           }, "stream upstream request failed");
           reply.code(upstreamResponse.status).send(errBody);
+          finishTiming({
+            status: upstreamResponse.status,
+            outcome: "upstream_http_failed",
+            errorCode: classified.code,
+            source: "upstream"
+          });
           return;
         }
 
@@ -694,6 +830,7 @@ export async function proxyRequest({
             reply,
             policy,
             onFirstChunk: () => {
+              markTiming(timing, "firstChunkAt");
               startStreamingResponse();
             },
             onUsage: recordProxyUsage,
@@ -708,6 +845,7 @@ export async function proxyRequest({
             model,
             policy,
             onFirstChunk: () => {
+              markTiming(timing, "firstChunkAt");
               startStreamingResponse();
             },
             onUsage: recordProxyUsage,
@@ -744,6 +882,12 @@ export async function proxyRequest({
               failureReason: classified.detail
             }, "stream ended before any data was sent");
             reply.code(classified.status).send(errBody);
+            finishTiming({
+              status: classified.status,
+              outcome: "upstream_empty_stream",
+              errorCode: classified.code,
+              source: "upstream"
+            });
             return;
           }
           reply.raw.end();
@@ -756,6 +900,11 @@ export async function proxyRequest({
             attempt,
             latencyMs: Date.now() - startAt,
             message: "stream request completed"
+          });
+          finishTiming({
+            status: 200,
+            outcome: "success",
+            source: "proxy"
           });
           return;
         }
@@ -800,6 +949,12 @@ export async function proxyRequest({
           providerMessage: providerError?.message || classified.detail || "",
           latencyMs: Date.now() - startAt
         }, providerError ? "stream provider error" : "stream request failed");
+        finishTiming({
+          status: classified.status || 502,
+          outcome: providerError ? "provider_stream_failed" : "stream_failed",
+          errorCode: providerError?.code || classified.code,
+          source: providerError ? "provider" : "upstream"
+        });
         return;
       }
       recordProxyError({
@@ -812,9 +967,16 @@ export async function proxyRequest({
         code: "STREAM_INTERRUPTED",
         message: "stream retry budget exhausted"
       });
+      finishTiming({
+        status: 502,
+        outcome: "stream_retry_exhausted",
+        errorCode: "STREAM_INTERRUPTED",
+        source: "upstream"
+      });
       return;
     }
 
+    markTiming(timing, "upstreamRequestAt");
     const fetchResult = await fetchWithRetry({
       targetUrl,
       headers,
@@ -823,6 +985,7 @@ export async function proxyRequest({
       logMeta: { source: "upstream", requestId, modelId, routeKey, backendRouteKey },
       log
     });
+    timing.upstreamAttempts = fetchResult.attempt || timing.upstreamAttempts;
     if (!fetchResult.ok) {
       recordProxyError({
         status: fetchResult.upstreamStatus || fetchResult.classified.status || 502,
@@ -851,10 +1014,17 @@ export async function proxyRequest({
         ...extractFailureDetails(fetchResult.detail)
       }, "non-stream upstream request failed");
       reply.code(status).send(errBody);
+      finishTiming({
+        status,
+        outcome: "upstream_http_failed",
+        errorCode: fetchResult.classified.code,
+        source: "upstream"
+      });
       return;
     }
 
     const upstreamResponse = fetchResult.upstreamResponse;
+    markTiming(timing, "upstreamHeadersAt");
     let payload = null;
     try {
       payload = await parseJsonWithTimeout(upstreamResponse, policy.requestTimeoutMs);
@@ -881,6 +1051,12 @@ export async function proxyRequest({
         ...extractFailureDetails(classified.detail)
       }, "non-stream response parse failed");
       reply.code(status).send(errBody);
+      finishTiming({
+        status,
+        outcome: "upstream_parse_failed",
+        errorCode: classified.code,
+        source: "upstream"
+      });
       return;
     }
 
@@ -890,6 +1066,11 @@ export async function proxyRequest({
         noteResolvedUpstreamModel(payload?.model || mapped?.model);
         if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
         reply.code(200).send(mapped);
+        finishTiming({
+          status: 200,
+          outcome: "success",
+          source: "proxy"
+        });
         return;
       }
       if (routeKey === "responses" && backendRouteKey === "chat/completions") {
@@ -897,6 +1078,11 @@ export async function proxyRequest({
         noteResolvedUpstreamModel(payload?.model || mapped?.model);
         if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
         reply.code(200).send(mapped);
+        finishTiming({
+          status: 200,
+          outcome: "success",
+          source: "proxy"
+        });
         return;
       }
     }
@@ -917,8 +1103,19 @@ export async function proxyRequest({
       message: "proxy request completed"
     });
     reply.code(upstreamResponse.status).send(payload);
+    finishTiming({
+      status: upstreamResponse.status,
+      outcome: "success",
+      source: "proxy"
+    });
   } finally {
-    governanceResult.lease.release();
+    governanceLease?.release();
+    finishTiming({
+      status: reply.statusCode || null,
+      outcome: reply.statusCode && reply.statusCode < 400 ? "success" : "completed",
+      errorCode: reply.statusCode && reply.statusCode >= 400 ? "REQUEST_FAILED" : "",
+      source: "proxy"
+    });
   }
 }
 
