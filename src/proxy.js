@@ -48,6 +48,10 @@ import {
   streamShim
 } from "./proxy/stream.js";
 import {
+  DEBUG_LATENCY_HEADER_NAME,
+  hasEnabledDebugLatencyHeader
+} from "./proxy/debug-latency.js";
+import {
   checkConsumerModelAccess,
   acquireRequestGovernance,
   noteGovernanceError,
@@ -113,6 +117,9 @@ function extractFailureDetails(detail) {
 }
 
 function markTiming(timing, key) {
+  if (!timing.enabled) {
+    return;
+  }
   if (!Number.isFinite(timing[key])) {
     timing[key] = Date.now();
   }
@@ -185,6 +192,7 @@ export async function proxyRequest({
     : req.id;
   const requestNetworkContext = getRequestNetworkContext(config, req);
   const timing = {
+    enabled: hasEnabledDebugLatencyHeader(req.headers[DEBUG_LATENCY_HEADER_NAME]),
     startAt,
     authStartAt: null,
     authReadyAt: null,
@@ -201,6 +209,9 @@ export async function proxyRequest({
   let governanceLease = null;
   const log = req.log;
   const finishTiming = ({ status = null, outcome = "", errorCode = "", source = "proxy" } = {}) => {
+    if (!timing.enabled) {
+      return;
+    }
     const hasObservablePhase = Number.isFinite(timing.authStartAt)
       || Number.isFinite(timing.governanceStartAt)
       || Number.isFinite(timing.upstreamRequestAt);

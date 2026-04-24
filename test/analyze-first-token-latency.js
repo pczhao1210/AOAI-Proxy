@@ -4,6 +4,10 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import {
+  DEBUG_LATENCY_HEADER_ENABLED_VALUE,
+  DEBUG_LATENCY_HEADER_NAME
+} from "../src/proxy/debug-latency.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:3000";
 const DEFAULT_ROUTE = "chat/completions";
@@ -109,7 +113,8 @@ function createProxyHeaders(config, requestId) {
     authorization: `Bearer ${config.apiKey}`,
     "content-type": "application/json",
     accept: "text/event-stream",
-    "x-request-id": requestId
+    "x-request-id": requestId,
+    [DEBUG_LATENCY_HEADER_NAME]: DEBUG_LATENCY_HEADER_ENABLED_VALUE
   };
 }
 

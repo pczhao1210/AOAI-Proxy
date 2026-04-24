@@ -54,7 +54,13 @@ Latency analysis script:
 
 - `test/analyze-first-token-latency.js`
 
-It sends real streaming requests through the proxy, measures client-side timings for response headers, first chunk, first token, and full completion, and then tries to pull the matching `proxy.request_timing` entry from `/admin/api/logs` by `x-request-id`.
+It sends real streaming requests through the proxy with `x-debug-latency: 1`, measures client-side timings for response headers, first chunk, first token, and full completion, and then tries to pull the matching `proxy.request_timing` entry from `/admin/api/logs` by `x-request-id`.
+
+Notes:
+
+- `proxy.request_timing` is disabled for normal traffic by default.
+- The proxy only emits that timing log when the request carries `x-debug-latency: 1`.
+- `test/analyze-first-token-latency.js` adds that request header automatically, so the script can fetch the timing entry without changing normal production traffic.
 
 Typical environment variables:
 
@@ -81,3 +87,5 @@ npm run test:latency
 ```
 
 The script writes a JSON report into `test/output` by default.
+
+If you want to reproduce the behavior manually, make sure your request also carries `x-debug-latency: 1`; otherwise the proxy will not emit `proxy.request_timing` for that request.

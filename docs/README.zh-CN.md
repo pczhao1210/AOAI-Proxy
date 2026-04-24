@@ -194,6 +194,13 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 - 进入管理页缓冲前会对常见敏感字段做脱敏，并截断过长字符串
 - 这套日志更适合“最近问题排查”，不等价于长期审计日志存储
 
+## 测试与延迟诊断
+
+- 路由冒烟测试、真实模型测试和延迟分析脚本说明位于 [../test/README.md](../test/README.md)
+- `npm run test:latency` 会发起真实流式请求，并自动附带 `x-debug-latency: 1`
+- 代理仅在请求带有这个头时输出 `proxy.request_timing`，因此正常业务流量默认不会产生这类延迟分段日志
+- 如果希望脚本再按 `request id` 从 `/admin/api/logs` 拉回对应 timing 日志，且管理页开启了 Basic Auth，还需要设置 `AOAI_PROXY_LATENCY_ADMIN_USERNAME` 和 `AOAI_PROXY_LATENCY_ADMIN_PASSWORD`
+
 ## Docker
 
 构建：

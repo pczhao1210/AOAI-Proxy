@@ -209,6 +209,13 @@ Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin
 - Log records are sanitized for common sensitive keys and large strings are truncated before entering the admin buffer
 - The admin page is intended for recent troubleshooting, not long-term audit retention
 
+## Testing And Latency Diagnostics
+
+- Route smoke tests, real-model tests, and the latency analysis script are documented in [test/README.md](test/README.md)
+- `npm run test:latency` sends real streaming requests and automatically adds `x-debug-latency: 1`
+- The proxy only emits `proxy.request_timing` when that header is present, so normal traffic does not produce timing logs by default
+- If you want the script to pull the matching timing entry from `/admin/api/logs`, also provide `AOAI_PROXY_LATENCY_ADMIN_USERNAME` and `AOAI_PROXY_LATENCY_ADMIN_PASSWORD` when admin auth is enabled
+
 ## Docker
 
 Build:
