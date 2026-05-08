@@ -1,0 +1,40 @@
+{
+  "id": "gpt-realtime-whisper",
+  "displayName": "GPT Realtime Whisper",
+  "provider": "openai",
+  "family": "gpt-realtime",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "realtime/transcription_sessions"
+  ],
+  "inputModalities": [
+    "audio"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "realtime",
+    "transcription",
+    "speech-to-text",
+    "streaming"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "minute",
+    "sourceType": "openai-official",
+    "status": "published",
+    "realtimeAudioDurationPerMinute": 0.017,
+    "realtimeAudioDurationPerSecond": 0.00028
+  },
+  "pricingCatalogEntry": null,
+  "sources": {
+    "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-whisper",
+    "pricing": "https://developers.openai.com/api/docs/pricing"
+  },
+  "notes": [
+    "OpenAI 官方说明 gpt-realtime-whisper 按实时音频时长计费，而不是按文本 token 计费。",
+    "官方公开价格为 0.017 USD/分钟，约 0.00028 USD/秒。"
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "id": "gpt-chat-latest",
+  "displayName": "GPT Chat Latest",
+  "provider": "azure-openai",
+  "family": "gpt-chat-latest",
+  "modelVersion": "2026-05-05",
+  "status": "preview",
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "openai-official",
+    "status": "published",
+    "inputPer1mTokens": 5,
+    "cachedInputPer1mTokens": 0.5,
+    "outputPer1mTokens": 30,
+    "inputPer1kTokens": 0.005,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.03
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.005,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.03
+  },
+  "proxyTemplate": {
+    "id": "gpt-chat-latest",
+    "displayName": "GPT Chat Latest",
+    "targetModel": "gpt-chat-latest",
+    "capabilities": [
+      "reasoning",
+      "function-calling",
+      "structured-outputs",
+      "parallel-tool-calling"
+    ],
+    "pricingRef": "gpt-chat-latest"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "pricing": "https://developers.openai.com/api/docs/pricing"
+  },
+  "notes": [
+    "Azure 文档将 gpt-chat-latest 标为 GPT-chat-latest 2026-05-05 Preview，并说明 OpenAI API 中也称为 chat-latest。",
+    "OpenAI pricing 将 chat-latest 列为 ChatGPT 专用 latest Instant 模型，价格为输入 5 USD/1M、缓存输入 0.50 USD/1M、输出 30 USD/1M。"
+  ]
+}

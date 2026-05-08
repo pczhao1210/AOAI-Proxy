@@ -1,0 +1,64 @@
+{
+  "id": "gpt-realtime-2",
+  "displayName": "GPT Realtime 2",
+  "provider": "openai",
+  "family": "gpt-realtime",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "realtime"
+  ],
+  "inputModalities": [
+    "text",
+    "image",
+    "audio"
+  ],
+  "outputModalities": [
+    "text",
+    "audio"
+  ],
+  "capabilities": [
+    "reasoning",
+    "realtime",
+    "audio-input",
+    "audio-output",
+    "vision",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "openai-official",
+    "status": "published",
+    "inputPer1mTokens": 4,
+    "cachedInputPer1mTokens": 0.4,
+    "outputPer1mTokens": 24,
+    "inputPer1kTokens": 0.004,
+    "cachedInputPer1kTokens": 0.0004,
+    "outputPer1kTokens": 0.024,
+    "channels": {
+      "audio": {
+        "inputPer1mTokens": 32,
+        "cachedInputPer1mTokens": 0.4,
+        "outputPer1mTokens": 64,
+        "inputPer1kTokens": 0.032,
+        "cachedInputPer1kTokens": 0.0004,
+        "outputPer1kTokens": 0.064
+      },
+      "image": {
+        "inputPer1mTokens": 5,
+        "cachedInputPer1mTokens": 0.5,
+        "inputPer1kTokens": 0.005,
+        "cachedInputPer1kTokens": 0.0005
+      }
+    }
+  },
+  "pricingCatalogEntry": null,
+  "sources": {
+    "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-2",
+    "pricing": "https://developers.openai.com/api/docs/pricing"
+  },
+  "notes": [
+    "OpenAI 官方价格按文本、音频、图像 token 分通道计费；当前 AOAI Proxy 治理计费只支持标准 token 单价，因此 pricingCatalogEntry 保持为空，避免多模态请求被误算。"
+  ]
+}
