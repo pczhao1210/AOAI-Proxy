@@ -985,6 +985,8 @@ export default function App() {
       ...modelSectionLinks
     ],
     ops: [
+      { id: "ops-overview", label: t("ops.overview", "Operations Overview") },
+      { id: "ops-model-validation", label: t("ops.nav.validation", "Model Validation") },
       { id: "ops-pricing", label: t("ops.nav.pricing", "Pricing 库") },
       { id: "ops-caddy", label: t("ops.nav.caddy", "Caddy 与服务") },
       { id: "ops-logs", label: t("ops.nav.logs", "运行日志") },

@@ -179,6 +179,60 @@ function emitTimingLog({
   });
 }
 
+function normalizeRouteProfileKey(routeKey) {
+  if (routeKey === "chat/completions") return "chatCompletions";
+  if (routeKey === "responses") return "responses";
+  if (routeKey === "images/generations") return "imageGenerations";
+  return routeKey;
+}
+
+function normalizeStringList(value) {
+  return Array.isArray(value)
+    ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
+    : [];
+}
+
+function getPositiveByteLimit(value) {
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+function isAllowedByAllNonEmptyLists(fieldName, lists) {
+  for (const list of lists) {
+    if (list.size > 0 && !list.has(fieldName)) return false;
+  }
+  return true;
+}
+
+function applyConfiguredRequestPolicy(body, { config, routeKey, model }) {
+  if (!body || typeof body !== "object") return null;
+  const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(routeKey)] || {};
+  const routeAllowed = new Set(normalizeStringList(routeProfile.allowedRequestFields));
+  const modelPolicy = model?.requestPolicy || {};
+  const modelAllowed = new Set(normalizeStringList(modelPolicy.allowedParams));
+  const modelBlocked = new Set(normalizeStringList(modelPolicy.blockedParams));
+  const dropUnsupported = modelPolicy.dropUnsupportedParams === true || config?.proxy?.guards?.dropUnsupportedOpenAiParams === true;
+  const rejectedFields = [];
+
+  for (const fieldName of Object.keys(body)) {
+    if (fieldName === "model") continue;
+    const blocked = modelBlocked.has(fieldName);
+    const allowed = isAllowedByAllNonEmptyLists(fieldName, [routeAllowed, modelAllowed]);
+    if (!blocked && allowed) continue;
+    if (dropUnsupported) {
+      delete body[fieldName];
+      continue;
+    }
+    rejectedFields.push(fieldName);
+  }
+
+  if (!rejectedFields.length) return null;
+  return {
+    param: rejectedFields[0],
+    fields: rejectedFields,
+    message: `Unsupported request field${rejectedFields.length > 1 ? "s" : ""}: ${rejectedFields.join(", ")}`
+  };
+}
+
 export async function proxyRequest({
   config,
   routeKey,
@@ -560,6 +614,30 @@ export async function proxyRequest({
       });
       return;
     }
+    const configuredPolicyRejection = applyConfiguredRequestPolicy(nextBody, { config, routeKey, model });
+    if (configuredPolicyRejection) {
+      log.error({
+        source: "proxy",
+        requestId,
+        ...requestNetworkContext,
+        modelId,
+        routeKey,
+        backendRouteKey,
+        status: 400,
+        event: "proxy.request_rejected",
+        errorCode: "UNSUPPORTED_PARAMETER",
+        param: configuredPolicyRejection.param,
+        failureReason: configuredPolicyRejection.message
+      }, configuredPolicyRejection.message);
+      sendProxyError(400, {
+        code: "UNSUPPORTED_PARAMETER",
+        exposedCode: "UnsupportedParameter",
+        message: configuredPolicyRejection.message,
+        param: configuredPolicyRejection.param,
+        detail: { fields: configuredPolicyRejection.fields }
+      });
+      return;
+    }
   }
 
   if (
@@ -727,6 +805,33 @@ export async function proxyRequest({
       "x-request-id": requestId
     };
     const bodyText = JSON.stringify(nextBody);
+    const maxRequestBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxRequestBodyBytes);
+    if (maxRequestBodyBytes > 0 && Buffer.byteLength(bodyText) > maxRequestBodyBytes) {
+      log.error({
+        source: "proxy",
+        requestId,
+        ...requestNetworkContext,
+        modelId,
+        routeKey,
+        backendRouteKey,
+        status: 413,
+        event: "proxy.request_rejected",
+        errorCode: "PAYLOAD_TOO_LARGE",
+        failureReason: `Request body exceeds ${maxRequestBodyBytes} bytes`
+      }, "request body exceeds configured limit");
+      sendProxyError(413, {
+        code: "PAYLOAD_TOO_LARGE",
+        exposedCode: "PayloadTooLarge",
+        message: `Request body exceeds ${maxRequestBodyBytes} bytes`
+      });
+      finishTiming({
+        status: 413,
+        outcome: "request_rejected",
+        errorCode: "PAYLOAD_TOO_LARGE",
+        source: "proxy"
+      });
+      return;
+    }
 
     if (isStream) {
       const maxAttempts = Math.max(1, policy.maxRetries + 1);
@@ -747,7 +852,10 @@ export async function proxyRequest({
             targetUrl,
             headers,
             bodyText,
-            connectTimeoutMs: policy.connectTimeoutMs
+            connectTimeoutMs: policy.connectTimeoutMs,
+            timeoutMs: policy.firstByteTimeoutMs,
+            timeoutCode: "UPSTREAM_FIRST_BYTE_TIMEOUT",
+            timeoutLabel: "first byte"
           });
           markTiming(timing, "upstreamHeadersAt");
         } catch (error) {
@@ -1036,6 +1144,31 @@ export async function proxyRequest({
 
     const upstreamResponse = fetchResult.upstreamResponse;
     markTiming(timing, "upstreamHeadersAt");
+    const maxResponseBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxResponseBodyBytes);
+    const responseContentLength = Number(upstreamResponse.headers.get("content-length"));
+    if (maxResponseBodyBytes > 0 && Number.isFinite(responseContentLength) && responseContentLength > maxResponseBodyBytes) {
+      const classified = {
+        code: "UPSTREAM_RESPONSE_TOO_LARGE",
+        retryable: false,
+        status: 502,
+        detail: `Upstream response exceeds ${maxResponseBodyBytes} bytes`
+      };
+      recordProxyError({
+        status: classified.status,
+        errorCode: classified.code,
+        failureReason: classified.detail,
+        source: "upstream"
+      });
+      await upstreamResponse.body?.cancel?.().catch(() => {});
+      reply.code(classified.status).send(buildErrorBody({ classified, requestId, detail: classified.detail }));
+      finishTiming({
+        status: classified.status,
+        outcome: "upstream_response_too_large",
+        errorCode: classified.code,
+        source: "upstream"
+      });
+      return;
+    }
     let payload = null;
     try {
       payload = await parseJsonWithTimeout(upstreamResponse, policy.requestTimeoutMs);

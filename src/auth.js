@@ -8,6 +8,7 @@ const injectedEnv = new Map();
 
 const MIN_TOKEN_HEADROOM_MS = 2 * 60 * 1000;
 const PREFETCH_REFRESH_MS = 10 * 60 * 1000;
+const TOKEN_RETRY_DELAYS_MS = [200, 500, 1000];
 
 function getCacheKey(scope) {
   return String(scope || "");
@@ -113,6 +114,46 @@ function syncAzureIdentityEnv(auth) {
   }
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isCredentialUnavailableError(error) {
+  return String(error?.name || "") === "CredentialUnavailableError";
+}
+
+function isTransientDefaultCredentialError(error) {
+  if (!isCredentialUnavailableError(error)) {
+    return false;
+  }
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    message.includes("imds endpoint")
+    || message.includes("managedidentitycredential")
+    || message.includes("authentication is not available")
+    || message.includes("azure cli could not be found")
+    || message.includes("azure developer cli couldn't be found")
+    || message.includes("environmentcredential is unavailable")
+  );
+}
+
+async function acquireTokenWithRetry(scope) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= TOKEN_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await credential.getToken(scope);
+    } catch (error) {
+      lastError = error;
+      const canRetry = isTransientDefaultCredentialError(error) && attempt < TOKEN_RETRY_DELAYS_MS.length;
+      if (!canRetry) {
+        break;
+      }
+      await wait(TOKEN_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  throw lastError;
+}
+
 async function refreshBearerToken(scope) {
   if (!credential) {
     throw new Error("Credential not initialized");
@@ -123,7 +164,7 @@ async function refreshBearerToken(scope) {
     return existing;
   }
 
-  const refreshPromise = credential.getToken(scope)
+  const refreshPromise = acquireTokenWithRetry(scope)
     .then((token) => {
       if (!token || !token.token) {
         throw new Error("Failed to acquire access token");

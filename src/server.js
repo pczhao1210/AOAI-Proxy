@@ -22,6 +22,8 @@ import { getRequestNetworkContext } from "./request-network.js";
 const defaultBodyLimit = 50 * 1024 * 1024;
 const bodyLimitEnv = Number(process.env.BODY_LIMIT || process.env.SERVER_BODY_LIMIT);
 const bodyLimit = Number.isFinite(bodyLimitEnv) && bodyLimitEnv > 0 ? bodyLimitEnv : defaultBodyLimit;
+const STATIC_ADMIN_PATH = "/admin";
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 const app = fastify({
   logger: {
@@ -29,16 +31,52 @@ const app = fastify({
     stream: createPinoCaptureStream()
   },
   disableRequestLogging: true,
-  bodyLimit
+  bodyLimit,
+  rewriteUrl: (req) => rewriteAdminUrl(req.url)
 });
+
+function normalizeAdminPath(adminPath) {
+  const text = typeof adminPath === "string" ? adminPath.trim() : "";
+  const withLeadingSlash = text.startsWith("/") ? text : `/${text}`;
+  const normalized = withLeadingSlash.replace(/\/+$/, "");
+  return normalized && normalized !== "/" ? normalized : STATIC_ADMIN_PATH;
+}
+
+function getConfiguredAdminPath() {
+  try {
+    return normalizeAdminPath(getConfig()?.server?.adminPath);
+  } catch {
+    return STATIC_ADMIN_PATH;
+  }
+}
+
+function rewriteAdminUrl(url) {
+  if (!url || typeof url !== "string") return url;
+  const configuredAdminPath = getConfiguredAdminPath();
+  if (configuredAdminPath === STATIC_ADMIN_PATH) return url;
+
+  const queryStart = url.indexOf("?");
+  const pathOnly = queryStart >= 0 ? url.slice(0, queryStart) : url;
+  const query = queryStart >= 0 ? url.slice(queryStart) : "";
+  const normalizedUrl = pathOnly.startsWith("/") ? pathOnly : `/${pathOnly}`;
+  if (normalizedUrl !== configuredAdminPath && !normalizedUrl.startsWith(`${configuredAdminPath}/`)) {
+    return url;
+  }
+  return `${STATIC_ADMIN_PATH}${normalizedUrl.slice(configuredAdminPath.length)}${query}`;
+}
 
 // Check if a request targets the admin area
 function isAdminRoute(url, adminPath) {
   if (!url) return false;
-  const normalized = (adminPath || "/admin").replace(/\/+$/, "");
+  const adminPaths = new Set([STATIC_ADMIN_PATH, normalizeAdminPath(adminPath)]);
   const pathOnly = url.split("?")[0];
   const normalizedUrl = pathOnly.startsWith("/") ? pathOnly : `/${pathOnly}`;
-  return normalizedUrl === normalized || normalizedUrl.startsWith(`${normalized}/`);
+  for (const normalized of adminPaths) {
+    if (normalizedUrl === normalized || normalizedUrl.startsWith(`${normalized}/`)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Extract API key from Authorization or x-api-key
@@ -67,6 +105,33 @@ function secureEqual(a, b) {
   const bBuf = Buffer.from(String(b ?? ""));
   if (aBuf.length !== bBuf.length) return false;
   return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function normalizeIp(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (text.startsWith("::ffff:")) return text.slice(7);
+  return text;
+}
+
+function verifyAdminIpAccess(config, req) {
+  const allowedIps = Array.isArray(config?.admin?.security?.allowedIps)
+    ? config.admin.security.allowedIps.map(normalizeIp).filter(Boolean)
+    : [];
+  if (!allowedIps.length) return true;
+  const networkContext = getRequestNetworkContext(config, req);
+  const clientIp = normalizeIp(networkContext.clientIp);
+  return allowedIps.includes(clientIp);
+}
+
+function verifyAdminCsrf(config, req) {
+  if (config?.admin?.security?.csrfProtection !== true) return true;
+  if (!UNSAFE_METHODS.has(String(req.method || "").toUpperCase())) return true;
+  const header = req.headers["x-aoai-admin-csrf"];
+  return typeof header === "string" && header.trim() === "1";
+}
+
+function getPositiveInteger(value) {
+  return Number.isInteger(value) && value > 0 ? value : 0;
 }
 
 function parseBasicAuthHeader(headerValue) {
@@ -184,11 +249,22 @@ app.addHook("preHandler", async (req, reply) => {
     return reply.code(204).send();
   }
   if (isAdminRoute(rawUrl, config.server.adminPath)) {
+    if (!verifyAdminIpAccess(config, req)) {
+      return reply.code(403).send({ error: "AdminForbidden", message: "Admin access is not allowed from this IP address" });
+    }
     if (!verifyAdminBasicAuth(config, req.headers)) {
       reply.header("WWW-Authenticate", 'Basic realm="AOAI Proxy Admin"');
       return reply.code(401).send({ error: "AdminUnauthorized" });
     }
+    if (!verifyAdminCsrf(config, req)) {
+      return reply.code(403).send({ error: "AdminCsrfRejected", message: "Missing admin CSRF header" });
+    }
     return;
+  }
+  const maxRequestBodyBytes = getPositiveInteger(config?.proxy?.guards?.maxRequestBodyBytes);
+  const contentLength = Number(req.headers["content-length"]);
+  if (maxRequestBodyBytes > 0 && Number.isFinite(contentLength) && contentLength > maxRequestBodyBytes) {
+    return reply.code(413).send({ error: "PayloadTooLarge", message: `Request body exceeds ${maxRequestBodyBytes} bytes` });
   }
   const key = extractApiKey(config, req.headers);
   const consumerResult = resolveApiConsumer(config, key);
@@ -438,7 +514,7 @@ if (hasBuiltAdminApp) {
   });
 
   app.get("/admin", async (req, reply) => {
-    return reply.redirect("/admin/");
+    return reply.redirect(`${getConfiguredAdminPath()}/`);
   });
 
   app.get("/admin/", async (req, reply) => {
@@ -451,13 +527,13 @@ if (hasBuiltAdminApp) {
       return reply.callNotFound();
     }
     if (requestPath.startsWith("/admin/legacy/")) {
-      return reply.redirect("/admin/");
+      return reply.redirect(`${getConfiguredAdminPath()}/`);
     }
     return reply.sendFile("index.html", adminAppRoot);
   });
 } else {
   app.get("/admin", async (req, reply) => {
-    return reply.redirect("/admin/");
+    return reply.redirect(`${getConfiguredAdminPath()}/`);
   });
 
   app.get("/admin/", async (req, reply) => {
@@ -466,11 +542,11 @@ if (hasBuiltAdminApp) {
 }
 
 app.get("/admin/legacy", async (req, reply) => {
-  return reply.redirect("/admin/");
+  return reply.redirect(`${getConfiguredAdminPath()}/`);
 });
 
 app.get("/admin/legacy/", async (req, reply) => {
-  return reply.redirect("/admin/");
+  return reply.redirect(`${getConfiguredAdminPath()}/`);
 });
 
 async function start() {

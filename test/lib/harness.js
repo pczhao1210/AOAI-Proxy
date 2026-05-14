@@ -336,7 +336,7 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
 async function waitForServerReady(baseUrl, timeoutMs, childProcess, output) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    if (childProcess.exitCode != null) {
+    if (hasChildProcessExited(childProcess)) {
       throw new Error(`Proxy process exited early with code ${childProcess.exitCode}\nSTDOUT:\n${output.stdout.join("")}\nSTDERR:\n${output.stderr.join("")}`);
     }
     try {
@@ -352,17 +352,23 @@ async function waitForServerReady(baseUrl, timeoutMs, childProcess, output) {
   throw new Error(`Timed out waiting for proxy server on ${baseUrl}\nSTDOUT:\n${output.stdout.join("")}\nSTDERR:\n${output.stderr.join("")}`);
 }
 
+function hasChildProcessExited(childProcess) {
+  return childProcess.exitCode != null || childProcess.signalCode != null;
+}
+
 async function stopChildProcess(childProcess) {
-  if (!childProcess || childProcess.exitCode != null) {
+  if (!childProcess || hasChildProcessExited(childProcess)) {
     return;
   }
 
   childProcess.kill("SIGTERM");
   const exitPromise = once(childProcess, "exit").catch(() => null);
   await Promise.race([exitPromise, delay(3000)]);
-  if (childProcess.exitCode == null) {
+  if (!hasChildProcessExited(childProcess)) {
     childProcess.kill("SIGKILL");
-    await once(childProcess, "exit").catch(() => null);
+    if (!hasChildProcessExited(childProcess)) {
+      await once(childProcess, "exit").catch(() => null);
+    }
   }
 }
 
@@ -491,7 +497,7 @@ export async function createTestContext() {
       return result;
     },
     async waitForExit(timeoutMs = 3000) {
-      if (childProcess.exitCode != null) {
+      if (hasChildProcessExited(childProcess)) {
         return childProcess.exitCode;
       }
       const exitPromise = once(childProcess, "exit").then(([code]) => code);
