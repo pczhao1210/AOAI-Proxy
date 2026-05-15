@@ -1,0 +1,59 @@
+{
+  "id": "DeepSeek-V4-Pro",
+  "displayName": "DeepSeek V4 Pro",
+  "provider": "deepseek",
+  "family": "deepseek-v4",
+  "modelVersion": "DeepSeek-V4-Pro",
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "function-calling",
+    "json-output"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "deepseek-official",
+    "status": "published",
+    "inputPer1mTokens": 1.74,
+    "cachedInputPer1mTokens": 0.0145,
+    "outputPer1mTokens": 3.48,
+    "inputPer1kTokens": 0.00174,
+    "cachedInputPer1kTokens": 0.0000145,
+    "outputPer1kTokens": 0.00348
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00174,
+    "cachedInputPer1kTokens": 0.0000145,
+    "outputPer1kTokens": 0.00348
+  },
+  "proxyTemplate": {
+    "id": "DeepSeek-V4-Pro",
+    "displayName": "DeepSeek V4 Pro",
+    "targetModel": "DeepSeek-V4-Pro",
+    "capabilities": [
+      "reasoning",
+      "function-calling",
+      "json-output"
+    ],
+    "pricingRef": "DeepSeek-V4-Pro"
+  },
+  "sources": {
+    "capabilities": "https://api-docs.deepseek.com/quick_start/pricing",
+    "pricing": "https://api-docs.deepseek.com/quick_start/pricing"
+  },
+  "notes": [
+    "DeepSeek 官方价格页按 1M tokens 公布 cache hit、cache miss input 和 output 价格；这里将 cache miss 映射为 input，cache hit 映射为 cachedInput。",
+    "官方页当前同时展示 DeepSeek V4 Pro 的限时 75% 折扣价，但这里按原价回填。"
+  ]
+}

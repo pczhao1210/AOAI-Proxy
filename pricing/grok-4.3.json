@@ -1,0 +1,53 @@
+{
+  "id": "grok-4.3",
+  "displayName": "Grok 4.3",
+  "provider": "xai",
+  "family": "grok-4.3",
+  "modelVersion": null,
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "xai-official",
+    "status": "published",
+    "inputPer1mTokens": 1.25,
+    "outputPer1mTokens": 2.5,
+    "inputPer1kTokens": 0.00125,
+    "outputPer1kTokens": 0.0025
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00125,
+    "outputPer1kTokens": 0.0025
+  },
+  "proxyTemplate": {
+    "id": "grok-4.3",
+    "displayName": "Grok 4.3",
+    "targetModel": "grok-4.3",
+    "capabilities": [
+      "reasoning",
+      "function-calling"
+    ],
+    "pricingRef": "grok-4.3"
+  },
+  "sources": {
+    "capabilities": "https://docs.x.ai/developers/models",
+    "pricing": "https://docs.x.ai/developers/models"
+  },
+  "notes": [
+    "xAI 模型页公开 Grok 4.3 input 和 output 单价，并说明 2026-05-15 后旧 grok-4、grok-4-fast 等文本模型 slug 会重定向到 grok-4.3 且按 Grok 4.3 标准价格计费。"
+  ]
+}
