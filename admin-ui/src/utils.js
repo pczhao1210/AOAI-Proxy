@@ -294,9 +294,7 @@ export function syncUpstreamCapabilities(config, upstreamName) {
     }
   }
 
-  if (!normalizeStringArray(upstream.capabilities).length || hasLegacyRouteCapabilities(upstream.capabilities)) {
-    upstream.capabilities = [...union];
-  }
+  upstream.capabilities = [...union];
 }
 
 export function getValueByPath(source, path) {

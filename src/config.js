@@ -1,7 +1,7 @@
 import { getLogRuntimeInfo } from "./logs.js";
 import { getConfiguredModelBindingIssues } from "./model-validation.js";
 import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
-import { hasLegacyRouteCapabilities, resolveNativeModelCapabilities } from "./pricing-library.js";
+import { resolveNativeModelCapabilities } from "./pricing-library.js";
 import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
 import { isSupportedPersistenceMode } from "./persistence-mode.js";
 
@@ -586,10 +586,7 @@ function applySchemaCompatibility(rawConfig, merged) {
         }
       }, upstream || {});
       next.tags = normalizeStringArray(next.tags);
-      next.capabilities = normalizeStringArray(next.capabilities);
-      if (next.capabilities.length === 0 || hasLegacyRouteCapabilities(next.capabilities)) {
-        next.capabilities = collectCapabilitiesForUpstream(merged.models, next.name);
-      }
+      next.capabilities = collectCapabilitiesForUpstream(merged.models, next.name);
       return next;
     })
     : [];
@@ -1158,12 +1155,6 @@ function validateConfig(cfg) {
     }
     if (upstream.capabilities != null && (!Array.isArray(upstream.capabilities) || upstream.capabilities.some((value) => typeof value !== "string"))) {
       throw new Error(`upstreams[${idx}].capabilities must be an array of strings`);
-    }
-    const declaredCapabilities = new Set(collectCapabilitiesForUpstream(cfg.models, upstream.name));
-    for (const capability of normalizeStringArray(upstream.capabilities)) {
-      if (!declaredCapabilities.has(capability)) {
-        throw new Error(`upstreams[${idx}].capabilities contains \"${capability}\" but no model bound to upstream \"${upstream.name}\" declares it`);
-      }
     }
     if (upstream.routes && typeof upstream.routes !== "object") {
       throw new Error(`upstreams[${idx}].routes must be an object`);

@@ -30,6 +30,16 @@ function setModelWildcardRoute(next, modelIndex, value) {
   next.models[modelIndex].routes = routes;
 }
 
+function syncModelUpstreams(next, modelIndex, previousUpstream) {
+  const currentUpstream = next.models?.[modelIndex]?.upstream;
+  if (previousUpstream) {
+    syncUpstreamCapabilities(next, previousUpstream);
+  }
+  if (currentUpstream && currentUpstream !== previousUpstream) {
+    syncUpstreamCapabilities(next, currentUpstream);
+  }
+}
+
 export default function RoutingTab({ config, pricingLibrary, updateConfig, addUpstream, addModel, addBlankModel, t }) {
   const [search, setSearch] = useState("");
   const searchTerm = search.trim().toLowerCase();
@@ -121,7 +131,7 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                     <Field label={t("field.priority", "Priority")}><input type="number" value={item.priority || 0} onChange={(event) => updateConfig((next) => { next.upstreams[index].priority = Number(event.target.value || 0); })} /></Field>
                   </div>
                   <Field label={t("field.baseUrl", "Base URL")}><input value={item.baseUrl || ""} onChange={(event) => updateConfig((next) => { next.upstreams[index].baseUrl = event.target.value; })} /></Field>
-                  <Field label={t("field.capabilities", "Capabilities")}><input value={formatList(item.capabilities)} onChange={(event) => updateConfig((next) => { next.upstreams[index].capabilities = parseList(event.target.value); })} /></Field>
+                  <Field label={t("field.capabilities", "Capabilities")}><input value={formatList(item.capabilities)} readOnly /></Field>
                 </EntityCard>
               );
             })}
@@ -150,7 +160,9 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                   defaultOpen={false}
                   group="routing-models"
                   onRemove={() => updateConfig((next) => {
+                    const upstreamName = next.models?.[index]?.upstream;
                     next.models = (next.models || []).filter((_, modelIndex) => modelIndex !== index);
+                    syncUpstreamCapabilities(next, upstreamName);
                   })}
                 >
                   <div className="form-grid compact">
@@ -179,7 +191,11 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                       hint={t("routing.hint.azureDeployment", "This is the upstream deployment or target model actually sent to Azure.")}
                     ><input value={item.targetModel || ""} onChange={(event) => updateConfig((next) => { next.models[index].targetModel = event.target.value; autoMatchTemplate(next, index); })} /></Field>
                     <Field label={t("field.upstream", "Upstream")}>
-                      <select value={item.upstream || ""} onChange={(event) => updateConfig((next) => { next.models[index].upstream = event.target.value; })}>
+                      <select value={item.upstream || ""} onChange={(event) => updateConfig((next) => {
+                        const previousUpstream = next.models?.[index]?.upstream;
+                        next.models[index].upstream = event.target.value;
+                        syncModelUpstreams(next, index, previousUpstream);
+                      })}>
                         <option value="">-</option>
                         {upstreamOptions.map((upstream) => <option key={upstream.name} value={upstream.name}>{upstream.name}</option>)}
                       </select>
@@ -202,7 +218,10 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                       hint={t("routing.hint.pricingTemplateId", "Used to match pricing library metadata and governance pricing, not the Azure deployment name.")}
                     ><input value={item.pricingRef || ""} onChange={(event) => updateConfig((next) => { next.models[index].pricingRef = event.target.value; autoMatchTemplate(next, index); })} /></Field>
                   </div>
-                  <Field label={t("field.capabilities", "Capabilities")}><input value={formatList(item.capabilities)} onChange={(event) => updateConfig((next) => { next.models[index].capabilities = parseList(event.target.value); })} /></Field>
+                  <Field label={t("field.capabilities", "Capabilities")}><input value={formatList(item.capabilities)} onChange={(event) => updateConfig((next) => {
+                    next.models[index].capabilities = parseList(event.target.value);
+                    syncUpstreamCapabilities(next, next.models[index].upstream);
+                  })} /></Field>
                   <Field label={t("field.accessTags", "Access Tags")}><input value={formatList(item.accessTags)} onChange={(event) => updateConfig((next) => { next.models[index].accessTags = parseList(event.target.value); })} /></Field>
                   <Field label={t("field.fallbackModels", "Fallback Models")}><input value={formatList(item.fallbackModels)} onChange={(event) => updateConfig((next) => { next.models[index].fallbackModels = parseList(event.target.value); })} /></Field>
                 </EntityCard>
