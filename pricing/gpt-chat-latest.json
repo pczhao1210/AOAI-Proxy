@@ -18,6 +18,7 @@
   ],
   "capabilities": [
     "reasoning",
+    "vision",
     "function-calling",
     "structured-outputs",
     "parallel-tool-calling"
@@ -46,6 +47,7 @@
     "targetModel": "gpt-chat-latest",
     "capabilities": [
       "reasoning",
+      "vision",
       "function-calling",
       "structured-outputs",
       "parallel-tool-calling"

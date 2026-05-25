@@ -16,6 +16,7 @@
     "image"
   ],
   "capabilities": [
+    "vision",
     "image-generation",
     "image-editing"
   ],
@@ -40,6 +41,7 @@
     "displayName": "FLUX.2 [flex]",
     "targetModel": "FLUX.2-flex",
     "capabilities": [
+      "vision",
       "image-generation",
       "image-editing"
     ],

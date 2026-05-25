@@ -9,13 +9,15 @@
     "chat/completions"
   ],
   "inputModalities": [
-    "text"
+    "text",
+    "image"
   ],
   "outputModalities": [
     "text"
   ],
   "capabilities": [
     "reasoning",
+    "vision",
     "function-calling",
     "json-output"
   ],
@@ -43,6 +45,7 @@
     "targetModel": "DeepSeek-V4-Flash",
     "capabilities": [
       "reasoning",
+      "vision",
       "function-calling",
       "json-output"
     ],

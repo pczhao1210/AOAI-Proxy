@@ -17,6 +17,7 @@
     "text"
   ],
   "capabilities": [
+    "vision",
     "function-calling",
     "structured-outputs",
     "parallel-tool-calling"
@@ -44,6 +45,7 @@
     "displayName": "GPT-5.2 Chat",
     "targetModel": "gpt-5.2-chat",
     "capabilities": [
+      "vision",
       "function-calling",
       "structured-outputs",
       "parallel-tool-calling"

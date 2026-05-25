@@ -17,6 +17,7 @@
     "text"
   ],
   "capabilities": [
+    "vision",
     "image-generation",
     "image-editing"
   ],
@@ -48,6 +49,7 @@
     "displayName": "GPT-Image-1.5",
     "targetModel": "gpt-image-1.5",
     "capabilities": [
+      "vision",
       "image-generation",
       "image-editing"
     ],
