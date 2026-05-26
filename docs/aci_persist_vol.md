@@ -293,7 +293,9 @@ az role assignment create \
 
 ### 6.3 `database` 与 `database+azureFile` 模式：保证 PostgreSQL 可连通
 
-本仓库模板在 `persistenceMode=database` 或 `persistenceMode=database+azureFile` 下会自动创建 PostgreSQL Flexible Server、数据库、允许 Azure 服务访问的 `0.0.0.0` 防火墙规则，并把连接串以安全环境变量方式注入容器。
+本仓库模板在 `persistenceMode=database` 或 `persistenceMode=database+azureFile` 下会自动创建 PostgreSQL Flexible Server、数据库，并把连接串以安全环境变量方式注入容器。出于安全默认值考虑，允许 Azure 服务访问的 `0.0.0.0` 防火墙规则不会默认创建；只有显式设置 `allowAzureServicesToDatabase=true` 时才会创建。
+
+如果保持默认 `false`，请确保 PostgreSQL 已经通过私网、受控防火墙规则或其他预批准网络路径允许该容器连接。
 
 如果你走的是本文档里的原始 ACI CLI 手工流程，需要自己确保 PostgreSQL 服务器允许该容器连接。
 

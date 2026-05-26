@@ -220,7 +220,16 @@ Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin
 
 Build:
 
-- `docker build -t aoai-proxy:latest .`
+- `./dockerbuild.sh aoai-proxy:latest`
+
+The Dockerfile tracks the current stable major lines with `NODE_MAJOR=24` and `CADDY_MAJOR=2`, which resolve to `node:24-alpine` and `caddy:2-alpine`. The helper script runs `docker build --pull` so each build fetches the latest available patch/minor image in those major lines. Override them only when you intentionally need a different major line:
+
+```bash
+docker build --pull \
+  --build-arg NODE_MAJOR=24 \
+  --build-arg CADDY_MAJOR=2 \
+  -t aoai-proxy:latest .
+```
 
 Run with Azure Files-style local persistence:
 
@@ -275,7 +284,8 @@ az deployment group create \
 The templates provision:
 
 - A container group with system-assigned managed identity
-- Azure Database for PostgreSQL Flexible Server, a firewall rule that allows Azure services, and a database child resource when `persistenceMode=database` or `persistenceMode=database+azureFile`
+- Azure Database for PostgreSQL Flexible Server and a database child resource when `persistenceMode=database` or `persistenceMode=database+azureFile`
+- An optional PostgreSQL `0.0.0.0` Azure-services firewall rule only when `allowAzureServicesToDatabase=true`
 - A new storage account only when `persistenceMode=azureFile` or `persistenceMode=database+azureFile`
 - Azure Files share when `persistenceMode=azureFile` or `persistenceMode=database+azureFile`
 - Secure `CONFIG_DB_CONNECTION_STRING` injection into the container when `persistenceMode=database` or `persistenceMode=database+azureFile`
@@ -286,6 +296,12 @@ If `storageAccountName` is empty, the template auto-generates a valid name for s
 If `databaseServerName` is empty, the template auto-generates a valid PostgreSQL server name.
 If `databaseName` is empty, the template creates `aoaiproxy`.
 The PostgreSQL default is `Burstable` + `Standard_B1ms` + `32 GB`, which is the smallest documented development-oriented size in Microsoft Learn guidance.
+
+Security defaults:
+
+- `allowAzureServicesToDatabase` defaults to `false`. Set it to `true` only when this public ACI deployment cannot reach PostgreSQL through a private or pre-approved network path.
+- `acrLoginServer`, `acrUsername`, and `acrPassword` default to empty. Fill them only when the image registry requires basic image-pull credentials from this template.
+- The template still creates a public ACI IP address. Leaving `dnsNameLabel` empty only skips the public DNS name.
 
 Current limitation: this ACI-based deployment does not expose an ARM64 machine-family selector. The implemented default is therefore the smallest documented PostgreSQL development SKU, not a guaranteed ARM-series runtime.
 

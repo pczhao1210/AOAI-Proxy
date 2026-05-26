@@ -45,7 +45,7 @@
         "type": "Microsoft.Common.TextBox",
         "label": "Public DNS label",
         "defaultValue": "",
-        "toolTip": "Optional public DNS label for the container group. Leave empty to skip a public DNS name.",
+        "toolTip": "Optional public DNS label for the container group. Leave empty to skip a public DNS name. This does not make the ACI private.",
         "constraints": {
           "regex": "^$|^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
           "validationMessage": "Leave empty or use 1-63 lowercase letters, numbers, or hyphens."
@@ -137,7 +137,7 @@
                   "label": "Azure Files volume",
                   "description": "Mount /app/data from Azure Files. Requires shared key access.",
                   "value": "azureFile"
-                },
+                }
               ],
               "required": true
             }
@@ -282,6 +282,14 @@
             }
           },
           {
+            "name": "allowAzureServicesToDatabase",
+            "type": "Microsoft.Common.CheckBox",
+            "label": "Allow Azure services to reach PostgreSQL",
+            "defaultValue": false,
+            "visible": "[and(or(equals(steps('runtime').persistenceMode, 'database'), equals(steps('runtime').persistenceMode, 'database+azureFile')), equals(steps('database').databaseServerMode, 'new'))]",
+            "toolTip": "Creates the PostgreSQL 0.0.0.0 firewall rule. Enable only when this public ACI deployment cannot reach PostgreSQL through a private or pre-approved network path."
+          },
+          {
             "name": "databaseSkuName",
             "type": "Microsoft.Common.DropDown",
             "label": "Database size",
@@ -385,7 +393,6 @@
             "constraints": {
               "required": false
             }
-          },
           }
         ]
       },
@@ -423,8 +430,8 @@
             "name": "acrLoginServer",
             "type": "Microsoft.Common.TextBox",
             "label": "ACR login server",
-            "defaultValue": "alexmcr.azurecr.io",
-            "toolTip": "Leave empty for a public image registry.",
+            "defaultValue": "",
+            "toolTip": "Fill only when the image registry requires basic image-pull credentials from this template. Leave empty for public images or registries that do not need credentials here.",
             "constraints": {
               "required": false
             }
@@ -435,7 +442,10 @@
             "label": "ACR username",
             "defaultValue": "",
             "toolTip": "Required only when the registry needs basic authentication.",
-            "visible": "[not(empty(steps('registry').acrLoginServer))]"
+            "visible": "[not(empty(steps('registry').acrLoginServer))]",
+            "constraints": {
+              "required": "[not(empty(steps('registry').acrLoginServer))]"
+            }
           },
           {
             "name": "acrPassword",
@@ -477,6 +487,7 @@
       "databaseAdminPassword": "[steps('database').databaseAdminPassword]",
       "databaseTier": "Burstable",
       "databaseSkuName": "[steps('database').databaseSkuName]",
+      "allowAzureServicesToDatabase": "[steps('database').allowAzureServicesToDatabase]",
       "cognitiveServicesAccountName": "[steps('foundry').cognitiveAccount.name]",
       "cognitiveServicesAccountResourceGroup": "[split(steps('foundry').cognitiveAccount.id, '/')[4]]",
       "acrLoginServer": "[steps('registry').acrLoginServer]",

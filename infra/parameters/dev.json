@@ -24,7 +24,10 @@
       "value": "aoaiproxyadmin"
     },
     "databaseAdminPassword": {
-      "value": "replace-with-postgresql-admin-password"
+      "value": ""
+    },
+    "allowAzureServicesToDatabase": {
+      "value": false
     },
     "databaseTier": {
       "value": "Burstable"
@@ -39,13 +42,13 @@
       "value": "replace-with-foundry-resource-group-if-different"
     },
     "acrLoginServer": {
-      "value": "alexmcr.azurecr.io"
+      "value": ""
     },
     "acrUsername": {
-      "value": "replace-with-acr-username"
+      "value": ""
     },
     "acrPassword": {
-      "value": "replace-with-acr-password"
+      "value": ""
     }
   }
 }

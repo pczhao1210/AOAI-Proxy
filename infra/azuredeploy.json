@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "16410912255070560642"
+      "templateHash": "17918851119479686637"
     }
   },
   "parameters": {
@@ -33,7 +33,7 @@
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Public DNS label for the container group. Leave empty to skip public DNS."
+        "description": "Public DNS label for the container group. Leave empty to skip public DNS. This does not make the ACI private; the current template still creates a public IP address."
       }
     },
     "cpu": {
@@ -196,9 +196,9 @@
     },
     "allowAzureServicesToDatabase": {
       "type": "bool",
-      "defaultValue": true,
+      "defaultValue": false,
       "metadata": {
-        "description": "Allow connections from Azure services to the PostgreSQL server by creating a 0.0.0.0 firewall rule. This is recommended for ACI because egress IPs are not fixed by default."
+        "description": "Allow connections from Azure services to the PostgreSQL server by creating a 0.0.0.0 firewall rule. Enable only when this public ACI deployment cannot reach PostgreSQL through a private or pre-approved network path."
       }
     },
     "databaseCharset": {
@@ -233,7 +233,7 @@
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Optional ACR login server. Leave empty for public images."
+        "description": "Optional registry login server used only when basic image-pull credentials are required. Leave empty for public images or registries that do not need credentials from this template."
       }
     },
     "acrUsername": {
@@ -269,7 +269,8 @@
     "createDatabase": "[and(variables('enableDatabase'), or(variables('createDatabaseServer'), equals(parameters('databaseMode'), 'new')))]",
     "databaseServerFqdn": "[if(variables('enableDatabase'), format('{0}.postgres.database.azure.com', variables('effectiveDatabaseServerName')), '')]",
     "databaseConnectionString": "[if(variables('enableDatabase'), format('postgresql://{0}:{1}@{2}:5432/{3}?sslmode=require', parameters('databaseAdminUsername'), uriComponent(parameters('databaseAdminPassword')), variables('databaseServerFqdn'), variables('effectiveDatabaseName')), '')]",
-    "imageRegistryCredentials": "[if(empty(parameters('acrLoginServer')), createArray(), createArray(createObject('server', parameters('acrLoginServer'), 'username', parameters('acrUsername'), 'password', parameters('acrPassword'))))]",
+    "useImageRegistryCredentials": "[and(and(not(empty(parameters('acrLoginServer'))), not(empty(parameters('acrUsername')))), not(empty(parameters('acrPassword'))))]",
+    "imageRegistryCredentials": "[if(variables('useImageRegistryCredentials'), createArray(createObject('server', parameters('acrLoginServer'), 'username', parameters('acrUsername'), 'password', parameters('acrPassword'))), createArray())]",
     "environmentVariables": "[if(variables('enableDatabase'), createArray(createObject('name', 'PERSISTENCE_MODE', 'value', parameters('persistenceMode')), createObject('name', 'CONFIG_DB_CONNECTION_STRING', 'secureValue', variables('databaseConnectionString'))), createArray(createObject('name', 'PERSISTENCE_MODE', 'value', parameters('persistenceMode'))))]",
     "volumeMounts": "[if(variables('enableAzureFile'), createArray(createObject('name', 'configshare', 'mountPath', '/app/data')), createArray())]"
   },

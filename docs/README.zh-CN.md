@@ -205,7 +205,16 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 构建：
 
-- `docker build -t aoai-proxy:latest .`
+- `./dockerbuild.sh aoai-proxy:latest`
+
+Dockerfile 使用动态大版本基线：`NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，实际解析为 `node:24-alpine` 和 `caddy:2-alpine`。构建脚本会执行 `docker build --pull`，因此每次构建都会拉取这些大版本线内最新可用的 patch/minor 镜像。只有明确需要切换大版本时才覆盖：
+
+```bash
+docker build --pull \
+  --build-arg NODE_MAJOR=24 \
+  --build-arg CADDY_MAJOR=2 \
+  -t aoai-proxy:latest .
+```
 
 使用 Azure Files 风格本地持久化运行：
 
@@ -260,7 +269,8 @@ az deployment group create \
 模板会创建或配置：
 
 - 启用系统分配托管身份的 Container Group
-- `persistenceMode=database` 或 `persistenceMode=database+azureFile` 时的 Azure Database for PostgreSQL Flexible Server、允许 Azure 服务访问的防火墙规则，以及数据库子资源
+- `persistenceMode=database` 或 `persistenceMode=database+azureFile` 时的 Azure Database for PostgreSQL Flexible Server 和数据库子资源
+- 仅当 `allowAzureServicesToDatabase=true` 时创建 PostgreSQL `0.0.0.0` Azure 服务访问防火墙规则
 - 仅在 `persistenceMode=azureFile` 或 `persistenceMode=database+azureFile` 时创建 Storage Account
 - `persistenceMode=azureFile` 或 `persistenceMode=database+azureFile` 时的 Azure Files 共享
 - `persistenceMode=database` 或 `persistenceMode=database+azureFile` 时向容器安全注入 `CONFIG_DB_CONNECTION_STRING`
@@ -271,6 +281,12 @@ az deployment group create \
 如果 `databaseServerName` 为空，模板会自动生成 PostgreSQL 服务器名。
 如果 `databaseName` 为空，模板会创建 `aoaiproxy`。
 PostgreSQL 默认规格是 `Burstable` + `Standard_B1ms` + `32 GB`，对应微软文档里最小的开发向规格。
+
+安全默认值：
+
+- `allowAzureServicesToDatabase` 默认是 `false`。只有当当前公网 ACI 部署无法通过私网或预批准网络路径连接 PostgreSQL 时，才显式设为 `true`。
+- `acrLoginServer`、`acrUsername`、`acrPassword` 默认留空。只有镜像仓库确实需要由该模板提供 basic pull credential 时才填写。
+- 模板当前仍会创建 ACI 公网 IP；`dnsNameLabel` 留空只是不创建公网 DNS 名称。
 
 Azure Files 凭据补充说明：
 

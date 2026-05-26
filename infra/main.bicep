@@ -9,7 +9,7 @@ param containerGroupName string = 'aoai-proxy'
 @description('Container image to deploy.')
 param image string
 
-@description('Public DNS label for the container group. Leave empty to skip public DNS.')
+@description('Public DNS label for the container group. Leave empty to skip public DNS. This does not make the ACI private; the current template still creates a public IP address.')
 param dnsNameLabel string = ''
 
 @description('CPU cores for the container.')
@@ -100,8 +100,8 @@ param databaseVersion string = '14'
 @description('PostgreSQL storage size in GB used when persistenceMode includes database.')
 param databaseStorageSizeGB int = 32
 
-@description('Allow connections from Azure services to the PostgreSQL server by creating a 0.0.0.0 firewall rule. This is recommended for ACI because egress IPs are not fixed by default.')
-param allowAzureServicesToDatabase bool = true
+@description('Allow connections from Azure services to the PostgreSQL server by creating a 0.0.0.0 firewall rule. Enable only when this public ACI deployment cannot reach PostgreSQL through a private or pre-approved network path.')
+param allowAzureServicesToDatabase bool = false
 
 @description('Database charset used when persistenceMode includes database.')
 param databaseCharset string = 'UTF8'
@@ -116,7 +116,7 @@ param cognitiveServicesAccountName string
 @description('Resource group that contains the existing Azure OpenAI or Azure AI Foundry account. Defaults to the deployment resource group.')
 param cognitiveServicesAccountResourceGroup string = resourceGroup().name
 
-@description('Optional ACR login server. Leave empty for public images.')
+@description('Optional registry login server used only when basic image-pull credentials are required. Leave empty for public images or registries that do not need credentials from this template.')
 param acrLoginServer string = ''
 
 @secure()
@@ -150,13 +150,14 @@ var databaseServerFqdn = enableDatabase ? '${effectiveDatabaseServerName}.postgr
 var databaseConnectionString = enableDatabase
   ? 'postgresql://${databaseAdminUsername}:${uriComponent(databaseAdminPassword)}@${databaseServerFqdn}:5432/${effectiveDatabaseName}?sslmode=require'
   : ''
-var imageRegistryCredentials = empty(acrLoginServer) ? [] : [
+var useImageRegistryCredentials = !empty(acrLoginServer) && !empty(acrUsername) && !empty(acrPassword)
+var imageRegistryCredentials = useImageRegistryCredentials ? [
   {
     server: acrLoginServer
     username: acrUsername
     password: acrPassword
   }
-]
+] : []
 var effectiveAzureFileStorageAccountKey = enableAzureFile
   ? (!empty(azureFileStorageAccountKey)
       ? azureFileStorageAccountKey

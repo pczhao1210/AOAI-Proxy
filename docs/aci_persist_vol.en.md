@@ -282,7 +282,9 @@ ACI Azure Files mounting still needs the account key. RBAC is for runtime access
 
 ### 6.3 `database` and `database+azureFile` modes: allow PostgreSQL connectivity
 
-For the template-driven deployment in this repo, `persistenceMode=database` and `persistenceMode=database+azureFile` create a PostgreSQL flexible server, create the database, inject the connection string securely, and add a `0.0.0.0` firewall rule so Azure services can connect.
+For the template-driven deployment in this repo, `persistenceMode=database` and `persistenceMode=database+azureFile` create a PostgreSQL flexible server, create the database, and inject the connection string securely. The `0.0.0.0` Azure-services firewall rule is no longer created by default; it is created only when `allowAzureServicesToDatabase=true` is explicitly set.
+
+When the default remains `false`, make sure PostgreSQL allows the container to connect through a private network path, a controlled firewall rule, or another pre-approved network path.
 
 For the raw ACI CLI flow, make sure your PostgreSQL server allows the container to connect.
 
