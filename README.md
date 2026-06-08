@@ -1,16 +1,28 @@
-# AOAI Foundry Proxy
+# AOAI Foundry Proxy Minimum
 
-> OpenAI-compatible reverse proxy for Azure AI Foundry / Azure OpenAI with SSE streaming, configurable Caddy TLS, and deployment-selectable persistence.
+> Minimum, deployment-focused OpenAI-compatible reverse proxy for Azure AI Foundry / Azure OpenAI with SSE streaming, configurable Caddy TLS, and lightweight persistence options.
 
 [English](README.md) | [简体中文](docs/README.zh-CN.md) | [Docs Index](docs/README.md)
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Fazure-deploy%2Finfra%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Faoai-minimum%2Finfra%2Fazuredeploy.json)
+
+## Branch Purpose
+
+`aoai-minimum` is the stable core branch for users who want the essential proxy and Azure deployment experience without the heavier next-generation management features. It keeps the runtime small and focuses on:
+
+- OpenAI-compatible proxy routes for chat, responses, images, and models
+- API key protection for client requests
+- AAD or API key authentication from the proxy to upstream Azure AI services
+- ACI deployment templates, optional Caddy TLS, and basic admin configuration
+- File, Azure Files-style, or Blob-backed config persistence
+
+Use the default branch when you want the current nextgen experience. Use this branch when you want the smallest practical deployment that keeps the core proxy functionality.
 
 ## Overview
 
 - OpenAI-compatible proxy for `chat/completions`, `responses`, `images/generations`, and `models`
 - Client -> Proxy uses API key auth via `Authorization: Bearer` or `x-api-key`
-- Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens from `DefaultAzureCredential`
+- Proxy -> Azure AI Foundry / Azure OpenAI supports AAD tokens or upstream API key auth
 - Static admin page for config editing, AAD verification, and model usage stats
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
 
@@ -109,6 +121,14 @@ Guidance:
 - `CONFIG_PATH`: local cached config path, default `./config/config.json`
 - `BODY_LIMIT`: request body limit in bytes, default `52428800`
 - `CADDY_BIN`: optional Caddy binary path override
+
+### Upstream Auth
+
+Configure `auth.mode` in `config/config.json`:
+
+- `servicePrincipal`: use `tenantId`, `clientId`, and `clientSecret`
+- `managedIdentity` or `default`: use `DefaultAzureCredential`
+- `apiKey`: send `auth.apiKey` to the upstream as `api-key`
 
 ### Optional Upstream Pool Overrides
 

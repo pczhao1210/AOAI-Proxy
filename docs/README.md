@@ -1,6 +1,8 @@
-# Documentation Index
+# AOAI Minimum Documentation Index
 
-This directory contains the project documentation and deployment guides.
+This directory contains the documentation for the `aoai-minimum` branch: the lightweight, core-function deployment branch for AOAI Foundry Proxy.
+
+Use this branch when you need the basic proxy, Azure deployment templates, Caddy TLS, and persistence options without the heavier nextgen admin/runtime features.
 
 ## Language Entry Points
 
@@ -25,5 +27,6 @@ This directory contains the project documentation and deployment guides.
 
 ## Notes
 
-- The root [../README.md](../README.md) is the primary English entry point.
+- The root [../README.md](../README.md) is the primary English entry point for `aoai-minimum`.
+- The default branch contains the current nextgen experience; this branch is intentionally smaller and focused on stable core functionality.
 - Process and scratch documents are intentionally excluded from version control and are not part of the public docs set.

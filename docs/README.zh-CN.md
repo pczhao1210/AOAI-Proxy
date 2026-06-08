@@ -1,16 +1,22 @@
-# AOAI Foundry Proxy
+# AOAI Foundry Proxy Minimum
 
-> 面向 Azure AI Foundry / Azure OpenAI 的 OpenAI 兼容反向代理，支持 SSE 流式转发、可配置 Caddy TLS，以及部署时可选的持久化方式。
+> 面向 Azure AI Foundry / Azure OpenAI 的最小核心版 OpenAI 兼容反向代理，支持 SSE 流式转发、可配置 Caddy TLS，以及轻量持久化方式。
 
 [English](../README.md) | [简体中文](README.zh-CN.md) | [Docs Index](README.md)
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Fazure-deploy%2Finfra%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Faoai-minimum%2Finfra%2Fazuredeploy.json)
+
+## 分支定位
+
+`aoai-minimum` 是面向核心功能和稳定部署的最小分支，适合只需要代理、Azure 部署模板、Caddy TLS 和基础持久化能力的场景。
+
+如果需要当前 nextgen 的完整体验，请使用默认分支；如果只需要稳定、快速、体积更小的核心代理能力，可以直接使用本分支。
 
 ## 概述
 
 - OpenAI 兼容端点：`/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/models`
 - Client -> Proxy 使用 API Key 鉴权
-- Proxy -> Azure AI Foundry / Azure OpenAI 使用 `DefaultAzureCredential`
+- Proxy -> Azure AI Foundry / Azure OpenAI 支持 AAD Token 或上游 API Key 鉴权
 - 静态管理页支持配置编辑、AAD 验证、统计查看
 - 支持 `models[].routes` 与 `upstreams[].routes` 做模型级和上游级路由映射
 
@@ -56,10 +62,10 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 "server": {
   "upstream": {
     "connectTimeoutMs": 5000,
-    "requestTimeoutMs": 300000,
-    "firstByteTimeoutMs": 45000,
-    "idleTimeoutMs": 360000,
-    "maxRetries": 2,
+    "requestTimeoutMs": 600000,
+    "firstByteTimeoutMs": 90000,
+    "idleTimeoutMs": 600000,
+    "maxRetries": 1,
     "retryBaseMs": 800,
     "retryMaxMs": 8000
   },
@@ -98,6 +104,14 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 - `CONFIG_PATH`：本地缓存配置路径，默认 `./config/config.json`
 - `BODY_LIMIT`：请求体大小限制，默认 `52428800`
 - `CADDY_BIN`：可选的 Caddy 可执行文件路径覆盖
+
+### 上游鉴权
+
+在 `config/config.json` 中配置 `auth.mode`：
+
+- `servicePrincipal`：使用 `tenantId`、`clientId`、`clientSecret`
+- `managedIdentity` 或 `default`：使用 `DefaultAzureCredential`
+- `apiKey`：把 `auth.apiKey` 作为 `api-key` 发送给上游
 
 ### 持久化模式
 
@@ -146,7 +160,7 @@ docker run --rm -p 3000:3000 -p 443:443 \
   aoai-proxy:latest
 ```
 
-容器仍使用 `DefaultAzureCredential`，因此本地开发请提供服务主体凭据，在 Azure 中请使用托管身份。
+使用 AAD 模式时，容器通过 `DefaultAzureCredential` 获取 Token；本地开发可提供服务主体凭据，在 Azure 中可使用托管身份。使用 `apiKey` 模式时，请在配置中设置 `auth.apiKey`。
 
 ## Azure 部署
 
