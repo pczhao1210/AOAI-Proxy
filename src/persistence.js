@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { BlobServiceClient } from "@azure/storage-blob";
 import { DefaultAzureCredential } from "@azure/identity";
+import { parsePersistenceMode } from "./persistence-mode.js";
 
 const DEFAULT_PERSISTENCE_MODE = "azureFile";
 const DEFAULT_CONFIG_BLOB_NAME = "config/config.json";
@@ -20,8 +21,12 @@ const persistenceState = {
   lastBlobError: null
 };
 
+function parseConfiguredMode() {
+  return parsePersistenceMode(process.env.PERSISTENCE_MODE || process.env.CONFIG_PERSISTENCE_MODE);
+}
+
 function normalizeMode(mode) {
-  return mode === "blob" ? "blob" : DEFAULT_PERSISTENCE_MODE;
+  return parsePersistenceMode(mode).normalizedMode;
 }
 
 function getBlobRecoveryIntervalMs() {
@@ -140,7 +145,7 @@ export function getPersistenceMode() {
   persistenceState.configuredMode = mode;
   if (mode !== "blob") {
     updatePersistenceState({
-      activeMode: DEFAULT_PERSISTENCE_MODE,
+      activeMode: mode,
       blobAccessState: "disabled",
       pendingBlobSync: false,
       lastBlobError: null
@@ -319,8 +324,13 @@ export async function writePersistedConfigText(text) {
 }
 
 export function getPersistenceSummary() {
+  const parsedMode = parseConfiguredMode();
   return {
     mode: getPersistenceMode(),
+    configuredModeInput: parsedMode.input,
+    normalizedMode: parsedMode.normalizedMode,
+    modeValid: parsedMode.valid,
+    unknownModeTokens: parsedMode.unknownTokens,
     activeMode: persistenceState.activeMode,
     blobAccessState: persistenceState.blobAccessState,
     pendingBlobSync: persistenceState.pendingBlobSync,

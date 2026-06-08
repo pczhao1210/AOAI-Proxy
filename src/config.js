@@ -7,6 +7,7 @@ const DEFAULTS = {
     host: "0.0.0.0",
     port: 3000,
     adminPath: "/admin",
+    trustProxy: false,
     adminAuth: {
       enabled: false,
       username: "admin",
@@ -56,7 +57,8 @@ const DEFAULTS = {
     clientId: "",
     clientSecret: "",
     managedIdentityClientId: "",
-    scope: "https://cognitiveservices.azure.com/.default"
+    scope: "https://cognitiveservices.azure.com/.default",
+    apiKey: ""
   },
   apiKeys: [],
   upstreams: [],
@@ -255,7 +257,18 @@ function validateConfig(cfg) {
       }
     }
   }
-  if (!cfg.auth || !cfg.auth.scope) {
+  if (!cfg.auth || typeof cfg.auth !== "object") {
+    throw new Error("auth must be an object");
+  }
+  const supportedAuthModes = new Set(["servicePrincipal", "managedIdentity", "default", "apiKey"]);
+  if (cfg.auth.mode != null && !supportedAuthModes.has(cfg.auth.mode)) {
+    throw new Error("auth.mode must be servicePrincipal, managedIdentity, default, or apiKey");
+  }
+  if (cfg.auth.mode === "apiKey") {
+    if (!cfg.auth.apiKey || typeof cfg.auth.apiKey !== "string") {
+      throw new Error("auth.apiKey is required when auth.mode is apiKey");
+    }
+  } else if (!cfg.auth.scope) {
     throw new Error("auth.scope is required");
   }
   if (!Array.isArray(cfg.apiKeys)) {
