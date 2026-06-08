@@ -6,12 +6,7 @@
 
 ## Branch Guidance
 
-The default branch currently tracks the nextgen experience, including the richer admin/runtime features and expanded deployment options.
-
-If you only need the stable core proxy functionality, use the lightweight [`aoai-minimum`](https://github.com/pczhao1210/AOAI-Proxy/tree/aoai-minimum) branch instead. It keeps the essential OpenAI-compatible proxy routes, Azure deployment templates, Caddy TLS, and basic persistence without the heavier nextgen surfaces.
-
-- Minimum branch README: [`aoai-minimum/README.md`](https://github.com/pczhao1210/AOAI-Proxy/blob/aoai-minimum/README.md)
-- Minimum Deploy to Azure: [deploy `aoai-minimum`](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Faoai-minimum%2Finfra%2Fazuredeploy.json)
+> **Need only the core proxy features?** This default branch tracks the nextgen experience with richer admin/runtime features and expanded deployment options. For a smaller, stable core-function build, jump to the [`aoai-minimum` branch](https://github.com/pczhao1210/AOAI-Proxy/tree/aoai-minimum) or read [`aoai-minimum/README.md`](https://github.com/pczhao1210/AOAI-Proxy/blob/aoai-minimum/README.md).
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Faoai-nextgen%2Finfra%2Fazuredeploy.json)
 
