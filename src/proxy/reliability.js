@@ -69,14 +69,80 @@ export function classifyFetchError(error) {
   return { code: "UPSTREAM_FETCH_FAILED", retryable: true, status: 502, detail: message || "fetch failed" };
 }
 
-export function buildErrorBody({ classified, requestId, detail, upstreamStatus }) {
+function stringifyDetail(detail) {
+  if (typeof detail === "string") return detail.trim();
+  if (detail == null) return "";
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return String(detail);
+  }
+}
+
+function parseDetail(detail) {
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    return detail;
+  }
+  const detailText = stringifyDetail(detail);
+  if (!detailText) return null;
+  try {
+    return JSON.parse(detailText);
+  } catch {
+    return null;
+  }
+}
+
+function extractUpstreamError(parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+  if (parsed.error && typeof parsed.error === "object") return parsed.error;
+  return parsed;
+}
+
+function buildDefaultMessage(classified, upstreamStatus) {
+  if (upstreamStatus === 401 || classified?.status === 401) {
+    return "Upstream returned 401 Unauthorized. Check auth.mode, credentials, and Azure RBAC or API key configuration.";
+  }
+  if (upstreamStatus === 403 || classified?.status === 403) {
+    return "Upstream returned 403 Forbidden. Check whether the current credential has permission to access the target Azure OpenAI or Foundry resource.";
+  }
+  if (typeof upstreamStatus === "number") {
+    return `Upstream request failed with status ${upstreamStatus}.`;
+  }
+  return classified?.detail || classified?.code || "request failed";
+}
+
+export function buildErrorBody({ classified, requestId, detail, upstreamStatus, message, code, param, type }) {
+  const detailText = stringifyDetail(detail || classified?.detail || "");
+  const parsedDetail = parseDetail(detail);
+  const upstreamError = extractUpstreamError(parsedDetail);
+  const resolvedMessage =
+    (typeof message === "string" && message.trim())
+    || (typeof upstreamError?.message === "string" && upstreamError.message.trim())
+    || (typeof upstreamError?.error_description === "string" && upstreamError.error_description.trim())
+    || (typeof upstreamError?.detail === "string" && upstreamError.detail.trim())
+    || (typeof upstreamError?.error === "string" && upstreamError.error.trim())
+    || buildDefaultMessage(classified, upstreamStatus);
+  const resolvedCode =
+    (typeof code === "string" && code.trim())
+    || (typeof upstreamError?.code === "string" && upstreamError.code.trim())
+    || classified.code;
+  const resolvedType =
+    (typeof type === "string" && type.trim())
+    || (typeof upstreamError?.type === "string" && upstreamError.type.trim())
+    || classified.code;
+  const resolvedParam = param ?? upstreamError?.param;
+
   return {
-    error: classified.code,
+    error: resolvedCode,
+    message: resolvedMessage,
+    type: resolvedType,
     code: classified.code,
+    upstreamCode: resolvedCode,
+    ...(resolvedParam != null ? { param: resolvedParam } : {}),
     retryable: !!classified.retryable,
     requestId,
     upstreamStatus,
-    detail: detail || classified.detail || ""
+    detail: detailText
   };
 }
 
@@ -87,11 +153,19 @@ export function markErrorWithCode(error, code, message) {
   return e;
 }
 
-export async function fetchOnceWithConnectTimeout({ targetUrl, headers, bodyText, connectTimeoutMs }) {
+export async function fetchOnceWithConnectTimeout({
+  targetUrl,
+  headers,
+  bodyText,
+  connectTimeoutMs,
+  timeoutMs = connectTimeoutMs,
+  timeoutCode = "UPSTREAM_CONNECT_TIMEOUT",
+  timeoutLabel = "connect"
+}) {
   const controller = new AbortController();
   const timer = setTimeout(() => {
-    controller.abort("connect-timeout");
-  }, connectTimeoutMs);
+    controller.abort(timeoutCode);
+  }, timeoutMs);
   try {
     return await fetch(targetUrl, {
       method: "POST",
@@ -100,8 +174,8 @@ export async function fetchOnceWithConnectTimeout({ targetUrl, headers, bodyText
       signal: controller.signal
     });
   } catch (error) {
-    if (controller.signal.aborted && controller.signal.reason === "connect-timeout") {
-      throw markErrorWithCode(error, "UPSTREAM_CONNECT_TIMEOUT", `connect timeout after ${connectTimeoutMs}ms`);
+    if (controller.signal.aborted && controller.signal.reason === timeoutCode) {
+      throw markErrorWithCode(error, timeoutCode, `${timeoutLabel} timeout after ${timeoutMs}ms`);
     }
     throw error;
   } finally {
@@ -124,7 +198,10 @@ export async function fetchWithRetry({
         targetUrl,
         headers,
         bodyText,
-        connectTimeoutMs: policy.connectTimeoutMs
+        connectTimeoutMs: policy.connectTimeoutMs,
+        timeoutMs: policy.firstByteTimeoutMs,
+        timeoutCode: "UPSTREAM_FIRST_BYTE_TIMEOUT",
+        timeoutLabel: "first byte"
       });
       if (upstreamResponse.ok) {
         return { ok: true, upstreamResponse, attempt };

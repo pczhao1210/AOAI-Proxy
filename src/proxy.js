@@ -1,5 +1,6 @@
-import { getBearerToken } from "./auth.js";
+import { getUpstreamAuthHeaders } from "./auth.js";
 import { recordError, recordRequest, recordUsage } from "./stats.js";
+import { getRequestNetworkContext } from "./request-network.js";
 import {
   findUpstream,
   findModel,
@@ -51,6 +52,7 @@ export async function proxyRequest({
     ? req.headers["x-request-id"]
     : req.id;
   const log = req.log;
+  const requestNetworkContext = getRequestNetworkContext(config, req);
   const body = sanitizeRequestBody(req.body || {});
   const modelId = body.model || config.models[0]?.id;
   if (!modelId) {
@@ -85,14 +87,14 @@ export async function proxyRequest({
     ? buildDirectUpstreamUrl(upstream, override.value, deployment)
     : buildUpstreamUrl(upstream, effectiveRouteKey, deployment);
   const policy = resolveUpstreamPolicy(config);
-  let bearer;
+  let upstreamAuthHeaders;
   try {
-    bearer = await getBearerToken(config.auth.scope);
+    upstreamAuthHeaders = await getUpstreamAuthHeaders(config.auth.scope);
   } catch (error) {
     recordError(model.id);
-    log.error({ requestId, modelId, routeKey, error: error?.message }, "failed to acquire AAD token");
-    const classified = { code: "AAD_TOKEN_ACQUIRE_FAILED", retryable: false, status: 500 };
-    reply.code(500).send(buildErrorBody({ classified, requestId, detail: error?.message || "token acquisition failed" }));
+    log.error({ requestId, modelId, routeKey, error: error?.message }, "failed to prepare upstream authentication");
+    const classified = { code: "UPSTREAM_AUTH_FAILED", retryable: false, status: 500 };
+    reply.code(500).send(buildErrorBody({ classified, requestId, detail: error?.message || "upstream authentication failed" }));
     return;
   }
 
@@ -132,13 +134,14 @@ export async function proxyRequest({
     routeKey,
     backendRouteKey,
     targetUrl,
-    stream: isStream
+    stream: isStream,
+    ...requestNetworkContext
   }, "proxy request started");
 
   const headers = {
     ...sanitizeIncomingHeaders(req.headers),
     "content-type": "application/json",
-    authorization: `Bearer ${bearer}`,
+    ...upstreamAuthHeaders,
     "x-request-id": requestId
   };
   const bodyText = JSON.stringify(nextBody);
@@ -153,7 +156,10 @@ export async function proxyRequest({
           targetUrl,
           headers,
           bodyText,
-          connectTimeoutMs: policy.connectTimeoutMs
+          connectTimeoutMs: policy.connectTimeoutMs,
+          timeoutMs: policy.firstByteTimeoutMs,
+          timeoutCode: "UPSTREAM_FIRST_BYTE_TIMEOUT",
+          timeoutLabel: "first byte"
         });
       } catch (error) {
         const classified = classifyFetchError(error);
@@ -287,7 +293,7 @@ export async function proxyRequest({
     headers,
     bodyText,
     policy,
-    logMeta: { requestId, modelId, routeKey, backendRouteKey },
+    logMeta: { requestId, modelId, routeKey, backendRouteKey, ...requestNetworkContext },
     log
   });
   if (!fetchResult.ok) {

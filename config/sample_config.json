@@ -3,6 +3,7 @@
     "host": "0.0.0.0",
     "port": 3000,
     "adminPath": "/admin",
+    "trustProxy": false,
     "adminAuth": {
       "enabled": true,
       "username": "admin",
@@ -52,7 +53,8 @@
     "clientId": "",
     "clientSecret": "",
     "managedIdentityClientId": "",
-    "scope": "https://cognitiveservices.azure.com/.default"
+    "scope": "https://cognitiveservices.azure.com/.default",
+    "apiKey": ""
   },
   "apiKeys": [
     {
