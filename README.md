@@ -4,6 +4,15 @@
 
 [English](README.md) | [简体中文](docs/README.zh-CN.md) | [Docs Index](docs/README.md) | [Git Workflow（中文）](GIT_WORKFLOW.zh-CN.md)
 
+## Branch Guidance
+
+The default branch currently tracks the nextgen experience, including the richer admin/runtime features and expanded deployment options.
+
+If you only need the stable core proxy functionality, use the lightweight [`aoai-minimum`](https://github.com/pczhao1210/AOAI-Proxy/tree/aoai-minimum) branch instead. It keeps the essential OpenAI-compatible proxy routes, Azure deployment templates, Caddy TLS, and basic persistence without the heavier nextgen surfaces.
+
+- Minimum branch README: [`aoai-minimum/README.md`](https://github.com/pczhao1210/AOAI-Proxy/blob/aoai-minimum/README.md)
+- Minimum Deploy to Azure: [deploy `aoai-minimum`](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Faoai-minimum%2Finfra%2Fazuredeploy.json)
+
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Faoai-nextgen%2Finfra%2Fazuredeploy.json)
 
 ## Overview
