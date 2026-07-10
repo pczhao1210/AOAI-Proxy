@@ -1,0 +1,63 @@
+{
+  "id": "gpt-5.6-terra",
+  "displayName": "GPT-5.6 Terra",
+  "provider": "azure-openai",
+  "family": "gpt-5.6",
+  "modelVersion": "2026-07-09",
+  "status": "preview",
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling",
+    "computer-use"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "openai-official",
+    "status": "published",
+    "inputPer1mTokens": 2.5,
+    "cachedInputPer1mTokens": 0.25,
+    "outputPer1mTokens": 15,
+    "inputPer1kTokens": 0.0025,
+    "cachedInputPer1kTokens": 0.00025,
+    "outputPer1kTokens": 0.015
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.0025,
+    "cachedInputPer1kTokens": 0.00025,
+    "outputPer1kTokens": 0.015
+  },
+  "proxyTemplate": {
+    "id": "gpt-5.6-terra",
+    "displayName": "GPT-5.6 Terra",
+    "targetModel": "gpt-5.6-terra",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling",
+      "structured-outputs",
+      "parallel-tool-calling",
+      "computer-use"
+    ],
+    "pricingRef": "gpt-5.6-terra"
+  },
+  "sources": {
+    "capabilities": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+    "pricing": "https://developers.openai.com/api/docs/pricing"
+  }
+}

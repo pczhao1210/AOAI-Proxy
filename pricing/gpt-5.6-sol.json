@@ -1,0 +1,63 @@
+{
+  "id": "gpt-5.6-sol",
+  "displayName": "GPT-5.6 Sol",
+  "provider": "azure-openai",
+  "family": "gpt-5.6",
+  "modelVersion": "2026-07-09",
+  "status": "preview",
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling",
+    "computer-use"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "openai-official",
+    "status": "published",
+    "inputPer1mTokens": 5,
+    "cachedInputPer1mTokens": 0.5,
+    "outputPer1mTokens": 30,
+    "inputPer1kTokens": 0.005,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.03
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.005,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.03
+  },
+  "proxyTemplate": {
+    "id": "gpt-5.6-sol",
+    "displayName": "GPT-5.6 Sol",
+    "targetModel": "gpt-5.6-sol",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling",
+      "structured-outputs",
+      "parallel-tool-calling",
+      "computer-use"
+    ],
+    "pricingRef": "gpt-5.6-sol"
+  },
+  "sources": {
+    "capabilities": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+    "pricing": "https://developers.openai.com/api/docs/pricing"
+  }
+}

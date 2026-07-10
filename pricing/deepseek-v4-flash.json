@@ -9,16 +9,13 @@
     "chat/completions"
   ],
   "inputModalities": [
-    "text",
-    "image"
+    "text"
   ],
   "outputModalities": [
     "text"
   ],
   "capabilities": [
     "reasoning",
-    "vision",
-    "function-calling",
     "json-output"
   ],
   "pricing": {
@@ -45,18 +42,16 @@
     "targetModel": "DeepSeek-V4-Flash",
     "capabilities": [
       "reasoning",
-      "vision",
-      "function-calling",
       "json-output"
     ],
     "pricingRef": "DeepSeek-V4-Flash"
   },
   "sources": {
-    "capabilities": "https://api-docs.deepseek.com/quick_start/pricing",
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
     "pricing": "https://api-docs.deepseek.com/quick_start/pricing"
   },
   "notes": [
-    "DeepSeek 官方价格页按 1M tokens 公布 cache hit、cache miss input 和 output 价格；这里将 cache miss 映射为 input，cache hit 映射为 cachedInput。",
+    "Azure Retail Prices API 当前没有 DeepSeek-V4-Flash 的精确计量项，因此价格保留 DeepSeek 官方发布值；cache miss 映射为 input，cache hit 映射为 cachedInput。",
     "deepseek-chat 和 deepseek-reasoner 将于 2026/07/24 废弃，官方兼容说明将它们分别对应到 deepseek-v4-flash 的 non-thinking 和 thinking 模式。"
   ]
 }

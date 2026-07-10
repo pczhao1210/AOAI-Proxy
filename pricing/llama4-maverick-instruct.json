@@ -21,17 +21,17 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "azure-foundry-models",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
-    "inputPer1mTokens": 0.25,
-    "outputPer1mTokens": 1,
-    "inputPer1kTokens": 0.00025,
-    "outputPer1kTokens": 0.001
+    "inputPer1mTokens": 0.29,
+    "outputPer1mTokens": 1.16,
+    "inputPer1kTokens": 0.00029,
+    "outputPer1kTokens": 0.00116
   },
   "pricingCatalogEntry": {
     "currency": "USD",
-    "inputPer1kTokens": 0.00025,
-    "outputPer1kTokens": 0.001
+    "inputPer1kTokens": 0.00029,
+    "outputPer1kTokens": 0.00116
   },
   "proxyTemplate": {
     "id": "llama4-maverick-instruct",
@@ -44,10 +44,10 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#meta-models-sold-directly-by-azure",
-    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/llama/"
+    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
     "model-router 使用的是简化路由名 llama4-maverick-instruct，这里同时兼容 Azure 模型目录中的完整模型名。",
-    "这里按 Azure Foundry 定价页公开的 Llama4 Maverick 17B Global Serverless 单价回填。"
+    "Azure Retail Prices API 的 Azure Machine Learning 计量 Llama-4-Mvrck-17B-128E-FP8-In Tokens 和 Out Tokens 的最新生效价分别为 0.00029 和 0.00116 USD 每 1K tokens。"
   ]
 }

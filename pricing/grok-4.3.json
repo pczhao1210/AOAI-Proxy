@@ -4,7 +4,7 @@
   "provider": "xai",
   "family": "grok-4.3",
   "modelVersion": null,
-  "status": "ga",
+  "status": "preview",
   "interfaces": [
     "chat/completions"
   ],

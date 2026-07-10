@@ -20,20 +20,20 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "fireworks-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
-    "inputPer1mTokens": 0.3,
-    "cachedInputPer1mTokens": 0.03,
-    "outputPer1mTokens": 1.2,
-    "inputPer1kTokens": 0.0003,
-    "cachedInputPer1kTokens": 0.00003,
-    "outputPer1kTokens": 0.0012
+    "inputPer1mTokens": 0.33,
+    "cachedInputPer1mTokens": 0.033,
+    "outputPer1mTokens": 1.32,
+    "inputPer1kTokens": 0.00033,
+    "cachedInputPer1kTokens": 0.000033,
+    "outputPer1kTokens": 0.00132
   },
   "pricingCatalogEntry": {
     "currency": "USD",
-    "inputPer1kTokens": 0.0003,
-    "cachedInputPer1kTokens": 0.00003,
-    "outputPer1kTokens": 0.0012
+    "inputPer1kTokens": 0.00033,
+    "cachedInputPer1kTokens": 0.000033,
+    "outputPer1kTokens": 0.00132
   },
   "proxyTemplate": {
     "id": "MiniMax-M2.5",
@@ -45,10 +45,9 @@
     "pricingRef": "MiniMax-M2.5"
   },
   "sources": {
-    "pricing": "https://fireworks.ai/pricing"
+    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
-    "Fireworks Serverless 定价页公开的是 MiniMax M2 family 价格，这里先将 MiniMax M2.5 映射到该 family 单价。",
-    "如果后续拿到 MiniMax M2.5 的独立官方定价，应优先替换当前 family 级别价格。"
+    "Azure Retail Prices API 的 Foundry Models 计量 FW MiniMax M2.5 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.000033、0.00033、0.00132 USD 每 1K tokens。"
   ]
 }

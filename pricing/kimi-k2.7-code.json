@@ -1,6 +1,6 @@
 {
-  "id": "Kimi-K2.5",
-  "displayName": "Kimi K2.5",
+  "id": "Kimi-K2.7-Code",
+  "displayName": "Kimi K2.7 Code",
   "provider": "moonshot-ai",
   "family": "kimi-k2",
   "modelVersion": null,
@@ -18,6 +18,7 @@
   "capabilities": [
     "reasoning",
     "vision",
+    "code-optimized",
     "function-calling"
   ],
   "pricing": {
@@ -25,36 +26,37 @@
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
     "status": "published",
-    "inputPer1mTokens": 0.66,
-    "cachedInputPer1mTokens": 0.11,
-    "outputPer1mTokens": 3.3,
-    "inputPer1kTokens": 0.00066,
-    "cachedInputPer1kTokens": 0.00011,
-    "outputPer1kTokens": 0.0033
+    "inputPer1mTokens": 1.05,
+    "cachedInputPer1mTokens": 0.21,
+    "outputPer1mTokens": 4.4,
+    "inputPer1kTokens": 0.00105,
+    "cachedInputPer1kTokens": 0.00021,
+    "outputPer1kTokens": 0.0044
   },
   "pricingCatalogEntry": {
     "currency": "USD",
-    "inputPer1kTokens": 0.00066,
-    "cachedInputPer1kTokens": 0.00011,
-    "outputPer1kTokens": 0.0033
+    "inputPer1kTokens": 0.00105,
+    "cachedInputPer1kTokens": 0.00021,
+    "outputPer1kTokens": 0.0044
   },
   "proxyTemplate": {
-    "id": "Kimi-K2.5",
-    "displayName": "Kimi K2.5",
-    "targetModel": "Kimi-K2.5",
+    "id": "Kimi-K2.7-Code",
+    "displayName": "Kimi K2.7 Code",
+    "targetModel": "Kimi-K2.7-Code",
     "capabilities": [
       "reasoning",
       "vision",
+      "code-optimized",
       "function-calling"
     ],
-    "pricingRef": "Kimi-K2.5"
+    "pricingRef": "Kimi-K2.7-Code"
   },
   "sources": {
-    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#moonshot-ai-models-sold-directly-by-azure",
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
-    "Azure Retail Prices API 的 Foundry Models 计量 FW Kimi K2.5 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00011、0.00066、0.0033 USD 每 1K tokens。",
+    "价格来自 Azure Retail Prices API 于 2026-07-10 返回的 Foundry Models 计量项：FW Kimi K2.7 Code Cd Inp DZ、Inp DZ、Opt DZ，分别为 0.00021、0.00105、0.0044 USD 每 1K tokens。",
     "Foundry 目录将此模型标为 Preview，并声明它支持文本和图像输入、文本输出与工具调用。"
   ]
 }
