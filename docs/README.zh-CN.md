@@ -81,6 +81,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 ```json
 "server": {
+  "gracefulShutdownMs": 15000,
   "upstream": {
     "connectTimeoutMs": 5000,
     "requestTimeoutMs": 600000,
@@ -138,6 +139,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 - `CONFIG_PATH`：本地缓存配置路径，默认 `./config/config.json`
 - `BODY_LIMIT`：请求体大小限制，默认 `52428800`
 - `CADDY_BIN`：可选的 Caddy 可执行文件路径覆盖
+- `SHUTDOWN_TIMEOUT_MS`：可选的优雅关闭时限覆盖；未设置时使用 `server.gracefulShutdownMs`
 - `ADMIN_LOG_BUFFER_SIZE`：管理页内存日志环形缓冲大小，默认 `1000`
 
 ### 可选的上游连接池覆盖项
@@ -196,6 +198,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 ## 测试与延迟诊断
 
+- `npm run test:unit` 覆盖 PostgreSQL 连接池错误、凭据脱敏、SIGTERM 优雅关闭和启动失败清理
 - 路由冒烟测试、真实模型测试和延迟分析脚本说明位于 [../test/README.md](../test/README.md)
 - `npm run test:latency` 会发起真实流式请求，并自动附带 `x-debug-latency: 1`
 - 代理仅在请求带有这个头时输出 `proxy.request_timing`，因此正常业务流量默认不会产生这类延迟分段日志
@@ -228,6 +231,8 @@ docker run --rm -p 3000:3000 -p 443:443 \
   -e CONFIG_DB_CONNECTION_STRING='postgresql://<user>:<password>@<server>.postgres.database.azure.com:5432/<database>?sslmode=require' \
   aoai-proxy:latest
 ```
+
+容器入口把 Node 和 Caddy 都视为关键进程；任一进程异常退出时，PID 1 会让容器以非零状态结束，以便平台重启策略恢复服务。ACI 模板还会直接探测 `http://127.0.0.1:3000/healthz`，即使 Caddy 仍在运行，也能识别 Node 不可用。
 
 如果容器需要 AAD 上游访问，仍会使用 `DefaultAzureCredential`，因此本地开发请提供服务主体凭据，在 Azure 中请使用托管身份。
 

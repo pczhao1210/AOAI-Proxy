@@ -10,6 +10,7 @@ const DEFAULTS = {
   server: {
     host: "0.0.0.0",
     port: 3000,
+    gracefulShutdownMs: 15000,
     adminPath: "/admin",
     adminAuth: {
       enabled: false,
@@ -640,6 +641,9 @@ function validateConfig(cfg) {
   }
   if (!cfg.server.adminPath || typeof cfg.server.adminPath !== "string") {
     throw new Error("server.adminPath must be a string");
+  }
+  if (!Number.isInteger(cfg.server.gracefulShutdownMs) || cfg.server.gracefulShutdownMs <= 0) {
+    throw new Error("server.gracefulShutdownMs must be a positive integer");
   }
   if (!cfg.admin || typeof cfg.admin !== "object") {
     throw new Error("admin must be an object");

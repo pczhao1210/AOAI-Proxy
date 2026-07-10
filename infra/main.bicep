@@ -312,6 +312,18 @@ resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2023-05-01'
         properties: {
           image: image
           environmentVariables: environmentVariables
+          livenessProbe: {
+            httpGet: {
+              path: '/healthz'
+              port: 3000
+              scheme: 'http'
+            }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+          }
           ports: [
             {
               port: 3000

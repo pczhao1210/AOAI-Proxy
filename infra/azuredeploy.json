@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "17918851119479686637"
+      "templateHash": "18166322172436977760"
     }
   },
   "parameters": {
@@ -401,6 +401,18 @@
             "properties": {
               "image": "[parameters('image')]",
               "environmentVariables": "[variables('environmentVariables')]",
+              "livenessProbe": {
+                "httpGet": {
+                  "path": "/healthz",
+                  "port": 3000,
+                  "scheme": "http"
+                },
+                "initialDelaySeconds": 30,
+                "periodSeconds": 10,
+                "timeoutSeconds": 3,
+                "failureThreshold": 3,
+                "successThreshold": 1
+              },
               "ports": [
                 {
                   "port": 3000,

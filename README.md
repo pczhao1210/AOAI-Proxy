@@ -82,6 +82,7 @@ The proxy now uses a more conservative long-response baseline that is better sui
 
 ```json
 "server": {
+  "gracefulShutdownMs": 15000,
   "upstream": {
     "connectTimeoutMs": 10000,
     "requestTimeoutMs": 900000,
@@ -139,6 +140,7 @@ Guidance:
 - `CONFIG_PATH`: local cached config path, default `./config/config.json`
 - `BODY_LIMIT`: request body limit in bytes, default `52428800`
 - `CADDY_BIN`: optional Caddy binary path override
+- `SHUTDOWN_TIMEOUT_MS`: optional graceful-shutdown deadline override; otherwise `server.gracefulShutdownMs` is used
 - `ADMIN_LOG_BUFFER_SIZE`: in-memory admin log ring buffer size, default `1000`
 - `PRICING_DIR`: optional pricing library directory override. By default the app reads from `/app/data/pricing` when synced files exist, otherwise it falls back to the bundled `pricing/` directory inside the image.
 
@@ -211,6 +213,7 @@ Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin
 
 ## Testing And Latency Diagnostics
 
+- `npm run test:unit` covers PostgreSQL pool errors, credential redaction, graceful SIGTERM handling, and startup failure cleanup
 - Route smoke tests, real-model tests, and the latency analysis script are documented in [test/README.md](test/README.md)
 - `npm run test:latency` sends real streaming requests and automatically adds `x-debug-latency: 1`
 - The proxy only emits `proxy.request_timing` when that header is present, so normal traffic does not produce timing logs by default
@@ -245,6 +248,8 @@ docker run --rm -p 3000:3000 -p 443:443 \
 ```
 
 When the container needs AAD upstream access, it still uses `DefaultAzureCredential`, so provide service principal credentials for local development or a managed identity in Azure.
+
+The container entrypoint treats both Node and Caddy as critical processes. If either exits unexpectedly, PID 1 terminates the container with a nonzero status so the platform restart policy can recover it. The ACI templates also probe Node directly at `http://127.0.0.1:3000/healthz`; this catches an unavailable application even if Caddy remains alive.
 
 ## Upstream Auth Modes
 

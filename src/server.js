@@ -12,11 +12,12 @@ import { flushRuntimeEvents, getRuntimeStatsSnapshot } from "./runtime-store.js"
 import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
-import { appendStructuredLog, createPinoCaptureStream, queryLogs, setLogConfig } from "./logs.js";
+import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, setLogConfig } from "./logs.js";
 import { validateConfiguredModels } from "./model-validation.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
+import { closeSharedPostgresPools } from "./postgres.js";
 
 // Fastify server entry
 const defaultBodyLimit = 50 * 1024 * 1024;
@@ -24,6 +25,9 @@ const bodyLimitEnv = Number(process.env.BODY_LIMIT || process.env.SERVER_BODY_LI
 const bodyLimit = Number.isFinite(bodyLimitEnv) && bodyLimitEnv > 0 ? bodyLimitEnv : defaultBodyLimit;
 const STATIC_ADMIN_PATH = "/admin";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15000;
+
+let shutdownPromise = null;
 
 const app = fastify({
   logger: {
@@ -223,6 +227,76 @@ function emitStartupError(stage, error, fields = {}) {
   } catch {
     console.error(`[${payload.ts}] startup.${stage}: ${payload.message}`);
   }
+}
+
+function resolveShutdownTimeoutMs() {
+  const environmentValue = Number(process.env.SHUTDOWN_TIMEOUT_MS);
+  if (Number.isInteger(environmentValue) && environmentValue > 0) {
+    return environmentValue;
+  }
+  try {
+    const configuredValue = Number(getConfig()?.server?.gracefulShutdownMs);
+    if (Number.isInteger(configuredValue) && configuredValue > 0) {
+      return configuredValue;
+    }
+  } catch {
+  }
+  return DEFAULT_SHUTDOWN_TIMEOUT_MS;
+}
+
+async function drainRuntimeState() {
+  try {
+    await flushRuntimeEvents();
+  } finally {
+    await closeSharedPostgresPools();
+  }
+}
+
+function shutdown(reason, exitCode) {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+
+  const timeoutMs = resolveShutdownTimeoutMs();
+  shutdownPromise = (async () => {
+    emitStartupLog("shutdown_started", { reason, exitCode, timeoutMs });
+    const forceExitTimer = setTimeout(() => {
+      emitStartupError("shutdown_timeout", new Error(`Shutdown exceeded ${timeoutMs} ms`), {
+        reason,
+        exitCode: 1,
+        timeoutMs
+      });
+      process.exit(1);
+    }, timeoutMs);
+
+    const httpResults = await Promise.allSettled([app.close()]);
+    const resourceResults = await Promise.allSettled([
+      drainRuntimeState(),
+      flushLogAnalyticsSink()
+    ]);
+    const results = [...httpResults, ...resourceResults];
+    clearTimeout(forceExitTimer);
+
+    const failures = results
+      .map((result, index) => ({ result, component: ["http", "runtime", "logs"][index] }))
+      .filter(({ result }) => result.status === "rejected");
+    for (const { result, component } of failures) {
+      emitStartupError("shutdown_component_failed", result.reason, { reason, component });
+    }
+
+    emitStartupLog("shutdown_complete", {
+      reason,
+      exitCode,
+      failedComponents: failures.map(({ component }) => component)
+    });
+    process.exit(exitCode);
+  })();
+
+  return shutdownPromise;
+}
+
+function requestShutdown(reason, exitCode) {
+  void shutdown(reason, exitCode);
 }
 
 function logAdminApiError(event, error, fields = {}) {
@@ -589,8 +663,20 @@ async function start() {
   app.log.info({ source: "proxy", configPath: getConfigPath() }, "config loaded");
 }
 
+process.once("SIGTERM", () => requestShutdown("SIGTERM", 0));
+process.once("SIGINT", () => requestShutdown("SIGINT", 0));
+process.once("uncaughtException", (error) => {
+  emitStartupError("uncaught_exception", error);
+  requestShutdown("uncaughtException", 1);
+});
+process.once("unhandledRejection", (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  emitStartupError("unhandled_rejection", error);
+  requestShutdown("unhandledRejection", 1);
+});
+
 start().catch((error) => {
   emitStartupError("fatal", error, { configPath: getConfigPath() });
   app.log.error(error);
-  process.exit(1);
+  requestShutdown("startupFailure", 1);
 });

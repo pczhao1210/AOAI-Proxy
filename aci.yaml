@@ -15,6 +15,16 @@ properties:
       - name: PERSISTENCE_MODE
         value: azureFile
       image: alexmcr.azurecr.io/aoai-proxy@sha256:db4d8bc12865edd8b16e15a6b63f4dfb73ad2fff43bc199b717ab575b4016a60
+      livenessProbe:
+        failureThreshold: 3
+        httpGet:
+          path: /healthz
+          port: 3000
+          scheme: http
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        successThreshold: 1
+        timeoutSeconds: 3
       ports:
       - port: 3000
         protocol: TCP
@@ -47,6 +57,7 @@ properties:
   isCustomProvisioningTimeout: false
   osType: Linux
   provisioningTimeoutInSeconds: 1800
+  restartPolicy: Always
   sku: Standard
   volumes:
   - azureFile:

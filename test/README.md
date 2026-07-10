@@ -1,5 +1,11 @@
 Route smoke tests live here.
 
+Reliability tests cover PostgreSQL pool error handling and server shutdown behavior:
+
+```bash
+npm run test:unit
+```
+
 Included scripts:
 
 - `test/routes/chat-completion.js`
