@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -6,6 +7,9 @@ import { spawn } from "node:child_process";
 
 const PROXY_API_KEY = "test-proxy-key";
 const UPSTREAM_API_KEY = "test-upstream-key";
+const CLIENT_SECRET = "test-client-secret";
+const ADMIN_PASSWORD = "test-admin-password";
+const REDACTED_SECRET_VALUE = "__AOAI_PROXY_REDACTED__";
 
 function listen(server, host = "127.0.0.1", port = 0) {
   return new Promise((resolve, reject) => {
@@ -142,6 +146,15 @@ async function postJson(url, body) {
   return payload;
 }
 
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(`${url} returned ${response.status}: ${JSON.stringify(payload)}`);
+  }
+  return payload;
+}
+
 async function main() {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-proxy-routes-"));
   const configPath = path.join(tempDir, "config.json");
@@ -155,13 +168,14 @@ async function main() {
       host: "127.0.0.1",
       port: proxyPort,
       adminPath: "/admin",
-      adminAuth: { enabled: false },
+      adminAuth: { enabled: false, username: "admin", password: ADMIN_PASSWORD },
       caddy: { enabled: false }
     },
     auth: {
       mode: "apiKey",
       scope: "https://cognitiveservices.azure.com/.default",
-      apiKey: UPSTREAM_API_KEY
+      apiKey: UPSTREAM_API_KEY,
+      clientSecret: CLIENT_SECRET
     },
     apiKeys: [{ id: "test", key: PROXY_API_KEY, status: "active" }],
     upstreams: [{
@@ -204,6 +218,38 @@ async function main() {
   try {
     const baseUrl = `http://127.0.0.1:${proxyPort}`;
     await waitForProxy(baseUrl, child);
+
+    const adminConfig = await requestJson(`${baseUrl}/admin/api/config`);
+    assert.equal(adminConfig.auth.apiKey, REDACTED_SECRET_VALUE);
+    assert.equal(adminConfig.auth.clientSecret, REDACTED_SECRET_VALUE);
+    assert.equal(adminConfig.server.adminAuth.password, REDACTED_SECRET_VALUE);
+    assert.equal(adminConfig.apiKeys[0].key, REDACTED_SECRET_VALUE);
+    const adminConfigText = JSON.stringify(adminConfig);
+    for (const secret of [UPSTREAM_API_KEY, CLIENT_SECRET, ADMIN_PASSWORD, PROXY_API_KEY]) {
+      assert.equal(adminConfigText.includes(secret), false, `admin config exposed ${secret}`);
+    }
+
+    adminConfig.server.trustProxy = true;
+    const saveResult = await requestJson(`${baseUrl}/admin/api/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(adminConfig)
+    });
+    assert.equal(saveResult.ok, true);
+    assert.equal(saveResult.config.auth.apiKey, REDACTED_SECRET_VALUE);
+    assert.equal(saveResult.config.apiKeys[0].key, REDACTED_SECRET_VALUE);
+
+    const persistedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    assert.equal(persistedConfig.auth.apiKey, UPSTREAM_API_KEY);
+    assert.equal(persistedConfig.auth.clientSecret, CLIENT_SECRET);
+    assert.equal(persistedConfig.server.adminAuth.password, ADMIN_PASSWORD);
+    assert.equal(persistedConfig.apiKeys[0].key, PROXY_API_KEY);
+    assert.equal(persistedConfig.server.trustProxy, true);
+
+    const reloadResult = await requestJson(`${baseUrl}/admin/api/reload`, { method: "POST" });
+    assert.equal(reloadResult.ok, true);
+    assert.equal(reloadResult.config.auth.apiKey, REDACTED_SECRET_VALUE);
+    assert.equal(reloadResult.config.apiKeys[0].key, REDACTED_SECRET_VALUE);
 
     const chat = await postJson(`${baseUrl}/v1/chat/completions`, {
       model: "test-chat",

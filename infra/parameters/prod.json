@@ -9,7 +9,7 @@
       "value": "aoai-proxy-prod"
     },
     "image": {
-      "value": "alexmcr.azurecr.io/aoai-proxy:latest"
+      "value": "alexmcr.azurecr.io/aoai-proxy:minimum-latest"
     },
     "dnsNameLabel": {
       "value": "aoai-proxy-prod"

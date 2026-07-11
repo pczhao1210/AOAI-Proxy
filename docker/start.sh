@@ -13,7 +13,22 @@ cleanup() {
   fi
 }
 
-trap cleanup TERM INT EXIT
+shutdown() {
+  trap - TERM INT
+  cleanup
+  set +e
+  if [ -n "$NODE_PID" ]; then
+    wait "$NODE_PID" 2>/dev/null
+  fi
+  if [ -n "$CADDY_PID" ]; then
+    wait "$CADDY_PID" 2>/dev/null
+  fi
+  set -e
+  exit 0
+}
+
+trap shutdown TERM INT
+trap cleanup EXIT
 
 DATA_DIR=${DATA_DIR:-/app/data}
 CONFIG_PATH=${CONFIG_PATH:-$DATA_DIR/config.json}
@@ -190,7 +205,41 @@ done
 if [ -f "$CADDYFILE_PATH" ]; then
   "$CADDY_BIN" run --config "$CADDYFILE_PATH" --adapter caddyfile &
   CADDY_PID=$!
-  wait $NODE_PID $CADDY_PID
+
+  while kill -0 "$NODE_PID" 2>/dev/null && kill -0 "$CADDY_PID" 2>/dev/null; do
+    sleep 1
+  done
+
+  if kill -0 "$NODE_PID" 2>/dev/null; then
+    EXITED_SERVICE="caddy"
+    EXITED_PID=$CADDY_PID
+  else
+    EXITED_SERVICE="node"
+    EXITED_PID=$NODE_PID
+  fi
+
+  set +e
+  wait "$EXITED_PID"
+  SERVICE_STATUS=$?
+  set -e
+  emit_startup_log error startup.service_exited \
+    service "$EXITED_SERVICE" \
+    exitCode "$SERVICE_STATUS"
+
+  if [ "$SERVICE_STATUS" -eq 0 ]; then
+    SERVICE_STATUS=1
+  fi
+  exit "$SERVICE_STATUS"
 else
-  wait $NODE_PID
+  set +e
+  wait "$NODE_PID"
+  SERVICE_STATUS=$?
+  set -e
+  emit_startup_log error startup.service_exited \
+    service "node" \
+    exitCode "$SERVICE_STATUS"
+  if [ "$SERVICE_STATUS" -eq 0 ]; then
+    SERVICE_STATUS=1
+  fi
+  exit "$SERVICE_STATUS"
 fi

@@ -10,13 +10,13 @@
     "test:routes": "node test/run-route-smoke-tests.js"
   },
   "dependencies": {
-    "@azure/identity": "^4.4.1",
-    "@azure/storage-blob": "^12.31.0",
-    "@fastify/static": "^6.12.0",
+    "@azure/identity": "^4.13.1",
+    "@azure/storage-blob": "^12.33.0",
+    "@fastify/static": "^10.0.0",
     "dotenv": "^16.4.5",
-    "fastify": "^4.26.2",
+    "fastify": "^5.10.0",
     "pino": "^9.0.0",
     "sharp": "^0.34.5",
-    "undici": "^7.22.0"
+    "undici": "^7.28.0"
   }
 }

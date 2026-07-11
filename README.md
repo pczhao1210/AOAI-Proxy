@@ -177,11 +177,11 @@ Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin
 
 Build:
 
-- `docker build -t aoai-proxy:latest .`
+- `docker build -t aoai-proxy:minimum-latest .`
 
 Run with Azure Files-style local persistence:
 
-- `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:latest`
+- `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:minimum-latest`
 
 Run with Blob-backed config persistence:
 
@@ -191,7 +191,7 @@ docker run --rm -p 3000:3000 -p 443:443 \
   -e AZURE_STORAGE_ACCOUNT_URL=https://<storage>.blob.core.windows.net \
   -e CONFIG_BLOB_CONTAINER=aoai-proxy-config \
   -e CONFIG_BLOB_NAME=config/config.json \
-  aoai-proxy:latest
+  aoai-proxy:minimum-latest
 ```
 
 The container still uses `DefaultAzureCredential`, so provide service principal credentials for local development or a managed identity in Azure.

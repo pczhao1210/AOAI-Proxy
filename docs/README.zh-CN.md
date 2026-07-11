@@ -143,11 +143,11 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 
 构建：
 
-- `docker build -t aoai-proxy:latest .`
+- `docker build -t aoai-proxy:minimum-latest .`
 
 使用 Azure Files 风格本地持久化运行：
 
-- `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:latest`
+- `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:minimum-latest`
 
 使用 Blob 配置持久化运行：
 
@@ -157,7 +157,7 @@ docker run --rm -p 3000:3000 -p 443:443 \
   -e AZURE_STORAGE_ACCOUNT_URL=https://<storage>.blob.core.windows.net \
   -e CONFIG_BLOB_CONTAINER=aoai-proxy-config \
   -e CONFIG_BLOB_NAME=config/config.json \
-  aoai-proxy:latest
+  aoai-proxy:minimum-latest
 ```
 
 使用 AAD 模式时，容器通过 `DefaultAzureCredential` 获取 Token；本地开发可提供服务主体凭据，在 Azure 中可使用托管身份。使用 `apiKey` 模式时，请在配置中设置 `auth.apiKey`。

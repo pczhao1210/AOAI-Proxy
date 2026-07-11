@@ -9,6 +9,7 @@ import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
+import { redactConfigSecrets, restoreConfigSecrets } from "./admin-config.js";
 
 // Fastify server entry
 const defaultBodyLimit = 50 * 1024 * 1024;
@@ -191,18 +192,18 @@ app.post("/v1/images/generations", async (req, reply) => {
 
 app.get("/admin/api/config", async () => {
   const config = getConfig();
-  return config;
+  return redactConfigSecrets(config);
 });
 
 app.put("/admin/api/config", async (req, reply) => {
-  const nextConfig = req.body;
+  const nextConfig = restoreConfigSecrets(req.body, getConfig());
   try {
     const saved = await saveConfig(nextConfig);
     attachAuth(saved);
     void primeAuth(saved);
     writeCaddyfile(saved);
     await reloadCaddy(saved);
-    reply.send({ ok: true, config: saved });
+    reply.send({ ok: true, config: redactConfigSecrets(saved) });
   } catch (error) {
     reply.code(400).send({ error: error.message });
   }
@@ -215,7 +216,7 @@ app.post("/admin/api/reload", async (req, reply) => {
     void primeAuth(config);
     writeCaddyfile(config);
     await reloadCaddy(config);
-    reply.send({ ok: true, config });
+    reply.send({ ok: true, config: redactConfigSecrets(config) });
   } catch (error) {
     reply.code(400).send({ error: error.message });
   }
