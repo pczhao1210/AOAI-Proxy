@@ -70,6 +70,7 @@ The proxy now uses a more conservative long-response baseline that is better sui
   "upstream": {
     "connectTimeoutMs": 5000,
     "requestTimeoutMs": 600000,
+    "maxResponseBytes": 33554432,
     "firstByteTimeoutMs": 90000,
     "idleTimeoutMs": 600000,
     "maxRetries": 1,
@@ -99,6 +100,7 @@ Guidance:
 - Keep `server.caddy.transport.dialTimeoutMs` aligned with `server.upstream.connectTimeoutMs`
 - Keep `server.caddy.transport.responseHeaderTimeoutMs` greater than or equal to `server.upstream.firstByteTimeoutMs`
 - Keep `server.upstream.idleTimeoutMs` long enough for SSE streams that pause between events
+- Keep `server.upstream.maxResponseBytes` bounded for non-stream JSON responses; the default is 32 MiB
 - Tune `server.upstream.pool` first for latency-sensitive, low-concurrency deployments before changing retry budgets
 - For MCP or tool-calling flows, prefer longer `firstByteTimeoutMs` and `idleTimeoutMs`, but keep `maxRetries` low to avoid replaying side-effecting tool calls
 
@@ -109,7 +111,7 @@ Guidance:
 2. Edit `config/config.json`:
    - Replace `upstreams[].baseUrl` with your Foundry or Azure OpenAI endpoint
    - Set `models[].targetModel` to the deployment identifier
-   - Replace the default API key and admin credentials
+  - Add an active client API key and set a non-empty admin password
 3. Install dependencies and start:
    - `npm install`
    - `npm run start`
@@ -121,6 +123,19 @@ Guidance:
 - `CONFIG_PATH`: local cached config path, default `./config/config.json`
 - `BODY_LIMIT`: request body limit in bytes, default `52428800`
 - `CADDY_BIN`: optional Caddy binary path override
+- `CADDYFILE_WAIT_TIMEOUT_SECONDS`: maximum container startup wait for a required Caddyfile, default `60`
+- `BOOTSTRAP_CREDENTIALS_PATH`: generated credential file path, default `/app/data/bootstrap-credentials.json`
+
+### Admin And Client Credentials
+
+- `AOAI_PROXY_ADMIN_USERNAME`: overrides the admin username
+- `AOAI_PROXY_ADMIN_PASSWORD`: overrides the admin password and enables admin authentication by default
+- `AOAI_PROXY_ADMIN_AUTH_ENABLED`: explicitly enables or disables admin authentication
+- `AOAI_PROXY_API_KEY`: installs or replaces the active `default` client API key
+- `AOAI_PROXY_CADDY_ENABLED`, `AOAI_PROXY_CADDY_DOMAIN`, and `AOAI_PROXY_CADDY_EMAIL`: override Caddy startup settings
+- `AOAI_PROXY_TRUST_PROXY`: overrides `server.trustProxy`
+
+Public listeners fail closed when admin authentication is disabled or a built-in weak credential is used. On container startup, missing or legacy shared credentials are replaced with random values. Generated values are written to `/app/data/bootstrap-credentials.json` with mode `0600` on filesystems that support POSIX modes and are never printed to logs. Supplying both credential environment variables avoids generating that file.
 
 ### Upstream Auth
 
@@ -149,11 +164,11 @@ Config file values under `server.upstream.pool` are primary. These environment v
 - `CONFIG_BLOB_NAME=config/config.json`
 - `BLOB_RECOVERY_INTERVAL_MS=30000` to control how often the app retries Blob access after falling back to the local cache
 
-In `blob` mode, the app reads from Blob first and falls back to the local cached config if the blob is not present yet.
+In `blob` mode, the app reads from Blob first and falls back to the local cached config when Blob is temporarily unavailable, throttled, or not yet authorized. Invalid Blob configuration still fails explicitly.
 
 ## Admin Page
 
-Open `/admin` to manage config.
+Open the configured `server.adminPath` (default `/admin`) to manage config.
 
 The admin page now exposes:
 
@@ -164,7 +179,7 @@ The admin page now exposes:
 
 ### Admin Login
 
-Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin/api/*` with HTTP Basic auth.
+Controlled by `server.adminAuth`. It protects the configured admin path and its `/api/*` routes with HTTP Basic auth. Changing `server.adminPath` requires a service restart.
 
 ## Stats Notes
 
@@ -182,6 +197,8 @@ Build:
 Run with Azure Files-style local persistence:
 
 - `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:minimum-latest`
+
+After the first run, read `data/bootstrap-credentials.json`, then store the values in your secret manager and remove the bootstrap file. For managed deployments, inject `AOAI_PROXY_ADMIN_PASSWORD` and `AOAI_PROXY_API_KEY` as secret environment variables instead.
 
 Run with Blob-backed config persistence:
 
@@ -319,8 +336,8 @@ Use `models[].routes` when the client-facing route and backend-supported route d
 
 List models:
 
-- `curl -sS http://127.0.0.1:3000/v1/models -H 'authorization: Bearer CHANGEME' | jq .`
+- `curl -sS http://127.0.0.1:3000/v1/models -H "authorization: Bearer $PROXY_API_KEY" | jq .`
 
 Chat request:
 
-- `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer CHANGEME' -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`
+- `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H "authorization: Bearer $PROXY_API_KEY" -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`

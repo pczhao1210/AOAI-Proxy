@@ -7,7 +7,7 @@
     "adminAuth": {
       "enabled": true,
       "username": "admin",
-      "password": "admin"
+      "password": ""
     },
     "caddy": {
       "enabled": false,
@@ -31,6 +31,7 @@
     "upstream": {
       "connectTimeoutMs": 5000,
       "requestTimeoutMs": 600000,
+      "maxResponseBytes": 33554432,
       "firstByteTimeoutMs": 90000,
       "idleTimeoutMs": 600000,
       "maxRetries": 1,
@@ -56,13 +57,7 @@
     "scope": "https://cognitiveservices.azure.com/.default",
     "apiKey": ""
   },
-  "apiKeys": [
-    {
-      "id": "default",
-      "key": "CHANGEME",
-      "status": "active"
-    }
-  ],
+  "apiKeys": [],
   "upstreams": [
     {
       "name": "foundry",

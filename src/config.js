@@ -9,9 +9,9 @@ const DEFAULTS = {
     adminPath: "/admin",
     trustProxy: false,
     adminAuth: {
-      enabled: false,
+      enabled: true,
       username: "admin",
-      password: "change-me"
+      password: ""
     },
     caddy: {
       enabled: false,
@@ -35,6 +35,7 @@ const DEFAULTS = {
     upstream: {
       connectTimeoutMs: 5000,
       requestTimeoutMs: 600000,
+      maxResponseBytes: 33554432,
       firstByteTimeoutMs: 90000,
       idleTimeoutMs: 600000,
       maxRetries: 1,
@@ -67,6 +68,64 @@ const DEFAULTS = {
 
 let currentConfig = null;
 let configPath = null;
+const INSECURE_SECRET_VALUES = new Set(["", "admin", "password", "change-me", "changeme"]);
+
+function getEnvironmentValue(...names) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function getEnvironmentBoolean(...names) {
+  const value = getEnvironmentValue(...names).toLowerCase();
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  return null;
+}
+
+function isPublicExposure(config) {
+  const host = String(config?.server?.host || "").trim().toLowerCase();
+  return !["127.0.0.1", "::1", "localhost"].includes(host)
+    || config?.server?.caddy?.enabled === true;
+}
+
+function isKnownInsecureSecret(value) {
+  return INSECURE_SECRET_VALUES.has(String(value || "").trim().toLowerCase());
+}
+
+export function applyConfigEnvironmentOverrides(config) {
+  const adminUsername = getEnvironmentValue("AOAI_PROXY_ADMIN_USERNAME", "ADMIN_USERNAME");
+  const adminPassword = getEnvironmentValue("AOAI_PROXY_ADMIN_PASSWORD", "ADMIN_PASSWORD");
+  const adminAuthEnabled = getEnvironmentBoolean("AOAI_PROXY_ADMIN_AUTH_ENABLED", "ADMIN_AUTH_ENABLED");
+  const proxyApiKey = getEnvironmentValue("AOAI_PROXY_API_KEY", "PROXY_API_KEY");
+  const caddyEnabled = getEnvironmentBoolean("AOAI_PROXY_CADDY_ENABLED", "CADDY_ENABLED");
+  const caddyDomain = getEnvironmentValue("AOAI_PROXY_CADDY_DOMAIN", "CADDY_DOMAIN");
+  const caddyEmail = getEnvironmentValue("AOAI_PROXY_CADDY_EMAIL", "CADDY_EMAIL");
+  const trustProxy = getEnvironmentBoolean("AOAI_PROXY_TRUST_PROXY", "TRUST_PROXY");
+  if (adminUsername) config.server.adminAuth.username = adminUsername;
+  if (adminPassword) config.server.adminAuth.password = adminPassword;
+  if (adminAuthEnabled !== null || adminPassword) {
+    config.server.adminAuth.enabled = adminAuthEnabled ?? true;
+  }
+  if (proxyApiKey) {
+    const defaultKey = config.apiKeys.find((item) => item?.id === "default");
+    if (defaultKey) {
+      defaultKey.key = proxyApiKey;
+      defaultKey.status = "active";
+    } else {
+      config.apiKeys.push({ id: "default", key: proxyApiKey, status: "active" });
+    }
+  }
+  if (caddyDomain) config.server.caddy.domain = caddyDomain;
+  if (caddyEmail) config.server.caddy.email = caddyEmail;
+  if (caddyEnabled !== null || caddyDomain) {
+    config.server.caddy.enabled = caddyEnabled ?? true;
+  }
+  if (trustProxy !== null) config.server.trustProxy = trustProxy;
+  return config;
+}
 
 function deepMerge(base, override) {
   if (Array.isArray(base)) {
@@ -91,16 +150,19 @@ function normalizeConfig(raw) {
   merged.apiKeys = Array.isArray(merged.apiKeys) ? merged.apiKeys : [];
   merged.upstreams = Array.isArray(merged.upstreams) ? merged.upstreams : [];
   merged.models = Array.isArray(merged.models) ? merged.models : [];
-  return merged;
+  return applyConfigEnvironmentOverrides(merged);
 }
 
 // Validate config structure and types
-function validateConfig(cfg) {
+export function validateConfig(cfg) {
   if (!cfg.server || !cfg.server.port) {
     throw new Error("server.port is required");
   }
   if (!cfg.server.adminPath || typeof cfg.server.adminPath !== "string") {
     throw new Error("server.adminPath must be a string");
+  }
+  if (!/^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*\/?$/.test(cfg.server.adminPath)) {
+    throw new Error("server.adminPath must be an absolute URL path without query or fragment");
   }
   if (cfg.server.caddy != null) {
     if (typeof cfg.server.caddy !== "object") {
@@ -159,7 +221,13 @@ function validateConfig(cfg) {
       if (!password || typeof password !== "string") {
         throw new Error("server.adminAuth.password must be a non-empty string when enabled");
       }
+      if (isKnownInsecureSecret(password)) {
+        throw new Error("server.adminAuth.password must not use a built-in insecure value");
+      }
     }
+  }
+  if (isPublicExposure(cfg) && cfg.server.adminAuth?.enabled !== true) {
+    throw new Error("server.adminAuth must be enabled when the service is publicly reachable");
   }
   if (cfg.server.imageCompression != null) {
     if (typeof cfg.server.imageCompression !== "object") {
@@ -189,6 +257,7 @@ function validateConfig(cfg) {
     const {
       connectTimeoutMs,
       requestTimeoutMs,
+      maxResponseBytes,
       firstByteTimeoutMs,
       idleTimeoutMs,
       maxRetries,
@@ -204,6 +273,9 @@ function validateConfig(cfg) {
     }
     if (requestTimeoutMs != null && !positiveInt(requestTimeoutMs)) {
       throw new Error("server.upstream.requestTimeoutMs must be a positive integer");
+    }
+    if (maxResponseBytes != null && !positiveInt(maxResponseBytes)) {
+      throw new Error("server.upstream.maxResponseBytes must be a positive integer");
     }
     if (firstByteTimeoutMs != null && !positiveInt(firstByteTimeoutMs)) {
       throw new Error("server.upstream.firstByteTimeoutMs must be a positive integer");
@@ -273,6 +345,14 @@ function validateConfig(cfg) {
   }
   if (!Array.isArray(cfg.apiKeys)) {
     throw new Error("apiKeys must be an array");
+  }
+  for (const [idx, apiKey] of cfg.apiKeys.entries()) {
+    if (!apiKey || typeof apiKey !== "object") {
+      throw new Error(`apiKeys[${idx}] must be an object`);
+    }
+    if (apiKey.status !== "disabled" && isKnownInsecureSecret(apiKey.key)) {
+      throw new Error(`apiKeys[${idx}].key must not use a built-in insecure value`);
+    }
   }
   if (!Array.isArray(cfg.upstreams) || cfg.upstreams.length === 0) {
     throw new Error("upstreams must be a non-empty array");

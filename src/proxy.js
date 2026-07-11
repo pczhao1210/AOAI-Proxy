@@ -172,8 +172,8 @@ export async function proxyRequest({
         recordError(model.id);
         const errBody = buildErrorBody({ classified, requestId, detail: classified.detail });
         if (streamingStarted) {
-          writeSseError(reply.raw, errBody);
-          reply.raw.end();
+          const errorWritten = await writeSseError(reply.raw, errBody);
+          if (errorWritten && !reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
           return;
         }
         reply.code(classified.status || 502).send(errBody);
@@ -198,8 +198,8 @@ export async function proxyRequest({
           upstreamStatus: upstreamResponse.status
         });
         if (streamingStarted) {
-          writeSseError(reply.raw, errBody);
-          reply.raw.end();
+          const errorWritten = await writeSseError(reply.raw, errBody);
+          if (errorWritten && !reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
           return;
         }
         reply.code(upstreamResponse.status).send(errBody);
@@ -214,7 +214,7 @@ export async function proxyRequest({
           policy,
           onFirstChunk: () => {
             if (streamingStarted) return;
-            reply.raw.writeHead(upstreamResponse.status, Object.fromEntries(upstreamResponse.headers));
+            setSseResponseHeaders(reply.raw);
             reply.hijack();
             streamingStarted = true;
           }
@@ -241,7 +241,7 @@ export async function proxyRequest({
         } else {
           setSseResponseHeaders(reply.raw);
           reply.hijack();
-          writeSseDoneFrame(reply.raw);
+          await writeSseDoneFrame(reply.raw);
           reply.raw.end();
         }
         log.info({
@@ -255,6 +255,17 @@ export async function proxyRequest({
         return;
       }
 
+      if (streamResult.clientDisconnected) {
+        log.info({
+          requestId,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          latencyMs: Date.now() - startAt
+        }, "stream client disconnected");
+        return;
+      }
+
       const classified = classifyFetchError(streamResult.error);
       const canRetry = streamResult.beforeFirstChunk && classified.retryable && attempt < maxAttempts;
       if (canRetry) {
@@ -265,13 +276,27 @@ export async function proxyRequest({
       }
 
       recordError(model.id);
+      if (streamResult.providerErrorForwarded) {
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+          reply.raw.end();
+        }
+        log.error({
+          requestId,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          errorCode: classified.code,
+          latencyMs: Date.now() - startAt
+        }, "provider stream error forwarded");
+        return;
+      }
       const errBody = buildErrorBody({ classified, requestId, detail: classified.detail });
       if (!streamingStarted) {
         reply.code(classified.status || 502).send(errBody);
         return;
       }
-      writeSseError(reply.raw, errBody);
-      reply.raw.end();
+      const errorWritten = await writeSseError(reply.raw, errBody);
+      if (errorWritten && !reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
       log.error({
         requestId,
         modelId,
@@ -322,7 +347,14 @@ export async function proxyRequest({
   const upstreamResponse = fetchResult.upstreamResponse;
   let payload = null;
   try {
-    payload = await parseJsonWithTimeout(upstreamResponse, policy.requestTimeoutMs);
+    const contentLength = Number(upstreamResponse.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > policy.maxResponseBytes) {
+      await upstreamResponse.body?.cancel("response-too-large").catch(() => {});
+      const error = new Error(`upstream response exceeds ${policy.maxResponseBytes} bytes`);
+      error.code = "UPSTREAM_RESPONSE_TOO_LARGE";
+      throw error;
+    }
+    payload = await parseJsonWithTimeout(upstreamResponse, policy.requestTimeoutMs, policy.maxResponseBytes);
   } catch (error) {
     recordError(model.id);
     const classified = classifyFetchError(error);

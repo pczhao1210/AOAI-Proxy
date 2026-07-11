@@ -49,7 +49,31 @@ function updatePersistenceState(patch) {
 }
 
 function isBlobAuthorizationError(error) {
-  return error?.statusCode === 403 || error?.details?.errorCode === "AuthorizationPermissionMismatch" || error?.code === "AuthorizationPermissionMismatch";
+  return error?.statusCode === 401
+    || error?.statusCode === 403
+    || error?.details?.errorCode === "AuthorizationPermissionMismatch"
+    || error?.code === "AuthorizationPermissionMismatch";
+}
+
+export function isBlobFallbackError(error) {
+  if (isBlobAuthorizationError(error)) return true;
+  const statusCode = Number(error?.statusCode || error?.status);
+  if ([408, 409, 425, 429].includes(statusCode) || statusCode >= 500) return true;
+  const code = String(error?.details?.errorCode || error?.code || error?.cause?.code || "");
+  if ([
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ETIMEDOUT",
+    "ESOCKETTIMEDOUT",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "CredentialUnavailableError"
+  ].includes(code)) return true;
+  const name = String(error?.name || "");
+  return name === "AbortError"
+    || name === "CredentialUnavailableError"
+    || name === "AggregateAuthenticationError";
 }
 
 function snapshotBlobError(error) {
@@ -201,7 +225,14 @@ async function readLocalConfigText(filePath) {
 
 async function writeLocalConfigText(filePath, text) {
   await ensureLocalDirectory(filePath);
-  await fs.writeFile(filePath, text, "utf8");
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(tempPath, text, { encoding: "utf8", mode: 0o600 });
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 async function readBlobConfigText() {
@@ -272,22 +303,24 @@ export async function readPersistedConfigText() {
     blobText = await readBlobConfigText();
     markBlobReady("read");
   } catch (error) {
-    if (isBlobAuthorizationError(error)) {
+    if (isBlobFallbackError(error)) {
       const localText = await tryReadLocalConfigText(filePath);
       if (localText != null) {
         markBlobDegraded(error);
         emitPersistenceEvent("warn", "startup.persistence_blob_fallback", {
-          reason: error?.details?.errorCode || error?.code || "AuthorizationFailed",
+          reason: error?.details?.errorCode || error?.code || error?.name || "BlobUnavailable",
           target: describeBlobTarget(),
           configPath: filePath,
-          message: "Blob config read is not authorized. Falling back to local cached config.",
+          message: "Blob config read failed. Falling back to local cached config.",
           activeMode: persistenceState.activeMode,
           pendingBlobSync: persistenceState.pendingBlobSync
         });
         scheduleBlobRecovery();
         return localText;
       }
-      throw new Error(`Blob config read is not authorized and no local fallback config exists at ${filePath}. Check Storage Blob Data Contributor or Reader access for ${describeBlobTarget()}.`);
+      if (isBlobAuthorizationError(error)) {
+        throw new Error(`Blob config read is not authorized and no local fallback config exists at ${filePath}. Check Storage Blob Data Contributor or Reader access for ${describeBlobTarget()}.`);
+      }
     }
     throw error;
   }

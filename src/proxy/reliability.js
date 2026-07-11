@@ -6,6 +6,7 @@ export function resolveUpstreamPolicy(config) {
   return {
     connectTimeoutMs: Number.isFinite(cfg.connectTimeoutMs) ? cfg.connectTimeoutMs : 5000,
     requestTimeoutMs: Number.isFinite(cfg.requestTimeoutMs) ? cfg.requestTimeoutMs : 600000,
+    maxResponseBytes: Number.isFinite(cfg.maxResponseBytes) ? cfg.maxResponseBytes : 32 * 1024 * 1024,
     firstByteTimeoutMs: Number.isFinite(cfg.firstByteTimeoutMs) ? cfg.firstByteTimeoutMs : 90000,
     idleTimeoutMs: Number.isFinite(cfg.idleTimeoutMs) ? cfg.idleTimeoutMs : 600000,
     maxRetries: Number.isFinite(cfg.maxRetries) ? cfg.maxRetries : 1,
@@ -53,6 +54,18 @@ export function classifyFetchError(error) {
   }
   if (code === "UPSTREAM_IDLE_TIMEOUT") {
     return { code: "UPSTREAM_IDLE_TIMEOUT", retryable: true, status: 504, detail: message };
+  }
+  if (code === "UPSTREAM_RESPONSE_TOO_LARGE") {
+    return { code: "UPSTREAM_RESPONSE_TOO_LARGE", retryable: false, status: 502, detail: message };
+  }
+  if (code === "UPSTREAM_STREAM_EVENT_TOO_LARGE") {
+    return { code: "UPSTREAM_STREAM_EVENT_TOO_LARGE", retryable: false, status: 502, detail: message };
+  }
+  if (code === "UPSTREAM_PROVIDER_STREAM_ERROR") {
+    return { code: "UPSTREAM_PROVIDER_STREAM_ERROR", retryable: false, status: 502, detail: message };
+  }
+  if (code === "CLIENT_DISCONNECTED") {
+    return { code: "CLIENT_DISCONNECTED", retryable: false, status: 499, detail: message };
   }
   if (code === "ENOTFOUND" || message.includes("ENOTFOUND")) {
     return { code: "UPSTREAM_DNS_ERROR", retryable: true, status: 502, detail: message };
@@ -248,16 +261,50 @@ export async function fetchWithRetry({
   };
 }
 
-export async function parseJsonWithTimeout(response, timeoutMs) {
-  let timerId = null;
-  const timeoutPromise = new Promise((_, reject) => {
-    timerId = setTimeout(() => {
-      reject(markErrorWithCode(new Error(`request timeout after ${timeoutMs}ms`), "UPSTREAM_REQUEST_TIMEOUT"));
-    }, timeoutMs);
-  });
+export async function parseJsonWithTimeout(response, timeoutMs, maxBytes = 0) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw markErrorWithCode(new Error("response body unavailable"), "UPSTREAM_FETCH_FAILED");
+  }
+  let timedOut = false;
+  let totalBytes = 0;
+  const chunks = [];
+  const timerId = setTimeout(() => {
+    timedOut = true;
+    reader.cancel("request-timeout").catch(() => {});
+  }, timeoutMs);
   try {
-    return await Promise.race([response.json(), timeoutPromise]);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (maxBytes > 0 && totalBytes > maxBytes) {
+        await reader.cancel("response-too-large").catch(() => {});
+        throw markErrorWithCode(
+          new Error(`upstream response exceeds ${maxBytes} bytes`),
+          "UPSTREAM_RESPONSE_TOO_LARGE"
+        );
+      }
+      chunks.push(Buffer.from(value));
+    }
+    if (timedOut) {
+      throw markErrorWithCode(
+        new Error(`request timeout after ${timeoutMs}ms`),
+        "UPSTREAM_REQUEST_TIMEOUT"
+      );
+    }
+    return JSON.parse(Buffer.concat(chunks, totalBytes).toString("utf8"));
+  } catch (error) {
+    if (timedOut && error?.code !== "UPSTREAM_REQUEST_TIMEOUT") {
+      throw markErrorWithCode(
+        error,
+        "UPSTREAM_REQUEST_TIMEOUT",
+        `request timeout after ${timeoutMs}ms`
+      );
+    }
+    throw error;
   } finally {
-    if (timerId) clearTimeout(timerId);
+    clearTimeout(timerId);
+    reader.releaseLock();
   }
 }

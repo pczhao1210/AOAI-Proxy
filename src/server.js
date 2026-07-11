@@ -23,6 +23,13 @@ const app = fastify({
   bodyLimit
 });
 
+let activeAdminPath = "/admin";
+
+function normalizeAdminPath(adminPath) {
+  const normalized = `/${String(adminPath || "/admin").replace(/^\/+|\/+$/g, "")}`;
+  return normalized === "/" ? "/admin" : normalized;
+}
+
 // Check if a request targets the admin area
 function isAdminRoute(url, adminPath) {
   if (!url) return false;
@@ -155,7 +162,7 @@ app.addHook("preHandler", async (req, reply) => {
   if (pathOnly === "/favicon.ico") {
     return reply.code(204).send();
   }
-  if (isAdminRoute(rawUrl, config.server.adminPath)) {
+  if (isAdminRoute(rawUrl, activeAdminPath)) {
     if (!verifyAdminBasicAuth(config, req.headers)) {
       reply.header("WWW-Authenticate", 'Basic realm="AOAI Proxy Admin"');
       return reply.code(401).send({ error: "AdminUnauthorized" });
@@ -190,39 +197,55 @@ app.post("/v1/images/generations", async (req, reply) => {
   await proxyRequest({ config, routeKey: "images/generations", req, reply });
 });
 
-app.get("/admin/api/config", async () => {
+function registerAdminRoutes(adminPath) {
+  activeAdminPath = normalizeAdminPath(adminPath);
+  const adminRoute = (suffix = "") => `${activeAdminPath}${suffix}`;
+
+app.get(adminRoute("/api/config"), async () => {
   const config = getConfig();
   return redactConfigSecrets(config);
 });
 
-app.put("/admin/api/config", async (req, reply) => {
+app.put(adminRoute("/api/config"), async (req, reply) => {
   const nextConfig = restoreConfigSecrets(req.body, getConfig());
   try {
     const saved = await saveConfig(nextConfig);
+    const upstreamHttp = configureUpstreamHttp(saved);
     attachAuth(saved);
     void primeAuth(saved);
     writeCaddyfile(saved);
     await reloadCaddy(saved);
-    reply.send({ ok: true, config: redactConfigSecrets(saved) });
+    reply.send({
+      ok: true,
+      config: redactConfigSecrets(saved),
+      upstreamHttp,
+      restartRequired: normalizeAdminPath(saved.server.adminPath) !== activeAdminPath
+    });
   } catch (error) {
     reply.code(400).send({ error: error.message });
   }
 });
 
-app.post("/admin/api/reload", async (req, reply) => {
+app.post(adminRoute("/api/reload"), async (req, reply) => {
   try {
     const config = await reloadConfig();
+    const upstreamHttp = configureUpstreamHttp(config);
     attachAuth(config);
     void primeAuth(config);
     writeCaddyfile(config);
     await reloadCaddy(config);
-    reply.send({ ok: true, config: redactConfigSecrets(config) });
+    reply.send({
+      ok: true,
+      config: redactConfigSecrets(config),
+      upstreamHttp,
+      restartRequired: normalizeAdminPath(config.server.adminPath) !== activeAdminPath
+    });
   } catch (error) {
     reply.code(400).send({ error: error.message });
   }
 });
 
-app.post("/admin/api/verify-aad", async (req, reply) => {
+app.post(adminRoute("/api/verify-aad"), async (req, reply) => {
   const config = getConfig();
   try {
     const result = await verifyUpstreamAuth(config.auth.scope);
@@ -232,19 +255,19 @@ app.post("/admin/api/verify-aad", async (req, reply) => {
   }
 });
 
-app.get("/admin/api/runtime", async () => {
+app.get(adminRoute("/api/runtime"), async () => {
   return { ok: true, runtime: getConfigRuntimeInfo() };
 });
 
-app.get("/admin/api/stats", async () => {
+app.get(adminRoute("/api/stats"), async () => {
   return getStats();
 });
 
-app.get("/admin/api/caddy/status", async () => {
+app.get(adminRoute("/api/caddy/status"), async () => {
   return { ok: true, status: getCaddyStatus() };
 });
 
-app.post("/admin/api/restart", async (req, reply) => {
+app.post(adminRoute("/api/restart"), async (req, reply) => {
   setCaddyStatus({ state: "restart-requested", message: "restart requested", lastError: null });
   reply.send({ ok: true });
   setTimeout(() => {
@@ -259,13 +282,14 @@ app.post("/admin/api/restart", async (req, reply) => {
 const publicRoot = path.resolve(process.cwd(), "public");
 app.register(fastifyStatic, {
   root: publicRoot,
-  prefix: "/admin/",
+  prefix: `${activeAdminPath}/`,
   index: "index.html"
 });
 
-app.get("/admin", async (req, reply) => {
-  reply.redirect("/admin/");
+app.get(activeAdminPath, async (req, reply) => {
+  reply.redirect(`${activeAdminPath}/`);
 });
+}
 
 async function start() {
   emitStartupLog("init", {
@@ -277,6 +301,7 @@ async function start() {
     logLevel: process.env.LOG_LEVEL || "warn"
   });
   const config = await reloadConfig();
+  registerAdminRoutes(config.server.adminPath);
   const upstreamHttp = configureUpstreamHttp(config);
   attachAuth(config);
   await primeAuth(config);

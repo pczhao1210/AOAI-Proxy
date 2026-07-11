@@ -1,10 +1,14 @@
+function adminApiUrl(route) {
+  return new URL(`./api/${route}`, window.location.href);
+}
+
 export async function getConfigApi() {
-  const res = await fetch("/admin/api/config");
+  const res = await fetch(adminApiUrl("config"));
   return res.json();
 }
 
 export async function saveConfigApi(nextConfig) {
-  const res = await fetch("/admin/api/config", {
+  const res = await fetch(adminApiUrl("config"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(nextConfig)
@@ -13,32 +17,32 @@ export async function saveConfigApi(nextConfig) {
 }
 
 export async function reloadConfigApi() {
-  const res = await fetch("/admin/api/reload", { method: "POST" });
+  const res = await fetch(adminApiUrl("reload"), { method: "POST" });
   return res.json();
 }
 
 export async function getRuntimeApi() {
-  const res = await fetch("/admin/api/runtime");
+  const res = await fetch(adminApiUrl("runtime"));
   return res.json();
 }
 
 export async function verifyAadApi() {
-  const res = await fetch("/admin/api/verify-aad", { method: "POST" });
+  const res = await fetch(adminApiUrl("verify-aad"), { method: "POST" });
   return res.json();
 }
 
 export async function getStatsApi() {
-  const res = await fetch("/admin/api/stats");
+  const res = await fetch(adminApiUrl("stats"));
   return res.json();
 }
 
 export async function getCaddyStatusApi() {
-  const res = await fetch("/admin/api/caddy/status");
+  const res = await fetch(adminApiUrl("caddy/status"));
   return res.json();
 }
 
 export async function restartServiceApi() {
-  await fetch("/admin/api/restart", { method: "POST" });
+  await fetch(adminApiUrl("restart"), { method: "POST" });
 }
 
 export async function sendProxyRequestApi(endpoint, payload, apiKey) {

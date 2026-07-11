@@ -1,12 +1,78 @@
 import { recordUsage } from "../stats.js";
 import { markErrorWithCode } from "./reliability.js";
 
-function writeSse(replyRaw, dataObj) {
-  replyRaw.write(`data: ${JSON.stringify(dataObj)}\n\n`);
+const MAX_SSE_BUFFER_CHARS = 8 * 1024 * 1024;
+
+function buildProviderStreamError(event) {
+  const providerError = event?.error && typeof event.error === "object"
+    ? event.error
+    : (event?.response?.error && typeof event.response.error === "object" ? event.response.error : event);
+  const message = typeof providerError?.message === "string"
+    ? providerError.message
+    : "upstream provider stream error";
+  const error = markErrorWithCode(new Error(message), "UPSTREAM_PROVIDER_STREAM_ERROR");
+  error.providerError = {
+    code: typeof providerError?.code === "string" ? providerError.code : "UPSTREAM_PROVIDER_STREAM_ERROR",
+    message,
+    type: typeof providerError?.type === "string" ? providerError.type : event?.type,
+    param: providerError?.param ?? null
+  };
+  return error;
 }
 
-function writeSseDone(replyRaw) {
-  replyRaw.write("data: [DONE]\n\n");
+function isProviderErrorEvent(event) {
+  return event?.type === "error" || event?.type === "response.failed";
+}
+
+function parseSseJson(payload) {
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return null;
+  }
+}
+
+function createClientDisconnectedError() {
+  return markErrorWithCode(new Error("client disconnected"), "CLIENT_DISCONNECTED");
+}
+
+async function writeWithBackpressure(replyRaw, data) {
+  if (replyRaw.destroyed || replyRaw.writableEnded) {
+    throw createClientDisconnectedError();
+  }
+  if (replyRaw.write(data) !== false || typeof replyRaw.once !== "function") {
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const cleanup = () => {
+      replyRaw.removeListener?.("drain", onDrain);
+      replyRaw.removeListener?.("close", onClose);
+      replyRaw.removeListener?.("error", onError);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(createClientDisconnectedError());
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    replyRaw.once("drain", onDrain);
+    replyRaw.once("close", onClose);
+    replyRaw.once("error", onError);
+  });
+}
+
+async function writeSse(replyRaw, dataObj) {
+  await writeWithBackpressure(replyRaw, `data: ${JSON.stringify(dataObj)}\n\n`);
+}
+
+async function writeSseDone(replyRaw) {
+  await writeWithBackpressure(replyRaw, "data: [DONE]\n\n");
 }
 
 function extractUsageFromSseChunk(chunkText, modelId, usageState) {
@@ -39,13 +105,19 @@ export function setSseResponseHeaders(replyRaw) {
   });
 }
 
-export function writeSseError(replyRaw, errorBody) {
-  writeSse(replyRaw, { error: errorBody });
-  writeSseDone(replyRaw);
+export async function writeSseError(replyRaw, errorBody) {
+  if (replyRaw.destroyed || replyRaw.writableEnded) return false;
+  try {
+    await writeSse(replyRaw, { error: errorBody });
+    await writeSseDone(replyRaw);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export function writeSseDoneFrame(replyRaw) {
-  writeSseDone(replyRaw);
+export async function writeSseDoneFrame(replyRaw) {
+  await writeSseDone(replyRaw);
 }
 
 export async function streamPassthrough({
@@ -64,6 +136,18 @@ export async function streamPassthrough({
   let idleTimedOut = false;
   let idleTimer = null;
   const usageState = { buffer: "", recorded: false };
+  const decoder = new TextDecoder();
+  let providerBuffer = "";
+  let providerError = null;
+  let clientDisconnected = false;
+  const onClientClose = () => {
+    if (reply.raw.writableEnded) return;
+    clientDisconnected = true;
+    reader.cancel("client-disconnected").catch(() => {});
+  };
+  if (typeof reply.raw.once === "function") {
+    reply.raw.once("close", onClientClose);
+  }
   const clearIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
@@ -93,17 +177,52 @@ export async function streamPassthrough({
       }
       resetIdle();
       const chunk = Buffer.from(value);
-      const text = chunk.toString("utf8");
+      const text = decoder.decode(value, { stream: true });
       extractUsageFromSseChunk(text, modelId, usageState);
-      reply.raw.write(chunk);
+      providerBuffer += text;
+      let idx;
+      while ((idx = providerBuffer.indexOf("\n")) >= 0) {
+        const line = providerBuffer.slice(0, idx).trim();
+        providerBuffer = providerBuffer.slice(idx + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          const event = JSON.parse(payload);
+          if (isProviderErrorEvent(event)) {
+            providerError = buildProviderStreamError(event);
+          }
+        } catch {
+          // ignore parse errors for passthrough events
+        }
+      }
+      if (usageState.buffer.length > MAX_SSE_BUFFER_CHARS || providerBuffer.length > MAX_SSE_BUFFER_CHARS) {
+        throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
+      }
+      await writeWithBackpressure(reply.raw, chunk);
     }
   } catch (error) {
     clearTimeout(firstByteTimer);
     clearIdle();
-    return { ok: false, beforeFirstChunk: !firstChunkSeen, error };
+    reply.raw.removeListener?.("close", onClientClose);
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: clientDisconnected ? createClientDisconnectedError() : error,
+      clientDisconnected
+    };
   }
   clearTimeout(firstByteTimer);
   clearIdle();
+  reply.raw.removeListener?.("close", onClientClose);
+  if (clientDisconnected) {
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: createClientDisconnectedError(),
+      clientDisconnected: true
+    };
+  }
   if (firstByteTimedOut) {
     return {
       ok: false,
@@ -116,6 +235,14 @@ export async function streamPassthrough({
       ok: false,
       beforeFirstChunk: !firstChunkSeen,
       error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
+    };
+  }
+  if (providerError) {
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: providerError,
+      providerErrorForwarded: true
     };
   }
   return { ok: true, firstChunkSeen };
@@ -140,11 +267,35 @@ export async function streamShim({
   let idleTimedOut = false;
   let idleTimer = null;
   let buffer = "";
+  const decoder = new TextDecoder();
+  let providerError = null;
+  let terminalFrameWritten = false;
+  let clientDisconnected = false;
   const created = Math.floor(Date.now() / 1000);
   const streamId = `chatcmpl_${created}`;
   const toolCallMap = new Map();
   let toolCallIndex = 0;
   let sawToolCall = false;
+  const finishChatCompletionStream = async (finishReason = sawToolCall ? "tool_calls" : "stop") => {
+    if (terminalFrameWritten) return;
+    await writeSse(reply.raw, {
+      id: streamId,
+      object: "chat.completion.chunk",
+      created,
+      model: modelId,
+      choices: [{ index: 0, delta: {}, finish_reason: finishReason }]
+    });
+    await writeSseDone(reply.raw);
+    terminalFrameWritten = true;
+  };
+  const onClientClose = () => {
+    if (reply.raw.writableEnded) return;
+    clientDisconnected = true;
+    reader.cancel("client-disconnected").catch(() => {});
+  };
+  if (typeof reply.raw.once === "function") {
+    reply.raw.once("close", onClientClose);
+  }
   const clearIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
@@ -173,7 +324,10 @@ export async function streamShim({
         onFirstChunk();
       }
       resetIdle();
-      buffer += Buffer.from(value).toString("utf8");
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > MAX_SSE_BUFFER_CHARS) {
+        throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
+      }
       let idx;
       while ((idx = buffer.indexOf("\n")) >= 0) {
         const rawLine = buffer.slice(0, idx);
@@ -183,87 +337,91 @@ export async function streamShim({
         const payload = line.slice(5).trim();
         if (!payload) continue;
         if (payload === "[DONE]") {
-          writeSseDone(reply.raw);
+          if (routeKey === "chat/completions" && backendRouteKey === "responses") {
+            await finishChatCompletionStream();
+          } else if (!terminalFrameWritten) {
+            await writeSseDone(reply.raw);
+            terminalFrameWritten = true;
+          }
           continue;
         }
         if (routeKey === "chat/completions" && backendRouteKey === "responses") {
-          try {
-            const evt = JSON.parse(payload);
-            if (evt?.usage) recordUsage(model.id, evt.usage);
-            const t = evt?.type;
-            if (t === "response.output_text.delta") {
-              const delta = evt?.delta ?? "";
-              writeSse(reply.raw, {
-                id: streamId,
-                object: "chat.completion.chunk",
-                created,
-                model: modelId,
-                choices: [{ index: 0, delta: { content: delta }, finish_reason: null }]
-              });
-            } else if (t === "response.output_item.added" || t === "response.output_item.done") {
-              const item = evt?.item;
-              if (item?.type === "function_call") {
-                const callId = item.call_id || item.id || `call_${toolCallIndex}`;
-                if (!toolCallMap.has(item.id || callId)) {
-                  toolCallMap.set(item.id || callId, {
-                    index: toolCallIndex,
-                    id: callId,
-                    name: item.name || ""
-                  });
-                  toolCallIndex += 1;
-                }
-              }
-            } else if (t === "response.function_call_arguments.delta") {
-              const entry = toolCallMap.get(evt?.item_id);
-              if (entry) {
-                sawToolCall = true;
-                writeSse(reply.raw, {
-                  id: streamId,
-                  object: "chat.completion.chunk",
-                  created,
-                  model: modelId,
-                  choices: [{
-                    index: 0,
-                    delta: {
-                      tool_calls: [{
-                        index: entry.index,
-                        id: entry.id,
-                        type: "function",
-                        function: { name: entry.name, arguments: evt?.delta ?? "" }
-                      }]
-                    },
-                    finish_reason: null
-                  }]
+          const evt = parseSseJson(payload);
+          if (!evt) continue;
+          if (isProviderErrorEvent(evt)) {
+            providerError = buildProviderStreamError(evt);
+            continue;
+          }
+          if (evt?.usage) recordUsage(model.id, evt.usage);
+          const t = evt?.type;
+          if (t === "response.output_text.delta") {
+            const delta = evt?.delta ?? "";
+            await writeSse(reply.raw, {
+              id: streamId,
+              object: "chat.completion.chunk",
+              created,
+              model: modelId,
+              choices: [{ index: 0, delta: { content: delta }, finish_reason: null }]
+            });
+          } else if (t === "response.output_item.added" || t === "response.output_item.done") {
+            const item = evt?.item;
+            if (item?.type === "function_call") {
+              const callId = item.call_id || item.id || `call_${toolCallIndex}`;
+              if (!toolCallMap.has(item.id || callId)) {
+                toolCallMap.set(item.id || callId, {
+                  index: toolCallIndex,
+                  id: callId,
+                  name: item.name || ""
                 });
+                toolCallIndex += 1;
               }
-            } else if (t === "response.completed" || t === "response.output_text.done") {
-              const usage = evt?.response?.usage;
-              if (usage) recordUsage(model.id, usage);
-              writeSse(reply.raw, {
+            }
+          } else if (t === "response.function_call_arguments.delta") {
+            const entry = toolCallMap.get(evt?.item_id);
+            if (entry) {
+              sawToolCall = true;
+              await writeSse(reply.raw, {
                 id: streamId,
                 object: "chat.completion.chunk",
                 created,
                 model: modelId,
-                choices: [{ index: 0, delta: {}, finish_reason: sawToolCall ? "tool_calls" : "stop" }]
+                choices: [{
+                  index: 0,
+                  delta: {
+                    tool_calls: [{
+                      index: entry.index,
+                      id: entry.id,
+                      type: "function",
+                      function: { name: entry.name, arguments: evt?.delta ?? "" }
+                    }]
+                  },
+                  finish_reason: null
+                }]
               });
-              writeSseDone(reply.raw);
             }
-          } catch {
-            // ignore parse errors for shim events
+          } else if (t === "response.completed") {
+            const usage = evt?.response?.usage;
+            if (usage) recordUsage(model.id, usage);
+            await finishChatCompletionStream();
+          } else if (t === "response.incomplete") {
+            const usage = evt?.response?.usage;
+            if (usage) recordUsage(model.id, usage);
+            await finishChatCompletionStream("length");
           }
           continue;
         }
 
         if (routeKey === "responses" && backendRouteKey === "chat/completions") {
-          try {
-            const evt = JSON.parse(payload);
-            if (evt?.usage) recordUsage(model.id, evt.usage);
-            const choiceDelta = evt?.choices?.[0]?.delta?.content;
-            if (typeof choiceDelta === "string" && choiceDelta.length > 0) {
-              writeSse(reply.raw, { type: "response.output_text.delta", delta: choiceDelta });
-            }
-          } catch {
-            // ignore parse errors for shim events
+          const evt = parseSseJson(payload);
+          if (!evt) continue;
+          if (isProviderErrorEvent(evt)) {
+            providerError = buildProviderStreamError(evt);
+            continue;
+          }
+          if (evt?.usage) recordUsage(model.id, evt.usage);
+          const choiceDelta = evt?.choices?.[0]?.delta?.content;
+          if (typeof choiceDelta === "string" && choiceDelta.length > 0) {
+            await writeSse(reply.raw, { type: "response.output_text.delta", delta: choiceDelta });
           }
         }
       }
@@ -271,10 +429,25 @@ export async function streamShim({
   } catch (error) {
     clearTimeout(firstByteTimer);
     clearIdle();
-    return { ok: false, beforeFirstChunk: !firstChunkSeen, error };
+    reply.raw.removeListener?.("close", onClientClose);
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: clientDisconnected ? createClientDisconnectedError() : error,
+      clientDisconnected
+    };
   }
   clearTimeout(firstByteTimer);
   clearIdle();
+  reply.raw.removeListener?.("close", onClientClose);
+  if (clientDisconnected) {
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: createClientDisconnectedError(),
+      clientDisconnected: true
+    };
+  }
   if (firstByteTimedOut) {
     return {
       ok: false,
@@ -287,6 +460,13 @@ export async function streamShim({
       ok: false,
       beforeFirstChunk: !firstChunkSeen,
       error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
+    };
+  }
+  if (providerError) {
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: providerError
     };
   }
   return { ok: true, firstChunkSeen };

@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test:routes": "node test/run-route-smoke-tests.js"
+    "test": "npm run test:safety && npm run test:routes",
+    "test:routes": "node test/run-route-smoke-tests.js",
+    "test:safety": "node test/run-proxy-safety-tests.js"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1",

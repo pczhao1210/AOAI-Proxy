@@ -63,6 +63,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
   "upstream": {
     "connectTimeoutMs": 5000,
     "requestTimeoutMs": 600000,
+    "maxResponseBytes": 33554432,
     "firstByteTimeoutMs": 90000,
     "idleTimeoutMs": 600000,
     "maxRetries": 1,
@@ -84,6 +85,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 - `server.caddy.transport.dialTimeoutMs` 与 `server.upstream.connectTimeoutMs` 保持一致
 - `server.caddy.transport.responseHeaderTimeoutMs` 不低于 `server.upstream.firstByteTimeoutMs`
 - `server.upstream.idleTimeoutMs` 需要覆盖 SSE 中事件间隔较长的情况
+- `server.upstream.maxResponseBytes` 用于限制非流式 JSON 响应，默认 32 MiB
 
 ## 本地运行
 
@@ -92,7 +94,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 2. 编辑 `config/config.json`：
    - 将 `upstreams[].baseUrl` 替换为真实 Foundry 或 Azure OpenAI 资源域名
    - 将 `models[].targetModel` 设置为 deployment identifier
-   - 替换默认 API Key 和管理账号密码
+  - 添加一个启用的客户端 API Key，并设置非空管理密码
 3. 安装依赖并启动：
    - `npm install`
    - `npm run start`
@@ -104,6 +106,19 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 - `CONFIG_PATH`：本地缓存配置路径，默认 `./config/config.json`
 - `BODY_LIMIT`：请求体大小限制，默认 `52428800`
 - `CADDY_BIN`：可选的 Caddy 可执行文件路径覆盖
+- `CADDYFILE_WAIT_TIMEOUT_SECONDS`：容器等待必需 Caddyfile 的最长时间，默认 `60`
+- `BOOTSTRAP_CREDENTIALS_PATH`：自动生成凭据文件路径，默认 `/app/data/bootstrap-credentials.json`
+
+### 管理与客户端凭据
+
+- `AOAI_PROXY_ADMIN_USERNAME`：覆盖管理用户名
+- `AOAI_PROXY_ADMIN_PASSWORD`：覆盖管理密码，并默认启用管理认证
+- `AOAI_PROXY_ADMIN_AUTH_ENABLED`：显式启用或关闭管理认证
+- `AOAI_PROXY_API_KEY`：添加或替换启用的 `default` 客户端 API Key
+- `AOAI_PROXY_CADDY_ENABLED`、`AOAI_PROXY_CADDY_DOMAIN`、`AOAI_PROXY_CADDY_EMAIL`：覆盖 Caddy 启动配置
+- `AOAI_PROXY_TRUST_PROXY`：覆盖 `server.trustProxy`
+
+公网监听时，如果管理认证关闭或仍使用内置弱凭据，程序会拒绝启动。容器启动时会把缺失凭据或旧共享默认值替换为随机值；在支持 POSIX 权限的文件系统上，凭据会以 `0600` 写入 `/app/data/bootstrap-credentials.json`，且不会把密钥输出到日志。若同时通过环境变量提供管理密码和客户端 API Key，则不会生成该文件。
 
 ### 上游鉴权
 
@@ -121,11 +136,11 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 - `CONFIG_BLOB_NAME=config/config.json`
 - `BLOB_RECOVERY_INTERVAL_MS=30000`，控制回退到本地缓存后重试 Blob 的间隔
 
-在 `blob` 模式下，应用会优先从 Blob 读取配置；如果 Blob 中还没有配置文件，则回退到本地缓存配置。
+在 `blob` 模式下，应用会优先从 Blob 读取配置；Blob 暂时不可用、限流或 RBAC 尚未生效时，会回退到本地缓存。Blob 配置本身无效时仍会明确失败。
 
 ## 管理页
 
-访问 `/admin` 进入管理页。
+访问 `server.adminPath` 配置的路径进入管理页，默认是 `/admin`。
 
 当前管理页已支持：
 
@@ -137,7 +152,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 
 ### 管理登录
 
-通过 `server.adminAuth` 控制，启用后会保护 `/admin` 与 `/admin/api/*`。
+通过 `server.adminAuth` 控制，保护配置的管理路径及其 `/api/*`。修改 `server.adminPath` 后需要重启服务。
 
 ## Docker
 
@@ -148,6 +163,8 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份可以用�
 使用 Azure Files 风格本地持久化运行：
 
 - `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:minimum-latest`
+
+首次运行后可读取 `data/bootstrap-credentials.json`。建议随后把凭据存入密钥管理服务并删除该引导文件；托管部署应优先通过 secret 环境变量注入 `AOAI_PROXY_ADMIN_PASSWORD` 与 `AOAI_PROXY_API_KEY`。
 
 使用 Blob 配置持久化运行：
 
@@ -276,8 +293,8 @@ az managedapp create \
 
 列出模型：
 
-- `curl -sS http://127.0.0.1:3000/v1/models -H 'authorization: Bearer CHANGEME' | jq .`
+- `curl -sS http://127.0.0.1:3000/v1/models -H "authorization: Bearer $PROXY_API_KEY" | jq .`
 
 调用 chat：
 
-- `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer CHANGEME' -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`
+- `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H "authorization: Bearer $PROXY_API_KEY" -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`

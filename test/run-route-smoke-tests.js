@@ -4,12 +4,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { gzipSync } from "node:zlib";
 
 const PROXY_API_KEY = "test-proxy-key";
 const UPSTREAM_API_KEY = "test-upstream-key";
 const CLIENT_SECRET = "test-client-secret";
 const ADMIN_PASSWORD = "test-admin-password";
 const REDACTED_SECRET_VALUE = "__AOAI_PROXY_REDACTED__";
+const ADMIN_PATH = "/control";
 
 function listen(server, host = "127.0.0.1", port = 0) {
   return new Promise((resolve, reject) => {
@@ -74,6 +76,25 @@ function createMockUpstream() {
       }
 
       if (req.url === "/openai/v1/chat/completions") {
+        if (body.stream === true) {
+          const streamBody = [
+            `data: ${JSON.stringify({
+              id: "chatcmpl-stream-test",
+              object: "chat.completion.chunk",
+              model: body.model,
+              choices: [{ index: 0, delta: { content: "stream-ok" }, finish_reason: null }]
+            })}\n\n`,
+            "data: [DONE]\n\n"
+          ].join("");
+          const compressedBody = gzipSync(streamBody);
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "content-encoding": "gzip",
+            "content-length": compressedBody.length
+          });
+          res.end(compressedBody);
+          return;
+        }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
           id: "chatcmpl-test",
@@ -146,6 +167,22 @@ async function postJson(url, body) {
   return payload;
 }
 
+async function postStream(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${PROXY_API_KEY}`,
+      "x-request-id": `test-stream-${Date.now()}`
+    },
+    body: JSON.stringify(body)
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-encoding"), null);
+  assert.equal(response.headers.get("content-length"), null);
+  return response.text();
+}
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const payload = await response.json();
@@ -167,7 +204,7 @@ async function main() {
     server: {
       host: "127.0.0.1",
       port: proxyPort,
-      adminPath: "/admin",
+      adminPath: ADMIN_PATH,
       adminAuth: { enabled: false, username: "admin", password: ADMIN_PASSWORD },
       caddy: { enabled: false }
     },
@@ -219,7 +256,15 @@ async function main() {
     const baseUrl = `http://127.0.0.1:${proxyPort}`;
     await waitForProxy(baseUrl, child);
 
-    const adminConfig = await requestJson(`${baseUrl}/admin/api/config`);
+    const adminPage = await fetch(`${baseUrl}${ADMIN_PATH}/`);
+    assert.equal(adminPage.status, 200);
+    const adminApiScript = await fetch(`${baseUrl}${ADMIN_PATH}/admin/api.js`);
+    assert.equal(adminApiScript.status, 200);
+    const adminApiScriptText = await adminApiScript.text();
+    assert.doesNotMatch(adminApiScriptText, /\/admin\/api\//);
+    assert.match(adminApiScriptText, /\.\/api\//);
+
+    const adminConfig = await requestJson(`${baseUrl}${ADMIN_PATH}/api/config`);
     assert.equal(adminConfig.auth.apiKey, REDACTED_SECRET_VALUE);
     assert.equal(adminConfig.auth.clientSecret, REDACTED_SECRET_VALUE);
     assert.equal(adminConfig.server.adminAuth.password, REDACTED_SECRET_VALUE);
@@ -230,12 +275,16 @@ async function main() {
     }
 
     adminConfig.server.trustProxy = true;
-    const saveResult = await requestJson(`${baseUrl}/admin/api/config`, {
+    adminConfig.server.upstream.pool.connections = 7;
+    adminConfig.server.adminPath = "/next-control";
+    const saveResult = await requestJson(`${baseUrl}${ADMIN_PATH}/api/config`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(adminConfig)
     });
     assert.equal(saveResult.ok, true);
+    assert.equal(saveResult.upstreamHttp.connections, 7);
+    assert.equal(saveResult.restartRequired, true);
     assert.equal(saveResult.config.auth.apiKey, REDACTED_SECRET_VALUE);
     assert.equal(saveResult.config.apiKeys[0].key, REDACTED_SECRET_VALUE);
 
@@ -245,9 +294,13 @@ async function main() {
     assert.equal(persistedConfig.server.adminAuth.password, ADMIN_PASSWORD);
     assert.equal(persistedConfig.apiKeys[0].key, PROXY_API_KEY);
     assert.equal(persistedConfig.server.trustProxy, true);
+    assert.equal(persistedConfig.server.upstream.pool.connections, 7);
+    assert.equal(persistedConfig.server.adminPath, "/next-control");
 
-    const reloadResult = await requestJson(`${baseUrl}/admin/api/reload`, { method: "POST" });
+    const reloadResult = await requestJson(`${baseUrl}${ADMIN_PATH}/api/reload`, { method: "POST" });
     assert.equal(reloadResult.ok, true);
+    assert.equal(reloadResult.upstreamHttp.connections, 7);
+    assert.equal(reloadResult.restartRequired, true);
     assert.equal(reloadResult.config.auth.apiKey, REDACTED_SECRET_VALUE);
     assert.equal(reloadResult.config.apiKeys[0].key, REDACTED_SECRET_VALUE);
 
@@ -267,7 +320,15 @@ async function main() {
       throw new Error(`unexpected responses response: ${JSON.stringify(responses)}`);
     }
 
-    if (requests.length !== 2 || requests.some((request) => request.apiKey !== UPSTREAM_API_KEY)) {
+    const streamText = await postStream(`${baseUrl}/v1/chat/completions`, {
+      model: "test-chat",
+      messages: [{ role: "user", content: "hello" }],
+      stream: true
+    });
+    assert.match(streamText, /stream-ok/);
+    assert.match(streamText, /data: \[DONE\]/);
+
+    if (requests.length !== 3 || requests.some((request) => request.apiKey !== UPSTREAM_API_KEY)) {
       throw new Error(`unexpected upstream auth forwarding: ${JSON.stringify(requests)}`);
     }
 
