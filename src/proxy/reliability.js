@@ -45,6 +45,9 @@ export function resolveUpstreamPolicy(config, options = {}) {
   const upstreamTimeouts = asPlainObject(options.upstream?.timeoutProfile);
   const upstreamRetries = asPlainObject(options.upstream?.retryProfile);
   const requestOverrides = asPlainObject(options.requestOverrides);
+  const imageGeneration = options.routeKey === "images/generations"
+    ? asPlainObject(config?.media?.generation)
+    : {};
   const retryStatuses = resolveRetryStatuses(
     requestOverrides.retryStatuses,
     modelRetries.statuses,
@@ -67,6 +70,7 @@ export function resolveUpstreamPolicy(config, options = {}) {
       modelTimeouts.requestMs,
       upstreamTimeouts.requestMs,
       routeTimeouts.requestMs,
+      imageGeneration.requestTimeoutMs,
       timeoutCfg.requestMs,
       legacyCfg.requestTimeoutMs,
       600000
@@ -103,7 +107,7 @@ export function resolveUpstreamPolicy(config, options = {}) {
       upstreamRetries.maxRetries,
       retryCfg.maxRetries,
       legacyCfg.maxRetries,
-      1
+      0
     ),
     retryBaseMs: pickInteger(
       requestOverrides.retryBaseMs,
@@ -121,7 +125,8 @@ export function resolveUpstreamPolicy(config, options = {}) {
       legacyCfg.retryMaxMs,
       8000
     ),
-    retryStatuses: new Set(retryStatuses)
+    retryStatuses: new Set(retryStatuses),
+    classifyNetworkErrorsAsRetryable: retryCfg.classifyNetworkErrorsAsRetryable !== false
   };
 }
 
@@ -152,6 +157,18 @@ export function classifyHttpStatus(status) {
 export function classifyFetchError(error) {
   const code = String(error?.code || "");
   const message = String(error?.message || "");
+  if (code === "CLIENT_DISCONNECTED") {
+    return { code: "CLIENT_DISCONNECTED", retryable: false, status: 499, detail: message || "client disconnected" };
+  }
+  if (code === "UPSTREAM_STREAM_EVENT_TOO_LARGE") {
+    return { code: "UPSTREAM_STREAM_EVENT_TOO_LARGE", retryable: false, status: 502, detail: message };
+  }
+  if (code === "UPSTREAM_RESPONSE_TOO_LARGE") {
+    return { code: "UPSTREAM_RESPONSE_TOO_LARGE", retryable: false, status: 502, detail: message };
+  }
+  if (code === "UND_ERR_CONNECT_TIMEOUT") {
+    return { code: "UPSTREAM_CONNECT_TIMEOUT", retryable: true, status: 504, detail: message || "connect timeout" };
+  }
   if (code === "UPSTREAM_CONNECT_TIMEOUT") {
     return { code: "UPSTREAM_CONNECT_TIMEOUT", retryable: true, status: 504, detail: message };
   }
@@ -338,7 +355,8 @@ export async function fetchWithRetry({
       };
     } catch (error) {
       const classified = classifyFetchError(error);
-      if (attempt < maxAttempts && classified.retryable) {
+      const retryableNetworkError = classified.retryable && policy.classifyNetworkErrorsAsRetryable !== false;
+      if (attempt < maxAttempts && retryableNetworkError) {
         const backoffMs = computeBackoffMs(policy, attempt);
         log.warn({ ...logMeta, attempt, backoffMs, errorCode: classified.code, detail: classified.detail }, "upstream retry on fetch error");
         await sleep(backoffMs);
@@ -346,7 +364,7 @@ export async function fetchWithRetry({
       }
       return {
         ok: false,
-        classified,
+        classified: { ...classified, retryable: retryableNetworkError && attempt < maxAttempts },
         detail: classified.detail,
         upstreamStatus: classified.status,
         attempt
@@ -362,16 +380,49 @@ export async function fetchWithRetry({
   };
 }
 
-export async function parseJsonWithTimeout(response, timeoutMs) {
-  let timerId = null;
-  const timeoutPromise = new Promise((_, reject) => {
-    timerId = setTimeout(() => {
-      reject(markErrorWithCode(new Error(`request timeout after ${timeoutMs}ms`), "UPSTREAM_REQUEST_TIMEOUT"));
-    }, timeoutMs);
-  });
+export async function parseJsonWithTimeout(response, timeoutMs, maxBytes = 0) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw markErrorWithCode(new Error("response body unavailable"), "UPSTREAM_FETCH_FAILED");
+  }
+  let timedOut = false;
+  let totalBytes = 0;
+  const chunks = [];
+  const timerId = setTimeout(() => {
+    timedOut = true;
+    reader.cancel("request-timeout").catch(() => {});
+  }, timeoutMs);
   try {
-    return await Promise.race([response.json(), timeoutPromise]);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (maxBytes > 0 && totalBytes > maxBytes) {
+        await reader.cancel("response-too-large").catch(() => {});
+        throw markErrorWithCode(
+          new Error(`Upstream response exceeds ${maxBytes} bytes`),
+          "UPSTREAM_RESPONSE_TOO_LARGE"
+        );
+      }
+      chunks.push(Buffer.from(value));
+    }
+    if (timedOut) {
+      throw markErrorWithCode(
+        new Error(`request timeout after ${timeoutMs}ms`),
+        "UPSTREAM_REQUEST_TIMEOUT"
+      );
+    }
+    return JSON.parse(Buffer.concat(chunks, totalBytes).toString("utf8"));
+  } catch (error) {
+    if (timedOut && error?.code !== "UPSTREAM_REQUEST_TIMEOUT") {
+      throw markErrorWithCode(
+        error,
+        "UPSTREAM_REQUEST_TIMEOUT",
+        `request timeout after ${timeoutMs}ms`
+      );
+    }
+    throw error;
   } finally {
-    if (timerId) clearTimeout(timerId);
+    clearTimeout(timerId);
   }
 }

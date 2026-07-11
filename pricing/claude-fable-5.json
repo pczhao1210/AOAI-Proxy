@@ -1,0 +1,63 @@
+{
+  "id": "claude-fable-5",
+  "displayName": "Claude Fable 5",
+  "provider": "anthropic",
+  "family": "claude-5",
+  "modelVersion": "2026-06-09",
+  "status": "ga",
+  "interfaces": [
+    "messages"
+  ],
+  "inputModalities": [
+    "text",
+    "image",
+    "code"
+  ],
+  "outputModalities": [
+    "text",
+    "image",
+    "code"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "anthropic-official",
+    "status": "published",
+    "inputPer1mTokens": 10,
+    "cachedInputPer1mTokens": 1,
+    "outputPer1mTokens": 50,
+    "inputPer1kTokens": 0.01,
+    "cachedInputPer1kTokens": 0.001,
+    "outputPer1kTokens": 0.05
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.01,
+    "cachedInputPer1kTokens": 0.001,
+    "outputPer1kTokens": 0.05
+  },
+  "proxyTemplate": {
+    "id": "claude-fable-5",
+    "displayName": "Claude Fable 5",
+    "targetModel": "claude-fable-5",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling"
+    ],
+    "pricingRef": "claude-fable-5"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-from-partners",
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  "notes": [
+    "Anthropic 分别公布缓存写入与读取价格；当前 schema 只有一个 cachedInput 字段，因此此处记录缓存读取价格。",
+    "Claude Fable 5 自 2026-06-09 起在 Claude API、Microsoft Foundry、Amazon Bedrock 和 Google Cloud 正式可用。"
+  ]
+}

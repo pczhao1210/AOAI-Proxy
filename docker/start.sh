@@ -13,7 +13,22 @@ cleanup() {
   fi
 }
 
-trap cleanup TERM INT EXIT
+shutdown() {
+  trap - TERM INT
+  cleanup
+  set +e
+  if [ -n "$NODE_PID" ]; then
+    wait "$NODE_PID" 2>/dev/null
+  fi
+  if [ -n "$CADDY_PID" ]; then
+    wait "$CADDY_PID" 2>/dev/null
+  fi
+  set -e
+  exit 0
+}
+
+trap shutdown TERM INT
+trap cleanup EXIT
 
 DATA_DIR=${DATA_DIR:-/app/data}
 CONFIG_PATH=${CONFIG_PATH:-$DATA_DIR/config.json}
@@ -168,6 +183,11 @@ ln -sf "$CONFIG_PATH" /app/config/config.json
 
 # Persist Caddyfile alongside config
 export CADDYFILE_PATH=${CADDYFILE_PATH:-$DATA_DIR/Caddyfile}
+CADDYFILE_WAIT_TIMEOUT_SECONDS=${CADDYFILE_WAIT_TIMEOUT_SECONDS:-60}
+case "$CADDYFILE_WAIT_TIMEOUT_SECONDS" in
+  ''|*[!0-9]*) CADDYFILE_WAIT_TIMEOUT_SECONDS=60 ;;
+  0) CADDYFILE_WAIT_TIMEOUT_SECONDS=60 ;;
+esac
 
 # Ensure config exists
 if [ ! -f "$CONFIG_PATH" ]; then
@@ -175,22 +195,103 @@ if [ ! -f "$CONFIG_PATH" ]; then
   exit 1
 fi
 
+# The application regenerates this file from the effective runtime config.
+rm -f "$CADDYFILE_PATH"
+
+configured_caddy_enabled=$(node -e '
+  try {
+    const config = JSON.parse(require("fs").readFileSync(process.env.CONFIG_PATH, "utf8"));
+    process.stdout.write(config?.server?.caddy?.enabled === true ? "true" : "false");
+  } catch {
+    process.stdout.write("false");
+  }
+')
+requested_caddy_enabled=$(printf '%s' "${AOAI_PROXY_CADDY_ENABLED:-${CADDY_ENABLED:-}}" | tr '[:upper:]' '[:lower:]')
+if [ "$requested_caddy_enabled" = "true" ] || [ "$requested_caddy_enabled" = "1" ]; then
+  caddy_required=true
+elif [ "$requested_caddy_enabled" = "false" ] || [ "$requested_caddy_enabled" = "0" ]; then
+  caddy_required=false
+else
+  caddy_required=$configured_caddy_enabled
+fi
+
 # Generate Caddyfile if enabled (server will write on startup)
 node /app/src/server.js &
 NODE_PID=$!
 
-# Wait briefly for Caddyfile generation (if enabled)
-for i in 1 2 3 4 5; do
+# Database bootstrap and credential warmup may delay Caddyfile generation.
+if [ "$caddy_required" = "true" ]; then
+  caddy_wait_attempts=$((CADDYFILE_WAIT_TIMEOUT_SECONDS * 2))
+else
+  caddy_wait_attempts=5
+fi
+i=0
+while [ "$i" -lt "$caddy_wait_attempts" ]; do
   if [ -f "$CADDYFILE_PATH" ]; then
     break
   fi
+  if ! kill -0 "$NODE_PID" 2>/dev/null; then
+    break
+  fi
   sleep 0.5
+  i=$((i + 1))
 done
+
+if ! kill -0 "$NODE_PID" 2>/dev/null; then
+  set +e
+  wait "$NODE_PID"
+  SERVICE_STATUS=$?
+  set -e
+  emit_startup_log error startup.service_exited service "node" exitCode "$SERVICE_STATUS"
+  [ "$SERVICE_STATUS" -ne 0 ] || SERVICE_STATUS=1
+  exit "$SERVICE_STATUS"
+fi
+
+if [ "$caddy_required" = "true" ] && [ ! -f "$CADDYFILE_PATH" ]; then
+  emit_startup_log error startup.caddyfile_timeout \
+    caddyfilePath "$CADDYFILE_PATH" \
+    timeoutSeconds "$CADDYFILE_WAIT_TIMEOUT_SECONDS"
+  exit 1
+fi
 
 if [ -f "$CADDYFILE_PATH" ]; then
   "$CADDY_BIN" run --config "$CADDYFILE_PATH" --adapter caddyfile &
   CADDY_PID=$!
-  wait $NODE_PID $CADDY_PID
+
+  while kill -0 "$NODE_PID" 2>/dev/null && kill -0 "$CADDY_PID" 2>/dev/null; do
+    sleep 1
+  done
+
+  if kill -0 "$NODE_PID" 2>/dev/null; then
+    EXITED_SERVICE="caddy"
+    EXITED_PID=$CADDY_PID
+  else
+    EXITED_SERVICE="node"
+    EXITED_PID=$NODE_PID
+  fi
+
+  set +e
+  wait "$EXITED_PID"
+  SERVICE_STATUS=$?
+  set -e
+  emit_startup_log error startup.service_exited \
+    service "$EXITED_SERVICE" \
+    exitCode "$SERVICE_STATUS"
+
+  if [ "$SERVICE_STATUS" -eq 0 ]; then
+    SERVICE_STATUS=1
+  fi
+  exit "$SERVICE_STATUS"
 else
-  wait $NODE_PID
+  set +e
+  wait "$NODE_PID"
+  SERVICE_STATUS=$?
+  set -e
+  emit_startup_log error startup.service_exited \
+    service "node" \
+    exitCode "$SERVICE_STATUS"
+  if [ "$SERVICE_STATUS" -eq 0 ]; then
+    SERVICE_STATUS=1
+  fi
+  exit "$SERVICE_STATUS"
 fi

@@ -224,14 +224,9 @@ function buildStaticResultItem(config, model) {
   return base;
 }
 
-async function fetchValidationResponse({ targetUrl, headers, bodyText, connectTimeoutMs, requestTimeoutMs }) {
+async function fetchValidationResponse({ targetUrl, headers, bodyText, requestTimeoutMs }) {
   const controller = new AbortController();
-  let connectTimer = null;
-  let requestTimer = null;
-  connectTimer = setTimeout(() => {
-    controller.abort("connect-timeout");
-  }, connectTimeoutMs);
-  requestTimer = setTimeout(() => {
+  const requestTimer = setTimeout(() => {
     controller.abort("request-timeout");
   }, requestTimeoutMs);
 
@@ -243,12 +238,6 @@ async function fetchValidationResponse({ targetUrl, headers, bodyText, connectTi
       signal: controller.signal
     });
   } catch (error) {
-    if (controller.signal.aborted && controller.signal.reason === "connect-timeout") {
-      const timeoutError = error instanceof Error ? error : new Error(String(error || ""));
-      timeoutError.code = "UPSTREAM_CONNECT_TIMEOUT";
-      timeoutError.message = `connect timeout after ${connectTimeoutMs}ms`;
-      throw timeoutError;
-    }
     if (controller.signal.aborted && controller.signal.reason === "request-timeout") {
       const timeoutError = error instanceof Error ? error : new Error(String(error || ""));
       timeoutError.code = "UPSTREAM_REQUEST_TIMEOUT";
@@ -257,7 +246,6 @@ async function fetchValidationResponse({ targetUrl, headers, bodyText, connectTi
     }
     throw error;
   } finally {
-    clearTimeout(connectTimer);
     clearTimeout(requestTimer);
   }
 }
@@ -308,7 +296,6 @@ async function probeConfiguredModel(config, item) {
       targetUrl: target.targetUrl,
       headers,
       bodyText: JSON.stringify(payload),
-      connectTimeoutMs: policy.connectTimeoutMs,
       requestTimeoutMs: policy.requestTimeoutMs
     });
 

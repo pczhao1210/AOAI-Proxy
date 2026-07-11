@@ -9,8 +9,25 @@ param containerGroupName string = 'aoai-proxy'
 @description('Container image to deploy.')
 param image string
 
-@description('Public DNS label for the container group. Leave empty to skip public DNS. This does not make the ACI private; the current template still creates a public IP address.')
-param dnsNameLabel string = ''
+@minLength(3)
+@description('Public DNS label used by Caddy for the HTTPS endpoint.')
+param dnsNameLabel string
+
+@description('Email address used for Caddy automatic HTTPS certificate management.')
+param caddyEmail string
+
+@description('Username for the proxy administration interface.')
+param adminUsername string = 'admin'
+
+@secure()
+@minLength(16)
+@description('Password for the proxy administration interface. Use a unique secret of at least 16 characters.')
+param adminPassword string
+
+@secure()
+@minLength(16)
+@description('Default client API key accepted by the proxy. Use a unique secret of at least 16 characters.')
+param proxyApiKey string
 
 @description('CPU cores for the container.')
 param cpu int = 1
@@ -150,6 +167,7 @@ var databaseServerFqdn = enableDatabase ? '${effectiveDatabaseServerName}.postgr
 var databaseConnectionString = enableDatabase
   ? 'postgresql://${databaseAdminUsername}:${uriComponent(databaseAdminPassword)}@${databaseServerFqdn}:5432/${effectiveDatabaseName}?sslmode=require'
   : ''
+var caddyDomain = '${dnsNameLabel}.${location}.azurecontainer.io'
 var useImageRegistryCredentials = !empty(acrLoginServer) && !empty(acrUsername) && !empty(acrPassword)
 var imageRegistryCredentials = useImageRegistryCredentials ? [
   {
@@ -163,23 +181,52 @@ var effectiveAzureFileStorageAccountKey = enableAzureFile
       ? azureFileStorageAccountKey
       : (createStorageAccount ? storageAccount!.listKeys().keys[0].value : existingStorageAccount!.listKeys().keys[0].value))
   : ''
+var baseEnvironmentVariables = [
+  {
+    name: 'PERSISTENCE_MODE'
+    value: persistenceMode
+  }
+  {
+    name: 'AOAI_PROXY_ADMIN_AUTH_ENABLED'
+    value: 'true'
+  }
+  {
+    name: 'AOAI_PROXY_ADMIN_USERNAME'
+    value: adminUsername
+  }
+  {
+    name: 'AOAI_PROXY_ADMIN_PASSWORD'
+    secureValue: adminPassword
+  }
+  {
+    name: 'AOAI_PROXY_API_KEY'
+    secureValue: proxyApiKey
+  }
+  {
+    name: 'AOAI_PROXY_CADDY_ENABLED'
+    value: 'true'
+  }
+  {
+    name: 'AOAI_PROXY_CADDY_DOMAIN'
+    value: caddyDomain
+  }
+  {
+    name: 'AOAI_PROXY_CADDY_EMAIL'
+    value: caddyEmail
+  }
+  {
+    name: 'AOAI_PROXY_TRUST_PROXY'
+    value: 'true'
+  }
+]
 var environmentVariables = enableDatabase
-  ? [
-      {
-        name: 'PERSISTENCE_MODE'
-        value: persistenceMode
-      }
+  ? concat(baseEnvironmentVariables, [
       {
         name: 'CONFIG_DB_CONNECTION_STRING'
         secureValue: databaseConnectionString
       }
-    ]
-  : [
-      {
-        name: 'PERSISTENCE_MODE'
-        value: persistenceMode
-      }
-    ]
+    ])
+  : baseEnvironmentVariables
 var volumeMounts = enableAzureFile ? [
   {
     name: 'configshare'
@@ -312,6 +359,18 @@ resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2023-05-01'
         properties: {
           image: image
           environmentVariables: environmentVariables
+          livenessProbe: {
+            httpGet: {
+              path: '/healthz'
+              port: 3000
+              scheme: 'http'
+            }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+          }
           ports: [
             {
               port: 3000
@@ -337,10 +396,6 @@ resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2023-05-01'
       type: 'Public'
       dnsNameLabel: empty(dnsNameLabel) ? null : dnsNameLabel
       ports: [
-        {
-          port: 3000
-          protocol: 'TCP'
-        }
         {
           port: 443
           protocol: 'TCP'

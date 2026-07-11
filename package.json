@@ -10,6 +10,7 @@
     "admin:dev": "vite --config admin-ui/vite.config.js",
     "build:admin": "vite build --config admin-ui/vite.config.js",
     "build": "npm run build:admin",
+    "test:unit": "node --test test/*.test.js",
     "test:routes": "node test/run-all-routes.js",
     "test:real": "node test/run-all-real-routes.js",
     "test:latency": "node test/analyze-first-token-latency.js",

@@ -4,7 +4,7 @@
   "provider": "moonshot-ai",
   "family": "kimi-k2",
   "modelVersion": null,
-  "status": "ga",
+  "status": "preview",
   "interfaces": [
     "chat/completions"
   ],
@@ -23,20 +23,20 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "moonshot-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
-    "inputPer1mTokens": 0.6,
-    "cachedInputPer1mTokens": 0.1,
-    "outputPer1mTokens": 3,
-    "inputPer1kTokens": 0.0006,
-    "cachedInputPer1kTokens": 0.0001,
-    "outputPer1kTokens": 0.003
+    "inputPer1mTokens": 0.66,
+    "cachedInputPer1mTokens": 0.11,
+    "outputPer1mTokens": 3.3,
+    "inputPer1kTokens": 0.00066,
+    "cachedInputPer1kTokens": 0.00011,
+    "outputPer1kTokens": 0.0033
   },
   "pricingCatalogEntry": {
     "currency": "USD",
-    "inputPer1kTokens": 0.0006,
-    "cachedInputPer1kTokens": 0.0001,
-    "outputPer1kTokens": 0.003
+    "inputPer1kTokens": 0.00066,
+    "cachedInputPer1kTokens": 0.00011,
+    "outputPer1kTokens": 0.0033
   },
   "proxyTemplate": {
     "id": "Kimi-K2.5",
@@ -51,10 +51,10 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#moonshot-ai-models-sold-directly-by-azure",
-    "pricing": "https://platform.kimi.com/docs/pricing/chat-k25"
+    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
-    "这里按仓库 pricing 目录统一的 USD 口径维护 Kimi K2.5 单价。",
-    "缓存命中、未命中输入和输出价格分别按 0.10 / 0.60 / 3.00 USD 每 1M tokens 回填，并同步换算到 1K tokens 字段。"
+    "Azure Retail Prices API 的 Foundry Models 计量 FW Kimi K2.5 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00011、0.00066、0.0033 USD 每 1K tokens。",
+    "Foundry 目录将此模型标为 Preview，并声明它支持文本和图像输入、文本输出与工具调用。"
   ]
 }

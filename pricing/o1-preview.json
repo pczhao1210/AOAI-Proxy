@@ -20,20 +20,20 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "azure-openai-data-zone",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
-    "inputPer1mTokens": 16.5,
-    "cachedInputPer1mTokens": 8.25,
-    "outputPer1mTokens": 66,
-    "inputPer1kTokens": 0.0165,
-    "cachedInputPer1kTokens": 0.00825,
-    "outputPer1kTokens": 0.066
+    "inputPer1mTokens": 15,
+    "cachedInputPer1mTokens": 7.5,
+    "outputPer1mTokens": 60,
+    "inputPer1kTokens": 0.015,
+    "cachedInputPer1kTokens": 0.0075,
+    "outputPer1kTokens": 0.06
   },
   "pricingCatalogEntry": {
     "currency": "USD",
-    "inputPer1kTokens": 0.0165,
-    "cachedInputPer1kTokens": 0.00825,
-    "outputPer1kTokens": 0.066
+    "inputPer1kTokens": 0.015,
+    "cachedInputPer1kTokens": 0.0075,
+    "outputPer1kTokens": 0.06
   },
   "proxyTemplate": {
     "id": "o1-preview",
@@ -46,6 +46,9 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
-    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
+  },
+  "notes": [
+    "Azure Retail Prices API 的 Global Standard 计量 o1 preview input、cached input、output glbl Tokens 的最新生效价分别为 0.015、0.0075、0.06 USD 每 1K tokens。"
+  ]
 }

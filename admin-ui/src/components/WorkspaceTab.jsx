@@ -174,7 +174,7 @@ export default function WorkspaceTab({
               <div className="database-probe-form">
                 <div className="database-probe-span-full">
                   <Field label={t("field.databaseConnectionString", "Connection String")} hint={t("field.databaseConnectionStringHint", "Defaults come from CONFIG_DB_CONNECTION_STRING, DATABASE_URL, or a configured connectionRef when available.")}>
-                    <textarea className="database-probe-connection-string" rows={5} value={databaseConfigForm?.connectionString || ""} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "connectionString", event.target.value)} />
+                    <textarea className="database-probe-connection-string" rows={5} autoComplete="off" value={databaseConfigForm?.connectionString || ""} onChange={(event) => updateDatabaseForm(setDatabaseConfigForm, "connectionString", event.target.value)} />
                   </Field>
                 </div>
                 <Field label={t("field.databaseConnectionRefResolved", "Resolved Connection Ref")} hint={t("field.databaseConnectionRefResolvedHint", "If Connection String is empty, the test will try to resolve this environment variable on the server.")}>

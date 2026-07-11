@@ -223,7 +223,6 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                     syncUpstreamCapabilities(next, next.models[index].upstream);
                   })} /></Field>
                   <Field label={t("field.accessTags", "Access Tags")}><input value={formatList(item.accessTags)} onChange={(event) => updateConfig((next) => { next.models[index].accessTags = parseList(event.target.value); })} /></Field>
-                  <Field label={t("field.fallbackModels", "Fallback Models")}><input value={formatList(item.fallbackModels)} onChange={(event) => updateConfig((next) => { next.models[index].fallbackModels = parseList(event.target.value); })} /></Field>
                 </EntityCard>
               );
             })}

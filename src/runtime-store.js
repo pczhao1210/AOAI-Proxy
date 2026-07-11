@@ -453,38 +453,7 @@ function buildEventRow(eventType, fields = {}) {
   };
 }
 
-function enqueueRuntimeEvent(settings, event) {
-  if (!settings.enabled) {
-    return;
-  }
-  if (runtimeStoreState.spilloverActive) {
-    void appendLocalBufferEvents(settings, [event])
-      .then(({ dropped }) => {
-        if (dropped > 0) {
-          updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + dropped });
-        }
-        scheduleFlush(settings);
-      })
-      .catch((error) => {
-        appendStructuredLog("warn", {
-          source: "runtime-store",
-          event: "runtime_store.local_buffer_append_failed",
-          failureReason: error?.message || "Failed to append runtime event to local buffer",
-          target: settings.localBufferPath
-        });
-        if (runtimeEventQueue.length >= settings.maxQueueSize) {
-          runtimeEventQueue.shift();
-          updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + 1 });
-        }
-        runtimeEventQueue.push(event);
-        updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured });
-        scheduleFlush(settings);
-      });
-    return;
-  }
-  if (!settings.configured) {
-    return;
-  }
+function enqueueMemoryFallback(settings, event) {
   if (runtimeEventQueue.length >= settings.maxQueueSize) {
     runtimeEventQueue.shift();
     updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + 1 });
@@ -492,6 +461,36 @@ function enqueueRuntimeEvent(settings, event) {
   runtimeEventQueue.push(event);
   updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured });
   scheduleFlush(settings);
+}
+
+function persistRuntimeEventLocally(settings, event) {
+  void appendLocalBufferEvents(settings, [event])
+    .then(({ dropped }) => {
+      if (dropped > 0) {
+        updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + dropped });
+      }
+      scheduleFlush(settings);
+    })
+    .catch((error) => {
+      appendStructuredLog("warn", {
+        source: "runtime-store",
+        event: "runtime_store.local_buffer_append_failed",
+        failureReason: error?.message || "Failed to append runtime event to local buffer",
+        target: settings.localBufferPath
+      });
+      enqueueMemoryFallback(settings, event);
+    });
+}
+
+function enqueueRuntimeEvent(settings, event) {
+  if (!settings.enabled) {
+    return;
+  }
+  if (runtimeStoreState.spilloverActive || !settings.configured) {
+    persistRuntimeEventLocally(settings, event);
+    return;
+  }
+  enqueueMemoryFallback(settings, event);
 }
 
 async function insertRuntimeEvents(settings, batchItems) {
@@ -931,6 +930,11 @@ export async function flushRuntimeEvents() {
         });
       } catch (persistError) {
         runtimeEventQueue.unshift(...backlog);
+        if (runtimeEventQueue.length > settings.maxQueueSize) {
+          const dropped = runtimeEventQueue.length - settings.maxQueueSize;
+          runtimeEventQueue.splice(0, dropped);
+          updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + dropped });
+        }
         appendStructuredLog("warn", {
           source: "runtime-store",
           event: "runtime_store.local_buffer_persist_failed",

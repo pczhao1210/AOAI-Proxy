@@ -2,6 +2,7 @@ import { ClientSecretCredential, DefaultAzureCredential } from "@azure/identity"
 
 let credential = null;
 let currentAuth = null;
+let authGeneration = 0;
 const cachedTokens = new Map();
 const inFlightTokens = new Map();
 const injectedEnv = new Map();
@@ -137,11 +138,11 @@ function isTransientDefaultCredentialError(error) {
   );
 }
 
-async function acquireTokenWithRetry(scope) {
+async function acquireTokenWithRetry(scope, credentialInstance = credential) {
   let lastError = null;
   for (let attempt = 0; attempt <= TOKEN_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      return await credential.getToken(scope);
+      return await credentialInstance.getToken(scope);
     } catch (error) {
       lastError = error;
       const canRetry = isTransientDefaultCredentialError(error) && attempt < TOKEN_RETRY_DELAYS_MS.length;
@@ -159,21 +160,27 @@ async function refreshBearerToken(scope) {
     throw new Error("Credential not initialized");
   }
   const cacheKey = getCacheKey(scope);
+  const generation = authGeneration;
+  const credentialInstance = credential;
   const existing = inFlightTokens.get(cacheKey);
   if (existing) {
     return existing;
   }
 
-  const refreshPromise = acquireTokenWithRetry(scope)
+  const refreshPromise = acquireTokenWithRetry(scope, credentialInstance)
     .then((token) => {
       if (!token || !token.token) {
         throw new Error("Failed to acquire access token");
       }
-      cachedTokens.set(cacheKey, token);
+      if (generation === authGeneration && credentialInstance === credential) {
+        cachedTokens.set(cacheKey, token);
+      }
       return token;
     })
     .finally(() => {
-      inFlightTokens.delete(cacheKey);
+      if (inFlightTokens.get(cacheKey) === refreshPromise) {
+        inFlightTokens.delete(cacheKey);
+      }
     });
 
   inFlightTokens.set(cacheKey, refreshPromise);
@@ -181,6 +188,7 @@ async function refreshBearerToken(scope) {
 }
 
 export function initAuth(config) {
+  authGeneration += 1;
   currentAuth = normalizeAuth(config?.auth);
   syncAzureIdentityEnv(currentAuth);
   credential = createCredential(currentAuth);

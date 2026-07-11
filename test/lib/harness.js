@@ -507,6 +507,9 @@ export async function createTestContext() {
       }
       return timed;
     },
+    async stopProxy() {
+      await stopChildProcess(childProcess);
+    },
     getUpstreamRequest(predicate = null) {
       if (!predicate) {
         return upstream.requests[upstream.requests.length - 1] || null;

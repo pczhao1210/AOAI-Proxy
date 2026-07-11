@@ -16,6 +16,7 @@ import {
 } from "./proxy/routing.js";
 import {
   sanitizeIncomingHeaders,
+  sanitizeConfiguredUpstreamHeaders,
   getStreamFlag,
   sanitizeRequestBody,
   extractProxyRequestControls,
@@ -58,6 +59,8 @@ import {
   recordGovernanceUsage
 } from "./governance.js";
 import { getRequestNetworkContext } from "./request-network.js";
+
+const DEFAULT_MAX_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
 
 function emitInfoLog(payload) {
   const normalizedPayload = {
@@ -233,6 +236,26 @@ function applyConfiguredRequestPolicy(body, { config, routeKey, model }) {
   };
 }
 
+function validateImageGenerationPolicy(body, config) {
+  const generation = config?.media?.generation || {};
+  const maxImages = Number.isInteger(generation.maxImages) && generation.maxImages > 0
+    ? generation.maxImages
+    : 4;
+  const imageCount = body?.n == null ? 1 : Number(body.n);
+  if (!Number.isInteger(imageCount) || imageCount <= 0 || imageCount > maxImages) {
+    return { param: "n", message: `n must be an integer between 1 and ${maxImages}` };
+  }
+  const allowedSizes = normalizeStringList(generation.allowedSizes);
+  if (allowedSizes.length && body?.size != null && !allowedSizes.includes(String(body.size))) {
+    return { param: "size", message: `size must be one of: ${allowedSizes.join(", ")}` };
+  }
+  const allowedQualityModes = normalizeStringList(generation.allowedQualityModes);
+  if (allowedQualityModes.length && body?.quality != null && !allowedQualityModes.includes(String(body.quality))) {
+    return { param: "quality", message: `quality must be one of: ${allowedQualityModes.join(", ")}` };
+  }
+  return null;
+}
+
 export async function proxyRequest({
   config,
   routeKey,
@@ -330,7 +353,19 @@ export async function proxyRequest({
     });
     return;
   }
-  const modelId = body.model || config.models[0]?.id;
+  const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(routeKey)] || {};
+  if (routeProfile.enabled === false || (routeKey === "images/generations" && config?.media?.generation?.enabled === false)) {
+    sendProxyError(404, {
+      code: "ROUTE_DISABLED",
+      exposedCode: "RouteDisabled",
+      message: `route ${routeKey} is disabled`
+    });
+    return;
+  }
+  const defaultModelId = routeKey === "images/generations"
+    ? config?.media?.generation?.defaultModel || config.models[0]?.id
+    : config.models[0]?.id;
+  const modelId = body.model || defaultModelId;
   if (!modelId) {
     log.error({
       source: "proxy",
@@ -366,6 +401,25 @@ export async function proxyRequest({
       message: `model ${modelId} not found`
     });
     return;
+  }
+
+  body = {
+    ...(routeProfile.defaultParams && typeof routeProfile.defaultParams === "object" ? routeProfile.defaultParams : {}),
+    ...(model.defaultParams && typeof model.defaultParams === "object" ? model.defaultParams : {}),
+    ...body,
+    model: modelId
+  };
+  if (routeKey === "images/generations") {
+    const imagePolicyError = validateImageGenerationPolicy(body, config);
+    if (imagePolicyError) {
+      sendProxyError(400, {
+        code: "IMAGE_GENERATION_POLICY_REJECTED",
+        exposedCode: "InvalidImageGenerationRequest",
+        message: imagePolicyError.message,
+        param: imagePolicyError.param
+      });
+      return;
+    }
   }
 
   if (Array.isArray(body.messages)) {
@@ -800,9 +854,10 @@ export async function proxyRequest({
 
     const headers = {
       ...sanitizeIncomingHeaders(req.headers, config),
+      ...sanitizeConfiguredUpstreamHeaders(upstream.headersTemplate),
       "content-type": "application/json",
       ...upstreamAuthHeaders,
-      "x-request-id": requestId
+      ...(config?.proxy?.forwardHeaders?.addRequestIdHeader === false ? {} : { "x-request-id": requestId })
     };
     const bodyText = JSON.stringify(nextBody);
     const maxRequestBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxRequestBodyBytes);
@@ -860,7 +915,8 @@ export async function proxyRequest({
           markTiming(timing, "upstreamHeadersAt");
         } catch (error) {
           const classified = classifyFetchError(error);
-          if (attempt < maxAttempts && classified.retryable) {
+          const retryableNetworkError = classified.retryable && policy.classifyNetworkErrorsAsRetryable !== false;
+          if (attempt < maxAttempts && retryableNetworkError) {
             const backoffMs = computeBackoffMs(policy, attempt);
             log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream fetch retry");
             await sleep(backoffMs);
@@ -1029,7 +1085,29 @@ export async function proxyRequest({
         }
 
         const classified = classifyFetchError(streamResult.error);
-        const canRetry = streamResult.beforeFirstChunk && classified.retryable && attempt < maxAttempts;
+        if (streamResult.clientDisconnected || classified.code === "CLIENT_DISCONNECTED") {
+          emitInfoLog({
+            requestId,
+            modelId,
+            event: "proxy.stream_client_disconnected",
+            routeKey,
+            backendRouteKey,
+            attempt,
+            latencyMs: Date.now() - startAt,
+            message: "client disconnected during stream"
+          });
+          finishTiming({
+            status: 499,
+            outcome: "client_disconnected",
+            errorCode: "CLIENT_DISCONNECTED",
+            source: "client"
+          });
+          return;
+        }
+        const canRetry = streamResult.beforeFirstChunk
+          && classified.retryable
+          && policy.classifyNetworkErrorsAsRetryable !== false
+          && attempt < maxAttempts;
         if (canRetry) {
           const backoffMs = computeBackoffMs(policy, attempt);
           log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream retry before first chunk");
@@ -1044,11 +1122,19 @@ export async function proxyRequest({
           failureReason: providerError?.message || classified.detail || "stream request failed",
           source: providerError ? "provider" : "upstream"
         });
-        const errBody = buildErrorBody({ classified, requestId, detail: providerError?.message || classified.detail });
+        const errBody = buildErrorBody({
+          classified,
+          requestId,
+          detail: providerError?.message || classified.detail,
+          message: providerError?.message,
+          code: providerError?.code,
+          type: providerError?.type,
+          param: providerError?.param
+        });
         if (!streamingStarted) {
           reply.code(classified.status || 502).send(errBody);
         } else if (!streamResult.providerErrorForwarded) {
-          writeSseError(reply.raw, errBody);
+          await writeSseError(reply.raw, errBody);
           reply.raw.end();
         } else {
           reply.raw.end();
@@ -1144,7 +1230,8 @@ export async function proxyRequest({
 
     const upstreamResponse = fetchResult.upstreamResponse;
     markTiming(timing, "upstreamHeadersAt");
-    const maxResponseBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxResponseBodyBytes);
+    const maxResponseBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxResponseBodyBytes)
+      || DEFAULT_MAX_RESPONSE_BODY_BYTES;
     const responseContentLength = Number(upstreamResponse.headers.get("content-length"));
     if (maxResponseBodyBytes > 0 && Number.isFinite(responseContentLength) && responseContentLength > maxResponseBodyBytes) {
       const classified = {
@@ -1171,7 +1258,7 @@ export async function proxyRequest({
     }
     let payload = null;
     try {
-      payload = await parseJsonWithTimeout(upstreamResponse, policy.requestTimeoutMs);
+      payload = await parseJsonWithTimeout(upstreamResponse, policy.requestTimeoutMs, maxResponseBodyBytes);
     } catch (error) {
       const classified = classifyFetchError(error);
       recordProxyError({

@@ -10,6 +10,7 @@ const DEFAULTS = {
   server: {
     host: "0.0.0.0",
     port: 3000,
+    gracefulShutdownMs: 30000,
     adminPath: "/admin",
     adminAuth: {
       enabled: false,
@@ -25,12 +26,12 @@ const DEFAULTS = {
       upstreamPort: 3000,
       transport: {
         dialTimeoutMs: 5000,
-        responseHeaderTimeoutMs: 45000,
+        responseHeaderTimeoutMs: 1260000,
         keepAliveTimeoutMs: 120000
       }
     },
     imageCompression: {
-      enabled: true,
+      enabled: false,
       maxSize: 1600,
       quality: 0.85,
       format: "jpeg"
@@ -39,16 +40,16 @@ const DEFAULTS = {
       connectTimeoutMs: 10000,
       requestTimeoutMs: 900000,
       firstByteTimeoutMs: 300000,
-      idleTimeoutMs: 900000,
+      idleTimeoutMs: 300000,
       maxRetries: 0,
       retryBaseMs: 800,
       retryMaxMs: 8000,
       retryStatuses: [408, 409, 425, 429, 500, 502, 503, 504],
       pool: {
-        connections: 64,
+        connections: 32,
         keepAliveTimeoutMs: 60000,
         keepAliveMaxTimeoutMs: 300000,
-        headersTimeoutMs: 300000,
+        headersTimeoutMs: 330000,
         bodyTimeoutMs: 0,
         pipelining: 1
       }
@@ -77,7 +78,7 @@ const DEFAULTS = {
     },
     security: {
       allowedIps: [],
-      csrfProtection: false,
+      csrfProtection: true,
       auditAllWrites: true,
       maskSecretsInUi: true
     },
@@ -90,15 +91,22 @@ const DEFAULTS = {
   proxy: {
     timeouts: {
       connectMs: 10000,
-      requestMs: 180000,
-      firstByteMs: 45000,
-      idleMs: 120000,
-      maxStreamDurationMs: 0,
+      requestMs: 900000,
+      firstByteMs: 300000,
+      idleMs: 300000,
+      maxStreamDurationMs: 3600000,
       allowPerRequestOverride: false,
-      requestOverrideFields: ["timeoutMs", "streamTimeoutMs", "idleTimeoutMs", "maxStreamDurationMs", "maxRetries"]
+      requestOverrideFields: ["timeoutMs", "streamTimeoutMs", "idleTimeoutMs", "maxStreamDurationMs"],
+      requestOverrideLimits: {
+        requestMs: 900000,
+        firstByteMs: 300000,
+        idleMs: 900000,
+        maxStreamDurationMs: 3600000,
+        maxRetries: 0
+      }
     },
     retries: {
-      maxRetries: 1,
+      maxRetries: 0,
       baseDelayMs: 800,
       maxDelayMs: 8000,
       statuses: [408, 409, 425, 429, 500, 502, 503, 504],
@@ -107,11 +115,11 @@ const DEFAULTS = {
     },
     httpClient: {
       implementation: "undici",
-      connections: 64,
+      connections: 32,
       keepAliveTimeoutMs: 60000,
       keepAliveMaxTimeoutMs: 300000,
-      headersTimeoutMs: 300000,
-      bodyTimeoutMs: 120000,
+      headersTimeoutMs: 330000,
+      bodyTimeoutMs: 0,
       pipelining: 1,
       dnsCacheTtlMs: 300000,
       forceIpv4: false
@@ -124,7 +132,7 @@ const DEFAULTS = {
     },
     guards: {
       maxRequestBodyBytes: 50 * 1024 * 1024,
-      maxResponseBodyBytes: 0,
+      maxResponseBodyBytes: 50 * 1024 * 1024,
       rejectUnknownProxyParams: false,
       dropUnsupportedOpenAiParams: false,
       sanitizeMeaninglessValues: true
@@ -178,7 +186,7 @@ const DEFAULTS = {
   },
   media: {
     inputCompression: {
-      enabled: true,
+      enabled: false,
       maxLongSidePx: 1600,
       quality: 0.85,
       outputFormat: "jpeg",
@@ -201,7 +209,7 @@ const DEFAULTS = {
     generation: {
       enabled: true,
       defaultModel: "",
-      requestTimeoutMs: 300000,
+      requestTimeoutMs: 600000,
       pollIntervalMs: 2000,
       pollTimeoutMs: 600000,
       maxImages: 4,
@@ -304,9 +312,9 @@ const DEFAULTS = {
     },
     rateLimits: {
       windowSeconds: 60,
-      defaultRpm: 0,
+      defaultRpm: 60,
       defaultTpm: 0,
-      defaultConcurrency: 0
+      defaultConcurrency: 8
     },
     budgets: {
       enabled: false,
@@ -337,6 +345,149 @@ const DEFAULTS = {
 };
 
 let currentConfig = null;
+let persistedConfig = null;
+const INSECURE_SECRET_VALUES = new Set([
+  "admin",
+  "password",
+  "change-me",
+  "changeme"
+]);
+
+function getEnvironmentValue(...names) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function getEnvironmentBoolean(...names) {
+  const value = getEnvironmentValue(...names).toLowerCase();
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  return null;
+}
+
+function isPublicListenHost(host) {
+  const normalized = String(host || "").trim().toLowerCase();
+  return !["127.0.0.1", "::1", "localhost"].includes(normalized);
+}
+
+function isKnownInsecureSecret(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return !normalized || INSECURE_SECRET_VALUES.has(normalized);
+}
+
+export function applyConfigEnvironmentOverrides(config) {
+  const adminUsername = getEnvironmentValue("AOAI_PROXY_ADMIN_USERNAME", "ADMIN_USERNAME");
+  const passwordRef = String(config?.admin?.auth?.passwordRef || "").trim();
+  const adminPassword = getEnvironmentValue(
+    "AOAI_PROXY_ADMIN_PASSWORD",
+    "ADMIN_PASSWORD",
+    ...(passwordRef ? [passwordRef] : [])
+  );
+  const adminAuthEnabled = getEnvironmentBoolean("AOAI_PROXY_ADMIN_AUTH_ENABLED", "ADMIN_AUTH_ENABLED");
+  const proxyApiKey = getEnvironmentValue("AOAI_PROXY_API_KEY", "PROXY_API_KEY");
+  const upstreamApiKey = getEnvironmentValue("AOAI_PROXY_UPSTREAM_API_KEY", "UPSTREAM_API_KEY");
+  const caddyEnabled = getEnvironmentBoolean("AOAI_PROXY_CADDY_ENABLED", "CADDY_ENABLED");
+  const caddyDomain = getEnvironmentValue("AOAI_PROXY_CADDY_DOMAIN", "CADDY_DOMAIN");
+  const caddyEmail = getEnvironmentValue("AOAI_PROXY_CADDY_EMAIL", "CADDY_EMAIL");
+  const trustProxy = getEnvironmentBoolean("AOAI_PROXY_TRUST_PROXY", "TRUST_PROXY");
+
+  if (adminUsername) {
+    config.admin.auth.username = adminUsername;
+    config.server.adminAuth.username = adminUsername;
+  }
+  if (adminPassword) {
+    config.admin.auth.password = adminPassword;
+    config.server.adminAuth.password = adminPassword;
+  }
+  if (adminAuthEnabled !== null || adminPassword) {
+    const enabled = adminAuthEnabled ?? true;
+    config.admin.auth.enabled = enabled;
+    config.server.adminAuth.enabled = enabled;
+  }
+  if (proxyApiKey) {
+    if (!Array.isArray(config.apiKeys) || config.apiKeys.length === 0) {
+      config.apiKeys = [{ id: "default", key: proxyApiKey, status: "active" }];
+    } else {
+      const defaultKey = config.apiKeys.find((item) => item?.id === "default");
+      if (defaultKey) {
+        defaultKey.key = proxyApiKey;
+        defaultKey.status = "active";
+      } else {
+        config.apiKeys.push({ id: "default", key: proxyApiKey, status: "active" });
+      }
+    }
+  }
+  if (upstreamApiKey) {
+    config.auth.apiKey = upstreamApiKey;
+  }
+  if (caddyDomain) config.server.caddy.domain = caddyDomain;
+  if (caddyEmail) config.server.caddy.email = caddyEmail;
+  if (caddyEnabled !== null || caddyDomain) {
+    config.server.caddy.enabled = caddyEnabled ?? true;
+  }
+  if (trustProxy !== null) {
+    config.server.trustProxy = trustProxy;
+  }
+  return config;
+}
+
+function cloneConfig(config) {
+  return JSON.parse(JSON.stringify(config || {}));
+}
+
+function preserveEnvironmentManagedFields(config, previousPersistedConfig) {
+  if (!previousPersistedConfig) return config;
+  const previous = previousPersistedConfig;
+  const adminUsername = getEnvironmentValue("AOAI_PROXY_ADMIN_USERNAME", "ADMIN_USERNAME");
+  const passwordRef = String(previous?.admin?.auth?.passwordRef || config?.admin?.auth?.passwordRef || "").trim();
+  const adminPassword = getEnvironmentValue(
+    "AOAI_PROXY_ADMIN_PASSWORD",
+    "ADMIN_PASSWORD",
+    ...(passwordRef ? [passwordRef] : [])
+  );
+  const adminAuthEnabled = getEnvironmentBoolean("AOAI_PROXY_ADMIN_AUTH_ENABLED", "ADMIN_AUTH_ENABLED");
+  const proxyApiKey = getEnvironmentValue("AOAI_PROXY_API_KEY", "PROXY_API_KEY");
+  const upstreamApiKey = getEnvironmentValue("AOAI_PROXY_UPSTREAM_API_KEY", "UPSTREAM_API_KEY");
+  const caddyEnabled = getEnvironmentBoolean("AOAI_PROXY_CADDY_ENABLED", "CADDY_ENABLED");
+  const caddyDomain = getEnvironmentValue("AOAI_PROXY_CADDY_DOMAIN", "CADDY_DOMAIN");
+  const caddyEmail = getEnvironmentValue("AOAI_PROXY_CADDY_EMAIL", "CADDY_EMAIL");
+  const trustProxy = getEnvironmentBoolean("AOAI_PROXY_TRUST_PROXY", "TRUST_PROXY");
+
+  if (adminUsername) {
+    config.admin.auth.username = previous.admin.auth.username;
+    config.server.adminAuth.username = previous.server.adminAuth.username;
+  }
+  if (adminPassword) {
+    config.admin.auth.password = previous.admin.auth.password;
+    config.server.adminAuth.password = previous.server.adminAuth.password;
+  }
+  if (adminAuthEnabled !== null || adminPassword) {
+    config.admin.auth.enabled = previous.admin.auth.enabled;
+    config.server.adminAuth.enabled = previous.server.adminAuth.enabled;
+  }
+  if (proxyApiKey) {
+    const candidateKeys = Array.isArray(config.apiKeys) ? config.apiKeys : [];
+    const previousKeys = Array.isArray(previous.apiKeys) ? previous.apiKeys : [];
+    const candidateDefault = candidateKeys.find((item) => item?.id === "default");
+    const previousDefault = previousKeys.find((item) => item?.id === "default");
+    if (candidateDefault && previousDefault) {
+      candidateDefault.key = previousDefault.key;
+      candidateDefault.status = previousDefault.status;
+    } else if (candidateDefault && !previousDefault && candidateDefault.key === proxyApiKey) {
+      config.apiKeys = candidateKeys.filter((item) => item !== candidateDefault);
+    }
+  }
+  if (upstreamApiKey) config.auth.apiKey = previous.auth.apiKey;
+  if (caddyEnabled !== null || caddyDomain) config.server.caddy.enabled = previous.server.caddy.enabled;
+  if (caddyDomain) config.server.caddy.domain = previous.server.caddy.domain;
+  if (caddyEmail) config.server.caddy.email = previous.server.caddy.email;
+  if (trustProxy !== null) config.server.trustProxy = previous.server.trustProxy;
+  return config;
+}
+
 function deepMerge(base, override) {
   if (Array.isArray(base)) {
     return Array.isArray(override) ? override : base;
@@ -620,18 +771,37 @@ function applySchemaCompatibility(rawConfig, merged) {
     : [];
 }
 
-function normalizeConfig(raw) {
+function normalizeConfig(raw, options = {}) {
   const merged = deepMerge(DEFAULTS, raw || {});
   merged.apiKeys = Array.isArray(merged.apiKeys) ? merged.apiKeys : [];
   merged.upstreams = Array.isArray(merged.upstreams) ? merged.upstreams : [];
   merged.models = Array.isArray(merged.models) ? merged.models : [];
   applySchemaCompatibility(raw || {}, merged);
+  if (options.applyEnvironment !== false) {
+    applyConfigEnvironmentOverrides(merged);
+  }
   merged.access.pricingCatalog = asPlainObject(merged.access.pricingCatalog);
   return merged;
 }
 
 // Validate config structure and types
 function validateConfig(cfg) {
+  const publicServer = isPublicListenHost(cfg?.server?.host);
+  const allowInsecurePublicAdmin = getEnvironmentBoolean("ALLOW_INSECURE_PUBLIC_ADMIN") === true;
+  if (publicServer && !allowInsecurePublicAdmin) {
+    if (cfg?.server?.adminAuth?.enabled !== true) {
+      throw new Error("Admin authentication must be enabled for a non-loopback server. Set AOAI_PROXY_ADMIN_PASSWORD or explicitly set ALLOW_INSECURE_PUBLIC_ADMIN=true.");
+    }
+    if (isKnownInsecureSecret(cfg.server.adminAuth.password)) {
+      throw new Error("Admin password for a non-loopback server is empty or uses a known placeholder. Set AOAI_PROXY_ADMIN_PASSWORD to a strong secret.");
+    }
+    if (cfg?.access?.defaults?.requireApiKey !== false) {
+      const activeApiKeys = (Array.isArray(cfg.apiKeys) ? cfg.apiKeys : []).filter((item) => item?.status !== "disabled");
+      if (!activeApiKeys.length || activeApiKeys.some((item) => isKnownInsecureSecret(item?.key))) {
+        throw new Error("API keys for a non-loopback server must not be empty or use known placeholders. Set AOAI_PROXY_API_KEY to a strong secret.");
+      }
+    }
+  }
   if (!cfg.server || !cfg.server.port) {
     throw new Error("server.port is required");
   }
@@ -640,6 +810,9 @@ function validateConfig(cfg) {
   }
   if (!cfg.server.adminPath || typeof cfg.server.adminPath !== "string") {
     throw new Error("server.adminPath must be a string");
+  }
+  if (!Number.isInteger(cfg.server.gracefulShutdownMs) || cfg.server.gracefulShutdownMs <= 0) {
+    throw new Error("server.gracefulShutdownMs must be a positive integer");
   }
   if (!cfg.admin || typeof cfg.admin !== "object") {
     throw new Error("admin must be an object");
@@ -853,6 +1026,17 @@ function validateConfig(cfg) {
       if (requestOverrideFields != null && (!Array.isArray(requestOverrideFields) || requestOverrideFields.some((value) => typeof value !== "string"))) {
         throw new Error("proxy.timeouts.requestOverrideFields must be an array of strings");
       }
+      const requestOverrideLimits = cfg.proxy.timeouts.requestOverrideLimits;
+      if (requestOverrideLimits != null) {
+        if (typeof requestOverrideLimits !== "object" || Array.isArray(requestOverrideLimits)) {
+          throw new Error("proxy.timeouts.requestOverrideLimits must be an object");
+        }
+        for (const key of ["requestMs", "firstByteMs", "idleMs", "maxStreamDurationMs", "maxRetries"]) {
+          if (requestOverrideLimits[key] != null && (!Number.isInteger(requestOverrideLimits[key]) || requestOverrideLimits[key] < 0)) {
+            throw new Error(`proxy.timeouts.requestOverrideLimits.${key} must be a non-negative integer`);
+          }
+        }
+      }
     }
     if (cfg.proxy.forwardHeaders != null) {
       const forwardHeaders = cfg.proxy.forwardHeaders;
@@ -868,6 +1052,9 @@ function validateConfig(cfg) {
       if (forwardHeaders.deny != null && (!Array.isArray(forwardHeaders.deny) || forwardHeaders.deny.some((value) => typeof value !== "string"))) {
         throw new Error("proxy.forwardHeaders.deny must be an array of strings");
       }
+    }
+    if (cfg.proxy.retries?.retryBeforeFirstChunkOnly === false) {
+      throw new Error("proxy.retries.retryBeforeFirstChunkOnly must remain true because streamed requests cannot be safely replayed after output starts");
     }
   }
   if (cfg.persistence != null) {
@@ -978,6 +1165,11 @@ function validateConfig(cfg) {
       }
     }
   }
+  for (const feature of ["fallbacks", "cooldowns", "healthChecks"]) {
+    if (cfg.routing?.[feature]?.enabled === true) {
+      throw new Error(`routing.${feature}.enabled is not supported by this proxy version`);
+    }
+  }
   if (!cfg.auth || typeof cfg.auth !== "object") {
     throw new Error("auth must be an object");
   }
@@ -1032,6 +1224,9 @@ function validateConfig(cfg) {
     }
     if (model.capabilities != null && (!Array.isArray(model.capabilities) || model.capabilities.some((value) => typeof value !== "string"))) {
       throw new Error(`models[${idx}].capabilities must be an array of strings`);
+    }
+    if (Array.isArray(model.fallbackModels) && model.fallbackModels.length > 0) {
+      throw new Error(`models[${idx}].fallbackModels is not supported by this proxy version`);
     }
     if (model.routes != null) {
       if (typeof model.routes !== "object") {
@@ -1175,7 +1370,9 @@ export function getConfigPath() {
 export async function loadConfig() {
   const rawText = await readPersistedConfigText();
   const raw = JSON.parse(rawText);
-  const cfg = validateConfig(normalizeConfig(raw));
+  const normalizedPersistedConfig = normalizeConfig(raw, { applyEnvironment: false });
+  const cfg = validateConfig(applyConfigEnvironmentOverrides(cloneConfig(normalizedPersistedConfig)));
+  persistedConfig = normalizedPersistedConfig;
   currentConfig = cfg;
   setPersistenceConfig(cfg);
   setRuntimeStoreConfig(cfg);
@@ -1189,10 +1386,21 @@ export function getConfig() {
   return currentConfig;
 }
 
+export function getPersistedConfig() {
+  if (!persistedConfig) {
+    throw new Error("Configuration not loaded yet");
+  }
+  return cloneConfig(persistedConfig);
+}
+
 export async function saveConfig(nextConfig) {
-  const normalized = normalizeConfig(nextConfig);
-  const validated = validateConfig(normalized);
-  await writePersistedConfigText(JSON.stringify(validated, null, 2), validated);
+  const normalized = preserveEnvironmentManagedFields(
+    normalizeConfig(nextConfig, { applyEnvironment: false }),
+    persistedConfig
+  );
+  const validated = validateConfig(applyConfigEnvironmentOverrides(cloneConfig(normalized)));
+  await writePersistedConfigText(JSON.stringify(normalized, null, 2), validated);
+  persistedConfig = normalized;
   currentConfig = validated;
   setPersistenceConfig(validated);
   setRuntimeStoreConfig(validated);

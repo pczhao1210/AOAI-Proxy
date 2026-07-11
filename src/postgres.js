@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { appendStructuredLog } from "./logs.js";
 
 const sharedPools = new Map();
 const WEAK_SSL_MODES = new Set(["prefer", "require", "verify-ca"]);
@@ -85,9 +86,60 @@ function getConnectionMetadata(connectionString) {
   }
 }
 
+function sanitizePostgresErrorMessage(error, connectionString) {
+  let message = error?.message || String(error);
+  const secrets = [String(connectionString || "").trim()];
+  try {
+    const parsed = new URL(connectionString);
+    secrets.push(parsed.password, decodeURIComponent(parsed.password));
+  } catch {
+  }
+  for (const secret of secrets.filter(Boolean)) {
+    message = message.replaceAll(secret, "[REDACTED]");
+  }
+  return message
+    .replace(/(postgres(?:ql)?:\/\/[^:\s/@]+:)[^@\s]+@/gi, "$1[REDACTED]@")
+    .slice(0, 2000);
+}
+
+function createPostgresPool(poolOptions, poolKind) {
+  const pool = new Pool(poolOptions);
+  const connection = getConnectionMetadata(poolOptions.connectionString);
+
+  pool.on("error", (error) => {
+    const payload = {
+      ts: new Date().toISOString(),
+      source: "postgres",
+      event: "postgres.pool_error",
+      errorCode: error?.code || error?.name || "PostgresPoolError",
+      failureReason: sanitizePostgresErrorMessage(error, poolOptions.connectionString),
+      syscall: typeof error?.syscall === "string" ? error.syscall : "",
+      poolKind,
+      host: connection.host,
+      port: connection.port,
+      databaseName: connection.databaseName,
+      totalCount: pool.totalCount,
+      idleCount: pool.idleCount,
+      waitingCount: pool.waitingCount
+    };
+
+    try {
+      appendStructuredLog("error", payload);
+    } catch {
+    }
+    try {
+      console.error(JSON.stringify(payload));
+    } catch {
+      console.error("PostgreSQL pool error", error);
+    }
+  });
+
+  return pool;
+}
+
 export async function probePostgresConnection(databaseSettings = {}, options = {}) {
   const normalizedOptions = buildPostgresPoolOptions(databaseSettings);
-  const pool = new Pool(normalizedOptions);
+  const pool = createPostgresPool(normalizedOptions, "probe");
   const schemaName = String(options.schemaName || "").trim();
   const tableName = String(options.tableName || "").trim();
   const configKey = String(options.configKey || "").trim();
@@ -183,8 +235,14 @@ export function getSharedPostgresPool(poolOptions) {
 
   const poolKey = JSON.stringify(normalizedOptions);
   if (!sharedPools.has(poolKey)) {
-    sharedPools.set(poolKey, new Pool(normalizedOptions));
+    sharedPools.set(poolKey, createPostgresPool(normalizedOptions, "shared"));
   }
 
   return sharedPools.get(poolKey);
+}
+
+export async function closeSharedPostgresPools() {
+  const pools = [...sharedPools.values()];
+  sharedPools.clear();
+  await Promise.allSettled(pools.map((pool) => pool.end()));
 }

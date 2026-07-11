@@ -14,6 +14,12 @@
     "dnsNameLabel": {
       "value": "aoai-proxy-prod"
     },
+    "caddyEmail": {
+      "value": "replace-with-certificate-contact@example.com"
+    },
+    "adminUsername": {
+      "value": "admin"
+    },
     "cpu": {
       "value": 2
     },

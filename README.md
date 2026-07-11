@@ -46,29 +46,28 @@ This repo now supports deployment-time persistence selection, and the Azure depl
 
 - Keeps PostgreSQL-backed config persistence without creating or mounting Azure Files
 - Creates Azure Database for PostgreSQL Flexible Server and injects the connection string as a secure environment variable
-- The deployment flow can now either create new PostgreSQL resources or point to an existing server/database
+- The deployment flow can create new PostgreSQL resources or point to an existing server/database
 - If `databaseName` is empty in the Azure templates, the deployment auto-creates `aoaiproxy`
-- The application auto-creates the schema/table/config row inside that database on first use
+- The application auto-creates the schema, table, and config row inside that database on first use
 - Persists proxy configuration, but does not turn `/app/data` into a persistent volume
 - In pure `database` mode, local cache files, generated Caddyfile, ACME certificates, and Caddy state remain container-local and are therefore ephemeral across container replacement
 
 ### `azureFile`
 
-- Keeps the current ACI + Azure Files mount to `/app/data`
-- Best fit when you need filesystem-style persistence for config, Caddyfile, and Caddy state
-- The deployment flow can now either create new storage/share resources or reuse existing ones
-- The deployment UI now accepts an optional Azure Files storage account key; when supplied, deployment uses that key directly and skips the `listKeys` call
-- If no key is supplied, the template falls back to `listKeys` for the ACI mount itself
+- Keeps the ACI + Azure Files mount at `/app/data`
+- Best fit when filesystem-style persistence is needed for config, Caddyfile, and Caddy state
+- The deployment flow can create new storage/share resources or reuse existing ones
+- The deployment UI accepts an optional Azure Files storage account key; supplying it skips the deployment-time `listKeys` call
+- If no key is supplied, the template falls back to `listKeys` for the ACI mount
 
 How the Azure Files credential path works:
 
 - Bicep/ARM parameter name: `azureFileStorageAccountKey`
-- Portal managed-app UI: an optional password field named `Azure Files storage account key`
-- When this field is populated, the deployment passes that secure value directly into the ACI Azure Files volume definition
-- When this field is empty, the deployment identity must be able to call `listKeys` on the target storage account, because the template resolves the mount credential during deployment
-- This is mainly useful when the storage account and share are already provisioned and the deployment should avoid an additional key lookup step
-- Providing the key does not change the underlying ACI requirement: Azure Files mounting still uses shared-key authentication at mount time
-- If you choose an existing file share, the deployment still expects `fileShareName` to already exist; supplying a key only changes how the credential is obtained
+- Portal managed-app UI: optional password field `Azure Files storage account key`
+- A supplied value is passed directly into the ACI Azure Files volume definition
+- Without a supplied value, the deployment identity must be able to call `listKeys`
+- Supplying a key does not remove ACI's shared-key requirement at mount time
+- When an existing share is selected, `fileShareName` must already exist
 
 ### Deployment Constraint
 
@@ -78,48 +77,67 @@ Practical implication:
 
 - Manual key input avoids a deployment-time `listKeys` dependency
 - It does not eliminate the storage-account-key dependency of the ACI mount itself
-- If shared-key access is disabled on the storage account, both the manual-key path and the automatic `listKeys` path are unsuitable for Azure Files mounting on ACI
+- If shared-key access is disabled, neither the manual-key path nor automatic `listKeys` is suitable for ACI Azure Files mounting
 
 ## Timeout Model
 
 The proxy now uses a more conservative long-response baseline that is better suited for tool-calling and MCP-style workflows.
 
 ```json
+{
 "server": {
-  "upstream": {
-    "connectTimeoutMs": 10000,
-    "requestTimeoutMs": 900000,
-    "firstByteTimeoutMs": 300000,
-    "idleTimeoutMs": 900000,
-    "maxRetries": 0,
-    "retryBaseMs": 800,
-    "retryMaxMs": 8000,
-    "pool": {
-      "connections": 64,
-      "keepAliveTimeoutMs": 60000,
-      "keepAliveMaxTimeoutMs": 300000,
-      "headersTimeoutMs": 300000,
-      "bodyTimeoutMs": 0,
-      "pipelining": 1
-    }
-  },
+  "gracefulShutdownMs": 30000,
   "caddy": {
     "transport": {
       "dialTimeoutMs": 5000,
-      "responseHeaderTimeoutMs": 45000,
+      "responseHeaderTimeoutMs": 1260000,
       "keepAliveTimeoutMs": 120000
     }
   }
+},
+"proxy": {
+  "timeouts": {
+    "connectMs": 10000,
+    "requestMs": 900000,
+    "firstByteMs": 300000,
+    "idleMs": 300000,
+    "maxStreamDurationMs": 3600000
+  },
+  "retries": {
+    "maxRetries": 0,
+    "baseDelayMs": 800,
+    "maxDelayMs": 8000
+  },
+  "httpClient": {
+    "connections": 32,
+    "keepAliveTimeoutMs": 60000,
+    "keepAliveMaxTimeoutMs": 300000,
+    "headersTimeoutMs": 330000,
+    "bodyTimeoutMs": 0,
+    "pipelining": 1
+  }
+},
+"access": {
+  "rateLimits": {
+    "windowSeconds": 60,
+    "defaultRpm": 60,
+    "defaultTpm": 0,
+    "defaultConcurrency": 8
+  }
+}
 }
 ```
 
 Guidance:
 
-- Keep `server.caddy.transport.dialTimeoutMs` aligned with `server.upstream.connectTimeoutMs`
-- Keep `server.caddy.transport.responseHeaderTimeoutMs` greater than or equal to `server.upstream.firstByteTimeoutMs`
-- Keep `server.upstream.idleTimeoutMs` long enough for SSE streams that pause between events
-- Tune `server.upstream.pool` first for latency-sensitive, low-concurrency deployments before changing retry budgets
-- For MCP or tool-calling flows, prefer longer `firstByteTimeoutMs` and `idleTimeoutMs`, but keep `maxRetries` low to avoid replaying side-effecting tool calls
+- `connectMs` limits upstream TCP/TLS connection establishment; Caddy `dialTimeoutMs` covers only the local Caddy-to-Node hop.
+- `firstByteMs` bounds upstream response headers and the initial stream chunk. `headersTimeoutMs` includes a small margin above it.
+- `requestMs` bounds reading/parsing a non-stream response body after upstream headers arrive. `idleMs` bounds the gap between streaming chunks.
+- `bodyTimeoutMs` is `0` so Undici does not preempt the proxy's route-aware request and idle timers.
+- Caddy waits for Node to produce downstream headers. Its `responseHeaderTimeoutMs` covers `firstByteMs + requestMs` plus margin.
+- `maxStreamDurationMs` is a hard one-hour ceiling. Set it to `0` only when deliberately allowing unbounded streams.
+- Keep `maxRetries` at `0` for tool-calling or other potentially side-effecting requests.
+- Per-key rate-limit values of `0` inherit `access.rateLimits` defaults. A global value of `0` means unlimited for that dimension.
 
 ## Local Run
 
@@ -134,7 +152,10 @@ Guidance:
    - Replace the default API key and admin credentials
 3. Install dependencies and start:
    - `npm install`
+  - Set `AOAI_PROXY_ADMIN_PASSWORD` and `AOAI_PROXY_API_KEY` to strong, unique secrets when `server.host` is not loopback
    - `npm run start`
+
+Non-loopback listeners fail closed when admin authentication is disabled or known placeholder credentials are active. `ALLOW_INSECURE_PUBLIC_ADMIN=true` is an explicit compatibility escape hatch and is not recommended for normal deployments.
 
 ## Environment Variables
 
@@ -143,8 +164,16 @@ Guidance:
 - `CONFIG_PATH`: local cached config path, default `./config/config.json`
 - `BODY_LIMIT`: request body limit in bytes, default `52428800`
 - `CADDY_BIN`: optional Caddy binary path override
-- `ADMIN_LOG_BUFFER_SIZE`: in-memory admin log ring buffer size, default `1000`
+- `SHUTDOWN_TIMEOUT_MS`: optional graceful-shutdown deadline override; otherwise `server.gracefulShutdownMs` is used
+- `ADMIN_LOG_BUFFER_SIZE`: in-memory admin log ring buffer size, default and hard maximum `100`
 - `PRICING_DIR`: optional pricing library directory override. By default the app reads from `/app/data/pricing` when synced files exist, otherwise it falls back to the bundled `pricing/` directory inside the image.
+- `AOAI_PROXY_ADMIN_USERNAME`: admin Basic Auth username, defaulting to the configured username
+- `AOAI_PROXY_ADMIN_PASSWORD`: admin Basic Auth password; setting it also enables admin authentication unless explicitly disabled
+- `AOAI_PROXY_API_KEY`: replaces the configured default client API key
+- `AOAI_PROXY_UPSTREAM_API_KEY`: overrides `auth.apiKey` for upstream API-key authentication
+- `AOAI_PROXY_CADDY_ENABLED`, `AOAI_PROXY_CADDY_DOMAIN`, `AOAI_PROXY_CADDY_EMAIL`: Caddy HTTPS overrides
+- `AOAI_PROXY_TRUST_PROXY`: trust proxy-appended forwarding headers; enable only when Node is reachable exclusively through the trusted reverse proxy
+- `ALLOW_INSECURE_PUBLIC_ADMIN`: explicit opt-out from non-loopback credential checks; avoid in production
 
 ### Pricing Sync
 
@@ -215,6 +244,7 @@ Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin
 
 ## Testing And Latency Diagnostics
 
+- `npm run test:unit` covers PostgreSQL pool errors, credential redaction, graceful SIGTERM handling, and startup failure cleanup
 - Route smoke tests, real-model tests, and the latency analysis script are documented in [test/README.md](test/README.md)
 - `npm run test:latency` sends real streaming requests and automatically adds `x-debug-latency: 1`
 - The proxy only emits `proxy.request_timing` when that header is present, so normal traffic does not produce timing logs by default
@@ -237,18 +267,28 @@ docker build --pull \
 
 Run with Azure Files-style local persistence:
 
-- `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:latest`
+```bash
+docker run --rm -p 127.0.0.1:3000:3000 \
+  -e AOAI_PROXY_ADMIN_PASSWORD="$AOAI_PROXY_ADMIN_PASSWORD" \
+  -e AOAI_PROXY_API_KEY="$AOAI_PROXY_API_KEY" \
+  -v "$(pwd)/data:/app/data" \
+  aoai-proxy:latest
+```
 
 Run with PostgreSQL-backed config persistence:
 
 ```bash
-docker run --rm -p 3000:3000 -p 443:443 \
+docker run --rm -p 127.0.0.1:3000:3000 \
   -e PERSISTENCE_MODE=database \
+  -e AOAI_PROXY_ADMIN_PASSWORD="$AOAI_PROXY_ADMIN_PASSWORD" \
+  -e AOAI_PROXY_API_KEY="$AOAI_PROXY_API_KEY" \
   -e CONFIG_DB_CONNECTION_STRING='postgresql://<user>:<password>@<server>.postgres.database.azure.com:5432/<database>?sslmode=require' \
   aoai-proxy:latest
 ```
 
 When the container needs AAD upstream access, it still uses `DefaultAzureCredential`, so provide service principal credentials for local development or a managed identity in Azure.
+
+The container entrypoint treats both Node and Caddy as critical processes. If either exits unexpectedly, PID 1 terminates the container with a nonzero status so the platform restart policy can recover it. The ACI templates also probe Node directly at `http://127.0.0.1:3000/healthz`; this catches an unavailable application even if Caddy remains alive.
 
 ## Upstream Auth Modes
 
@@ -273,7 +313,8 @@ When the container needs AAD upstream access, it still uses `DefaultAzureCredent
 az deployment group create \
   --resource-group <rg> \
   --template-file infra/main.bicep \
-  --parameters @infra/parameters/dev.json
+  --parameters @infra/parameters/dev.json \
+  --parameters adminPassword="$AOAI_PROXY_ADMIN_PASSWORD" proxyApiKey="$AOAI_PROXY_API_KEY"
 ```
 
 ### Deploy with ARM JSON
@@ -282,7 +323,8 @@ az deployment group create \
 az deployment group create \
   --resource-group <rg> \
   --template-file infra/azuredeploy.json \
-  --parameters @infra/parameters/prod.json
+  --parameters @infra/parameters/prod.json \
+  --parameters adminPassword="$AOAI_PROXY_ADMIN_PASSWORD" proxyApiKey="$AOAI_PROXY_API_KEY"
 ```
 
 The templates provision:
@@ -293,6 +335,8 @@ The templates provision:
 - A new storage account only when `persistenceMode=azureFile` or `persistenceMode=database+azureFile`
 - Azure Files share when `persistenceMode=azureFile` or `persistenceMode=database+azureFile`
 - Secure `CONFIG_DB_CONNECTION_STRING` injection into the container when `persistenceMode=database` or `persistenceMode=database+azureFile`
+- Secure admin password and client API-key injection; the checked-in parameter files intentionally omit these values
+- Caddy automatic HTTPS configuration with only port `443` exposed publicly; Node port `3000` remains internal for health probes
 - RBAC assignment for `Cognitive Services OpenAI User` on the target Azure OpenAI resource
 
 The target Azure OpenAI / Foundry resource can live in a different resource group within the same subscription. Set `cognitiveServicesAccountResourceGroup` when it differs from the deployment resource group.
@@ -305,7 +349,7 @@ Security defaults:
 
 - `allowAzureServicesToDatabase` defaults to `false`. Set it to `true` only when this public ACI deployment cannot reach PostgreSQL through a private or pre-approved network path.
 - `acrLoginServer`, `acrUsername`, and `acrPassword` default to empty. Fill them only when the image registry requires basic image-pull credentials from this template.
-- The template still creates a public ACI IP address. Leaving `dnsNameLabel` empty only skips the public DNS name.
+- The template creates a public ACI IP address, requires `dnsNameLabel` and `caddyEmail`, and exposes only Caddy HTTPS on port `443`.
 
 Current limitation: this ACI-based deployment does not expose an ARM64 machine-family selector. The implemented default is therefore the smallest documented PostgreSQL development SKU, not a guaranteed ARM-series runtime.
 

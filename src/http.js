@@ -6,6 +6,7 @@ const DEFAULT_KEEPALIVE_MAX_TIMEOUT_MS = 120000;
 const DEFAULT_HEADERS_TIMEOUT_MS = 60000;
 const DEFAULT_BODY_TIMEOUT_MS = 120000;
 const DEFAULT_PIPLINING = 1;
+const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
 
 let currentAgent = null;
 
@@ -28,7 +29,9 @@ function resolvePoolValue(configValue, envName, fallback, readFn) {
 
 export function configureUpstreamHttp(config) {
   const pool = config?.proxy?.httpClient || config?.server?.upstream?.pool || {};
+  const configuredConnectTimeout = config?.proxy?.timeouts?.connectMs ?? config?.server?.upstream?.connectTimeoutMs;
   const resolvedConfig = {
+    connectTimeout: resolvePoolValue(configuredConnectTimeout, "UPSTREAM_CONNECT_TIMEOUT_MS", DEFAULT_CONNECT_TIMEOUT_MS, readPositiveIntEnv),
     connections: resolvePoolValue(pool.connections, "UPSTREAM_MAX_CONNECTIONS", DEFAULT_CONNECTIONS, readPositiveIntEnv),
     keepAliveTimeout: resolvePoolValue(pool.keepAliveTimeoutMs, "UPSTREAM_KEEPALIVE_TIMEOUT_MS", DEFAULT_KEEPALIVE_TIMEOUT_MS, readPositiveIntEnv),
     keepAliveMaxTimeout: resolvePoolValue(pool.keepAliveMaxTimeoutMs, "UPSTREAM_KEEPALIVE_MAX_TIMEOUT_MS", DEFAULT_KEEPALIVE_MAX_TIMEOUT_MS, readPositiveIntEnv),

@@ -80,41 +80,60 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 当前默认值已经调整为更适合长响应和流式场景：
 
 ```json
+{
 "server": {
-  "upstream": {
-    "connectTimeoutMs": 5000,
-    "requestTimeoutMs": 600000,
-    "firstByteTimeoutMs": 90000,
-    "idleTimeoutMs": 600000,
-    "maxRetries": 1,
-    "retryBaseMs": 800,
-    "retryMaxMs": 8000,
-    "pool": {
-      "connections": 32,
-      "keepAliveTimeoutMs": 30000,
-      "keepAliveMaxTimeoutMs": 120000,
-      "headersTimeoutMs": 60000,
-      "bodyTimeoutMs": 0,
-      "pipelining": 1
-    }
-  },
+  "gracefulShutdownMs": 30000,
   "caddy": {
     "transport": {
       "dialTimeoutMs": 5000,
-      "responseHeaderTimeoutMs": 45000,
+      "responseHeaderTimeoutMs": 1260000,
       "keepAliveTimeoutMs": 120000
     }
   }
+},
+"proxy": {
+  "timeouts": {
+    "connectMs": 10000,
+    "requestMs": 900000,
+    "firstByteMs": 300000,
+    "idleMs": 300000,
+    "maxStreamDurationMs": 3600000
+  },
+  "retries": {
+    "maxRetries": 0,
+    "baseDelayMs": 800,
+    "maxDelayMs": 8000
+  },
+  "httpClient": {
+    "connections": 32,
+    "keepAliveTimeoutMs": 60000,
+    "keepAliveMaxTimeoutMs": 300000,
+    "headersTimeoutMs": 330000,
+    "bodyTimeoutMs": 0,
+    "pipelining": 1
+  }
+},
+"access": {
+  "rateLimits": {
+    "windowSeconds": 60,
+    "defaultRpm": 60,
+    "defaultTpm": 0,
+    "defaultConcurrency": 8
+  }
+}
 }
 ```
 
 建议：
 
-- `server.caddy.transport.dialTimeoutMs` 与 `server.upstream.connectTimeoutMs` 保持一致
-- `server.caddy.transport.responseHeaderTimeoutMs` 不低于 `server.upstream.firstByteTimeoutMs`
-- `server.upstream.idleTimeoutMs` 需要覆盖 SSE 中事件间隔较长的情况
-- 对低并发但强调延迟的部署，优先调 `server.upstream.pool`，再考虑改动重试策略
-- 对 MCP 或 tool-calling 场景，建议适当拉长 `firstByteTimeoutMs` 和 `idleTimeoutMs`，同时保持较低的 `maxRetries`，避免重放带副作用的工具调用
+- `connectMs` 限制到上游的 TCP/TLS 建连；Caddy 的 `dialTimeoutMs` 只限制本机 Caddy 到 Node 的连接。
+- `firstByteMs` 限制上游响应头和流式首块等待时间；`headersTimeoutMs` 在它之上保留少量余量。
+- `requestMs` 限制收到上游响应头后读取和解析非流式 body 的时间；`idleMs` 限制流式 chunk 之间的空闲时间。
+- `bodyTimeoutMs` 设为 `0`，避免 Undici 抢先于代理按路由区分的 request/idle timer 中断请求。
+- Caddy 等待 Node 产生下游响应头，因此 `responseHeaderTimeoutMs` 需要覆盖非流式最坏路径 `firstByteMs + requestMs` 并留余量。
+- `maxStreamDurationMs` 提供一小时硬上限；只有明确接受无限流时才设置为 `0`。
+- tool-calling 或其他可能有副作用的请求保持 `maxRetries=0`，正值可能在输出开始前重放请求。
+- Key 级限流值 `0` 表示继承 `access.rateLimits` 全局默认；全局值 `0` 才表示该维度不限。
 
 ## 本地运行
 
@@ -129,7 +148,10 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
    - 替换默认 API Key 和管理账号密码
 3. 安装依赖并启动：
    - `npm install`
+  - 当 `server.host` 不是回环地址时，将 `AOAI_PROXY_ADMIN_PASSWORD` 和 `AOAI_PROXY_API_KEY` 设置为强且唯一的秘密值
    - `npm run start`
+
+非回环监听会采用 fail-closed：管理认证关闭或仍存在已知占位凭据时拒绝启动。`ALLOW_INSECURE_PUBLIC_ADMIN=true` 仅用于显式兼容，不建议用于正常部署。
 
 ## 环境变量
 
@@ -138,7 +160,15 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 - `CONFIG_PATH`：本地缓存配置路径，默认 `./config/config.json`
 - `BODY_LIMIT`：请求体大小限制，默认 `52428800`
 - `CADDY_BIN`：可选的 Caddy 可执行文件路径覆盖
-- `ADMIN_LOG_BUFFER_SIZE`：管理页内存日志环形缓冲大小，默认 `1000`
+- `SHUTDOWN_TIMEOUT_MS`：可选的优雅关闭时限覆盖；未设置时使用 `server.gracefulShutdownMs`
+- `ADMIN_LOG_BUFFER_SIZE`：管理页内存日志环形缓冲大小，默认值和硬上限均为 `100`
+- `AOAI_PROXY_ADMIN_USERNAME`：管理端 Basic Auth 用户名
+- `AOAI_PROXY_ADMIN_PASSWORD`：管理端 Basic Auth 密码；设置后默认启用管理认证
+- `AOAI_PROXY_API_KEY`：覆盖默认客户端 API Key
+- `AOAI_PROXY_UPSTREAM_API_KEY`：覆盖上游 API Key 认证使用的 `auth.apiKey`
+- `AOAI_PROXY_CADDY_ENABLED`、`AOAI_PROXY_CADDY_DOMAIN`、`AOAI_PROXY_CADDY_EMAIL`：Caddy HTTPS 覆盖项
+- `AOAI_PROXY_TRUST_PROXY`：仅在 Node 只能通过受信反向代理访问时启用
+- `ALLOW_INSECURE_PUBLIC_ADMIN`：跳过非回环凭据门禁的显式兼容开关，不建议生产使用
 
 ### 可选的上游连接池覆盖项
 
@@ -196,6 +226,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 ## 测试与延迟诊断
 
+- `npm run test:unit` 覆盖 PostgreSQL 连接池错误、凭据脱敏、SIGTERM 优雅关闭和启动失败清理
 - 路由冒烟测试、真实模型测试和延迟分析脚本说明位于 [../test/README.md](../test/README.md)
 - `npm run test:latency` 会发起真实流式请求，并自动附带 `x-debug-latency: 1`
 - 代理仅在请求带有这个头时输出 `proxy.request_timing`，因此正常业务流量默认不会产生这类延迟分段日志
@@ -218,16 +249,26 @@ docker build --pull \
 
 使用 Azure Files 风格本地持久化运行：
 
-- `docker run --rm -p 3000:3000 -p 443:443 -v $(pwd)/data:/app/data aoai-proxy:latest`
+```bash
+docker run --rm -p 127.0.0.1:3000:3000 \
+  -e AOAI_PROXY_ADMIN_PASSWORD="$AOAI_PROXY_ADMIN_PASSWORD" \
+  -e AOAI_PROXY_API_KEY="$AOAI_PROXY_API_KEY" \
+  -v "$(pwd)/data:/app/data" \
+  aoai-proxy:latest
+```
 
 使用 PostgreSQL 配置持久化运行：
 
 ```bash
-docker run --rm -p 3000:3000 -p 443:443 \
+docker run --rm -p 127.0.0.1:3000:3000 \
   -e PERSISTENCE_MODE=database \
+  -e AOAI_PROXY_ADMIN_PASSWORD="$AOAI_PROXY_ADMIN_PASSWORD" \
+  -e AOAI_PROXY_API_KEY="$AOAI_PROXY_API_KEY" \
   -e CONFIG_DB_CONNECTION_STRING='postgresql://<user>:<password>@<server>.postgres.database.azure.com:5432/<database>?sslmode=require' \
   aoai-proxy:latest
 ```
+
+容器入口把 Node 和 Caddy 都视为关键进程；任一进程异常退出时，PID 1 会让容器以非零状态结束，以便平台重启策略恢复服务。ACI 模板还会直接探测 `http://127.0.0.1:3000/healthz`，即使 Caddy 仍在运行，也能识别 Node 不可用。
 
 如果容器需要 AAD 上游访问，仍会使用 `DefaultAzureCredential`，因此本地开发请提供服务主体凭据，在 Azure 中请使用托管身份。
 
@@ -254,7 +295,8 @@ docker run --rm -p 3000:3000 -p 443:443 \
 az deployment group create \
   --resource-group <rg> \
   --template-file infra/main.bicep \
-  --parameters @infra/parameters/dev.json
+  --parameters @infra/parameters/dev.json \
+  --parameters adminPassword="$AOAI_PROXY_ADMIN_PASSWORD" proxyApiKey="$AOAI_PROXY_API_KEY"
 ```
 
 ### 使用 ARM JSON
@@ -263,7 +305,8 @@ az deployment group create \
 az deployment group create \
   --resource-group <rg> \
   --template-file infra/azuredeploy.json \
-  --parameters @infra/parameters/prod.json
+  --parameters @infra/parameters/prod.json \
+  --parameters adminPassword="$AOAI_PROXY_ADMIN_PASSWORD" proxyApiKey="$AOAI_PROXY_API_KEY"
 ```
 
 模板会创建或配置：
@@ -274,6 +317,8 @@ az deployment group create \
 - 仅在 `persistenceMode=azureFile` 或 `persistenceMode=database+azureFile` 时创建 Storage Account
 - `persistenceMode=azureFile` 或 `persistenceMode=database+azureFile` 时的 Azure Files 共享
 - `persistenceMode=database` 或 `persistenceMode=database+azureFile` 时向容器安全注入 `CONFIG_DB_CONNECTION_STRING`
+- 安全注入管理密码与客户端 API Key；仓库参数样例刻意不保存这两个秘密值
+- 自动配置 Caddy HTTPS，公网仅开放 `443`；Node 的 `3000` 仅用于容器内健康探针
 - 面向目标 Azure OpenAI 资源的 `Cognitive Services OpenAI User` 角色授权
 
 目标 Azure OpenAI / Foundry 资源可以位于同一订阅下的不同资源组；不在当前部署资源组时，设置 `cognitiveServicesAccountResourceGroup` 即可。
@@ -286,7 +331,7 @@ PostgreSQL 默认规格是 `Burstable` + `Standard_B1ms` + `32 GB`，对应微�
 
 - `allowAzureServicesToDatabase` 默认是 `false`。只有当当前公网 ACI 部署无法通过私网或预批准网络路径连接 PostgreSQL 时，才显式设为 `true`。
 - `acrLoginServer`、`acrUsername`、`acrPassword` 默认留空。只有镜像仓库确实需要由该模板提供 basic pull credential 时才填写。
-- 模板当前仍会创建 ACI 公网 IP；`dnsNameLabel` 留空只是不创建公网 DNS 名称。
+- 模板会创建 ACI 公网 IP，并要求提供 `dnsNameLabel` 与 `caddyEmail`；公网只开放 Caddy HTTPS `443`。
 
 Azure Files 凭据补充说明：
 

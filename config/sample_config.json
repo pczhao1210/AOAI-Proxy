@@ -3,14 +3,8 @@
   "server": {
     "host": "0.0.0.0",
     "port": 3000,
-    "bodyLimitBytes": 52428800,
     "trustProxy": false,
-    "gracefulShutdownMs": 10000,
-    "requestId": {
-      "headerName": "x-request-id",
-      "generateIfMissing": true,
-      "forwardToUpstream": true
-    },
+    "gracefulShutdownMs": 30000,
     "caddy": {
       "enabled": false,
       "domain": "proxy.example.com",
@@ -20,7 +14,7 @@
       "upstreamPort": 3000,
       "transport": {
         "dialTimeoutMs": 5000,
-        "responseHeaderTimeoutMs": 45000,
+        "responseHeaderTimeoutMs": 1260000,
         "keepAliveTimeoutMs": 120000
       }
     }
@@ -32,45 +26,42 @@
     "clientSecret": "",
     "managedIdentityClientId": "",
     "scope": "https://cognitiveservices.azure.com/.default",
-    "apiKey": "",
-    "credentialRef": ""
+    "apiKey": ""
   },
   "admin": {
     "basePath": "/admin",
     "auth": {
       "enabled": true,
-      "mode": "basic",
       "username": "admin",
       "password": "admin",
-      "passwordRef": "",
-      "sessionTtlMs": 86400000,
-      "allowBasicAuth": true,
-      "allowOidc": false
+      "passwordRef": "AOAI_PROXY_ADMIN_PASSWORD"
     },
     "security": {
       "allowedIps": [],
-      "csrfProtection": false,
-      "auditAllWrites": true,
-      "maskSecretsInUi": true
+      "csrfProtection": true
     },
     "features": {
-      "enableLegacyJsonEditor": true,
-      "enableConfigImportExport": true,
-      "enableDangerousActions": false
+      "enableLegacyJsonEditor": true
     }
   },
   "proxy": {
     "timeouts": {
       "connectMs": 10000,
-      "requestMs": 180000,
-      "firstByteMs": 45000,
-      "idleMs": 120000,
-      "maxStreamDurationMs": 0,
+      "requestMs": 900000,
+      "firstByteMs": 300000,
+      "idleMs": 300000,
+      "maxStreamDurationMs": 3600000,
       "allowPerRequestOverride": false,
-      "requestOverrideFields": ["timeoutMs", "streamTimeoutMs", "idleTimeoutMs", "maxStreamDurationMs", "maxRetries"]
+      "requestOverrideFields": ["timeoutMs", "streamTimeoutMs", "idleTimeoutMs", "maxStreamDurationMs"],
+      "requestOverrideLimits": {
+        "requestMs": 900000,
+        "firstByteMs": 300000,
+        "idleMs": 900000,
+        "maxStreamDurationMs": 3600000
+      }
     },
     "retries": {
-      "maxRetries": 1,
+      "maxRetries": 0,
       "baseDelayMs": 800,
       "maxDelayMs": 8000,
       "statuses": [408, 409, 425, 429, 500, 502, 503, 504],
@@ -78,14 +69,12 @@
       "classifyNetworkErrorsAsRetryable": true
     },
     "httpClient": {
-      "implementation": "undici",
-      "connections": 64,
+      "connections": 32,
       "keepAliveTimeoutMs": 60000,
       "keepAliveMaxTimeoutMs": 300000,
-      "headersTimeoutMs": 300000,
-      "bodyTimeoutMs": 120000,
+      "headersTimeoutMs": 330000,
+      "bodyTimeoutMs": 0,
       "pipelining": 1,
-      "dnsCacheTtlMs": 300000,
       "forceIpv4": false
     },
     "forwardHeaders": {
@@ -96,7 +85,7 @@
     },
     "guards": {
       "maxRequestBodyBytes": 52428800,
-      "maxResponseBodyBytes": 0,
+      "maxResponseBodyBytes": 52428800,
       "rejectUnknownProxyParams": false,
       "dropUnsupportedOpenAiParams": false,
       "sanitizeMeaninglessValues": true
@@ -117,17 +106,13 @@
       "imageGenerations": {
         "enabled": true,
         "defaultParams": {},
-        "allowedRequestFields": [],
-        "polling": {
-          "intervalMs": 2000,
-          "timeoutMs": 600000
-        }
+        "allowedRequestFields": []
       }
     }
   },
   "media": {
     "inputCompression": {
-      "enabled": true,
+      "enabled": false,
       "maxLongSidePx": 1600,
       "quality": 0.85,
       "outputFormat": "jpeg",
@@ -137,22 +122,15 @@
     },
     "remoteImages": {
       "allow": false,
-      "maxDownloadSizeMb": 50,
-      "allowedMimeTypes": ["image/jpeg", "image/png", "image/webp", "image/gif"],
-      "allowedHosts": [],
-      "timeoutMs": 10000
+      "allowedHosts": []
     },
     "inlineImages": {
-      "maxBase64Bytes": 20971520,
-      "redactInLogs": true,
-      "logPreviewChars": 64
+      "maxBase64Bytes": 20971520
     },
     "generation": {
       "enabled": true,
       "defaultModel": "",
-      "requestTimeoutMs": 300000,
-      "pollIntervalMs": 2000,
-      "pollTimeoutMs": 600000,
+      "requestTimeoutMs": 600000,
       "maxImages": 4,
       "allowedSizes": [],
       "allowedQualityModes": []
@@ -161,16 +139,8 @@
   "observability": {
     "logs": {
       "level": "warn",
-      "sinks": ["memory", "console"],
       "bufferSize": 100,
-      "redactSecrets": true,
-      "redactApiKeyInfo": true,
-      "messageContentMode": "summary",
-      "maxPayloadLogBytes": 102400,
-      "maxBase64LogChars": 64,
-      "includeClientIp": true,
-      "includeUsage": true,
-      "includeHeaders": false
+      "maxPayloadLogBytes": 102400
     },
     "logAnalytics": {
       "enabled": false,
@@ -201,7 +171,8 @@
       "rollupBatchSize": 5000,
       "flushIntervalMs": 1000,
       "batchSize": 100,
-      "maxQueueSize": 5000
+      "maxQueueSize": 5000,
+      "maxPersistedEvents": 50000
     }
   },
   "persistence": {
@@ -219,10 +190,6 @@
         "readFallbackMode": "lastKnownGood"
       }
     },
-    "cache": {
-      "type": "memory",
-      "ttlMs": 60000
-    },
     "compatibilityExport": {
       "enabled": true,
       "exportLegacyConfigOnChange": true,
@@ -232,16 +199,13 @@
   "access": {
     "defaults": {
       "requireApiKey": true,
-      "keyHeaderNames": ["Authorization", "x-api-key"],
-      "defaultKeyStatus": "active",
-      "enforceUserField": false,
-      "rejectClientSideMetadataTags": false
+      "keyHeaderNames": ["Authorization", "x-api-key"]
     },
     "rateLimits": {
       "windowSeconds": 60,
-      "defaultRpm": 0,
+      "defaultRpm": 60,
       "defaultTpm": 0,
-      "defaultConcurrency": 0
+      "defaultConcurrency": 8
     },
     "budgets": {
       "enabled": false,
@@ -263,21 +227,7 @@
         "cachedInputPer1kTokens": 0.00018,
         "outputPer1kTokens": 0.014
       }
-    },
-    "keyStorage": {
-      "hashAlgorithm": "sha256",
-      "prefixLength": 8,
-      "rotationGracePeriodMs": 0
     }
-  },
-  "compatibility": {
-    "enableLegacyConfigRead": true,
-    "enableLegacyConfigWrite": true,
-    "mapServerAdminPathToAdminBasePath": true,
-    "mapImageCompressionToMediaInputCompression": true,
-    "mapServerUpstreamToProxyDefaults": true,
-    "warnOnDeprecatedFields": true,
-    "failOnDeprecatedFieldsAfterVersion": 3
   },
   "apiKeys": [
     {

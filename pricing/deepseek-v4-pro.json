@@ -9,35 +9,32 @@
     "chat/completions"
   ],
   "inputModalities": [
-    "text",
-    "image"
+    "text"
   ],
   "outputModalities": [
     "text"
   ],
   "capabilities": [
     "reasoning",
-    "vision",
-    "function-calling",
     "json-output"
   ],
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "deepseek-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
-    "inputPer1mTokens": 1.74,
-    "cachedInputPer1mTokens": 0.0145,
-    "outputPer1mTokens": 3.48,
-    "inputPer1kTokens": 0.00174,
-    "cachedInputPer1kTokens": 0.0000145,
-    "outputPer1kTokens": 0.00348
+    "inputPer1mTokens": 1.93,
+    "cachedInputPer1mTokens": 0.17,
+    "outputPer1mTokens": 3.83,
+    "inputPer1kTokens": 0.00193,
+    "cachedInputPer1kTokens": 0.00017,
+    "outputPer1kTokens": 0.00383
   },
   "pricingCatalogEntry": {
     "currency": "USD",
-    "inputPer1kTokens": 0.00174,
-    "cachedInputPer1kTokens": 0.0000145,
-    "outputPer1kTokens": 0.00348
+    "inputPer1kTokens": 0.00193,
+    "cachedInputPer1kTokens": 0.00017,
+    "outputPer1kTokens": 0.00383
   },
   "proxyTemplate": {
     "id": "DeepSeek-V4-Pro",
@@ -45,18 +42,16 @@
     "targetModel": "DeepSeek-V4-Pro",
     "capabilities": [
       "reasoning",
-      "vision",
-      "function-calling",
       "json-output"
     ],
     "pricingRef": "DeepSeek-V4-Pro"
   },
   "sources": {
-    "capabilities": "https://api-docs.deepseek.com/quick_start/pricing",
-    "pricing": "https://api-docs.deepseek.com/quick_start/pricing"
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
+    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
-    "DeepSeek 官方价格页按 1M tokens 公布 cache hit、cache miss input 和 output 价格；这里将 cache miss 映射为 input，cache hit 映射为 cachedInput。",
-    "官方页当前同时展示 DeepSeek V4 Pro 的限时 75% 折扣价，但这里按原价回填。"
+    "Azure Retail Prices API 的 Foundry Models 计量 FW DeepSeek-V4-Pro Inp DZ Tokens、Ch Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00193、0.00017、0.00383 USD 每 1K tokens。",
+    "Foundry 目录将此模型定义为文本输入、文本输出、带 reasoning content 的 chat completion；不支持工具调用，响应格式为文本和 JSON。"
   ]
 }
