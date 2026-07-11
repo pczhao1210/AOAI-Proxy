@@ -20,7 +20,7 @@ properties:
         value: aoai-proxy-config
       - name: CONFIG_BLOB_NAME
         value: config/config.json
-      image: alexmcr.azurecr.io/aoai-proxy@sha256:db4d8bc12865edd8b16e15a6b63f4dfb73ad2fff43bc199b717ab575b4016a60
+      image: alexmcr.azurecr.io/aoai-proxy@sha256:5c7bd2f7a52e1e317bf0e00194d0c81072bc8ea19291d46007accd87342f5571
       ports:
       - port: 3000
         protocol: TCP
