@@ -113,6 +113,7 @@ function ensureKeyRuntime(keyId) {
       lastBlockedAt: "",
       lastBlockedReason: "",
       hydratedAt: "",
+      hydrationPromise: null,
       rateWindow: buildRateWindow(Date.now()),
       budgetWindow: buildBudgetWindow({ windowType: "monthly" }, Date.now())
     });
@@ -124,52 +125,64 @@ async function hydrateRuntimeStateIfNeeded(config, consumer, runtime, rateLimitS
   if (!consumer?.keyId || runtime.hydratedAt) {
     return;
   }
-  const rateWindowStart = toIsoString(getRateWindowStart(rateLimitSettings.windowSeconds, now));
-  const budgetWindowStart = toIsoString(getBudgetWindowStart(budgetSettings.windowType, now));
-  const persisted = await hydrateGovernanceRuntime(config, consumer.keyId, rateWindowStart, budgetWindowStart);
-  runtime.hydratedAt = toIsoString(now);
-  runtime.rateWindow.startedAt = rateWindowStart;
-  runtime.budgetWindow.startedAt = budgetWindowStart;
-  runtime.budgetWindow.key = getBudgetWindowKey(budgetSettings.windowType, now);
-  if (!persisted) {
-    return;
+  if (!runtime.hydrationPromise) {
+    runtime.hydrationPromise = (async () => {
+      const rateWindowStart = toIsoString(getRateWindowStart(rateLimitSettings.windowSeconds, now));
+      const budgetWindowStart = toIsoString(getBudgetWindowStart(budgetSettings.windowType, now));
+      const persisted = await hydrateGovernanceRuntime(config, consumer.keyId, rateWindowStart, budgetWindowStart);
+      runtime.rateWindow.startedAt = rateWindowStart;
+      runtime.budgetWindow.startedAt = budgetWindowStart;
+      runtime.budgetWindow.key = getBudgetWindowKey(budgetSettings.windowType, now);
+      if (persisted) {
+        runtime.lastSeenAt = persisted.last_seen_at ? new Date(persisted.last_seen_at).toISOString() : runtime.lastSeenAt;
+        runtime.totalRequests = toNonNegativeInteger(persisted.total_requests, runtime.totalRequests);
+        runtime.totalErrors = toNonNegativeInteger(persisted.total_errors, runtime.totalErrors);
+        runtime.totalBlockedRequests = toNonNegativeInteger(persisted.total_blocked_requests, runtime.totalBlockedRequests);
+        runtime.lastBlockedAt = persisted.last_blocked_at ? new Date(persisted.last_blocked_at).toISOString() : runtime.lastBlockedAt;
+        runtime.lastBlockedReason = String(persisted.last_blocked_reason || runtime.lastBlockedReason || "");
+        runtime.rateWindow.requests = toNonNegativeInteger(persisted.rate_requests, runtime.rateWindow.requests);
+        runtime.rateWindow.promptTokens = toNonNegativeInteger(persisted.rate_prompt_tokens, runtime.rateWindow.promptTokens);
+        runtime.rateWindow.completionTokens = toNonNegativeInteger(persisted.rate_completion_tokens, runtime.rateWindow.completionTokens);
+        runtime.rateWindow.totalTokens = toNonNegativeInteger(persisted.rate_total_tokens, runtime.rateWindow.totalTokens);
+        runtime.rateWindow.cachedTokens = toNonNegativeInteger(persisted.rate_cached_tokens, runtime.rateWindow.cachedTokens);
+        runtime.rateWindow.blockedRequests = toNonNegativeInteger(persisted.rate_blocked_requests, runtime.rateWindow.blockedRequests);
+        runtime.budgetWindow.requests = toNonNegativeInteger(persisted.budget_requests, runtime.budgetWindow.requests);
+        runtime.budgetWindow.promptTokens = toNonNegativeInteger(persisted.budget_prompt_tokens, runtime.budgetWindow.promptTokens);
+        runtime.budgetWindow.completionTokens = toNonNegativeInteger(persisted.budget_completion_tokens, runtime.budgetWindow.completionTokens);
+        runtime.budgetWindow.totalTokens = toNonNegativeInteger(persisted.budget_total_tokens, runtime.budgetWindow.totalTokens);
+        runtime.budgetWindow.cachedTokens = toNonNegativeInteger(persisted.budget_cached_tokens, runtime.budgetWindow.cachedTokens);
+        runtime.budgetWindow.spentAmount = Math.max(0, toFiniteNumber(persisted.budget_spent_amount, runtime.budgetWindow.spentAmount));
+        runtime.budgetWindow.blockedRequests = toNonNegativeInteger(persisted.budget_blocked_requests, runtime.budgetWindow.blockedRequests);
+        if (budgetSettings.limitAmount > 0) {
+          const softLimitAmount = budgetSettings.limitAmount * budgetSettings.softLimitRatio;
+          runtime.budgetWindow.softLimitReached = softLimitAmount > 0 && runtime.budgetWindow.spentAmount >= softLimitAmount;
+          if (runtime.budgetWindow.softLimitReached && !runtime.budgetWindow.softLimitReachedAt) {
+            runtime.budgetWindow.softLimitReachedAt = runtime.lastSeenAt || toIsoString(now);
+          }
+        }
+      }
+      runtime.hydratedAt = toIsoString(now);
+    })().finally(() => {
+      runtime.hydrationPromise = null;
+    });
   }
-  runtime.lastSeenAt = persisted.last_seen_at ? new Date(persisted.last_seen_at).toISOString() : runtime.lastSeenAt;
-  runtime.totalRequests = toNonNegativeInteger(persisted.total_requests, runtime.totalRequests);
-  runtime.totalErrors = toNonNegativeInteger(persisted.total_errors, runtime.totalErrors);
-  runtime.totalBlockedRequests = toNonNegativeInteger(persisted.total_blocked_requests, runtime.totalBlockedRequests);
-  runtime.lastBlockedAt = persisted.last_blocked_at ? new Date(persisted.last_blocked_at).toISOString() : runtime.lastBlockedAt;
-  runtime.lastBlockedReason = String(persisted.last_blocked_reason || runtime.lastBlockedReason || "");
-  runtime.rateWindow.requests = toNonNegativeInteger(persisted.rate_requests, runtime.rateWindow.requests);
-  runtime.rateWindow.promptTokens = toNonNegativeInteger(persisted.rate_prompt_tokens, runtime.rateWindow.promptTokens);
-  runtime.rateWindow.completionTokens = toNonNegativeInteger(persisted.rate_completion_tokens, runtime.rateWindow.completionTokens);
-  runtime.rateWindow.totalTokens = toNonNegativeInteger(persisted.rate_total_tokens, runtime.rateWindow.totalTokens);
-  runtime.rateWindow.cachedTokens = toNonNegativeInteger(persisted.rate_cached_tokens, runtime.rateWindow.cachedTokens);
-  runtime.rateWindow.blockedRequests = toNonNegativeInteger(persisted.rate_blocked_requests, runtime.rateWindow.blockedRequests);
-  runtime.budgetWindow.requests = toNonNegativeInteger(persisted.budget_requests, runtime.budgetWindow.requests);
-  runtime.budgetWindow.promptTokens = toNonNegativeInteger(persisted.budget_prompt_tokens, runtime.budgetWindow.promptTokens);
-  runtime.budgetWindow.completionTokens = toNonNegativeInteger(persisted.budget_completion_tokens, runtime.budgetWindow.completionTokens);
-  runtime.budgetWindow.totalTokens = toNonNegativeInteger(persisted.budget_total_tokens, runtime.budgetWindow.totalTokens);
-  runtime.budgetWindow.cachedTokens = toNonNegativeInteger(persisted.budget_cached_tokens, runtime.budgetWindow.cachedTokens);
-  runtime.budgetWindow.spentAmount = Math.max(0, toFiniteNumber(persisted.budget_spent_amount, runtime.budgetWindow.spentAmount));
-  runtime.budgetWindow.blockedRequests = toNonNegativeInteger(persisted.budget_blocked_requests, runtime.budgetWindow.blockedRequests);
-  if (budgetSettings.limitAmount > 0) {
-    const softLimitAmount = budgetSettings.limitAmount * budgetSettings.softLimitRatio;
-    runtime.budgetWindow.softLimitReached = softLimitAmount > 0 && runtime.budgetWindow.spentAmount >= softLimitAmount;
-    if (runtime.budgetWindow.softLimitReached && !runtime.budgetWindow.softLimitReachedAt) {
-      runtime.budgetWindow.softLimitReachedAt = runtime.lastSeenAt || toIsoString(now);
-    }
-  }
+  await runtime.hydrationPromise;
 }
 
 function getRateLimitSettings(config, apiKey) {
   const defaults = config?.access?.rateLimits || {};
   const override = apiKey?.rateLimit || {};
+  const inheritWhenZero = (overrideValue, defaultValue, fallback = 0) => {
+    const normalizedOverride = toNonNegativeInteger(overrideValue, 0);
+    return normalizedOverride > 0
+      ? normalizedOverride
+      : toNonNegativeInteger(defaultValue, fallback);
+  };
   return {
-    windowSeconds: Math.max(1, toNonNegativeInteger(override.windowSeconds ?? defaults.windowSeconds, 60) || 60),
-    rpm: toNonNegativeInteger(override.rpm ?? defaults.defaultRpm, 0),
-    tpm: toNonNegativeInteger(override.tpm ?? defaults.defaultTpm, 0),
-    concurrency: toNonNegativeInteger(override.concurrency ?? defaults.defaultConcurrency, 0)
+    windowSeconds: Math.max(1, inheritWhenZero(override.windowSeconds, defaults.windowSeconds, 60) || 60),
+    rpm: inheritWhenZero(override.rpm, defaults.defaultRpm),
+    tpm: inheritWhenZero(override.tpm, defaults.defaultTpm),
+    concurrency: inheritWhenZero(override.concurrency, defaults.defaultConcurrency)
   };
 }
 
@@ -476,6 +489,15 @@ export function filterModelsForConsumer(models, consumer) {
 }
 
 export function checkConsumerModelAccess(consumer, model) {
+  if (model?.status === "disabled") {
+    return {
+      ok: false,
+      status: 404,
+      error: "ModelNotFound",
+      code: "MODEL_NOT_FOUND",
+      message: `model ${model?.id || "unknown"} not found`
+    };
+  }
   const allowedModels = normalizeStringArray(consumer?.apiKey?.allowedModels);
   if (!allowedModels.length) {
     return { ok: true };

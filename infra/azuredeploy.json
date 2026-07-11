@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "18166322172436977760"
+      "templateHash": "14044674146891393951"
     }
   },
   "parameters": {
@@ -31,9 +31,36 @@
     },
     "dnsNameLabel": {
       "type": "string",
-      "defaultValue": "",
+      "minLength": 3,
       "metadata": {
-        "description": "Public DNS label for the container group. Leave empty to skip public DNS. This does not make the ACI private; the current template still creates a public IP address."
+        "description": "Public DNS label used by Caddy for the HTTPS endpoint."
+      }
+    },
+    "caddyEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address used for Caddy automatic HTTPS certificate management."
+      }
+    },
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "admin",
+      "metadata": {
+        "description": "Username for the proxy administration interface."
+      }
+    },
+    "adminPassword": {
+      "type": "securestring",
+      "minLength": 16,
+      "metadata": {
+        "description": "Password for the proxy administration interface. Use a unique secret of at least 16 characters."
+      }
+    },
+    "proxyApiKey": {
+      "type": "securestring",
+      "minLength": 16,
+      "metadata": {
+        "description": "Default client API key accepted by the proxy. Use a unique secret of at least 16 characters."
       }
     },
     "cpu": {
@@ -269,9 +296,48 @@
     "createDatabase": "[and(variables('enableDatabase'), or(variables('createDatabaseServer'), equals(parameters('databaseMode'), 'new')))]",
     "databaseServerFqdn": "[if(variables('enableDatabase'), format('{0}.postgres.database.azure.com', variables('effectiveDatabaseServerName')), '')]",
     "databaseConnectionString": "[if(variables('enableDatabase'), format('postgresql://{0}:{1}@{2}:5432/{3}?sslmode=require', parameters('databaseAdminUsername'), uriComponent(parameters('databaseAdminPassword')), variables('databaseServerFqdn'), variables('effectiveDatabaseName')), '')]",
+    "caddyDomain": "[format('{0}.{1}.azurecontainer.io', parameters('dnsNameLabel'), parameters('location'))]",
     "useImageRegistryCredentials": "[and(and(not(empty(parameters('acrLoginServer'))), not(empty(parameters('acrUsername')))), not(empty(parameters('acrPassword'))))]",
     "imageRegistryCredentials": "[if(variables('useImageRegistryCredentials'), createArray(createObject('server', parameters('acrLoginServer'), 'username', parameters('acrUsername'), 'password', parameters('acrPassword'))), createArray())]",
-    "environmentVariables": "[if(variables('enableDatabase'), createArray(createObject('name', 'PERSISTENCE_MODE', 'value', parameters('persistenceMode')), createObject('name', 'CONFIG_DB_CONNECTION_STRING', 'secureValue', variables('databaseConnectionString'))), createArray(createObject('name', 'PERSISTENCE_MODE', 'value', parameters('persistenceMode'))))]",
+    "baseEnvironmentVariables": [
+      {
+        "name": "PERSISTENCE_MODE",
+        "value": "[parameters('persistenceMode')]"
+      },
+      {
+        "name": "AOAI_PROXY_ADMIN_AUTH_ENABLED",
+        "value": "true"
+      },
+      {
+        "name": "AOAI_PROXY_ADMIN_USERNAME",
+        "value": "[parameters('adminUsername')]"
+      },
+      {
+        "name": "AOAI_PROXY_ADMIN_PASSWORD",
+        "secureValue": "[parameters('adminPassword')]"
+      },
+      {
+        "name": "AOAI_PROXY_API_KEY",
+        "secureValue": "[parameters('proxyApiKey')]"
+      },
+      {
+        "name": "AOAI_PROXY_CADDY_ENABLED",
+        "value": "true"
+      },
+      {
+        "name": "AOAI_PROXY_CADDY_DOMAIN",
+        "value": "[variables('caddyDomain')]"
+      },
+      {
+        "name": "AOAI_PROXY_CADDY_EMAIL",
+        "value": "[parameters('caddyEmail')]"
+      },
+      {
+        "name": "AOAI_PROXY_TRUST_PROXY",
+        "value": "true"
+      }
+    ],
+    "environmentVariables": "[if(variables('enableDatabase'), concat(variables('baseEnvironmentVariables'), createArray(createObject('name', 'CONFIG_DB_CONNECTION_STRING', 'secureValue', variables('databaseConnectionString')))), variables('baseEnvironmentVariables'))]",
     "volumeMounts": "[if(variables('enableAzureFile'), createArray(createObject('name', 'configshare', 'mountPath', '/app/data')), createArray())]"
   },
   "resources": [
@@ -438,10 +504,6 @@
           "type": "Public",
           "dnsNameLabel": "[if(empty(parameters('dnsNameLabel')), null(), parameters('dnsNameLabel'))]",
           "ports": [
-            {
-              "port": 3000,
-              "protocol": "TCP"
-            },
             {
               "port": 443,
               "protocol": "TCP"

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { appendStructuredLog } from "./logs.js";
 import { buildPostgresPoolOptions, getSharedPostgresPool, probePostgresConnection, quoteIdentifier } from "./postgres.js";
 import { parsePersistenceMode } from "./persistence-mode.js";
@@ -169,7 +170,20 @@ async function readLocalConfigText(filePath) {
 
 async function writeLocalConfigText(filePath, text) {
   await ensureLocalDirectory(filePath);
-  await fs.writeFile(filePath, text, "utf8");
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  let fileHandle = null;
+  try {
+    fileHandle = await fs.open(tempPath, "w", 0o600);
+    await fileHandle.writeFile(text, "utf8");
+    await fileHandle.sync();
+    await fileHandle.close();
+    fileHandle = null;
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    await fileHandle?.close().catch(() => {});
+    await fs.unlink(tempPath).catch(() => {});
+    throw error;
+  }
 }
 
 async function tryReadLocalConfigText(filePath) {
@@ -557,7 +571,8 @@ export function getDatabaseConnectionDefaults(config = runtimeConfig) {
     configStoreMode: settings.configStoreMode,
     provider: settings.database.provider,
     connectionRef: settings.database.connectionRef,
-    connectionString: settings.database.connectionString,
+    connectionString: "",
+    connectionStringConfigured: !!settings.database.connectionString,
     schemaName: settings.database.schemaName,
     tableName: settings.database.tableName,
     configKey: settings.database.configKey

@@ -44,11 +44,12 @@
         "name": "dnsNameLabel",
         "type": "Microsoft.Common.TextBox",
         "label": "Public DNS label",
-        "defaultValue": "",
-        "toolTip": "Optional public DNS label for the container group. Leave empty to skip a public DNS name. This does not make the ACI private.",
+        "defaultValue": "aoai-proxy",
+        "toolTip": "Required public DNS label used by Caddy for the HTTPS endpoint.",
         "constraints": {
-          "regex": "^$|^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
-          "validationMessage": "Leave empty or use 1-63 lowercase letters, numbers, or hyphens."
+          "required": true,
+          "regex": "^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])?$",
+          "validationMessage": "Use 3-63 lowercase letters, numbers, or hyphens."
         }
       }
     ],
@@ -163,6 +164,74 @@
                 }
               ],
               "required": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "security",
+        "label": "HTTPS and access security",
+        "elements": [
+          {
+            "name": "securityInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "options": {
+              "icon": "Info",
+              "text": "The deployment exposes only Caddy HTTPS on port 443. Node port 3000 remains internal for health probes. Secrets are injected as secure environment variables and are not stored in the template-generated config."
+            }
+          },
+          {
+            "name": "caddyEmail",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Caddy certificate email",
+            "toolTip": "Email address used for automatic HTTPS certificate management.",
+            "constraints": {
+              "required": true,
+              "regex": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+              "validationMessage": "Enter a valid email address."
+            }
+          },
+          {
+            "name": "adminUsername",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Admin username",
+            "defaultValue": "admin",
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "adminPassword",
+            "type": "Microsoft.Common.PasswordBox",
+            "label": {
+              "password": "Admin password",
+              "confirmPassword": "Confirm admin password"
+            },
+            "toolTip": {
+              "password": "Use a unique secret of at least 16 characters.",
+              "confirmPassword": "Re-enter the admin password."
+            },
+            "constraints": {
+              "required": true,
+              "regex": "^.{16,}$",
+              "validationMessage": "Use at least 16 characters."
+            }
+          },
+          {
+            "name": "proxyApiKey",
+            "type": "Microsoft.Common.PasswordBox",
+            "label": {
+              "password": "Proxy API key",
+              "confirmPassword": "Confirm proxy API key"
+            },
+            "toolTip": {
+              "password": "Client applications use this secret to call the proxy. Use at least 16 characters.",
+              "confirmPassword": "Re-enter the proxy API key."
+            },
+            "constraints": {
+              "required": true,
+              "regex": "^.{16,}$",
+              "validationMessage": "Use at least 16 characters."
             }
           }
         ]
@@ -474,6 +543,10 @@
       "cpu": "[steps('runtime').cpu]",
       "memoryInGb": "[steps('runtime').memoryInGb]",
       "persistenceMode": "[steps('runtime').persistenceMode]",
+      "caddyEmail": "[steps('security').caddyEmail]",
+      "adminUsername": "[steps('security').adminUsername]",
+      "adminPassword": "[steps('security').adminPassword]",
+      "proxyApiKey": "[steps('security').proxyApiKey]",
       "storageAccountMode": "[steps('runtime').storageAccountMode]",
       "storageAccountName": "[steps('storage').storageAccountName]",
       "fileShareMode": "[steps('storage').fileShareMode]",

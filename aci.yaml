@@ -48,8 +48,6 @@ properties:
     fqdn: aoai-proxy.japaneast.azurecontainer.io
     ip: 74.176.36.76
     ports:
-    - port: 3000
-      protocol: TCP
     - port: 443
       protocol: TCP
     type: Public

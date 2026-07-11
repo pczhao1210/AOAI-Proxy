@@ -14,6 +14,12 @@
     "dnsNameLabel": {
       "value": "aoai-proxy-dev"
     },
+    "caddyEmail": {
+      "value": "replace-with-certificate-contact@example.com"
+    },
+    "adminUsername": {
+      "value": "admin"
+    },
     "persistenceMode": {
       "value": "database+azureFile"
     },

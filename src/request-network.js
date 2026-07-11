@@ -10,17 +10,17 @@ function readHeaderValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function firstForwardedForIp(value) {
+function lastForwardedForIp(value) {
   if (!value) return "";
-  const first = value
+  const entries = value
     .split(",")
     .map((item) => item.trim())
-    .find(Boolean);
-  return first || "";
+    .filter(Boolean);
+  return entries.at(-1) || "";
 }
 
 function shouldTrustForwardedHeaders(config) {
-  return config?.server?.trustProxy === true || config?.server?.caddy?.enabled === true;
+  return config?.server?.trustProxy === true;
 }
 
 export function getRequestNetworkContext(config, req) {
@@ -34,7 +34,7 @@ export function getRequestNetworkContext(config, req) {
       : (typeof req?.raw?.socket?.remoteAddress === "string" ? req.raw.socket.remoteAddress : ""));
 
   const clientIp = shouldTrustForwardedHeaders(config)
-    ? (firstForwardedForIp(forwardedFor) || realIp || remoteAddress)
+    ? (lastForwardedForIp(forwardedFor) || realIp || remoteAddress)
     : remoteAddress;
 
   return {

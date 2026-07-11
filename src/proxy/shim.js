@@ -45,6 +45,41 @@ function normalizeMessageContentToText(content) {
   return "";
 }
 
+function normalizeMessageContentForResponses(content, role) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return normalizeMessageContentToText(content);
+
+  const parts = [];
+  for (const part of content) {
+    if (typeof part === "string") {
+      parts.push({ type: role === "assistant" ? "output_text" : "input_text", text: part });
+      continue;
+    }
+    if (!part || typeof part !== "object") continue;
+    if ((part.type === "text" || part.type === "input_text" || part.type === "output_text") && typeof part.text === "string") {
+      parts.push({ type: role === "assistant" ? "output_text" : "input_text", text: part.text });
+      continue;
+    }
+    const imageUrl = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+    if ((part.type === "image_url" || part.type === "input_image" || part.type === "image") && typeof imageUrl === "string") {
+      parts.push({
+        type: "input_image",
+        image_url: imageUrl,
+        ...(part.detail || part.image_url?.detail ? { detail: part.detail || part.image_url.detail } : {})
+      });
+      continue;
+    }
+    if (part.type === "input_image" && typeof part.file_id === "string") {
+      parts.push({ type: "input_image", file_id: part.file_id, ...(part.detail ? { detail: part.detail } : {}) });
+      continue;
+    }
+    if (part.type === "input_file") {
+      parts.push({ ...part });
+    }
+  }
+  return parts.length ? parts : "";
+}
+
 function collectToolCallIds(toolCalls) {
   const ids = new Set();
   for (const call of toolCalls) {
@@ -183,11 +218,11 @@ function buildResponsesInputFromMessages(messages) {
       continue;
     }
     if (role === "user" || role === "assistant") {
-      const text = normalizeMessageContentToText(m.content);
+      const content = normalizeMessageContentForResponses(m.content, role);
       input.push({
         type: "message",
         role,
-        content: text
+        content
       });
     }
   }
@@ -217,11 +252,14 @@ function coerceToText(input) {
 
 function extractInstructionTextFromMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return "";
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
+  const instructions = [];
+  for (const m of messages) {
     if (!m || (m.role !== "system" && m.role !== "developer")) continue;
     const c = m.content;
-    if (typeof c === "string") return c;
+    if (typeof c === "string" && c) {
+      instructions.push(c);
+      continue;
+    }
     if (Array.isArray(c)) {
       const textParts = [];
       for (const part of c) {
@@ -234,10 +272,11 @@ function extractInstructionTextFromMessages(messages) {
           textParts.push(part.text);
         }
       }
-      return textParts.join("");
+      const text = textParts.join("");
+      if (text) instructions.push(text);
     }
   }
-  return "";
+  return instructions.join("\n\n");
 }
 
 function normalizeToolsForResponses(tools) {
@@ -293,6 +332,19 @@ function normalizeResponseFormatForResponses(responseFormat) {
     return { type: responseFormat };
   }
   if (typeof responseFormat === "object" && responseFormat.type) {
+    if (responseFormat.type === "json_schema") {
+      const jsonSchema = responseFormat.json_schema && typeof responseFormat.json_schema === "object"
+        ? responseFormat.json_schema
+        : responseFormat;
+      if (!jsonSchema.name || !jsonSchema.schema) return undefined;
+      return {
+        type: "json_schema",
+        name: jsonSchema.name,
+        schema: jsonSchema.schema,
+        ...(jsonSchema.strict != null ? { strict: jsonSchema.strict } : {}),
+        ...(jsonSchema.description ? { description: jsonSchema.description } : {})
+      };
+    }
     return responseFormat;
   }
   return undefined;
@@ -636,7 +688,11 @@ export function responsesToChatRequest(body, deployment) {
 export function mapResponsesJsonToChatCompletion(payload, modelId) {
   const created = Math.floor(Date.now() / 1000);
   const outputText = payload?.output_text
-    ?? payload?.output?.[0]?.content?.map((c) => c?.text).filter(Boolean).join("")
+    ?? payload?.output?.filter((item) => item?.type === "message")
+      .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+      .map((content) => content?.text)
+      .filter((text) => typeof text === "string")
+      .join("")
     ?? "";
   const toolCalls = [];
   if (Array.isArray(payload?.output)) {
@@ -671,19 +727,62 @@ export function mapResponsesJsonToChatCompletion(payload, modelId) {
         finish_reason: toolCalls.length ? "tool_calls" : "stop"
       }
     ],
-    usage: payload?.usage
+    usage: payload?.usage ? {
+      prompt_tokens: payload.usage.input_tokens ?? payload.usage.prompt_tokens ?? 0,
+      completion_tokens: payload.usage.output_tokens ?? payload.usage.completion_tokens ?? 0,
+      total_tokens: payload.usage.total_tokens ?? 0,
+      ...(payload.usage.input_tokens_details ? { prompt_tokens_details: payload.usage.input_tokens_details } : {}),
+      ...(payload.usage.output_tokens_details ? { completion_tokens_details: payload.usage.output_tokens_details } : {})
+    } : undefined
   };
 }
 
 export function mapChatCompletionJsonToResponses(payload, modelId) {
-  const text = payload?.choices?.[0]?.message?.content
-    ?? payload?.choices?.[0]?.text
-    ?? "";
+  const choice = payload?.choices?.[0] || {};
+  const message = choice.message || {};
+  const text = message.content ?? choice.text ?? "";
+  const responseId = payload?.id || `resp_${Math.floor(Date.now() / 1000)}`;
+  const output = [];
+  if (typeof text === "string") {
+    output.push({
+      id: `msg_${responseId}`,
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text, annotations: [], logprobs: [] }]
+    });
+  }
+  for (const toolCall of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
+    if (toolCall?.type !== "function" || !toolCall.function?.name) continue;
+    output.push({
+      id: toolCall.id,
+      type: "function_call",
+      status: "completed",
+      call_id: toolCall.id,
+      name: toolCall.function.name,
+      arguments: toolCall.function.arguments || ""
+    });
+  }
+  const incomplete = choice.finish_reason === "length";
+  const usage = payload?.usage ? {
+    input_tokens: payload.usage.prompt_tokens ?? payload.usage.input_tokens ?? 0,
+    output_tokens: payload.usage.completion_tokens ?? payload.usage.output_tokens ?? 0,
+    total_tokens: payload.usage.total_tokens ?? 0,
+    ...(payload.usage.prompt_tokens_details ? { input_tokens_details: payload.usage.prompt_tokens_details } : {}),
+    ...(payload.usage.completion_tokens_details ? { output_tokens_details: payload.usage.completion_tokens_details } : {})
+  } : undefined;
   return {
-    id: payload?.id,
+    id: responseId,
     object: "response",
+    created_at: payload?.created || Math.floor(Date.now() / 1000),
+    status: incomplete ? "incomplete" : "completed",
+    error: null,
+    incomplete_details: incomplete ? { reason: "max_output_tokens" } : null,
+    instructions: null,
     model: payload?.model || modelId,
+    output,
     output_text: text,
-    usage: payload?.usage
+    parallel_tool_calls: true,
+    usage
   };
 }

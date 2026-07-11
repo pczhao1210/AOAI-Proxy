@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { getConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo } from "./config.js";
+import { getConfig, getPersistedConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo } from "./config.js";
 import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
@@ -18,6 +18,7 @@ import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } fr
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
 import { closeSharedPostgresPools } from "./postgres.js";
+import { redactConfigSecrets, restoreConfigSecrets } from "./admin-config.js";
 
 // Fastify server entry
 const defaultBodyLimit = 50 * 1024 * 1024;
@@ -25,7 +26,7 @@ const bodyLimitEnv = Number(process.env.BODY_LIMIT || process.env.SERVER_BODY_LI
 const bodyLimit = Number.isFinite(bodyLimitEnv) && bodyLimitEnv > 0 ? bodyLimitEnv : defaultBodyLimit;
 const STATIC_ADMIN_PATH = "/admin";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30000;
 
 let shutdownPromise = null;
 
@@ -186,6 +187,15 @@ function buildModelList(config, consumer) {
 
 function attachAuth(config) {
   initAuth(config);
+}
+
+function applyLogConfig(config) {
+  setLogConfig(config);
+  if (process.env.LOG_LEVEL) return;
+  const configuredLevel = String(config?.observability?.logs?.level || "warn").trim().toLowerCase();
+  if (["trace", "debug", "info", "warn", "error", "fatal", "silent"].includes(configuredLevel)) {
+    app.log.level = configuredLevel;
+  }
 }
 
 async function primeAuth(config) {
@@ -394,20 +404,21 @@ app.post("/v1/images/generations", async (req, reply) => {
 
 app.get("/admin/api/config", async () => {
   const config = getConfig();
-  return config;
+  return redactConfigSecrets(config);
 });
 
 app.put("/admin/api/config", async (req, reply) => {
-  const nextConfig = req.body;
+  const nextConfig = restoreConfigSecrets(req.body, getPersistedConfig());
   try {
     const saved = await saveConfig(nextConfig);
-    setLogConfig(saved);
+    applyLogConfig(saved);
+    configureUpstreamHttp(saved);
     attachAuth(saved);
     void primeAuth(saved);
     writeCaddyfile(saved);
     await reloadCaddy(saved);
     app.log.info({ source: "admin", event: "admin.config_saved" }, "admin config saved");
-    reply.send({ ok: true, config: saved });
+    reply.send({ ok: true, config: redactConfigSecrets(saved) });
   } catch (error) {
     logAdminApiError("admin.config_save_failed", error, { route: "/admin/api/config" });
     reply.code(400).send({ error: error.message });
@@ -417,13 +428,14 @@ app.put("/admin/api/config", async (req, reply) => {
 app.post("/admin/api/reload", async (req, reply) => {
   try {
     const config = await reloadConfig();
-    setLogConfig(config);
+    applyLogConfig(config);
+    configureUpstreamHttp(config);
     attachAuth(config);
     void primeAuth(config);
     writeCaddyfile(config);
     await reloadCaddy(config);
     app.log.info({ source: "admin", event: "admin.config_reloaded" }, "admin config reloaded");
-    reply.send({ ok: true, config });
+    reply.send({ ok: true, config: redactConfigSecrets(config) });
   } catch (error) {
     logAdminApiError("admin.config_reload_failed", error, { route: "/admin/api/reload" });
     reply.code(400).send({ error: error.message });
@@ -633,7 +645,7 @@ async function start() {
     logLevel: process.env.LOG_LEVEL || "warn"
   });
   const config = await reloadConfig();
-  setLogConfig(config);
+  applyLogConfig(config);
   const upstreamHttp = configureUpstreamHttp(config);
   attachAuth(config);
   await primeAuth(config);

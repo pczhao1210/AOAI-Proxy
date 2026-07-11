@@ -221,7 +221,7 @@ export function resolveModelRoute(model, incomingRouteKey) {
 export function inferBackendRouteKey(routeKey, override) {
   if (override?.type === "routeKey") return normalizeBackendRouteKey(override.value);
   if (override?.type === "path") {
-    const p = override.value.toLowerCase();
+    const p = override.value.toLowerCase().split(/[?#]/, 1)[0].replace(/\/+$/, "");
     if (p.endsWith("/responses")) return "responses";
     if (p.endsWith("/chat/completions")) return "chat/completions";
     if (p.endsWith("/images/generations")) return "images/generations";

@@ -359,7 +359,7 @@ export default function OpsTab({
             </select>
           </Field>
           <Field label={t("field.apiKey", "API Key")} hint={t("field.apiKeyHint", "Leave blank to follow the current access default policy.")}>
-            <input value={testApiKey} onChange={(event) => setTestApiKey(event.target.value)} placeholder={t("field.apiKeyPlaceholder", "proxy API key")} />
+            <input type="password" autoComplete="off" value={testApiKey} onChange={(event) => setTestApiKey(event.target.value)} placeholder={t("field.apiKeyPlaceholder", "proxy API key")} />
           </Field>
         </div>
         <div className="toolbar" style={{ marginTop: "1rem" }}>

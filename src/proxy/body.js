@@ -29,6 +29,14 @@ const REQUEST_OVERRIDE_FIELD_ALIASES = {
   max_retries: "maxRetries"
 };
 
+const DEFAULT_REQUEST_OVERRIDE_LIMITS = {
+  requestMs: 900000,
+  firstByteMs: 300000,
+  idleMs: 900000,
+  maxStreamDurationMs: 3600000,
+  maxRetries: 2
+};
+
 function createPolicyError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -60,6 +68,18 @@ export function sanitizeIncomingHeaders(headers, config) {
     if (policy.deny.has(normalizedKey)) continue;
     if (policy.mode === "allowlist" && policy.allow.size > 0 && !policy.allow.has(normalizedKey)) continue;
     filtered[key] = value;
+  }
+  return filtered;
+}
+
+export function sanitizeConfiguredUpstreamHeaders(headers) {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return {};
+  const filtered = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const normalizedKey = key.toLowerCase();
+    if (HARD_BLOCKED_HEADERS.has(normalizedKey)) continue;
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue;
+    filtered[key] = String(value);
   }
   return filtered;
 }
@@ -128,6 +148,7 @@ export function extractProxyRequestControls(payload, config) {
       : []
   );
   const rejectUnknownProxyParams = config?.proxy?.guards?.rejectUnknownProxyParams === true;
+  const configuredLimits = config?.proxy?.timeouts?.requestOverrideLimits;
   const overrides = {};
   const rejectedFields = [];
 
@@ -148,6 +169,16 @@ export function extractProxyRequestControls(payload, config) {
     if (!Number.isInteger(normalizedValue) || normalizedValue < 0) {
       throw createPolicyError("INVALID_PROXY_CONTROL_FIELD", `${field} must be a non-negative integer`);
     }
+    const configuredLimit = configuredLimits?.[targetKey];
+    const limit = Number.isInteger(configuredLimit) && configuredLimit >= 0
+      ? configuredLimit
+      : DEFAULT_REQUEST_OVERRIDE_LIMITS[targetKey];
+    if (normalizedValue > limit) {
+      throw createPolicyError(
+        "PROXY_CONTROL_FIELD_LIMIT_EXCEEDED",
+        `${field} must not exceed ${limit}`
+      );
+    }
     overrides[targetKey] = normalizedValue;
   }
 
@@ -164,13 +195,16 @@ function resolveImageCompression(config) {
   const maxLongSidePx = Number.isFinite(cfg.maxLongSidePx)
     ? cfg.maxLongSidePx
     : (Number.isFinite(cfg.maxSize) ? cfg.maxSize : 1600);
+  const minQuality = Number.isFinite(cfg.minQuality) ? Math.min(1, Math.max(0.1, cfg.minQuality)) : 0.1;
   const quality = Number.isFinite(cfg.quality) ? cfg.quality : 0.85;
   const format = cfg.outputFormat === "webp" || cfg.format === "webp" ? "webp" : "jpeg";
   return {
     enabled,
     maxLongSidePx,
-    quality: Math.min(1, Math.max(0.1, quality)),
-    format
+    quality: Math.min(1, Math.max(minQuality, quality)),
+    format,
+    progressive: cfg.progressive === true,
+    useMozJpeg: cfg.useMozJpeg !== false
   };
 }
 
@@ -238,7 +272,7 @@ async function compressImageBuffer(buffer, options) {
     };
   }
   return {
-    buffer: await pipeline.jpeg({ quality, mozjpeg: true }).toBuffer(),
+    buffer: await pipeline.jpeg({ quality, mozjpeg: options.useMozJpeg, progressive: options.progressive }).toBuffer(),
     mime: "image/jpeg"
   };
 }

@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchCaddyStatus,
   fetchConfig,
@@ -17,13 +17,6 @@ import {
   validateConfiguredModels,
   verifyAad
 } from "./api.js";
-import AdvancedTab from "./components/AdvancedTab.jsx";
-import KeysTab from "./components/KeysTab.jsx";
-import OpsTab from "./components/OpsTab.jsx";
-import { bundledPricingLibrary } from "./pricing-library.js";
-import RoutingTab from "./components/RoutingTab.jsx";
-import RuntimeTab from "./components/RuntimeTab.jsx";
-import WorkspaceTab from "./components/WorkspaceTab.jsx";
 import { StatCard, TabButton, Modal } from "./components/ui.jsx";
 import { useI18n } from "./i18n.jsx";
 import toast from "react-hot-toast";
@@ -63,6 +56,22 @@ import {
   setValueByPath
 } from "./utils.js";
 
+const AdvancedTab = lazy(() => import("./components/AdvancedTab.jsx"));
+const KeysTab = lazy(() => import("./components/KeysTab.jsx"));
+const OpsTab = lazy(() => import("./components/OpsTab.jsx"));
+const RoutingTab = lazy(() => import("./components/RoutingTab.jsx"));
+const RuntimeTab = lazy(() => import("./components/RuntimeTab.jsx"));
+const WorkspaceTab = lazy(() => import("./components/WorkspaceTab.jsx"));
+let bundledPricingLibraryPromise = null;
+
+function loadBundledPricingLibrary() {
+  if (!bundledPricingLibraryPromise) {
+    bundledPricingLibraryPromise = import("./pricing-library.js")
+      .then((moduleValue) => moduleValue.bundledPricingLibrary);
+  }
+  return bundledPricingLibraryPromise;
+}
+
 function statusLabel(configured, enabled) {
   if (configured) return "configured";
   if (enabled) return "incomplete";
@@ -100,7 +109,7 @@ export default function App() {
   const [lastLoadedText, setLastLoadedText] = useState("");
   const [runtime, setRuntime] = useState(null);
   const [stats, setStats] = useState(null);
-  const [pricingLibrary, setPricingLibrary] = useState(() => bundledPricingLibrary);
+  const [pricingLibrary, setPricingLibrary] = useState([]);
   const [pricingLibraryStatus, setPricingLibraryStatus] = useState(null);
   const [modelValidationResult, setModelValidationResult] = useState(null);
   const [pricingSyncSource, setPricingSyncSource] = useState({ owner: "", repo: "", path: "pricing", ref: "" });
@@ -298,11 +307,20 @@ export default function App() {
 
   async function loadSecondaryData(requestId, filters = runtimeFilters, options = {}) {
     const { notifyOnError = false } = options;
+    const loadPricing = async () => {
+      try {
+        const pricingJson = await fetchPricingLibrary();
+        if (Array.isArray(pricingJson.items) && pricingJson.items.length) return pricingJson;
+        return { ...pricingJson, items: await loadBundledPricingLibrary() };
+      } catch {
+        return { items: await loadBundledPricingLibrary() };
+      }
+    };
     const [runtimeResult, statsResult, caddyResult, pricingResult] = await Promise.allSettled([
       fetchRuntime(),
       fetchStats(filters),
       fetchCaddyStatus(),
-      fetchPricingLibrary().catch(() => ({ items: bundledPricingLibrary }))
+      loadPricing()
     ]);
 
     if (requestId !== loadRequestRef.current) {
@@ -333,7 +351,7 @@ export default function App() {
         const pricingJson = pricingResult.value || {};
         const pricingItems = Array.isArray(pricingJson.items) && pricingJson.items.length
           ? pricingJson.items
-          : bundledPricingLibrary;
+          : [];
         setPricingLibrary(pricingItems);
         setPricingLibraryStatus(pricingJson.status || null);
         setPricingSyncSource(pricingSyncSourceFromStatus(pricingJson.status || null));
@@ -776,8 +794,11 @@ export default function App() {
         path: String(pricingSyncSource.path || "").trim(),
         ref: String(pricingSyncSource.ref || "").trim()
       });
+      const syncedPricingItems = Array.isArray(result.items) && result.items.length
+        ? result.items
+        : await loadBundledPricingLibrary();
       startTransition(() => {
-        setPricingLibrary(Array.isArray(result.items) && result.items.length ? result.items : bundledPricingLibrary);
+        setPricingLibrary(syncedPricingItems);
         setPricingLibraryStatus(result.status || null);
         setPricingSyncSource(pricingSyncSourceFromStatus(result.status || null));
       });
@@ -1244,6 +1265,7 @@ export default function App() {
         </aside>
 
         <main className="tab-content">
+          <Suspense fallback={<div className="loading">{t("common.loading", "Loading...")}</div>}>
 
       {activeTab === "workspace" && config ? (
         <WorkspaceTab
@@ -1376,6 +1398,7 @@ export default function App() {
           t={t}
         />
       ) : null}
+          </Suspense>
             </main>
       </div>
     </div>

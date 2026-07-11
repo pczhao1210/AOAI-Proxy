@@ -6,6 +6,8 @@ The packaged portal experience defaults to the combined ACI persistence path:
 
 - Default persistence mode is PostgreSQL config persistence plus an Azure Files `/app/data` mount
 - The custom UI exposes database server name, database name, admin username, admin password, and SKU selection
+- The custom UI requires a Caddy certificate email, a strong proxy admin password, and a strong client API key
+- The generated ACI endpoint exposes only Caddy HTTPS on port `443`; Node port `3000` remains internal for health probes
 - Leaving the database name empty auto-creates `aoaiproxy`
 - The default PostgreSQL size is `Burstable` + `Standard_B1ms`
 - Storage account inputs stay hidden unless the user explicitly switches to Azure Files
