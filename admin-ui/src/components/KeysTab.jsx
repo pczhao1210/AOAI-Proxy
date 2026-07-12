@@ -58,6 +58,8 @@ export default function KeysTab({ config, updateConfig, addApiKey, t }) {
               subtitle={item.owner || t("status.keySubtitleFallback", "Owner not set")}
               meta={`${t("field.status", "Status")}: ${statusLabel} · ${t("field.allowedModels", "Allowed Models")}: ${allowedModelsCount} · ${t("field.budgetLimit", "Budget Limit")}: ${budgetText}`}
               removeLabel={t("entity.delete", "Delete")}
+              expandLabel={t("entity.expand", "Edit configuration")}
+              collapseLabel={t("entity.collapse", "Collapse")}
               collapsible
               defaultOpen={false}
               group="keys-list"

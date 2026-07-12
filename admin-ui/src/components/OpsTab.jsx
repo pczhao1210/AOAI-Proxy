@@ -77,6 +77,7 @@ export default function OpsTab({
   const validationNote = modelValidationResult
     ? `${t("ops.validationFailed", "Failed")}: ${validationSummary.failed || 0} · ${t("ops.validationWarning", "Warnings")}: ${validationSummary.warning || 0}`
     : t("ops.validationIdle", "No validation run yet.");
+  const caddyEnabled = config?.server?.caddy?.enabled === true;
 
   return (
     <div className="stack-lg">
@@ -226,7 +227,7 @@ export default function OpsTab({
         <div className="toolbar" style={{ marginBottom: "1rem" }}>
           <button type="button" className="ghost" onClick={() => loadCaddyStatusAction()}>{t("ops.refreshStatus", "Refresh Status")}</button>
           <button type="button" className="ghost" onClick={handleVerifyAad} disabled={diagnosticsBusy.verify}>{diagnosticsBusy.verify ? t("ops.verifyingAad", "Verifying...") : t("ops.verifyAad", "Verify AAD")}</button>
-          <button type="button" onClick={handleRestartService} disabled={diagnosticsBusy.restart}>{diagnosticsBusy.restart ? t("ops.restarting", "Restarting...") : t("ops.restart", "Restart")}</button>
+          <button type="button" className="ghost danger" onClick={handleRestartService} disabled={diagnosticsBusy.restart}>{diagnosticsBusy.restart ? t("ops.restarting", "Restarting...") : t("ops.restart", "Restart")}</button>
         </div>
         <div className="status-grid">
           <StatCard label={t("status.caddyState", "Caddy State")} value={caddyStatus?.state ? t(`caddy.state.${caddyStatus.state}`, caddyStatus.state) : t("status.disabled", "disabled")} note={caddyStatus?.message || "-"} />
@@ -234,26 +235,27 @@ export default function OpsTab({
           <StatCard label={t("status.lastReload", "Last Reload")} value={formatDateTime(caddyStatus?.lastReloadAt)} note={t("status.caddyReloadNote", "Most recent reload")} />
           <StatCard label={t("status.aad", "AAD")} value={aadStatus?.state ? t(`status.aad.${aadStatus.state}`, aadStatus.state) : t("status.idle", "idle")} note={aadStatus?.detail || formatDateTime(aadStatus?.checkedAt)} />
         </div>
-        <div className="form-grid" style={{ marginTop: "1rem" }}>
-          <Field label={t("field.enableCaddy", "Enable Caddy")}>
-            <select value={config?.server?.caddy?.enabled ? "true" : "false"} onChange={(event) => updateField("server.caddy.enabled", event.target.value === "true")}>
-              <option value="true">{t("common.trueLiteral", "true")}</option>
-              <option value="false">{t("common.falseLiteral", "false")}</option>
-            </select>
-          </Field>
-          <Field label={t("field.domain", "Domain")}><input value={getValueByPath(config, "server.caddy.domain") || ""} onChange={(event) => updateField("server.caddy.domain", event.target.value)} /></Field>
-          <Field label={t("field.email", "Email")}><input value={getValueByPath(config, "server.caddy.email") || ""} onChange={(event) => updateField("server.caddy.email", event.target.value)} /></Field>
-          <Field label={t("field.httpsPort", "HTTPS Port")}><input type="number" value={getValueByPath(config, "server.caddy.httpsPort") || 443} onChange={(event) => updateField("server.caddy.httpsPort", Number(event.target.value || 0))} /></Field>
-          <Field label={t("field.upstreamHost", "Upstream Host")}><input value={getValueByPath(config, "server.caddy.upstreamHost") || "127.0.0.1"} onChange={(event) => updateField("server.caddy.upstreamHost", event.target.value)} /></Field>
-          <Field label={t("field.upstreamPort", "Upstream Port")}><input type="number" value={getValueByPath(config, "server.caddy.upstreamPort") || 3000} onChange={(event) => updateField("server.caddy.upstreamPort", Number(event.target.value || 0))} /></Field>
-          <Field label={t("field.dialTimeoutMs", "Dial Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.dialTimeoutMs") || 5000} onChange={(event) => updateField("server.caddy.transport.dialTimeoutMs", Number(event.target.value || 0))} /></Field>
-          <Field label={t("field.responseHeaderTimeoutMs", "Response Header Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.responseHeaderTimeoutMs") || 300000} onChange={(event) => updateField("server.caddy.transport.responseHeaderTimeoutMs", Number(event.target.value || 0))} /></Field>
-          <Field label={t("field.keepAliveTimeoutMs", "KeepAlive Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.keepAliveTimeoutMs") || 120000} onChange={(event) => updateField("server.caddy.transport.keepAliveTimeoutMs", Number(event.target.value || 0))} /></Field>
+        <div className="checkbox-row">
+          <label><input type="checkbox" checked={caddyEnabled} onChange={(event) => updateField("server.caddy.enabled", event.target.checked)} /> {t("field.enableCaddy", "Enable Caddy")}</label>
         </div>
-        <div className="code-block" style={{ marginTop: "1rem" }}>
-          <div className="code-block-head">{t("ops.caddyPreview", "Caddy Preview")}</div>
-          <pre>{caddyPreview}</pre>
-        </div>
+        {caddyEnabled ? (
+          <>
+            <div className="form-grid" style={{ marginTop: "1rem" }}>
+              <Field label={t("field.domain", "Domain")}><input value={getValueByPath(config, "server.caddy.domain") || ""} onChange={(event) => updateField("server.caddy.domain", event.target.value)} /></Field>
+              <Field label={t("field.email", "Email")}><input value={getValueByPath(config, "server.caddy.email") || ""} onChange={(event) => updateField("server.caddy.email", event.target.value)} /></Field>
+              <Field label={t("field.httpsPort", "HTTPS Port")}><input type="number" value={getValueByPath(config, "server.caddy.httpsPort") || 443} onChange={(event) => updateField("server.caddy.httpsPort", Number(event.target.value || 0))} /></Field>
+              <Field label={t("field.upstreamHost", "Upstream Host")}><input value={getValueByPath(config, "server.caddy.upstreamHost") || "127.0.0.1"} onChange={(event) => updateField("server.caddy.upstreamHost", event.target.value)} /></Field>
+              <Field label={t("field.upstreamPort", "Upstream Port")}><input type="number" value={getValueByPath(config, "server.caddy.upstreamPort") || 3000} onChange={(event) => updateField("server.caddy.upstreamPort", Number(event.target.value || 0))} /></Field>
+              <Field label={t("field.dialTimeoutMs", "Dial Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.dialTimeoutMs") || 5000} onChange={(event) => updateField("server.caddy.transport.dialTimeoutMs", Number(event.target.value || 0))} /></Field>
+              <Field label={t("field.responseHeaderTimeoutMs", "Response Header Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.responseHeaderTimeoutMs") || 300000} onChange={(event) => updateField("server.caddy.transport.responseHeaderTimeoutMs", Number(event.target.value || 0))} /></Field>
+              <Field label={t("field.keepAliveTimeoutMs", "KeepAlive Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.keepAliveTimeoutMs") || 120000} onChange={(event) => updateField("server.caddy.transport.keepAliveTimeoutMs", Number(event.target.value || 0))} /></Field>
+            </div>
+            <div className="code-block" style={{ marginTop: "1rem" }}>
+              <div className="code-block-head">{t("ops.caddyPreview", "Caddy Preview")}</div>
+              <pre>{caddyPreview}</pre>
+            </div>
+          </>
+        ) : null}
         {caddyStatus?.lastError ? <div className="inline-error" style={{ marginTop: "1rem" }}>{caddyStatus.lastError}</div> : null}
       </AccordionSection>
 
