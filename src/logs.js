@@ -2,8 +2,10 @@ import { Writable } from "node:stream";
 import { DefaultAzureCredential } from "@azure/identity";
 import { LogsIngestionClient, isAggregateLogsUploadError } from "@azure/monitor-ingestion";
 
-const DEFAULT_MAX_LOG_ENTRIES = 100;
-const HARD_MAX_IN_MEMORY_LOG_ENTRIES = 100;
+const DEFAULT_MAX_LOG_ENTRIES = 500;
+const HARD_MAX_IN_MEMORY_LOG_ENTRIES = 5000;
+const DEFAULT_LOG_LEVEL = "info";
+const DEFAULT_LOG_SINKS = ["memory", "console"];
 const DEFAULT_LOG_ANALYTICS_FLUSH_INTERVAL_MS = 10000;
 const DEFAULT_LOG_ANALYTICS_BATCH_SIZE = 100;
 const DEFAULT_LOG_ANALYTICS_MAX_CONCURRENCY = 1;
@@ -24,6 +26,16 @@ const PINO_LEVELS = {
   60: "fatal"
 };
 
+const LOG_LEVEL_PRIORITIES = {
+  trace: 10,
+  debug: 20,
+  info: 30,
+  warn: 40,
+  error: 50,
+  fatal: 60,
+  silent: Number.POSITIVE_INFINITY
+};
+
 const SENSITIVE_KEYS = new Set([
   "authorization",
   "proxy-authorization",
@@ -36,6 +48,43 @@ const SENSITIVE_KEYS = new Set([
   "access_token",
   "refresh_token",
   "client_secret"
+]);
+
+const SENSITIVE_QUERY_KEYS = new Set([
+  "apikey",
+  "authorization",
+  "token",
+  "accesstoken",
+  "refreshtoken",
+  "clientsecret",
+  "secret",
+  "password",
+  "sig",
+  "signature",
+  "code",
+  "credential",
+  "subscriptionkey",
+  "sastoken"
+]);
+
+const API_KEY_INFO_KEYS = new Set(["keyid", "apikeyid", "consumerkeyid"]);
+const USAGE_KEYS = new Set([
+  "usage",
+  "prompttokens",
+  "inputtokens",
+  "completiontokens",
+  "outputtokens",
+  "totaltokens",
+  "cachedtokens"
+]);
+const CONTENT_KEYS = new Set([
+  "prompt",
+  "messages",
+  "input",
+  "output",
+  "content",
+  "requestbody",
+  "responsebody"
 ]);
 
 const logBuffer = [];
@@ -67,6 +116,37 @@ function normalizeStringArray(value) {
   return Array.isArray(value)
     ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim().toLowerCase())
     : [];
+}
+
+function resolveLogSettings(config = runtimeLogConfig) {
+  const logs = asPlainObject(config?.observability?.logs);
+  const configuredSinks = Array.isArray(logs.sinks)
+    ? normalizeStringArray(logs.sinks)
+    : DEFAULT_LOG_SINKS;
+  const outputLevel = normalizeLevel(process.env.LOG_LEVEL || logs.level || DEFAULT_LOG_LEVEL);
+  const outputPriority = LOG_LEVEL_PRIORITIES[outputLevel] ?? LOG_LEVEL_PRIORITIES.info;
+  const adminLevel = outputPriority < LOG_LEVEL_PRIORITIES.info ? outputLevel : DEFAULT_LOG_LEVEL;
+  const sinks = new Set(configuredSinks);
+  sinks.add("memory");
+  return {
+    level: outputLevel,
+    adminLevel,
+    sinks,
+    includeClientIp: logs.includeClientIp !== false,
+    includeHeaders: logs.includeHeaders === true,
+    includeUsage: logs.includeUsage !== false,
+    redactApiKeyInfo: logs.redactApiKeyInfo !== false,
+    messageContentMode: logs.messageContentMode === "full" ? "full" : "summary",
+    maxBase64LogChars: clampInteger(logs.maxBase64LogChars, 64, 0, 4096)
+  };
+}
+
+function shouldRecordLevel(level, minimumLevel) {
+  const normalizedLevel = normalizeLevel(level);
+  const normalizedMinimum = normalizeLevel(minimumLevel);
+  const priority = LOG_LEVEL_PRIORITIES[normalizedLevel] ?? LOG_LEVEL_PRIORITIES.info;
+  const minimumPriority = LOG_LEVEL_PRIORITIES[normalizedMinimum] ?? LOG_LEVEL_PRIORITIES.warn;
+  return priority >= minimumPriority;
 }
 
 function getEnvOverride(...names) {
@@ -148,7 +228,7 @@ function clearLogAnalyticsFlushTimer() {
 }
 
 function recordInternalLog(level, payload = {}) {
-  return appendEntry(buildEntry({ ...payload, level }));
+  return recordEntry(buildEntry({ ...payload, level }), { enqueue: false });
 }
 
 function buildLogAnalyticsRecord(entry, settings) {
@@ -226,7 +306,9 @@ function enqueueLogAnalyticsEntry(entry) {
   if (!active) {
     return;
   }
-  if (settings.samplingRatio < 1 && Math.random() > settings.samplingRatio) {
+  if (settings.samplingRatio < 1
+    && (LOG_LEVEL_PRIORITIES[entry.level] ?? LOG_LEVEL_PRIORITIES.info) < LOG_LEVEL_PRIORITIES.warn
+    && Math.random() > settings.samplingRatio) {
     return;
   }
 
@@ -355,8 +437,16 @@ export function setLogConfig(config) {
 
 export function getLogRuntimeInfo(config = runtimeLogConfig) {
   const settings = resolveLogAnalyticsSettings(config);
+  const logSettings = resolveLogSettings(config);
   const active = shouldUseLogAnalytics(settings);
   return {
+    level: logSettings.adminLevel,
+    outputLevel: logSettings.level,
+    sinks: Array.from(logSettings.sinks),
+    memoryEnabled: logSettings.sinks.has("memory"),
+    consoleEnabled: logSettings.sinks.has("console"),
+    logAnalyticsEnabled: settings.enabled,
+    logAnalyticsConfigured: active,
     enabled: settings.enabled,
     configured: active,
     memoryBufferSize: maxLogEntries,
@@ -384,21 +474,73 @@ function truncateString(value, maxLen = 4000) {
   return `${value.slice(0, maxLen)}...<truncated>`;
 }
 
-function sanitizeValue(value, key = "", depth = 0) {
-  if (SENSITIVE_KEYS.has(String(key || "").toLowerCase())) {
+function sanitizeUrl(value) {
+  if (typeof value !== "string") return value;
+  const questionIndex = value.indexOf("?");
+  if (questionIndex < 0) return truncateString(value);
+
+  const hashIndex = value.indexOf("#", questionIndex);
+  const base = value.slice(0, questionIndex);
+  const query = value.slice(questionIndex + 1, hashIndex >= 0 ? hashIndex : undefined);
+  const hash = hashIndex >= 0 ? value.slice(hashIndex) : "";
+  const params = new URLSearchParams(query);
+  let changed = false;
+
+  for (const key of new Set(params.keys())) {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!SENSITIVE_QUERY_KEYS.has(normalizedKey)) continue;
+    params.set(key, "[REDACTED]");
+    changed = true;
+  }
+
+  if (!changed) return truncateString(value);
+  const sanitizedQuery = params.toString().replace(/%5BREDACTED%5D/gi, "[REDACTED]");
+  return truncateString(`${base}?${sanitizedQuery}${hash}`);
+}
+
+function sanitizeBase64Value(value, maxChars) {
+  const dataUrlMatch = value.match(/^(data:[^,]*;base64,)(.*)$/is);
+  const prefix = dataUrlMatch?.[1] || "";
+  const payload = dataUrlMatch?.[2] || value;
+  if (payload.length <= maxChars) return value;
+  return `${prefix}${payload.slice(0, maxChars)}...<truncated>`;
+}
+
+function sanitizeValue(value, key = "", depth = 0, settings = resolveLogSettings()) {
+  const normalizedKey = String(key || "").toLowerCase();
+  const compactKey = normalizedKey.replace(/[^a-z0-9]/g, "");
+  if (SENSITIVE_KEYS.has(normalizedKey)) {
     return "[REDACTED]";
+  }
+  if (settings.redactApiKeyInfo && API_KEY_INFO_KEYS.has(compactKey)) {
+    return "[REDACTED]";
+  }
+  if (!settings.includeHeaders && (compactKey === "headers" || compactKey.endsWith("headers"))) {
+    return "[OMITTED]";
+  }
+  if (!settings.includeUsage && USAGE_KEYS.has(compactKey)) {
+    return undefined;
   }
   if (value == null || typeof value === "number" || typeof value === "boolean") {
     return value;
   }
   if (typeof value === "string") {
+    if (normalizedKey === "url" || normalizedKey.endsWith("url")) {
+      return sanitizeUrl(value);
+    }
+    if (settings.messageContentMode !== "full" && CONTENT_KEYS.has(compactKey)) {
+      return "[OMITTED]";
+    }
+    if (compactKey.includes("base64") || /^data:[^,]*;base64,/i.test(value)) {
+      return sanitizeBase64Value(value, settings.maxBase64LogChars);
+    }
     return truncateString(value);
   }
   if (depth >= 4) {
     return "[Truncated]";
   }
   if (Array.isArray(value)) {
-    return value.slice(0, 50).map((item) => sanitizeValue(item, key, depth + 1));
+    return value.slice(0, 50).map((item) => sanitizeValue(item, key, depth + 1, settings));
   }
   if (value instanceof Error) {
     return {
@@ -410,7 +552,10 @@ function sanitizeValue(value, key = "", depth = 0) {
   if (value && typeof value === "object") {
     const out = {};
     Object.entries(value).forEach(([childKey, childValue]) => {
-      out[childKey] = sanitizeValue(childValue, childKey, depth + 1);
+      const sanitized = sanitizeValue(childValue, childKey, depth + 1, settings);
+      if (sanitized !== undefined) {
+        out[childKey] = sanitized;
+      }
     });
     return out;
   }
@@ -424,7 +569,8 @@ function normalizeLevel(value) {
   const normalized = String(value || "info").trim().toLowerCase();
   if (normalized === "warning") return "warn";
   if (normalized === "err") return "error";
-  return normalized || "info";
+  if (normalized === "log") return "info";
+  return Object.hasOwn(LOG_LEVEL_PRIORITIES, normalized) ? normalized : "info";
 }
 
 function normalizeTimestamp(value) {
@@ -448,12 +594,35 @@ function appendEntry(entry) {
   return entry;
 }
 
-function recordEntry(entry, options = {}) {
-  const appended = appendEntry(entry);
-  if (options.enqueue !== false) {
-    enqueueLogAnalyticsEntry(appended);
+function writeConsoleEntry(entry) {
+  const { id, fields, ...base } = entry;
+  try {
+    const serialized = JSON.stringify({ ...(fields || {}), ...base });
+    if (entry.level === "error" || entry.level === "fatal") {
+      console.error(serialized);
+    } else if (entry.level === "warn") {
+      console.warn(serialized);
+    } else {
+      console.log(serialized);
+    }
+  } catch {
   }
-  return appended;
+}
+
+function recordEntry(entry, options = {}) {
+  const settings = resolveLogSettings();
+  const outputEnabled = options.bypassLevel || shouldRecordLevel(entry.level, settings.level);
+  const adminCaptureEnabled = options.bypassLevel || shouldRecordLevel(entry.level, settings.adminLevel);
+  if (adminCaptureEnabled) {
+    appendEntry(entry);
+  }
+  if (outputEnabled && options.emitConsole !== false && (options.forceConsole || settings.sinks.has("console"))) {
+    writeConsoleEntry(entry);
+  }
+  if (outputEnabled && options.enqueue !== false) {
+    enqueueLogAnalyticsEntry(entry);
+  }
+  return entry;
 }
 
 function buildEntry(payload) {
@@ -480,6 +649,7 @@ function buildEntry(payload) {
     forwardedFor,
     ...rest
   } = payload || {};
+  const settings = resolveLogSettings();
 
   return {
     id: nextLogId++,
@@ -497,15 +667,15 @@ function buildEntry(payload) {
     errorCode: typeof errorCode === "string" ? errorCode : "",
     failureReason: truncateString(typeof failureReason === "string" ? failureReason : failureReason == null ? "" : String(failureReason)),
     latencyMs: Number.isFinite(latencyMs) ? latencyMs : null,
-    clientIp: typeof clientIp === "string" ? truncateString(clientIp, 512) : "",
+    clientIp: settings.includeClientIp && typeof clientIp === "string" ? truncateString(clientIp, 512) : "",
     userAgent: typeof userAgent === "string" ? truncateString(userAgent, 1024) : "",
-    forwardedFor: typeof forwardedFor === "string" ? truncateString(forwardedFor, 1024) : "",
-    fields: sanitizeValue(rest)
+    forwardedFor: settings.includeClientIp && typeof forwardedFor === "string" ? truncateString(forwardedFor, 1024) : "",
+    fields: sanitizeValue(rest, "", 0, settings)
   };
 }
 
-export function appendStructuredLog(level, payload = {}) {
-  return recordEntry(buildEntry({ ...payload, level }));
+export function appendStructuredLog(level, payload = {}, options = {}) {
+  return recordEntry(buildEntry({ ...payload, level }), options);
 }
 
 function ingestPinoLine(line) {
@@ -513,10 +683,10 @@ function ingestPinoLine(line) {
   try {
     parsed = JSON.parse(line);
   } catch {
-    appendStructuredLog("info", { message: line, event: "stdout.raw" });
+    recordEntry(buildEntry({ level: "info", message: line, event: "stdout.raw" }), { emitConsole: false });
     return;
   }
-  recordEntry(buildEntry(parsed));
+  recordEntry(buildEntry(parsed), { emitConsole: false });
 }
 
 export function createPinoCaptureStream() {
@@ -528,7 +698,9 @@ export function createPinoCaptureStream() {
         ? encoding
         : "utf8";
       const text = typeof chunk === "string" ? chunk : chunk.toString(resolvedEncoding);
-      process.stdout.write(text);
+      if (resolveLogSettings().sinks.has("console")) {
+        process.stdout.write(text);
+      }
       buffered += text;
 
       let nextLineBreak = buffered.indexOf("\n");
@@ -576,7 +748,7 @@ export function queryLogs(filters = {}) {
 
   const filtered = logBuffer.filter((entry) => {
     if (levels.size > 0 && !levels.has(entry.level)) return false;
-    if (event && !`${entry.event} ${entry.message}`.toLowerCase().includes(event)) return false;
+    if (event && entry.event.toLowerCase() !== event) return false;
     if (modelId && entry.modelId.toLowerCase() !== modelId) return false;
     if (requestId && entry.requestId.toLowerCase() !== requestId) return false;
     if (since && entry.ts < since) return false;

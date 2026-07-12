@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { appendStructuredLog } from "./logs.js";
 import { fileURLToPath } from "node:url";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -134,14 +135,12 @@ function readSyncMetadata(dirPath = getPersistedPricingDir()) {
 }
 
 function emitPricingEvent(level, event, fields = {}) {
-  const payload = {
+  appendStructuredLog(level, {
     ts: new Date().toISOString(),
-    source: "proxy",
+    source: "pricing",
     event,
     ...fields
-  };
-  const logger = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
-  logger(JSON.stringify(payload));
+  });
 }
 
 function rememberLookup(lookup, key, definition) {

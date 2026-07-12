@@ -219,7 +219,7 @@ const DEFAULTS = {
   },
   observability: {
     logs: {
-      level: "warn",
+      level: "info",
       sinks: ["memory", "console"],
       bufferSize: 100,
       redactSecrets: true,

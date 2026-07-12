@@ -237,6 +237,14 @@ test("Chat and Responses conversion preserves multimodal and structured semantic
     strict: true
   });
 
+  const gpt56Request = chatToResponsesRequest({
+    model: "gpt-5.6-luna",
+    messages: [{ role: "user", content: "hello" }],
+    reasoning_effort: "max"
+  }, "gpt-5.6-luna");
+  assert.deepEqual(gpt56Request.reasoning, { effort: "max" });
+  assert.equal("reasoning_effort" in gpt56Request, false);
+
   const responsesPayload = mapChatCompletionJsonToResponses({
     id: "chatcmpl-test",
     created: 123,
@@ -428,6 +436,57 @@ test("empty reverse shim streams do not write a synthetic success response", asy
   assert.equal(result.ok, true);
   assert.equal(result.firstChunkSeen, false);
   assert.equal(raw.output, "");
+});
+
+test("Responses passthrough preserves successful SSE framing", async () => {
+  const source = Buffer.from(
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "你" })}\n\n`
+      + `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed" } })}\n\n`
+  );
+  const split = source.indexOf(Buffer.from("你")) + 1;
+  const raw = new FakeReplyRaw();
+  const writtenChunks = [];
+  raw.write = (value) => {
+    writtenChunks.push(Buffer.from(value));
+    return true;
+  };
+  const result = await streamPassthrough({
+    upstreamResponse: {
+      body: { getReader: () => createReader([source.subarray(0, split), source.subarray(split)]) }
+    },
+    reply: { raw },
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(Buffer.concat(writtenChunks), source);
+});
+
+test("Responses passthrough recognizes top-level provider error events", async () => {
+  const raw = new FakeReplyRaw();
+  const result = await streamPassthrough({
+    upstreamResponse: {
+      body: {
+        getReader: () => createReader(encodeEvents([
+          { type: "error", code: "provider_failed", message: "upstream failed", param: null }
+        ]))
+      }
+    },
+    reply: { raw },
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, "UPSTREAM_PROVIDER_STREAM_ERROR");
+  assert.equal(result.providerErrorForwarded, true);
+  assert.equal(result.providerError?.code, "provider_failed");
+  assert.match(raw.output, /"type":"error"/);
 });
 
 test("client disconnect cancels the upstream stream", async () => {

@@ -68,15 +68,6 @@ function emitInfoLog(payload) {
     ...payload
   };
   appendStructuredLog("info", normalizedPayload);
-  try {
-    console.log(JSON.stringify({
-      ts: new Date().toISOString(),
-      level: "info",
-      ...normalizedPayload
-    }));
-  } catch {
-    console.log(normalizedPayload.message || normalizedPayload.event || "info");
-  }
 }
 
 function stringifyLogValue(value) {
@@ -644,7 +635,8 @@ export async function proxyRequest({
     }
     const unsupportedRequest = sanitizeModernModelRequest(nextBody, {
       backendRouteKey,
-      modelId: deployment || modelId
+      modelId: deployment || modelId,
+      model
     });
     if (unsupportedRequest) {
       log.error({
@@ -1401,13 +1393,25 @@ function isModernModel(modelId) {
   return /^gpt-(?:[5-9]|\d{2,})(?:$|[.-])/.test(value) || /^o\d(?:$|[.-])/.test(value);
 }
 
-function normalizeModernReasoningEffort(value) {
+function isGpt56Model(modelId, model) {
+  return [modelId, model?.id, model?.targetModel, model?.pricingRef]
+    .some((value) => /^gpt-5\.6(?:$|[.-])/.test(String(value || "").trim().toLowerCase()));
+}
+
+function getSupportedReasoningEfforts(modelId, model) {
+  return isGpt56Model(modelId, model)
+    ? ["none", "low", "medium", "high", "xhigh", "max"]
+    : ["low", "medium", "high"];
+}
+
+function normalizeModernReasoningEffort(value, modelId, model) {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
-  if (normalized === "xhigh") return "high";
-  if (normalized === "low" || normalized === "medium" || normalized === "high") {
+  if (isGpt56Model(modelId, model) && getSupportedReasoningEfforts(modelId, model).includes(normalized)) {
     return normalized;
   }
+  if (normalized === "xhigh") return "high";
+  if (getSupportedReasoningEfforts(modelId, model).includes(normalized)) return normalized;
   return undefined;
 }
 
@@ -1518,7 +1522,7 @@ function sanitizeWebSearchRequest(body, { backendRouteKey, upstream, model }) {
   return null;
 }
 
-function sanitizeModernModelRequest(body, { backendRouteKey, modelId }) {
+function sanitizeModernModelRequest(body, { backendRouteKey, modelId, model }) {
   if (!body || typeof body !== "object" || !isModernModel(modelId)) {
     return null;
   }
@@ -1539,11 +1543,11 @@ function sanitizeModernModelRequest(body, { backendRouteKey, modelId }) {
     }
 
     if (body.reasoning_effort != null) {
-      const normalizedEffort = normalizeModernReasoningEffort(body.reasoning_effort);
+      const normalizedEffort = normalizeModernReasoningEffort(body.reasoning_effort, modelId, model);
       if (!normalizedEffort) {
         return {
           param: "reasoning_effort",
-          message: "reasoning_effort 仅支持 low、medium、high；xhigh 已自动降级为 high。"
+          message: `reasoning_effort 仅支持 ${getSupportedReasoningEfforts(modelId, model).join("、")}。`
         };
       }
       body.reasoning_effort = normalizedEffort;
@@ -1551,11 +1555,11 @@ function sanitizeModernModelRequest(body, { backendRouteKey, modelId }) {
   }
 
   if (backendRouteKey === "responses" && body.reasoning && typeof body.reasoning === "object" && body.reasoning.effort != null) {
-    const normalizedEffort = normalizeModernReasoningEffort(body.reasoning.effort);
+    const normalizedEffort = normalizeModernReasoningEffort(body.reasoning.effort, modelId, model);
     if (!normalizedEffort) {
       return {
         param: "reasoning.effort",
-        message: "reasoning.effort 仅支持 low、medium、high；xhigh 已自动降级为 high。"
+        message: `reasoning.effort 仅支持 ${getSupportedReasoningEfforts(modelId, model).join("、")}。`
       };
     }
     body.reasoning.effort = normalizedEffort;

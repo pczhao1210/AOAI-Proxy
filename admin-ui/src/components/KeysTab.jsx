@@ -2,8 +2,9 @@ import { useState } from "react";
 import { EntityCard, Field, Section, StatCard } from "./ui.jsx";
 import { formatList, parseList } from "../utils.js";
 
-export default function KeysTab({ config, updateConfig, addApiKey, t }) {
+export default function KeysTab({ config, updateConfig, addApiKey, onCopyApiKey, t }) {
   const [search, setSearch] = useState("");
+  const [copyingKey, setCopyingKey] = useState("");
   const items = config.apiKeys || [];
   const searchTerm = search.trim().toLowerCase();
   const filteredItems = items
@@ -45,6 +46,7 @@ export default function KeysTab({ config, updateConfig, addApiKey, t }) {
 
       <div id="keys-list" className="entity-grid">
         {filteredItems.map(({ item, index }) => {
+          const copyStateKey = `${item.id || "key"}-${index}`;
           const allowedModelsCount = Array.isArray(item.allowedModels) ? item.allowedModels.length : 0;
           const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
           const budgetText = Number(item.budget?.limitAmount || 0) > 0
@@ -58,6 +60,8 @@ export default function KeysTab({ config, updateConfig, addApiKey, t }) {
               subtitle={item.owner || t("status.keySubtitleFallback", "Owner not set")}
               meta={`${t("field.status", "Status")}: ${statusLabel} · ${t("field.allowedModels", "Allowed Models")}: ${allowedModelsCount} · ${t("field.budgetLimit", "Budget Limit")}: ${budgetText}`}
               removeLabel={t("entity.delete", "Delete")}
+              expandLabel={t("entity.expand", "Edit configuration")}
+              collapseLabel={t("entity.collapse", "Collapse")}
               collapsible
               defaultOpen={false}
               group="keys-list"
@@ -70,7 +74,28 @@ export default function KeysTab({ config, updateConfig, addApiKey, t }) {
                 <Field label={t("field.displayName", "Display Name")}><input value={item.displayName || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].displayName = event.target.value; })} /></Field>
                 <Field label={t("field.owner", "Owner")}><input value={item.owner || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].owner = event.target.value; })} /></Field>
                 <Field label={t("field.status", "Status")}><select value={item.status || "active"} onChange={(event) => updateConfig((next) => { next.apiKeys[index].status = event.target.value; })}><option value="active">{t("option.active", "active")}</option><option value="disabled">{t("option.disabled", "disabled")}</option></select></Field>
-                <Field label={t("field.key", "Key")}><input type="password" autoComplete="new-password" value={item.key || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].key = event.target.value; })} /></Field>
+                <Field label={t("field.key", "Key")}>
+                  <div className="key-secret-control">
+                    <input type="password" autoComplete="new-password" value={item.key || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].key = event.target.value; })} />
+                    <button
+                      type="button"
+                      className="ghost"
+                      aria-label={t("keys.copyLabel", "Copy API key {id}", { id: item.id || index + 1 })}
+                      title={t("keys.copyLabel", "Copy API key {id}", { id: item.id || index + 1 })}
+                      disabled={copyingKey === copyStateKey || (!item.key && !item.id)}
+                      onClick={async () => {
+                        setCopyingKey(copyStateKey);
+                        try {
+                          await onCopyApiKey(item);
+                        } finally {
+                          setCopyingKey("");
+                        }
+                      }}
+                    >
+                      {copyingKey === copyStateKey ? t("keys.copying", "Copying...") : t("keys.copy", "Copy")}
+                    </button>
+                  </div>
+                </Field>
                 <Field label={t("field.allowedModels", "Allowed Models")}><input value={formatList(item.allowedModels)} onChange={(event) => updateConfig((next) => { next.apiKeys[index].allowedModels = parseList(event.target.value); })} /></Field>
                 <Field label={t("field.rateLimitRpm", "Rate Limit RPM")}><input type="number" value={item.rateLimit?.rpm || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.rpm = Number(event.target.value || 0); })} /></Field>
                 <Field label={t("field.rateLimitTpm", "Rate Limit TPM")}><input type="number" value={item.rateLimit?.tpm || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.tpm = Number(event.target.value || 0); })} /></Field>

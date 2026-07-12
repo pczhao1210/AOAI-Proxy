@@ -71,8 +71,6 @@ function emitPersistenceEvent(level, event, fields = {}) {
     ...fields
   };
   appendStructuredLog(level, payload);
-  const logger = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
-  logger(JSON.stringify(payload));
 }
 
 function snapshotError(error) {
@@ -297,7 +295,7 @@ function markDatabaseReady(settings, reason) {
     lastDatabaseError: null,
     nextDatabaseRecoveryAttemptAt: null
   });
-  emitPersistenceEvent("log", "persistence.database_ready", {
+  emitPersistenceEvent("info", "persistence.database_ready", {
     reason,
     target: describeDatabaseTarget(settings),
     activeMode: persistenceState.activeMode

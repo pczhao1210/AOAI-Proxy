@@ -1,6 +1,7 @@
 import { lazy, startTransition, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchCaddyStatus,
+  fetchApiKeySecret,
   fetchConfig,
   fetchDatabaseConfig,
   fetchLogs,
@@ -17,7 +18,7 @@ import {
   validateConfiguredModels,
   verifyAad
 } from "./api.js";
-import { StatCard, TabButton, Modal } from "./components/ui.jsx";
+import { StatCard, Modal } from "./components/ui.jsx";
 import { useI18n } from "./i18n.jsx";
 import toast from "react-hot-toast";
 import {
@@ -52,6 +53,7 @@ import {
   inspectConfigStructure,
   pickCompressionPreset,
   prepareProxyPayload,
+  REDACTED_SECRET_VALUE,
   supportsPricingTemplate,
   setValueByPath
 } from "./utils.js";
@@ -152,6 +154,8 @@ export default function App() {
   const [templateRouteOverride, setTemplateRouteOverride] = useState("");
   const [templateImportPricing, setTemplateImportPricing] = useState(true);
   const loadRequestRef = useRef(0);
+  const logsRequestRef = useRef(0);
+  const sectionNavigationTargetRef = useRef(null);
 
   const dirty = useMemo(() => JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText]);
   const advancedJsonEnabled = getValueByPath(config, "admin.features.enableLegacyJsonEditor") !== false;
@@ -262,6 +266,7 @@ export default function App() {
   }
 
   async function loadLogsAction(filters = logFilters) {
+    const requestId = ++logsRequestRef.current;
     setLogsLoading(true);
     try {
       const json = await fetchLogs({
@@ -272,6 +277,7 @@ export default function App() {
         keyword: filters.keyword,
         limit: filters.limit
       });
+      if (requestId !== logsRequestRef.current) return;
       startTransition(() => {
         setLogs({
           total: json.total || 0,
@@ -280,9 +286,12 @@ export default function App() {
         });
       });
     } catch (loadError) {
+      if (requestId !== logsRequestRef.current) return;
       setError(loadError.message || t("messages.logsLoadFailed", "Failed to load logs."));
     } finally {
-      setLogsLoading(false);
+      if (requestId === logsRequestRef.current) {
+        setLogsLoading(false);
+      }
     }
   }
 
@@ -603,6 +612,25 @@ export default function App() {
     }
   }
 
+  function confirmDiscardChanges() {
+    return !dirty || window.confirm(t("changes.discardConfirm", "Discard all unsaved changes?"));
+  }
+
+  function handleDiscardChanges() {
+    if (!lastLoadedText || !confirmDiscardChanges()) return;
+    try {
+      applyLoadedConfig(JSON.parse(lastLoadedText));
+      setMessage(t("messages.discarded", "Unsaved changes discarded."));
+    } catch {
+      setError(t("messages.loadFailed", "Load failed."));
+    }
+  }
+
+  async function handleReload(mode = "load") {
+    if (!confirmDiscardChanges()) return;
+    await loadAll(mode);
+  }
+
   function addApiKey() {
     updateConfig((next) => {
       next.apiKeys = Array.isArray(next.apiKeys) ? next.apiKeys : [];
@@ -706,6 +734,7 @@ export default function App() {
   function toggleLogLevel(level) {
     setLogFilters((current) => {
       const exists = current.level.includes(level);
+      if (exists && current.level.length === 1) return current;
       const nextLevels = exists
         ? current.level.filter((item) => item !== level)
         : [...current.level, level];
@@ -733,6 +762,36 @@ export default function App() {
       setMessage(t("logs.copySuccess", "Log summary copied to clipboard."));
     } catch (copyError) {
       setError(copyError.message || t("logs.copyFailed", "Failed to copy log summary."));
+    }
+  }
+
+  async function handleCopyApiKey(item) {
+    let secret = "";
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error(t("messages.clipboardUnavailable", "Clipboard access is unavailable in this browser."));
+      }
+
+      secret = typeof item?.key === "string" ? item.key : "";
+      if (secret === REDACTED_SECRET_VALUE) {
+        const keyId = typeof item?.id === "string" ? item.id.trim() : "";
+        if (!keyId) {
+          throw new Error(t("keys.copyMissingId", "Save a key ID before copying a stored key."));
+        }
+        const result = await fetchApiKeySecret(keyId);
+        secret = typeof result?.key === "string" ? result.key : "";
+      }
+      if (!secret || secret === REDACTED_SECRET_VALUE) {
+        throw new Error(t("keys.copyEmpty", "This key has no value to copy."));
+      }
+
+      await navigator.clipboard.writeText(secret);
+      setError("");
+      setMessage(t("keys.copySuccess", "API key copied to clipboard."));
+    } catch (copyError) {
+      setError(copyError.message || t("keys.copyFailed", "Failed to copy API key."));
+    } finally {
+      secret = "";
     }
   }
 
@@ -765,6 +824,9 @@ export default function App() {
   }
 
   async function handleRestartService() {
+    if (!window.confirm(t("ops.restartConfirm", "Restart the proxy service now? Active requests may be interrupted."))) {
+      return;
+    }
     setDiagnosticsBusy((current) => ({ ...current, restart: true }));
     setError("");
     try {
@@ -941,23 +1003,13 @@ export default function App() {
       cost: `${Number(totals.estimatedCostAmount || 0).toFixed(4)} ${totals.estimatedCostCurrency || "USD"}`,
       blocked,
       persistence: runtime?.persistence?.activeMode || runtime?.persistence?.mode || "file",
-      logging: statusLabel(runtime?.logging?.configured, runtime?.logging?.enabled),
+      logging: statusLabel(
+        runtime?.logging?.memoryEnabled || runtime?.logging?.consoleEnabled || runtime?.logging?.logAnalyticsConfigured,
+        runtime?.logging?.logAnalyticsEnabled ?? runtime?.logging?.enabled
+      ),
       caddy: caddyStatus?.state || (config?.server?.caddy?.enabled ? "unknown" : "disabled")
     };
   }, [runtime, stats, governanceKeys, caddyStatus, config?.server?.caddy?.enabled]);
-
-  const keySectionLinks = (config?.apiKeys || []).map((item, index) => ({
-    id: `key-card-${index}`,
-    label: item.displayName || item.id || t("keys.itemFallback", "Key {index}", { index: index + 1 })
-  }));
-  const upstreamSectionLinks = (config?.upstreams || []).map((item, index) => ({
-    id: `upstream-card-${index}`,
-    label: item.name || t("routing.upstreamFallback", "Upstream {index}", { index: index + 1 })
-  }));
-  const modelSectionLinks = (config?.models || []).map((item, index) => ({
-    id: `model-card-${index}`,
-    label: item.displayName || item.id || t("routing.itemFallback", "Model {index}", { index: index + 1 })
-  }));
 
   const categories = [
     {
@@ -986,7 +1038,6 @@ export default function App() {
     }
   ];
 
-  const currentCategory = categories.find((c) => c.tabs.some((tab) => tab.id === activeTab)) || categories[0];
   const sectionLinksByTab = {
     workspace: [
       { id: "workspace-core", label: t("workspace.nav.core", "基础与默认值") },
@@ -997,13 +1048,11 @@ export default function App() {
     ],
     keys: [
       { id: "keys-overview", label: t("keys.nav.overview", "Key 概览") },
-      ...keySectionLinks
+      { id: "keys-list", label: t("keys.nav.list", "Key 列表") }
     ],
     routing: [
       { id: "routing-upstreams", label: t("routing.nav.upstreams", "上游列表") },
-      ...upstreamSectionLinks,
-      { id: "routing-models", label: t("routing.nav.models", "模型配置") },
-      ...modelSectionLinks
+      { id: "routing-models", label: t("routing.nav.models", "模型配置") }
     ],
     ops: [
       { id: "ops-overview", label: t("ops.overview", "Operations Overview") },
@@ -1021,6 +1070,9 @@ export default function App() {
   };
   const currentSectionLinks = sectionLinksByTab[activeTab] || [];
   const currentSectionIds = currentSectionLinks.map((link) => link.id).join("|");
+  const currentSectionValue = currentSectionLinks.some((link) => link.id === activeSectionId)
+    ? activeSectionId
+    : currentSectionLinks[0]?.id || "";
 
   useEffect(() => {
     if (!currentSectionLinks.length) {
@@ -1028,55 +1080,90 @@ export default function App() {
       return undefined;
     }
 
-    const sectionElements = currentSectionLinks
-      .map((link) => document.getElementById(link.id))
-      .filter(Boolean);
+    setActiveSectionId((current) => (
+      currentSectionLinks.some((link) => link.id === current) ? current : currentSectionLinks[0].id
+    ));
 
-    if (!sectionElements.length) {
-      setActiveSectionId(currentSectionLinks[0]?.id || "");
-      return undefined;
+    let animationFrame = 0;
+    const updateActiveSection = () => {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(() => {
+        const sectionElements = currentSectionLinks
+          .map((link) => document.getElementById(link.id))
+          .filter(Boolean);
+        if (!sectionElements.length) return;
+
+        const mobileNav = window.innerWidth <= 900 ? document.querySelector(".left-nav") : null;
+        const activationLine = mobileNav ? mobileNav.getBoundingClientRect().bottom + 64 : 96;
+        const pendingTarget = sectionNavigationTargetRef.current;
+        if (pendingTarget) {
+          const targetTop = document.getElementById(pendingTarget.id)?.getBoundingClientRect().top;
+          const reachedTarget = targetTop != null
+            && targetTop >= activationLine - 96
+            && targetTop <= activationLine + 16;
+          if (!reachedTarget && performance.now() < pendingTarget.expiresAt) return;
+          sectionNavigationTargetRef.current = null;
+        }
+
+        let nextSectionId = sectionElements[0].id;
+
+        for (const element of sectionElements) {
+          if (element.getBoundingClientRect().top > activationLine) break;
+          nextSectionId = element.id;
+        }
+
+        setActiveSectionId((current) => current === nextSectionId ? current : nextSectionId);
+      });
+    };
+
+    const contentRoot = document.querySelector(".tab-content");
+    const contentObserver = new MutationObserver(updateActiveSection);
+    if (contentRoot) {
+      contentObserver.observe(contentRoot, { childList: true, subtree: true });
     }
 
-    setActiveSectionId((current) => current || sectionElements[0].id);
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
-
-        if (visible[0]?.target?.id) {
-          setActiveSectionId(visible[0].target.id);
-        }
-      },
-      {
-        rootMargin: "-18% 0px -52% 0px",
-        threshold: [0.2, 0.4, 0.7]
-      }
-    );
-
-    sectionElements.forEach((element) => observer.observe(element));
-    return () => observer.disconnect();
+    updateActiveSection();
+    window.addEventListener("scroll", updateActiveSection, { passive: true });
+    window.addEventListener("resize", updateActiveSection);
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      contentObserver.disconnect();
+      window.removeEventListener("scroll", updateActiveSection);
+      window.removeEventListener("resize", updateActiveSection);
+    };
   }, [activeTab, currentSectionIds]);
 
   function handleSectionNavClick(sectionId) {
-    const target = document.getElementById(sectionId);
-    if (!target) return;
+    const pendingTarget = {
+      id: sectionId,
+      expiresAt: performance.now() + 1600
+    };
+    sectionNavigationTargetRef.current = pendingTarget;
 
-    if (target instanceof HTMLDetailsElement) {
-      const group = target.dataset.accordionGroup;
-      if (group) {
-        document.querySelectorAll(`details[data-accordion-group="${group}"]`).forEach((item) => {
-          if (item instanceof HTMLDetailsElement) {
-            item.open = item.id === sectionId;
-          }
-        });
+    const navigate = () => {
+      if (sectionNavigationTargetRef.current !== pendingTarget) return;
+      const target = document.getElementById(sectionId);
+      if (!target) {
+        if (performance.now() < pendingTarget.expiresAt) {
+          requestAnimationFrame(navigate);
+        } else {
+          sectionNavigationTargetRef.current = null;
+        }
+        return;
       }
-      target.open = true;
-    }
 
-    setActiveSectionId(sectionId);
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (target instanceof HTMLDetailsElement) {
+        const summary = target.querySelector(":scope > summary");
+        if (!target.open && summary instanceof HTMLElement) {
+          summary.click();
+        }
+      }
+
+      setActiveSectionId(sectionId);
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+
+    navigate();
   }
 
   if (loading && !config) {
@@ -1084,27 +1171,28 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
-      <header className="hero">
-        <div>
-          <span className="eyebrow">{t("hero.eyebrow", "AOAI Proxy Admin")}</span>
-          <h1>{t("hero.title", "AOAI Proxy Admin Console")}</h1>
-          <p>{t("hero.subtitle", "面向 AOAI Proxy 的统一管理控制台，聚合配置治理、模型路由、运行监控与诊断操作。")}</p>
+    <div className={dirty ? "app-shell has-save-dock" : "app-shell"}>
+      <header className="app-header">
+        <div className="app-identity">
+          <span className="app-logo" aria-hidden="true">AP</span>
+          <div>
+            <h1>AOAI Proxy</h1>
+            <p>{t("header.console", "Admin Console")}</p>
+          </div>
         </div>
-        <div className="toolbar hero-actions">
-          <label className="inline">
+        <div className="toolbar header-actions">
+          <label className="inline language-control">
             <span>{t("common.language", "Language")}</span>
             <select value={language} onChange={(event) => setLanguage(event.target.value)}>
               {languages.map((code) => <option key={code} value={code}>{t(`lang.${code}`, code)}</option>)}
             </select>
           </label>
-          <button type="button" className="ghost" onClick={() => loadAll()}>{t("hero.reload", "Reload")}</button>
-          <button type="button" className="ghost" onClick={() => loadAll("reload")}>{t("hero.reloadFromStore", "Reload From Store")}</button>
-          <button type="button" onClick={handleSave} disabled={saving || !config}>{saving ? t("hero.saving", "Saving...") : t("hero.save", "Save Configuration")}</button>
+          <button type="button" className="ghost" onClick={() => handleReload()}>{t("hero.reload", "Reload")}</button>
+          <button type="button" className="ghost" onClick={() => handleReload("reload")}>{t("hero.reloadFromStore", "Reload From Store")}</button>
         </div>
       </header>
 
-      <section className="summary-grid">
+      <section className="summary-grid status-strip" aria-label={t("summary.title", "System status") }>
         <StatCard label={t("summary.requests", "Requests")} value={summary.requests} note={`${t("summary.errors", "Errors")} ${summary.errors}`} />
         <StatCard label={t("summary.cost", "Estimated Cost")} value={summary.cost} note={`${t("summary.blocked", "Blocked")} ${summary.blocked}`} />
         <StatCard label={t("summary.persistence", "Persistence")} value={t(`option.${summary.persistence}`, summary.persistence)} note={`${t("summary.logging", "Logging")} ${t(`status.${summary.logging}`, summary.logging)}`} />
@@ -1117,6 +1205,8 @@ export default function App() {
         onClose={() => setShowSaveModal(false)}
         onConfirm={proceedSave}
         confirmLabel={t("btn.save", "Save")}
+        cancelLabel={t("common.cancel", "Cancel")}
+        closeLabel={t("common.close", "Close")}
         disabled={saving}
       >
         <p>{t("config.save.desc", "You are about to hit Save. Please review the configuration changes below:")}</p>
@@ -1138,6 +1228,8 @@ export default function App() {
         onClose={() => setShowModelTemplateModal(false)}
         onConfirm={applyPricingTemplateSelection}
         confirmLabel={t("routing.template.confirm", "Create Model")}
+        cancelLabel={t("common.cancel", "Cancel")}
+        closeLabel={t("common.close", "Close")}
         disabled={!selectedPricingTemplate}
       >
         <div className="stack-lg">
@@ -1217,51 +1309,69 @@ export default function App() {
         </div>
       </Modal>
 
-      <div className="tabs-header">
-        {categories.map((cat) => (
-          <TabButton 
-            key={cat.id} 
-            active={currentCategory.id === cat.id} 
-            onClick={() => setActiveTab(cat.tabs[0].id)}
-          >
-            {cat.label}
-          </TabButton>
-        ))}
-      </div>
-
       <div className="layout-main-split">
-        <aside className="left-nav">
-          <div className="left-nav-group">
-            <div className="left-nav-title">{currentCategory.label}</div>
-            {currentCategory.tabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                className={`nav-item ${activeTab === tab.id ? "active" : ""}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                {tab.label}
-              </button>
+        <aside className="left-nav" aria-label={t("nav.primary", "Primary navigation")}>
+          <div className="mobile-nav-stack">
+            <label className="mobile-page-nav">
+              <span>{t("nav.page", "Page")}</span>
+              <select value={activeTab} onChange={(event) => setActiveTab(event.target.value)}>
+                {categories.map((category) => (
+                  <optgroup key={category.id} label={category.label}>
+                    {category.tabs.map((tab) => <option key={tab.id} value={tab.id}>{tab.label}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+            {currentSectionLinks.length ? (
+              <label className="mobile-page-nav mobile-section-nav">
+                <span>{t("nav.details", "Section")}</span>
+                <select value={currentSectionValue} onChange={(event) => handleSectionNavClick(event.target.value)}>
+                  {currentSectionLinks.map((link) => <option key={link.id} value={link.id}>{link.label}</option>)}
+                </select>
+              </label>
+            ) : null}
+          </div>
+          <div className="primary-nav-groups">
+            {categories.map((category) => (
+              <div className="left-nav-group" key={category.id}>
+                <div className="left-nav-title">{category.label}</div>
+                {category.tabs.map((tab) => {
+                  const tabSectionLinks = sectionLinksByTab[tab.id] || [];
+                  const isActive = activeTab === tab.id;
+                  return (
+                    <div className="nav-tree-item" key={tab.id}>
+                      <button
+                        type="button"
+                        className={`nav-item ${isActive ? "active" : ""}`}
+                        aria-current={isActive ? "page" : undefined}
+                        onClick={() => setActiveTab(tab.id)}
+                      >
+                        {tab.label}
+                      </button>
+                      {isActive && tabSectionLinks.length ? (
+                        <div className="sub-nav-list" aria-label={`${tab.label} · ${t("nav.details", "Section Navigation")}`}>
+                          {tabSectionLinks.map((link) => (
+                            <a
+                              key={link.id}
+                              className={activeSectionId === link.id ? "sub-nav-link active" : "sub-nav-link"}
+                              aria-current={activeSectionId === link.id ? "location" : undefined}
+                              href={`#${link.id}`}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                handleSectionNavClick(link.id);
+                              }}
+                            >
+                              {link.label}
+                            </a>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
             ))}
           </div>
-          {currentSectionLinks.length ? (
-            <div className="left-nav-group left-nav-subgroup">
-              <div className="left-nav-title left-nav-title-sub">{t("nav.details", "小类导航")}</div>
-              {currentSectionLinks.map((link) => (
-                <a
-                  key={link.id}
-                  className={activeSectionId === link.id ? "sub-nav-link active" : "sub-nav-link"}
-                  href={`#${link.id}`}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    handleSectionNavClick(link.id);
-                  }}
-                >
-                  {link.label}
-                </a>
-              ))}
-            </div>
-          ) : null}
         </aside>
 
         <main className="tab-content">
@@ -1290,6 +1400,7 @@ export default function App() {
           config={config}
           updateConfig={updateConfig}
           addApiKey={addApiKey}
+          onCopyApiKey={handleCopyApiKey}
           t={t}
         />
       ) : null}
@@ -1348,6 +1459,7 @@ export default function App() {
           caddyPreview={caddyPreview}
           formatDateTime={formatDateTime}
           logs={logs}
+          loggingRuntime={loggingRuntime}
           logFilters={logFilters}
           setLogFilters={setLogFilters}
           toggleLogLevel={toggleLogLevel}
@@ -1401,6 +1513,20 @@ export default function App() {
           </Suspense>
             </main>
       </div>
+      {dirty ? (
+        <aside className="save-dock" role="status" aria-live="polite">
+          <div className="save-dock-copy">
+            <strong>{t("changes.unsaved", "Unsaved changes")}</strong>
+            <span>{t("changes.count", "{count} changed paths", { count: configDiffCount })}</span>
+          </div>
+          <div className="toolbar save-dock-actions">
+            <button type="button" className="ghost" onClick={handleDiscardChanges}>{t("changes.discard", "Discard")}</button>
+            <button type="button" onClick={handleSave} disabled={saving || !config}>
+              {saving ? t("hero.saving", "Saving...") : t("changes.reviewSave", "Review & Save")}
+            </button>
+          </div>
+        </aside>
+      ) : null}
     </div>
   );
 }

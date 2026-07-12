@@ -49,6 +49,14 @@ export async function fetchConfig() {
   return readJson(await fetch(adminApiUrl("/config")));
 }
 
+export async function fetchApiKeySecret(id) {
+  return readJson(await adminFetch("/keys/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id })
+  }));
+}
+
 export async function saveConfig(config) {
   return readJson(await adminFetch("/config", {
     method: "PUT",

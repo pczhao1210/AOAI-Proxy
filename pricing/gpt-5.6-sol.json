@@ -54,7 +54,10 @@
       "parallel-tool-calling",
       "computer-use"
     ],
-    "pricingRef": "gpt-5.6-sol"
+    "pricingRef": "gpt-5.6-sol",
+    "routes": {
+      "*": "responses"
+    }
   },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",

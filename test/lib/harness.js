@@ -102,6 +102,26 @@ function createMockUpstreamServer() {
     }
 
     if (req.method === "POST" && pathname.endsWith("/responses")) {
+      if (body?.stream === true) {
+        const response = {
+          id: "resp-stream-test",
+          object: "response",
+          created_at: Math.floor(Date.now() / 1000),
+          model: body?.model || "gpt-5.6-luna",
+          status: "completed",
+          output: [],
+          usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16 }
+        };
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache"
+        });
+        res.write(`data: ${JSON.stringify({ type: "response.created", response: { ...response, status: "in_progress" } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok from mock responses stream" })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "response.output_text.done", text: "ok from mock responses stream" })}\n\n`);
+        res.end(`data: ${JSON.stringify({ type: "response.completed", response })}\n\n`);
+        return;
+      }
       jsonResponse(res, 200, {
         id: "resp-test",
         object: "response",
@@ -310,6 +330,17 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
         routes: {}
       },
       {
+        id: "gpt-5.6-luna",
+        displayName: "GPT-5.6 Luna",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "gpt-5.6-luna",
+        pricingRef: "gpt-5.6-luna",
+        routes: {
+          "*": "responses"
+        }
+      },
+      {
         id: "gpt-image-1.5",
         displayName: "GPT Image 1.5",
         status: "active",
@@ -376,7 +407,7 @@ export function ensure(condition, message) {
   assert.ok(condition, message);
 }
 
-export async function createTestContext() {
+export async function createTestContext({ logLevel = "error" } = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-proxy-route-test-"));
   const proxyPort = await getFreePort();
   const upstreamPort = await getFreePort();
@@ -396,7 +427,7 @@ export async function createTestContext() {
     env: {
       ...process.env,
       CONFIG_PATH: configPath,
-      LOG_LEVEL: "error"
+      LOG_LEVEL: logLevel
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

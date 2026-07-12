@@ -11,7 +11,9 @@ function extractAzureRequestId(value) {
 function buildProviderStreamError(evt) {
   const error = evt?.error && typeof evt.error === "object"
     ? evt.error
-    : (evt?.response?.error && typeof evt.response.error === "object" ? evt.response.error : {});
+    : (evt?.response?.error && typeof evt.response.error === "object"
+        ? evt.response.error
+        : (evt?.type === "error" ? evt : {}));
   const message = typeof error.message === "string" ? error.message : "upstream provider stream error";
   const azureRequestId =
     (typeof error.request_id === "string" && error.request_id)
@@ -196,7 +198,7 @@ export async function streamPassthrough({
         try {
           const evt = JSON.parse(payload);
           if (
-            (evt?.type === "error" && evt?.error)
+            evt?.type === "error"
             || (evt?.type === "response.failed" && evt?.response?.error)
           ) {
             providerError = buildProviderStreamError(evt);

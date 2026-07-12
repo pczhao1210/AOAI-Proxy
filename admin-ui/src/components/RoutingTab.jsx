@@ -117,6 +117,8 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                   subtitle={item.baseUrl || t("status.upstreamSubtitleFallback", "Base URL not configured")}
                   meta={`${t("field.provider", "Provider")}: ${item.provider || "azure-openai"} · ${t("field.status", "Status")}: ${statusLabel} · ${t("field.capabilities", "Capabilities")}: ${capabilityCount}`}
                   removeLabel={t("entity.delete", "Delete")}
+                  expandLabel={t("entity.expand", "Edit configuration")}
+                  collapseLabel={t("entity.collapse", "Collapse")}
                   collapsible
                   defaultOpen={false}
                   group="routing-upstreams"
@@ -156,6 +158,8 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                   subtitle={item.upstream || t("status.modelSubtitleFallback", "Upstream not bound")}
                   meta={`${t("routing.field.azureDeployment", "Azure Deployment Name")}: ${item.targetModel || "-"} · ${t("field.status", "Status")}: ${statusLabel}`}
                   removeLabel={t("entity.delete", "Delete")}
+                  expandLabel={t("entity.expand", "Edit configuration")}
+                  collapseLabel={t("entity.collapse", "Collapse")}
                   collapsible
                   defaultOpen={false}
                   group="routing-models"

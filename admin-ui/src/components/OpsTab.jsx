@@ -19,6 +19,7 @@ export default function OpsTab({
   caddyPreview,
   formatDateTime,
   logs,
+  loggingRuntime,
   logFilters,
   setLogFilters,
   toggleLogLevel,
@@ -55,10 +56,14 @@ export default function OpsTab({
   t
 }) {
   const levelOptions = [
-    { key: "warn", label: t("logs.level.warn", "Warn") },
+    { key: "fatal", label: t("logs.level.fatal", "Fatal") },
     { key: "error", label: t("logs.level.error", "Error") },
-    { key: "info", label: t("logs.level.info", "Info") }
+    { key: "warn", label: t("logs.level.warn", "Warn") },
+    { key: "info", label: t("logs.level.info", "Info") },
+    { key: "debug", label: t("logs.level.debug", "Debug") },
+    { key: "trace", label: t("logs.level.trace", "Trace") }
   ];
+  const memoryBufferSize = Math.max(1, Number(loggingRuntime?.memoryBufferSize) || 100);
   const advancedFiltersOpen = Boolean(logFilters.event || logFilters.modelId || logFilters.requestId || logFilters.keyword || Number(logFilters.limit || 100) !== 100);
   const pricingRepoLabel = pricingLibraryStatus?.githubOwner && pricingLibraryStatus?.githubRepo
     ? `${pricingLibraryStatus.githubOwner}/${pricingLibraryStatus.githubRepo}`
@@ -77,6 +82,7 @@ export default function OpsTab({
   const validationNote = modelValidationResult
     ? `${t("ops.validationFailed", "Failed")}: ${validationSummary.failed || 0} · ${t("ops.validationWarning", "Warnings")}: ${validationSummary.warning || 0}`
     : t("ops.validationIdle", "No validation run yet.");
+  const caddyEnabled = config?.server?.caddy?.enabled === true;
 
   return (
     <div className="stack-lg">
@@ -226,7 +232,7 @@ export default function OpsTab({
         <div className="toolbar" style={{ marginBottom: "1rem" }}>
           <button type="button" className="ghost" onClick={() => loadCaddyStatusAction()}>{t("ops.refreshStatus", "Refresh Status")}</button>
           <button type="button" className="ghost" onClick={handleVerifyAad} disabled={diagnosticsBusy.verify}>{diagnosticsBusy.verify ? t("ops.verifyingAad", "Verifying...") : t("ops.verifyAad", "Verify AAD")}</button>
-          <button type="button" onClick={handleRestartService} disabled={diagnosticsBusy.restart}>{diagnosticsBusy.restart ? t("ops.restarting", "Restarting...") : t("ops.restart", "Restart")}</button>
+          <button type="button" className="ghost danger" onClick={handleRestartService} disabled={diagnosticsBusy.restart}>{diagnosticsBusy.restart ? t("ops.restarting", "Restarting...") : t("ops.restart", "Restart")}</button>
         </div>
         <div className="status-grid">
           <StatCard label={t("status.caddyState", "Caddy State")} value={caddyStatus?.state ? t(`caddy.state.${caddyStatus.state}`, caddyStatus.state) : t("status.disabled", "disabled")} note={caddyStatus?.message || "-"} />
@@ -234,26 +240,27 @@ export default function OpsTab({
           <StatCard label={t("status.lastReload", "Last Reload")} value={formatDateTime(caddyStatus?.lastReloadAt)} note={t("status.caddyReloadNote", "Most recent reload")} />
           <StatCard label={t("status.aad", "AAD")} value={aadStatus?.state ? t(`status.aad.${aadStatus.state}`, aadStatus.state) : t("status.idle", "idle")} note={aadStatus?.detail || formatDateTime(aadStatus?.checkedAt)} />
         </div>
-        <div className="form-grid" style={{ marginTop: "1rem" }}>
-          <Field label={t("field.enableCaddy", "Enable Caddy")}>
-            <select value={config?.server?.caddy?.enabled ? "true" : "false"} onChange={(event) => updateField("server.caddy.enabled", event.target.value === "true")}>
-              <option value="true">{t("common.trueLiteral", "true")}</option>
-              <option value="false">{t("common.falseLiteral", "false")}</option>
-            </select>
-          </Field>
-          <Field label={t("field.domain", "Domain")}><input value={getValueByPath(config, "server.caddy.domain") || ""} onChange={(event) => updateField("server.caddy.domain", event.target.value)} /></Field>
-          <Field label={t("field.email", "Email")}><input value={getValueByPath(config, "server.caddy.email") || ""} onChange={(event) => updateField("server.caddy.email", event.target.value)} /></Field>
-          <Field label={t("field.httpsPort", "HTTPS Port")}><input type="number" value={getValueByPath(config, "server.caddy.httpsPort") || 443} onChange={(event) => updateField("server.caddy.httpsPort", Number(event.target.value || 0))} /></Field>
-          <Field label={t("field.upstreamHost", "Upstream Host")}><input value={getValueByPath(config, "server.caddy.upstreamHost") || "127.0.0.1"} onChange={(event) => updateField("server.caddy.upstreamHost", event.target.value)} /></Field>
-          <Field label={t("field.upstreamPort", "Upstream Port")}><input type="number" value={getValueByPath(config, "server.caddy.upstreamPort") || 3000} onChange={(event) => updateField("server.caddy.upstreamPort", Number(event.target.value || 0))} /></Field>
-          <Field label={t("field.dialTimeoutMs", "Dial Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.dialTimeoutMs") || 5000} onChange={(event) => updateField("server.caddy.transport.dialTimeoutMs", Number(event.target.value || 0))} /></Field>
-          <Field label={t("field.responseHeaderTimeoutMs", "Response Header Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.responseHeaderTimeoutMs") || 300000} onChange={(event) => updateField("server.caddy.transport.responseHeaderTimeoutMs", Number(event.target.value || 0))} /></Field>
-          <Field label={t("field.keepAliveTimeoutMs", "KeepAlive Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.keepAliveTimeoutMs") || 120000} onChange={(event) => updateField("server.caddy.transport.keepAliveTimeoutMs", Number(event.target.value || 0))} /></Field>
+        <div className="checkbox-row">
+          <label><input type="checkbox" checked={caddyEnabled} onChange={(event) => updateField("server.caddy.enabled", event.target.checked)} /> {t("field.enableCaddy", "Enable Caddy")}</label>
         </div>
-        <div className="code-block" style={{ marginTop: "1rem" }}>
-          <div className="code-block-head">{t("ops.caddyPreview", "Caddy Preview")}</div>
-          <pre>{caddyPreview}</pre>
-        </div>
+        {caddyEnabled ? (
+          <>
+            <div className="form-grid" style={{ marginTop: "1rem" }}>
+              <Field label={t("field.domain", "Domain")}><input value={getValueByPath(config, "server.caddy.domain") || ""} onChange={(event) => updateField("server.caddy.domain", event.target.value)} /></Field>
+              <Field label={t("field.email", "Email")}><input value={getValueByPath(config, "server.caddy.email") || ""} onChange={(event) => updateField("server.caddy.email", event.target.value)} /></Field>
+              <Field label={t("field.httpsPort", "HTTPS Port")}><input type="number" value={getValueByPath(config, "server.caddy.httpsPort") || 443} onChange={(event) => updateField("server.caddy.httpsPort", Number(event.target.value || 0))} /></Field>
+              <Field label={t("field.upstreamHost", "Upstream Host")}><input value={getValueByPath(config, "server.caddy.upstreamHost") || "127.0.0.1"} onChange={(event) => updateField("server.caddy.upstreamHost", event.target.value)} /></Field>
+              <Field label={t("field.upstreamPort", "Upstream Port")}><input type="number" value={getValueByPath(config, "server.caddy.upstreamPort") || 3000} onChange={(event) => updateField("server.caddy.upstreamPort", Number(event.target.value || 0))} /></Field>
+              <Field label={t("field.dialTimeoutMs", "Dial Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.dialTimeoutMs") || 5000} onChange={(event) => updateField("server.caddy.transport.dialTimeoutMs", Number(event.target.value || 0))} /></Field>
+              <Field label={t("field.responseHeaderTimeoutMs", "Response Header Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.responseHeaderTimeoutMs") || 300000} onChange={(event) => updateField("server.caddy.transport.responseHeaderTimeoutMs", Number(event.target.value || 0))} /></Field>
+              <Field label={t("field.keepAliveTimeoutMs", "KeepAlive Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.keepAliveTimeoutMs") || 120000} onChange={(event) => updateField("server.caddy.transport.keepAliveTimeoutMs", Number(event.target.value || 0))} /></Field>
+            </div>
+            <div className="code-block" style={{ marginTop: "1rem" }}>
+              <div className="code-block-head">{t("ops.caddyPreview", "Caddy Preview")}</div>
+              <pre>{caddyPreview}</pre>
+            </div>
+          </>
+        ) : null}
         {caddyStatus?.lastError ? <div className="inline-error" style={{ marginTop: "1rem" }}>{caddyStatus.lastError}</div> : null}
       </AccordionSection>
 
@@ -280,6 +287,7 @@ export default function OpsTab({
             </label>
           </div>
           <div className="muted">{logFilters.autoRefresh ? t("logs.autoRefreshHint.on", "Auto refresh is enabled. The log list updates every 5 seconds.") : t("logs.autoRefreshHint.off", "Auto refresh is disabled. Use Refresh Logs to fetch the latest entries.")}</div>
+          <div className="muted">{t("field.logLevel", "Log Level")}: {t(`logs.level.${loggingRuntime?.level || "info"}`, loggingRuntime?.level || "info")}</div>
           <details className="log-advanced-react" open={advancedFiltersOpen}>
             <summary>{t("logs.advancedFilters", "More Filters")}</summary>
             <div className="log-advanced-body-react">
@@ -292,13 +300,14 @@ export default function OpsTab({
                   <select value={logFilters.limit} onChange={(event) => setLogFilters((current) => ({ ...current, limit: Number(event.target.value || 100) }))}>
                     <option value={50}>50</option>
                     <option value={100}>100</option>
-                    <option value={200}>200</option>
-                    <option value={500}>500</option>
+                    <option value={200} disabled={memoryBufferSize < 200}>200</option>
+                    <option value={500} disabled={memoryBufferSize < 500}>500</option>
                   </select>
                 </Field>
               </div>
             </div>
           </details>
+          <div className="muted">{t("field.logBufferSize", "Log Buffer Size")}: {memoryBufferSize}</div>
           <div className="muted">{t("ops.logCount", "Matched {count} log entries{suffix}.", { count: logs.total || 0, suffix: logFilters.autoRefresh ? t("ops.logAutoRefreshSuffix", ", auto refresh enabled") : "" })}</div>
         </div>
 
@@ -307,7 +316,7 @@ export default function OpsTab({
             const details = getLogDetails(entry);
             const isExpanded = entry.level === "error" || entry.level === "fatal";
             return (
-              <article key={`${entry.ts || "log"}-${entry.event || "event"}-${index}`} className={`log-entry level-${entry.level || "info"}`}>
+              <article key={entry.id ?? `${entry.ts || "log"}-${entry.event || "event"}-${index}`} className={`log-entry level-${entry.level || "info"}`}>
                 <div className="log-header-react">
                   <div className="badge-row">
                     <span className={`badge level-${entry.level || "info"}`}>{t(`logs.level.${entry.level || "info"}`, entry.level || "info")}</span>

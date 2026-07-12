@@ -46,6 +46,16 @@ export default function WorkspaceTab({
         { label: t("workspace.databaseProbe.configExists", "Config Row Exists"), value: formatBool(databaseTestResult?.result?.objects?.configRowExists, t) }
       ]
     : [];
+  const budgetsEnabled = getValueByPath(config, "access.budgets.enabled") === true;
+  const persistenceMode = getValueByPath(config, "persistence.configStore.mode") || "file";
+  const fileSettingsVisible = persistenceMode !== "database";
+  const databaseSettingsVisible = persistenceMode.includes("database")
+    || getValueByPath(config, "persistence.configStore.database.enabled") === true;
+  const compatibilityExportEnabled = getValueByPath(config, "persistence.compatibilityExport.enabled") !== false;
+  const logAnalyticsEnabled = getValueByPath(config, "observability.logAnalytics.enabled") === true;
+  const compressionEnabled = getValueByPath(config, "media.inputCompression.enabled") === true;
+  const remoteImagesEnabled = getValueByPath(config, "media.remoteImages.allow") === true;
+  const generationEnabled = getValueByPath(config, "media.generation.enabled") === true;
 
   return (
     <div className="stack-lg">
@@ -86,18 +96,22 @@ export default function WorkspaceTab({
               <Field label={t("field.defaultConcurrency", "Default Concurrency")}>
                 <input type="number" value={getValueByPath(config, "access.rateLimits.defaultConcurrency") || 0} onChange={(event) => updateField("access.rateLimits.defaultConcurrency", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.budgetCurrency", "Budget Currency")}>
-                <input value={getValueByPath(config, "access.budgets.defaultCurrency") || "USD"} onChange={(event) => updateField("access.budgets.defaultCurrency", event.target.value)} />
-              </Field>
-              <Field label={t("field.softLimitRatio", "Soft Limit Ratio")}>
-                <input type="number" step="0.05" min="0" max="1" value={getValueByPath(config, "access.budgets.softLimitRatio") || 0} onChange={(event) => updateField("access.budgets.softLimitRatio", Number(event.target.value || 0))} />
-              </Field>
-              <Field label={t("field.hardLimitAction", "Hard Limit Action")}>
-                <select value={getValueByPath(config, "access.budgets.hardLimitAction") || "block"} onChange={(event) => updateField("access.budgets.hardLimitAction", event.target.value)}>
-                  <option value="block">{t("option.block", "block")}</option>
-                  <option value="warn">{t("option.warn", "warn")}</option>
-                </select>
-              </Field>
+              {budgetsEnabled ? (
+                <>
+                  <Field label={t("field.budgetCurrency", "Budget Currency")}>
+                    <input value={getValueByPath(config, "access.budgets.defaultCurrency") || "USD"} onChange={(event) => updateField("access.budgets.defaultCurrency", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.softLimitRatio", "Soft Limit Ratio")}>
+                    <input type="number" step="0.05" min="0" max="1" value={getValueByPath(config, "access.budgets.softLimitRatio") || 0} onChange={(event) => updateField("access.budgets.softLimitRatio", Number(event.target.value || 0))} />
+                  </Field>
+                  <Field label={t("field.hardLimitAction", "Hard Limit Action")}>
+                    <select value={getValueByPath(config, "access.budgets.hardLimitAction") || "block"} onChange={(event) => updateField("access.budgets.hardLimitAction", event.target.value)}>
+                      <option value="block">{t("option.block", "block")}</option>
+                      <option value="warn">{t("option.warn", "warn")}</option>
+                    </select>
+                  </Field>
+                </>
+              ) : null}
             </div>
             <div className="checkbox-row">
               <label><input type="checkbox" checked={getValueByPath(config, "server.trustProxy") === true} onChange={(event) => updateField("server.trustProxy", event.target.checked)} /> {t("field.trustProxy", "Trust Proxy Headers")}</label>
@@ -112,40 +126,46 @@ export default function WorkspaceTab({
             {pricingCatalogError ? <div className="inline-error">{pricingCatalogError}</div> : null}
           </AccordionSection>
 
-          <AccordionSection id="workspace-persistence" title={t("workspace.persistence.title", "Persistence And Cache")} desc={t("workspace.persistence.desc", "Configure file, Azure Files, database, and database+Azure Files persistence modes plus PostgreSQL storage, cache, and compatibility export.")} defaultOpen group="workspace-sections">
+          <AccordionSection id="workspace-persistence" title={t("workspace.persistence.title", "Persistence And Cache")} desc={t("workspace.persistence.desc", "Configure file, Azure Files, database, and database+Azure Files persistence modes plus PostgreSQL storage, cache, and compatibility export.")} group="workspace-sections">
             <div className="form-grid">
               <Field label={t("field.persistenceMode", "Persistence Mode")}>
-                <select value={getValueByPath(config, "persistence.configStore.mode") || "file"} onChange={(event) => updateField("persistence.configStore.mode", event.target.value)}>
+                <select value={persistenceMode} onChange={(event) => updateField("persistence.configStore.mode", event.target.value)}>
                   <option value="file">{t("option.file", "file")}</option>
                   <option value="azureFile">{t("option.azureFile", "azureFile")}</option>
                   <option value="database">{t("option.database", "database")}</option>
                   <option value="database+azureFile">{t("option.database+azureFile", "database+azureFile")}</option>
                 </select>
               </Field>
-              <Field label={t("field.configFilePath", "Config File Path")}>
-                <input value={getValueByPath(config, "persistence.configStore.filePath") || ""} onChange={(event) => updateField("persistence.configStore.filePath", event.target.value)} />
-              </Field>
-              <Field label={t("field.databaseProvider", "Database Provider")}>
-                <input value={getValueByPath(config, "persistence.configStore.database.provider") || "postgresql"} onChange={(event) => updateField("persistence.configStore.database.provider", event.target.value)} />
-              </Field>
-              <Field label={t("field.databaseConnectionRef", "Connection Ref")}>
-                <input value={getValueByPath(config, "persistence.configStore.database.connectionRef") || ""} onChange={(event) => updateField("persistence.configStore.database.connectionRef", event.target.value)} />
-              </Field>
-              <Field label={t("field.databaseSchema", "Schema")}>
-                <input value={getValueByPath(config, "persistence.configStore.database.schema") || "public"} onChange={(event) => updateField("persistence.configStore.database.schema", event.target.value)} />
-              </Field>
-              <Field label={t("field.databaseTable", "Table Name")}>
-                <input value={getValueByPath(config, "persistence.configStore.database.tableName") || "proxy_configs"} onChange={(event) => updateField("persistence.configStore.database.tableName", event.target.value)} />
-              </Field>
-              <Field label={t("field.databaseConfigKey", "Config Key")}>
-                <input value={getValueByPath(config, "persistence.configStore.database.configKey") || "active"} onChange={(event) => updateField("persistence.configStore.database.configKey", event.target.value)} />
-              </Field>
-              <Field label={t("field.databaseFallback", "Read Fallback")}>
-                <select value={getValueByPath(config, "persistence.configStore.database.readFallbackMode") || "lastKnownGood"} onChange={(event) => updateField("persistence.configStore.database.readFallbackMode", event.target.value)}>
-                  <option value="lastKnownGood">{t("option.lastKnownGood", "lastKnownGood")}</option>
-                  <option value="none">{t("option.none", "none")}</option>
-                </select>
-              </Field>
+              {fileSettingsVisible ? (
+                <Field label={t("field.configFilePath", "Config File Path")}>
+                  <input value={getValueByPath(config, "persistence.configStore.filePath") || ""} onChange={(event) => updateField("persistence.configStore.filePath", event.target.value)} />
+                </Field>
+              ) : null}
+              {databaseSettingsVisible ? (
+                <>
+                  <Field label={t("field.databaseProvider", "Database Provider")}>
+                    <input value={getValueByPath(config, "persistence.configStore.database.provider") || "postgresql"} onChange={(event) => updateField("persistence.configStore.database.provider", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseConnectionRef", "Connection Ref")}>
+                    <input value={getValueByPath(config, "persistence.configStore.database.connectionRef") || ""} onChange={(event) => updateField("persistence.configStore.database.connectionRef", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseSchema", "Schema")}>
+                    <input value={getValueByPath(config, "persistence.configStore.database.schema") || "public"} onChange={(event) => updateField("persistence.configStore.database.schema", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseTable", "Table Name")}>
+                    <input value={getValueByPath(config, "persistence.configStore.database.tableName") || "proxy_configs"} onChange={(event) => updateField("persistence.configStore.database.tableName", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseConfigKey", "Config Key")}>
+                    <input value={getValueByPath(config, "persistence.configStore.database.configKey") || "active"} onChange={(event) => updateField("persistence.configStore.database.configKey", event.target.value)} />
+                  </Field>
+                  <Field label={t("field.databaseFallback", "Read Fallback")}>
+                    <select value={getValueByPath(config, "persistence.configStore.database.readFallbackMode") || "lastKnownGood"} onChange={(event) => updateField("persistence.configStore.database.readFallbackMode", event.target.value)}>
+                      <option value="lastKnownGood">{t("option.lastKnownGood", "lastKnownGood")}</option>
+                      <option value="none">{t("option.none", "none")}</option>
+                    </select>
+                  </Field>
+                </>
+              ) : null}
               <Field label={t("field.cacheType", "Cache Type")}>
                 <select value={getValueByPath(config, "persistence.cache.type") || "memory"} onChange={(event) => updateField("persistence.cache.type", event.target.value)}>
                   <option value="memory">{t("option.memory", "memory")}</option>
@@ -154,9 +174,11 @@ export default function WorkspaceTab({
               <Field label={t("field.cacheTtlMs", "Cache TTL ms")}>
                 <input type="number" value={getValueByPath(config, "persistence.cache.ttlMs") || 0} onChange={(event) => updateField("persistence.cache.ttlMs", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.compatibilityExportPath", "Legacy Config Path")}>
-                <input value={getValueByPath(config, "persistence.compatibilityExport.legacyConfigPath") || ""} onChange={(event) => updateField("persistence.compatibilityExport.legacyConfigPath", event.target.value)} />
-              </Field>
+              {compatibilityExportEnabled ? (
+                <Field label={t("field.compatibilityExportPath", "Legacy Config Path")}>
+                  <input value={getValueByPath(config, "persistence.compatibilityExport.legacyConfigPath") || ""} onChange={(event) => updateField("persistence.compatibilityExport.legacyConfigPath", event.target.value)} />
+                </Field>
+              ) : null}
             </div>
             <div className="checkbox-row">
               <label><input type="checkbox" checked={getValueByPath(config, "persistence.configStore.database.enabled") === true} onChange={(event) => updateField("persistence.configStore.database.enabled", event.target.checked)} /> {t("field.databaseEnabled", "Enable Database Store")}</label>
@@ -164,7 +186,7 @@ export default function WorkspaceTab({
               <label><input type="checkbox" checked={getValueByPath(config, "persistence.compatibilityExport.exportLegacyConfigOnChange") !== false} onChange={(event) => updateField("persistence.compatibilityExport.exportLegacyConfigOnChange", event.target.checked)} /> {t("field.compatibilityExportLegacy", "Export legacy config on change")}</label>
             </div>
 
-            <div className="database-probe-panel">
+            {databaseSettingsVisible ? <div className="database-probe-panel">
               <div className="database-probe-header">
                 <div className="code-block-head">{t("workspace.databaseProbe.title", "Database Connection Test")}</div>
                 <p className="muted database-probe-desc">{t("workspace.databaseProbe.desc", "Load the current connection string from environment-backed runtime settings, edit it temporarily, and verify connectivity without saving secrets into config.json.")}</p>
@@ -230,7 +252,7 @@ export default function WorkspaceTab({
                   </details>
                 </div>
               ) : null}
-            </div>
+            </div> : null}
           </AccordionSection>
 
           <AccordionSection id="workspace-logging" title={t("workspace.logging.title", "Logging And Log Analytics")} desc={t("workspace.logging.desc", "Control log level, content policy, and the Azure Monitor Logs Ingestion sink.") } group="workspace-sections">
@@ -262,48 +284,28 @@ export default function WorkspaceTab({
               <Field label={t("field.logMaxBase64Chars", "Max Base64 Log Chars")}>
                 <input type="number" value={getValueByPath(config, "observability.logs.maxBase64LogChars") || 0} onChange={(event) => updateField("observability.logs.maxBase64LogChars", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.workspaceId", "Workspace ID")}>
-                <input value={getValueByPath(config, "observability.logAnalytics.workspaceId") || ""} onChange={(event) => updateField("observability.logAnalytics.workspaceId", event.target.value)} />
-              </Field>
-              <Field label={t("field.endpoint", "Logs Ingestion Endpoint")}>
-                <input value={getValueByPath(config, "observability.logAnalytics.endpoint") || ""} onChange={(event) => updateField("observability.logAnalytics.endpoint", event.target.value)} />
-              </Field>
-              <Field label={t("field.dcrImmutableId", "DCR Immutable ID")}>
-                <input value={getValueByPath(config, "observability.logAnalytics.dcrImmutableId") || ""} onChange={(event) => updateField("observability.logAnalytics.dcrImmutableId", event.target.value)} />
-              </Field>
-              <Field label={t("field.streamName", "Stream Name")}>
-                <input value={getValueByPath(config, "observability.logAnalytics.streamName") || ""} onChange={(event) => updateField("observability.logAnalytics.streamName", event.target.value)} />
-              </Field>
-              <Field label={t("field.audience", "Audience")}>
-                <input value={getValueByPath(config, "observability.logAnalytics.audience") || ""} onChange={(event) => updateField("observability.logAnalytics.audience", event.target.value)} />
-              </Field>
-              <Field label={t("field.credentialRef", "Credential Ref")}>
-                <input value={getValueByPath(config, "observability.logAnalytics.credentialRef") || ""} onChange={(event) => updateField("observability.logAnalytics.credentialRef", event.target.value)} />
-              </Field>
-              <Field label={t("field.tableName", "Table Name")}>
-                <input value={getValueByPath(config, "observability.logAnalytics.tableName") || "AOAIProxyLogs"} onChange={(event) => updateField("observability.logAnalytics.tableName", event.target.value)} />
-              </Field>
-              <Field label={t("field.flushIntervalMs", "Flush Interval ms")}>
-                <input type="number" value={getValueByPath(config, "observability.logAnalytics.flushIntervalMs") || 0} onChange={(event) => updateField("observability.logAnalytics.flushIntervalMs", asNumber(event.target.value))} />
-              </Field>
-              <Field label={t("field.batchSize", "Batch Size")}>
-                <input type="number" value={getValueByPath(config, "observability.logAnalytics.batchSize") || 0} onChange={(event) => updateField("observability.logAnalytics.batchSize", asNumber(event.target.value))} />
-              </Field>
-              <Field label={t("field.samplingRatio", "Sampling Ratio")}>
-                <input type="number" step="0.1" min="0" max="1" value={getValueByPath(config, "observability.logAnalytics.samplingRatio") || 0} onChange={(event) => updateField("observability.logAnalytics.samplingRatio", Number(event.target.value || 0))} />
-              </Field>
-              <Field label={t("field.maxConcurrency", "Max Concurrency")}>
-                <input type="number" value={getValueByPath(config, "observability.logAnalytics.maxConcurrency") || 0} onChange={(event) => updateField("observability.logAnalytics.maxConcurrency", asNumber(event.target.value))} />
-              </Field>
-              <Field label={t("field.maxQueueSize", "Max Queue Size")}>
-                <input type="number" value={getValueByPath(config, "observability.logAnalytics.maxQueueSize") || 0} onChange={(event) => updateField("observability.logAnalytics.maxQueueSize", asNumber(event.target.value))} />
-              </Field>
+              {logAnalyticsEnabled ? (
+                <>
+                  <Field label={t("field.workspaceId", "Workspace ID")}><input value={getValueByPath(config, "observability.logAnalytics.workspaceId") || ""} onChange={(event) => updateField("observability.logAnalytics.workspaceId", event.target.value)} /></Field>
+                  <Field label={t("field.endpoint", "Logs Ingestion Endpoint")}><input value={getValueByPath(config, "observability.logAnalytics.endpoint") || ""} onChange={(event) => updateField("observability.logAnalytics.endpoint", event.target.value)} /></Field>
+                  <Field label={t("field.dcrImmutableId", "DCR Immutable ID")}><input value={getValueByPath(config, "observability.logAnalytics.dcrImmutableId") || ""} onChange={(event) => updateField("observability.logAnalytics.dcrImmutableId", event.target.value)} /></Field>
+                  <Field label={t("field.streamName", "Stream Name")}><input value={getValueByPath(config, "observability.logAnalytics.streamName") || ""} onChange={(event) => updateField("observability.logAnalytics.streamName", event.target.value)} /></Field>
+                  <Field label={t("field.audience", "Audience")}><input value={getValueByPath(config, "observability.logAnalytics.audience") || ""} onChange={(event) => updateField("observability.logAnalytics.audience", event.target.value)} /></Field>
+                  <Field label={t("field.credentialRef", "Credential Ref")}><input value={getValueByPath(config, "observability.logAnalytics.credentialRef") || ""} onChange={(event) => updateField("observability.logAnalytics.credentialRef", event.target.value)} /></Field>
+                  <Field label={t("field.tableName", "Table Name")}><input value={getValueByPath(config, "observability.logAnalytics.tableName") || "AOAIProxyLogs"} onChange={(event) => updateField("observability.logAnalytics.tableName", event.target.value)} /></Field>
+                  <Field label={t("field.flushIntervalMs", "Flush Interval ms")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.flushIntervalMs") || 0} onChange={(event) => updateField("observability.logAnalytics.flushIntervalMs", asNumber(event.target.value))} /></Field>
+                  <Field label={t("field.batchSize", "Batch Size")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.batchSize") || 0} onChange={(event) => updateField("observability.logAnalytics.batchSize", asNumber(event.target.value))} /></Field>
+                  <Field label={t("field.samplingRatio", "Sampling Ratio")}><input type="number" step="0.1" min="0" max="1" value={getValueByPath(config, "observability.logAnalytics.samplingRatio") || 0} onChange={(event) => updateField("observability.logAnalytics.samplingRatio", Number(event.target.value || 0))} /></Field>
+                  <Field label={t("field.maxConcurrency", "Max Concurrency")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.maxConcurrency") || 0} onChange={(event) => updateField("observability.logAnalytics.maxConcurrency", asNumber(event.target.value))} /></Field>
+                  <Field label={t("field.maxQueueSize", "Max Queue Size")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.maxQueueSize") || 0} onChange={(event) => updateField("observability.logAnalytics.maxQueueSize", asNumber(event.target.value))} /></Field>
+                </>
+              ) : null}
             </div>
             <div className="checkbox-row">
               <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeClientIp") === true} onChange={(event) => updateField("observability.logs.includeClientIp", event.target.checked)} /> {t("field.includeClientIp", "Include Client IP")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeUsage") === true} onChange={(event) => updateField("observability.logs.includeUsage", event.target.checked)} /> {t("field.includeUsage", "Include Usage")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeHeaders") === true} onChange={(event) => updateField("observability.logs.includeHeaders", event.target.checked)} /> {t("field.includeHeaders", "Include Headers")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.redactSecrets") !== false} onChange={(event) => updateField("observability.logs.redactSecrets", event.target.checked)} /> {t("field.redactSecrets", "Redact Secrets")}</label>
+              <label title={t("field.redactSecretsEnforced", "Sensitive values are always redacted and this protection cannot be disabled.")}><input type="checkbox" checked disabled /> {t("field.redactSecrets", "Redact Secrets")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.redactApiKeyInfo") !== false} onChange={(event) => updateField("observability.logs.redactApiKeyInfo", event.target.checked)} /> {t("field.redactApiKeyInfo", "Redact API Key Info")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "observability.logAnalytics.enabled") === true} onChange={(event) => updateField("observability.logAnalytics.enabled", event.target.checked)} /> {t("field.logAnalyticsEnabled", "Enable Log Analytics Sink")}</label>
             </div>
@@ -311,7 +313,7 @@ export default function WorkspaceTab({
 
           <AccordionSection id="workspace-media" title={t("workspace.media.title", "Media Policy")} desc={t("workspace.media.desc", "Control input compression, remote images, inline images, and image generation defaults.") } group="workspace-sections">
             <div className="form-grid">
-              <Field label={t("field.mediaMaxLongSide", "Max Long Side px")}>
+              {compressionEnabled ? <><Field label={t("field.mediaMaxLongSide", "Max Long Side px")}>
                 <input type="number" value={getValueByPath(config, "media.inputCompression.maxLongSidePx") || 0} onChange={(event) => updateField("media.inputCompression.maxLongSidePx", asNumber(event.target.value))} />
               </Field>
               <Field label={t("field.mediaQuality", "Quality")}>
@@ -325,8 +327,8 @@ export default function WorkspaceTab({
                   <option value="jpeg">{t("option.jpeg", "jpeg")}</option>
                   <option value="webp">{t("option.webp", "webp")}</option>
                 </select>
-              </Field>
-              <Field label={t("field.remoteImagesMaxMb", "Remote Download Limit MB")}>
+              </Field></> : null}
+              {remoteImagesEnabled ? <><Field label={t("field.remoteImagesMaxMb", "Remote Download Limit MB")}>
                 <input type="number" value={getValueByPath(config, "media.remoteImages.maxDownloadSizeMb") || 0} onChange={(event) => updateField("media.remoteImages.maxDownloadSizeMb", asNumber(event.target.value))} />
               </Field>
               <Field label={t("field.remoteImagesTimeoutMs", "Remote Timeout ms")}>
@@ -337,14 +339,14 @@ export default function WorkspaceTab({
               </Field>
               <Field label={t("field.remoteImagesHosts", "Remote Allowed Hosts")}>
                 <input value={formatList(getValueByPath(config, "media.remoteImages.allowedHosts"))} onChange={(event) => updateField("media.remoteImages.allowedHosts", parseList(event.target.value))} />
-              </Field>
+              </Field></> : null}
               <Field label={t("field.inlineImagesMaxBase64", "Inline Max Base64 Bytes")}>
                 <input type="number" value={getValueByPath(config, "media.inlineImages.maxBase64Bytes") || 0} onChange={(event) => updateField("media.inlineImages.maxBase64Bytes", asNumber(event.target.value))} />
               </Field>
               <Field label={t("field.inlineImagesPreview", "Inline Log Preview Chars")}>
                 <input type="number" value={getValueByPath(config, "media.inlineImages.logPreviewChars") || 0} onChange={(event) => updateField("media.inlineImages.logPreviewChars", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.mediaGenerationDefaultModel", "Default Generation Model")}>
+              {generationEnabled ? <><Field label={t("field.mediaGenerationDefaultModel", "Default Generation Model")}>
                 <input value={getValueByPath(config, "media.generation.defaultModel") || ""} onChange={(event) => updateField("media.generation.defaultModel", event.target.value)} />
               </Field>
               <Field label={t("field.mediaGenerationRequestTimeout", "Generation Request Timeout ms")}>
@@ -364,7 +366,7 @@ export default function WorkspaceTab({
               </Field>
               <Field label={t("field.mediaGenerationAllowedQualityModes", "Allowed Quality Modes")}>
                 <input value={formatList(getValueByPath(config, "media.generation.allowedQualityModes"))} onChange={(event) => updateField("media.generation.allowedQualityModes", parseList(event.target.value))} />
-              </Field>
+              </Field></> : null}
             </div>
             <div className="checkbox-row">
               <label><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.enabled") === true} onChange={(event) => updateField("media.inputCompression.enabled", event.target.checked)} /> {t("field.mediaCompressionEnabled", "Enable Input Compression")}</label>

@@ -597,7 +597,7 @@ export function chatToResponsesRequest(body, deployment) {
 
   if (typeof out.reasoning_effort === "string") {
     const effort = out.reasoning_effort.toLowerCase();
-    const allowedEfforts = new Set(["low", "medium", "high", "xhigh"]);
+    const allowedEfforts = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
     if (allowedEfforts.has(effort)) {
       out.reasoning = {
         ...(out.reasoning && typeof out.reasoning === "object" ? out.reasoning : {}),

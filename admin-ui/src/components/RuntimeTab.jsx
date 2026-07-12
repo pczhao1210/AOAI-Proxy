@@ -143,7 +143,9 @@ export default function RuntimeTab({
   const observedKeyCount = visibleGovernanceKeys.length;
   const persistenceMode = persistenceRuntime.activeMode || persistenceRuntime.mode || "file";
   const syncState = persistenceRuntime.pendingDatabaseSync ? "pending" : "clean";
-  const logSinkState = loggingRuntime.configured ? "configured" : (loggingRuntime.enabled ? "incomplete" : "disabled");
+  const logAnalyticsEnabled = loggingRuntime.logAnalyticsEnabled ?? loggingRuntime.enabled;
+  const logAnalyticsConfigured = loggingRuntime.logAnalyticsConfigured ?? loggingRuntime.configured;
+  const logSinkState = logAnalyticsConfigured ? "configured" : (logAnalyticsEnabled ? "incomplete" : "disabled");
   const hourlyRollups = Array.isArray(analytics?.rollups?.hourly) ? analytics.rollups.hourly : [];
   const dailyRollups = Array.isArray(analytics?.rollups?.daily) ? analytics.rollups.daily : [];
   const weeklyRollups = Array.isArray(analytics?.rollups?.weekly) ? analytics.rollups.weekly : [];

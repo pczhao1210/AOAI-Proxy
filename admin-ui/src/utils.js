@@ -1,3 +1,5 @@
+export const REDACTED_SECRET_VALUE = "__AOAI_PROXY_REDACTED__";
+
 export const DEFAULT_KEY_TEMPLATE = {
   id: "",
   displayName: "",
@@ -68,13 +70,13 @@ export const KNOWN_MODEL_ROUTE_VALUES = [
 ];
 
 export const DEFAULT_LOG_FILTERS = {
-  level: ["warn", "error", "info"],
+  level: ["fatal", "error", "warn", "info"],
   event: "",
   modelId: "",
   requestId: "",
   keyword: "",
   limit: 100,
-  autoRefresh: false
+  autoRefresh: true
 };
 
 export const TEST_ENDPOINTS = [
@@ -462,8 +464,11 @@ export function describePersistenceRuntime(persistenceRuntime, t) {
 export function describeLoggingRuntime(loggingRuntime, t) {
   const runtime = loggingRuntime || {};
   const lines = [
-    `${t("runtime.enabled", "Enabled")}: ${formatBool(runtime.enabled, t)}`,
-    `${t("runtime.configured", "Configured")}: ${formatBool(runtime.configured, t)}`,
+    `${t("field.logLevel", "Log Level")}: ${runtime.level || "-"}`,
+    `${t("field.logSinks", "Log Sinks")}: ${Array.isArray(runtime.sinks) ? runtime.sinks.join(", ") : "-"}`,
+    `${t("field.logBufferSize", "Log Buffer Size")}: ${runtime.memoryBufferSize ?? 0}`,
+    `${t("runtime.logAnalyticsEnabled", "Log Analytics Enabled")}: ${formatBool(runtime.logAnalyticsEnabled ?? runtime.enabled, t)}`,
+    `${t("runtime.logAnalyticsConfigured", "Log Analytics Configured")}: ${formatBool(runtime.logAnalyticsConfigured ?? runtime.configured, t)}`,
     `${t("runtime.flushing", "Flushing")}: ${formatBool(runtime.flushing, t)}`,
     `${t("runtime.queueLength", "Queue Length")}: ${runtime.queueLength ?? 0}`,
     `${t("runtime.droppedEntries", "Dropped Entries")}: ${runtime.droppedEntries ?? 0}`,
