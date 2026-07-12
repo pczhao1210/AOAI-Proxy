@@ -71,8 +71,6 @@ function emitPersistenceEvent(level, event, fields = {}) {
     ...fields
   };
   appendStructuredLog(level, payload);
-  const logger = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
-  logger(JSON.stringify(payload));
 }
 
 function snapshotError(error) {

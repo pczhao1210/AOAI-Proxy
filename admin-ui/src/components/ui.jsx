@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef } from "react";
 
 const FOCUSABLE_SELECTOR = "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
 
@@ -40,8 +40,13 @@ function handleSingleOpenToggle(event) {
 }
 
 export function AccordionSection({ id, title, desc, children, defaultOpen = false, group }) {
+  const detailsRef = useRef(null);
+  useLayoutEffect(() => {
+    if (detailsRef.current) detailsRef.current.open = defaultOpen;
+  }, [defaultOpen]);
+
   return (
-    <details id={id} className="accordion-section" open={defaultOpen} data-accordion-group={group} onToggle={handleSingleOpenToggle}>
+    <details ref={detailsRef} id={id} className="accordion-section" data-accordion-group={group} onToggle={handleSingleOpenToggle}>
       <summary className="accordion-summary">
         <div className="accordion-copy">
           <h3>{title}</h3>
@@ -65,9 +70,14 @@ export function Field({ label, children, hint }) {
 }
 
 export function EntityCard({ id, title, subtitle, onRemove, removeLabel, expandLabel = "Edit configuration", collapseLabel = "Collapse", children, collapsible = false, defaultOpen = true, meta, group }) {
+  const detailsRef = useRef(null);
+  useLayoutEffect(() => {
+    if (detailsRef.current) detailsRef.current.open = defaultOpen;
+  }, [defaultOpen]);
+
   if (collapsible) {
     return (
-      <details id={id} className="entity-card entity-card-collapsible" open={defaultOpen} data-accordion-group={group} onToggle={handleSingleOpenToggle}>
+      <details ref={detailsRef} id={id} className="entity-card entity-card-collapsible" data-accordion-group={group} onToggle={handleSingleOpenToggle}>
         <summary className="entity-summary">
           <div>
             <h3>{title}</h3>

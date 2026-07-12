@@ -19,6 +19,7 @@ export default function OpsTab({
   caddyPreview,
   formatDateTime,
   logs,
+  loggingRuntime,
   logFilters,
   setLogFilters,
   toggleLogLevel,
@@ -55,10 +56,14 @@ export default function OpsTab({
   t
 }) {
   const levelOptions = [
-    { key: "warn", label: t("logs.level.warn", "Warn") },
+    { key: "fatal", label: t("logs.level.fatal", "Fatal") },
     { key: "error", label: t("logs.level.error", "Error") },
-    { key: "info", label: t("logs.level.info", "Info") }
+    { key: "warn", label: t("logs.level.warn", "Warn") },
+    { key: "info", label: t("logs.level.info", "Info") },
+    { key: "debug", label: t("logs.level.debug", "Debug") },
+    { key: "trace", label: t("logs.level.trace", "Trace") }
   ];
+  const memoryBufferSize = Math.max(1, Number(loggingRuntime?.memoryBufferSize) || 100);
   const advancedFiltersOpen = Boolean(logFilters.event || logFilters.modelId || logFilters.requestId || logFilters.keyword || Number(logFilters.limit || 100) !== 100);
   const pricingRepoLabel = pricingLibraryStatus?.githubOwner && pricingLibraryStatus?.githubRepo
     ? `${pricingLibraryStatus.githubOwner}/${pricingLibraryStatus.githubRepo}`
@@ -294,13 +299,14 @@ export default function OpsTab({
                   <select value={logFilters.limit} onChange={(event) => setLogFilters((current) => ({ ...current, limit: Number(event.target.value || 100) }))}>
                     <option value={50}>50</option>
                     <option value={100}>100</option>
-                    <option value={200}>200</option>
-                    <option value={500}>500</option>
+                    <option value={200} disabled={memoryBufferSize < 200}>200</option>
+                    <option value={500} disabled={memoryBufferSize < 500}>500</option>
                   </select>
                 </Field>
               </div>
             </div>
           </details>
+          <div className="muted">{t("field.logBufferSize", "Log Buffer Size")}: {memoryBufferSize}</div>
           <div className="muted">{t("ops.logCount", "Matched {count} log entries{suffix}.", { count: logs.total || 0, suffix: logFilters.autoRefresh ? t("ops.logAutoRefreshSuffix", ", auto refresh enabled") : "" })}</div>
         </div>
 
@@ -309,7 +315,7 @@ export default function OpsTab({
             const details = getLogDetails(entry);
             const isExpanded = entry.level === "error" || entry.level === "fatal";
             return (
-              <article key={`${entry.ts || "log"}-${entry.event || "event"}-${index}`} className={`log-entry level-${entry.level || "info"}`}>
+              <article key={entry.id ?? `${entry.ts || "log"}-${entry.event || "event"}-${index}`} className={`log-entry level-${entry.level || "info"}`}>
                 <div className="log-header-react">
                   <div className="badge-row">
                     <span className={`badge level-${entry.level || "info"}`}>{t(`logs.level.${entry.level || "info"}`, entry.level || "info")}</span>

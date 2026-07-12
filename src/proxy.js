@@ -68,15 +68,6 @@ function emitInfoLog(payload) {
     ...payload
   };
   appendStructuredLog("info", normalizedPayload);
-  try {
-    console.log(JSON.stringify({
-      ts: new Date().toISOString(),
-      level: "info",
-      ...normalizedPayload
-    }));
-  } catch {
-    console.log(normalizedPayload.message || normalizedPayload.event || "info");
-  }
 }
 
 function stringifyLogValue(value) {

@@ -152,6 +152,7 @@ export default function App() {
   const [templateRouteOverride, setTemplateRouteOverride] = useState("");
   const [templateImportPricing, setTemplateImportPricing] = useState(true);
   const loadRequestRef = useRef(0);
+  const logsRequestRef = useRef(0);
   const sectionNavigationTargetRef = useRef(null);
 
   const dirty = useMemo(() => JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText]);
@@ -263,6 +264,7 @@ export default function App() {
   }
 
   async function loadLogsAction(filters = logFilters) {
+    const requestId = ++logsRequestRef.current;
     setLogsLoading(true);
     try {
       const json = await fetchLogs({
@@ -273,6 +275,7 @@ export default function App() {
         keyword: filters.keyword,
         limit: filters.limit
       });
+      if (requestId !== logsRequestRef.current) return;
       startTransition(() => {
         setLogs({
           total: json.total || 0,
@@ -281,9 +284,12 @@ export default function App() {
         });
       });
     } catch (loadError) {
+      if (requestId !== logsRequestRef.current) return;
       setError(loadError.message || t("messages.logsLoadFailed", "Failed to load logs."));
     } finally {
-      setLogsLoading(false);
+      if (requestId === logsRequestRef.current) {
+        setLogsLoading(false);
+      }
     }
   }
 
@@ -726,6 +732,7 @@ export default function App() {
   function toggleLogLevel(level) {
     setLogFilters((current) => {
       const exists = current.level.includes(level);
+      if (exists && current.level.length === 1) return current;
       const nextLevels = exists
         ? current.level.filter((item) => item !== level)
         : [...current.level, level];
@@ -964,7 +971,10 @@ export default function App() {
       cost: `${Number(totals.estimatedCostAmount || 0).toFixed(4)} ${totals.estimatedCostCurrency || "USD"}`,
       blocked,
       persistence: runtime?.persistence?.activeMode || runtime?.persistence?.mode || "file",
-      logging: statusLabel(runtime?.logging?.configured, runtime?.logging?.enabled),
+      logging: statusLabel(
+        runtime?.logging?.memoryEnabled || runtime?.logging?.consoleEnabled || runtime?.logging?.logAnalyticsConfigured,
+        runtime?.logging?.logAnalyticsEnabled ?? runtime?.logging?.enabled
+      ),
       caddy: caddyStatus?.state || (config?.server?.caddy?.enabled ? "unknown" : "disabled")
     };
   }, [runtime, stats, governanceKeys, caddyStatus, config?.server?.caddy?.enabled]);
@@ -1092,28 +1102,36 @@ export default function App() {
   }, [activeTab, currentSectionIds]);
 
   function handleSectionNavClick(sectionId) {
-    const target = document.getElementById(sectionId);
-    if (!target) return;
-
-    sectionNavigationTargetRef.current = {
+    const pendingTarget = {
       id: sectionId,
       expiresAt: performance.now() + 1600
     };
+    sectionNavigationTargetRef.current = pendingTarget;
 
-    if (target instanceof HTMLDetailsElement) {
-      const group = target.dataset.accordionGroup;
-      if (group) {
-        document.querySelectorAll(`details[data-accordion-group="${group}"]`).forEach((item) => {
-          if (item instanceof HTMLDetailsElement) {
-            item.open = item.id === sectionId;
-          }
-        });
+    const navigate = () => {
+      if (sectionNavigationTargetRef.current !== pendingTarget) return;
+      const target = document.getElementById(sectionId);
+      if (!target) {
+        if (performance.now() < pendingTarget.expiresAt) {
+          requestAnimationFrame(navigate);
+        } else {
+          sectionNavigationTargetRef.current = null;
+        }
+        return;
       }
-      target.open = true;
-    }
 
-    setActiveSectionId(sectionId);
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (target instanceof HTMLDetailsElement) {
+        const summary = target.querySelector(":scope > summary");
+        if (!target.open && summary instanceof HTMLElement) {
+          summary.click();
+        }
+      }
+
+      setActiveSectionId(sectionId);
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+
+    navigate();
   }
 
   if (loading && !config) {
@@ -1408,6 +1426,7 @@ export default function App() {
           caddyPreview={caddyPreview}
           formatDateTime={formatDateTime}
           logs={logs}
+          loggingRuntime={loggingRuntime}
           logFilters={logFilters}
           setLogFilters={setLogFilters}
           toggleLogLevel={toggleLogLevel}

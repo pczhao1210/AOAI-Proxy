@@ -407,7 +407,7 @@ export function ensure(condition, message) {
   assert.ok(condition, message);
 }
 
-export async function createTestContext() {
+export async function createTestContext({ logLevel = "error" } = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-proxy-route-test-"));
   const proxyPort = await getFreePort();
   const upstreamPort = await getFreePort();
@@ -427,7 +427,7 @@ export async function createTestContext() {
     env: {
       ...process.env,
       CONFIG_PATH: configPath,
-      LOG_LEVEL: "error"
+      LOG_LEVEL: logLevel
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

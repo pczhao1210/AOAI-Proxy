@@ -2,7 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import fastify from "fastify";
+import fastify, { LogController } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { getConfig, getPersistedConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo } from "./config.js";
 import { initAuth, verifyUpstreamAuth } from "./auth.js";
@@ -35,7 +35,7 @@ const app = fastify({
     level: process.env.LOG_LEVEL || "warn",
     stream: createPinoCaptureStream()
   },
-  disableRequestLogging: true,
+  logController: new LogController({ disableRequestLogging: true }),
   bodyLimit,
   rewriteUrl: (req) => rewriteAdminUrl(req.url)
 });
@@ -82,6 +82,14 @@ function isAdminRoute(url, adminPath) {
     }
   }
   return false;
+}
+
+function shouldSkipSuccessfulAccessLog(url, method, status, adminPath) {
+  if (status >= 400) return false;
+  const pathOnly = String(url || "").split("?")[0];
+  if (pathOnly === "/healthz" || pathOnly === "/favicon.ico") return true;
+  return ["GET", "HEAD", "OPTIONS"].includes(String(method || "").toUpperCase())
+    && isAdminRoute(url, adminPath);
 }
 
 // Extract API key from Authorization or x-api-key
@@ -214,12 +222,11 @@ function emitStartupLog(stage, fields = {}) {
     event: `startup.${stage}`,
     ...fields
   };
-  appendStructuredLog("info", payload);
-  try {
-    console.log(JSON.stringify(payload));
-  } catch {
-    console.log(`[${payload.ts}] startup.${stage}`);
-  }
+  const shutdownAudit = stage.startsWith("shutdown_");
+  appendStructuredLog("info", payload, {
+    bypassLevel: shutdownAudit,
+    forceConsole: shutdownAudit
+  });
 }
 
 function emitStartupError(stage, error, fields = {}) {
@@ -231,12 +238,8 @@ function emitStartupError(stage, error, fields = {}) {
     failureReason: error?.message || String(error),
     ...fields
   };
-  appendStructuredLog("error", payload);
-  try {
-    console.error(JSON.stringify(payload));
-  } catch {
-    console.error(`[${payload.ts}] startup.${stage}: ${payload.message}`);
-  }
+  const shutdownAudit = stage.startsWith("shutdown_");
+  appendStructuredLog("error", payload, { forceConsole: shutdownAudit });
 }
 
 function resolveShutdownTimeoutMs() {
@@ -360,15 +363,21 @@ app.addHook("preHandler", async (req, reply) => {
 
 app.addHook("onResponse", async (req, reply) => {
   const status = reply.statusCode;
-  const level = status >= 400 ? "error" : "info";
   const config = getConfig();
+  const rawUrl = req.raw?.url || req.url;
+  if (shouldSkipSuccessfulAccessLog(rawUrl, req.method, status, config.server.adminPath)) {
+    return;
+  }
+
+  const level = status >= 500 ? "error" : status >= 400 ? "warn" : "info";
   const networkContext = getRequestNetworkContext(config, req);
   const payload = {
-    source: "http",
+    source: isAdminRoute(rawUrl, config.server.adminPath) ? "http.admin" : "http",
     event: "http.request_completed",
+    message: status >= 400 ? "request completed with error" : "request completed",
     requestId: req.id,
     method: req.method,
-    url: req.raw?.url || req.url,
+    url: rawUrl,
     status,
     latencyMs: Math.round(reply.elapsedTime || 0),
     ...networkContext
@@ -377,7 +386,7 @@ app.addHook("onResponse", async (req, reply) => {
     appendStructuredLog("info", payload);
     return;
   }
-  req.log[level](payload, status >= 400 ? "request completed with error" : "request completed");
+  req.log[level](payload, payload.message);
 });
 
 app.get("/healthz", async () => ({ status: "ok" }));

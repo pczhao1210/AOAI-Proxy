@@ -38,13 +38,13 @@ function normalizeConnectionString(connectionString) {
   parsed.searchParams.set("sslmode", "verify-full");
   if (!sslModeRewriteLogged) {
     sslModeRewriteLogged = true;
-    console.warn(JSON.stringify({
+    appendStructuredLog("warn", {
       ts: new Date().toISOString(),
-      source: "proxy",
+      source: "postgres",
       event: "postgres.sslmode_normalized",
       previousSslMode: sslMode,
       nextSslMode: "verify-full"
-    }));
+    });
   }
   return parsed.toString();
 }
@@ -125,10 +125,6 @@ function createPostgresPool(poolOptions, poolKind) {
 
     try {
       appendStructuredLog("error", payload);
-    } catch {
-    }
-    try {
-      console.error(JSON.stringify(payload));
     } catch {
       console.error("PostgreSQL pool error", error);
     }
