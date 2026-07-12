@@ -2,7 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import fastify, { LogController } from "fastify";
+import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { getConfig, getPersistedConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo } from "./config.js";
 import { initAuth, verifyUpstreamAuth } from "./auth.js";
@@ -19,6 +19,8 @@ import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitions
 import { getRequestNetworkContext } from "./request-network.js";
 import { closeSharedPostgresPools } from "./postgres.js";
 import { redactConfigSecrets, restoreConfigSecrets } from "./admin-config.js";
+
+const { LogController } = fastify;
 
 // Fastify server entry
 const defaultBodyLimit = 50 * 1024 * 1024;
