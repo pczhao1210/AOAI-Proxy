@@ -1,3 +1,5 @@
+export const REDACTED_SECRET_VALUE = "__AOAI_PROXY_REDACTED__";
+
 export const DEFAULT_KEY_TEMPLATE = {
   id: "",
   displayName: "",
@@ -74,7 +76,7 @@ export const DEFAULT_LOG_FILTERS = {
   requestId: "",
   keyword: "",
   limit: 100,
-  autoRefresh: false
+  autoRefresh: true
 };
 
 export const TEST_ENDPOINTS = [

@@ -34,7 +34,7 @@ let shutdownPromise = null;
 
 const app = fastify({
   logger: {
-    level: process.env.LOG_LEVEL || "warn",
+    level: process.env.LOG_LEVEL || "info",
     stream: createPinoCaptureStream()
   },
   logController: new LogController({ disableRequestLogging: true }),
@@ -202,7 +202,7 @@ function attachAuth(config) {
 function applyLogConfig(config) {
   setLogConfig(config);
   if (process.env.LOG_LEVEL) return;
-  const configuredLevel = String(config?.observability?.logs?.level || "warn").trim().toLowerCase();
+  const configuredLevel = String(config?.observability?.logs?.level || "info").trim().toLowerCase();
   if (["trace", "debug", "info", "warn", "error", "fatal", "silent"].includes(configuredLevel)) {
     app.log.level = configuredLevel;
   }
@@ -416,6 +416,33 @@ app.post("/v1/images/generations", async (req, reply) => {
 app.get("/admin/api/config", async () => {
   const config = getConfig();
   return redactConfigSecrets(config);
+});
+
+app.post("/admin/api/keys/reveal", async (req, reply) => {
+  reply.header("Cache-Control", "no-store, private");
+  reply.header("Pragma", "no-cache");
+
+  const config = getConfig();
+  const keyId = typeof req.body?.id === "string" ? req.body.id.trim() : "";
+  if (!keyId || keyId.length > 256) {
+    return reply.code(400).send({ error: "ApiKeyIdRequired", message: "A valid API key ID is required" });
+  }
+
+  const apiKey = (Array.isArray(config.apiKeys) ? config.apiKeys : [])
+    .find((candidate) => candidate?.id === keyId);
+  if (!apiKey || typeof apiKey.key !== "string" || !apiKey.key) {
+    return reply.code(404).send({ error: "ApiKeyNotFound", message: "API key was not found" });
+  }
+
+  appendStructuredLog("info", {
+    source: "admin",
+    event: "admin.api_key_secret_accessed",
+    message: "API key copied by administrator",
+    requestId: req.id,
+    keyRecordId: apiKey.id,
+    ...getRequestNetworkContext(config, req)
+  });
+  return reply.send({ ok: true, id: apiKey.id, key: apiKey.key });
 });
 
 app.put("/admin/api/config", async (req, reply) => {
@@ -653,7 +680,7 @@ async function start() {
     cwd: process.cwd(),
     configPath: getConfigPath(),
     bodyLimit,
-    logLevel: process.env.LOG_LEVEL || "warn"
+    logLevel: process.env.LOG_LEVEL || "info"
   });
   const config = await reloadConfig();
   applyLogConfig(config);

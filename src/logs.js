@@ -4,7 +4,7 @@ import { LogsIngestionClient, isAggregateLogsUploadError } from "@azure/monitor-
 
 const DEFAULT_MAX_LOG_ENTRIES = 500;
 const HARD_MAX_IN_MEMORY_LOG_ENTRIES = 5000;
-const DEFAULT_LOG_LEVEL = "warn";
+const DEFAULT_LOG_LEVEL = "info";
 const DEFAULT_LOG_SINKS = ["memory", "console"];
 const DEFAULT_LOG_ANALYTICS_FLUSH_INTERVAL_MS = 10000;
 const DEFAULT_LOG_ANALYTICS_BATCH_SIZE = 100;
@@ -123,9 +123,15 @@ function resolveLogSettings(config = runtimeLogConfig) {
   const configuredSinks = Array.isArray(logs.sinks)
     ? normalizeStringArray(logs.sinks)
     : DEFAULT_LOG_SINKS;
+  const outputLevel = normalizeLevel(process.env.LOG_LEVEL || logs.level || DEFAULT_LOG_LEVEL);
+  const outputPriority = LOG_LEVEL_PRIORITIES[outputLevel] ?? LOG_LEVEL_PRIORITIES.info;
+  const adminLevel = outputPriority < LOG_LEVEL_PRIORITIES.info ? outputLevel : DEFAULT_LOG_LEVEL;
+  const sinks = new Set(configuredSinks);
+  sinks.add("memory");
   return {
-    level: normalizeLevel(process.env.LOG_LEVEL || logs.level || DEFAULT_LOG_LEVEL),
-    sinks: new Set(configuredSinks),
+    level: outputLevel,
+    adminLevel,
+    sinks,
     includeClientIp: logs.includeClientIp !== false,
     includeHeaders: logs.includeHeaders === true,
     includeUsage: logs.includeUsage !== false,
@@ -434,7 +440,8 @@ export function getLogRuntimeInfo(config = runtimeLogConfig) {
   const logSettings = resolveLogSettings(config);
   const active = shouldUseLogAnalytics(settings);
   return {
-    level: logSettings.level,
+    level: logSettings.adminLevel,
+    outputLevel: logSettings.level,
     sinks: Array.from(logSettings.sinks),
     memoryEnabled: logSettings.sinks.has("memory"),
     consoleEnabled: logSettings.sinks.has("console"),
@@ -562,7 +569,8 @@ function normalizeLevel(value) {
   const normalized = String(value || "info").trim().toLowerCase();
   if (normalized === "warning") return "warn";
   if (normalized === "err") return "error";
-  return normalized || "info";
+  if (normalized === "log") return "info";
+  return Object.hasOwn(LOG_LEVEL_PRIORITIES, normalized) ? normalized : "info";
 }
 
 function normalizeTimestamp(value) {
@@ -603,16 +611,15 @@ function writeConsoleEntry(entry) {
 
 function recordEntry(entry, options = {}) {
   const settings = resolveLogSettings();
-  if (!options.bypassLevel && !shouldRecordLevel(entry.level, settings.level)) {
-    return entry;
-  }
-  if (settings.sinks.has("memory")) {
+  const outputEnabled = options.bypassLevel || shouldRecordLevel(entry.level, settings.level);
+  const adminCaptureEnabled = options.bypassLevel || shouldRecordLevel(entry.level, settings.adminLevel);
+  if (adminCaptureEnabled) {
     appendEntry(entry);
   }
-  if (options.emitConsole !== false && (options.forceConsole || settings.sinks.has("console"))) {
+  if (outputEnabled && options.emitConsole !== false && (options.forceConsole || settings.sinks.has("console"))) {
     writeConsoleEntry(entry);
   }
-  if (options.enqueue !== false) {
+  if (outputEnabled && options.enqueue !== false) {
     enqueueLogAnalyticsEntry(entry);
   }
   return entry;

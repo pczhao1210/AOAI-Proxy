@@ -1,6 +1,7 @@
 import { lazy, startTransition, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchCaddyStatus,
+  fetchApiKeySecret,
   fetchConfig,
   fetchDatabaseConfig,
   fetchLogs,
@@ -52,6 +53,7 @@ import {
   inspectConfigStructure,
   pickCompressionPreset,
   prepareProxyPayload,
+  REDACTED_SECRET_VALUE,
   supportsPricingTemplate,
   setValueByPath
 } from "./utils.js";
@@ -763,6 +765,36 @@ export default function App() {
     }
   }
 
+  async function handleCopyApiKey(item) {
+    let secret = "";
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error(t("messages.clipboardUnavailable", "Clipboard access is unavailable in this browser."));
+      }
+
+      secret = typeof item?.key === "string" ? item.key : "";
+      if (secret === REDACTED_SECRET_VALUE) {
+        const keyId = typeof item?.id === "string" ? item.id.trim() : "";
+        if (!keyId) {
+          throw new Error(t("keys.copyMissingId", "Save a key ID before copying a stored key."));
+        }
+        const result = await fetchApiKeySecret(keyId);
+        secret = typeof result?.key === "string" ? result.key : "";
+      }
+      if (!secret || secret === REDACTED_SECRET_VALUE) {
+        throw new Error(t("keys.copyEmpty", "This key has no value to copy."));
+      }
+
+      await navigator.clipboard.writeText(secret);
+      setError("");
+      setMessage(t("keys.copySuccess", "API key copied to clipboard."));
+    } catch (copyError) {
+      setError(copyError.message || t("keys.copyFailed", "Failed to copy API key."));
+    } finally {
+      secret = "";
+    }
+  }
+
   async function handleVerifyAad() {
     setDiagnosticsBusy((current) => ({ ...current, verify: true }));
     setError("");
@@ -1368,6 +1400,7 @@ export default function App() {
           config={config}
           updateConfig={updateConfig}
           addApiKey={addApiKey}
+          onCopyApiKey={handleCopyApiKey}
           t={t}
         />
       ) : null}

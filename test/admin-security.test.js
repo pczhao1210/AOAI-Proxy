@@ -19,6 +19,37 @@ test("admin APIs redact secrets and preserve them on config save", async () => {
     assert.equal(loaded.json.apiKeys[0].key, REDACTED_SECRET_VALUE);
     assert.doesNotMatch(loaded.text, /test-upstream-key|test-client-key|"password":"admin"/);
 
+    const unauthenticatedReveal = await context.request("/admin/api/keys/reveal", {
+      method: "POST",
+      headers: { "x-aoai-admin-csrf": "1" },
+      json: { id: "test-client" }
+    });
+    assert.equal(unauthenticatedReveal.status, 401, unauthenticatedReveal.text);
+    assert.doesNotMatch(unauthenticatedReveal.text, /test-client-key/);
+
+    const revealWithoutCsrf = await context.adminRequest("/admin/api/keys/reveal", {
+      method: "POST",
+      json: { id: "test-client" }
+    });
+    assert.equal(revealWithoutCsrf.status, 403, revealWithoutCsrf.text);
+    assert.doesNotMatch(revealWithoutCsrf.text, /test-client-key/);
+
+    const revealed = await context.adminRequest("/admin/api/keys/reveal", {
+      method: "POST",
+      headers: { "x-aoai-admin-csrf": "1" },
+      json: { id: "test-client" }
+    });
+    assert.equal(revealed.status, 200, revealed.text);
+    assert.equal(revealed.json.key, "test-client-key");
+    assert.match(revealed.headers.get("cache-control") || "", /no-store/);
+    assert.equal(revealed.headers.get("pragma"), "no-cache");
+
+    const secretAccessLogs = await context.adminRequest("/admin/api/logs?event=admin.api_key_secret_accessed");
+    assert.equal(secretAccessLogs.status, 200, secretAccessLogs.text);
+    assert.equal(secretAccessLogs.json.total, 1);
+    assert.equal(secretAccessLogs.json.items[0].fields.keyRecordId, "test-client");
+    assert.doesNotMatch(secretAccessLogs.text, /test-client-key/);
+
     loaded.json.server.gracefulShutdownMs = 12000;
     const saved = await context.adminRequest("/admin/api/config", {
       method: "PUT",

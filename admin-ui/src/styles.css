@@ -707,6 +707,17 @@ code {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.key-secret-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.key-secret-control .ghost {
+  min-width: 5.5rem;
+  white-space: nowrap;
+}
+
 .endpoint-select {
   min-width: 0;
 }

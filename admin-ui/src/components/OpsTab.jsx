@@ -287,6 +287,7 @@ export default function OpsTab({
             </label>
           </div>
           <div className="muted">{logFilters.autoRefresh ? t("logs.autoRefreshHint.on", "Auto refresh is enabled. The log list updates every 5 seconds.") : t("logs.autoRefreshHint.off", "Auto refresh is disabled. Use Refresh Logs to fetch the latest entries.")}</div>
+          <div className="muted">{t("field.logLevel", "Log Level")}: {t(`logs.level.${loggingRuntime?.level || "info"}`, loggingRuntime?.level || "info")}</div>
           <details className="log-advanced-react" open={advancedFiltersOpen}>
             <summary>{t("logs.advancedFilters", "More Filters")}</summary>
             <div className="log-advanced-body-react">

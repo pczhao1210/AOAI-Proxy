@@ -295,7 +295,7 @@ function markDatabaseReady(settings, reason) {
     lastDatabaseError: null,
     nextDatabaseRecoveryAttemptAt: null
   });
-  emitPersistenceEvent("log", "persistence.database_ready", {
+  emitPersistenceEvent("info", "persistence.database_ready", {
     reason,
     target: describeDatabaseTarget(settings),
     activeMode: persistenceState.activeMode

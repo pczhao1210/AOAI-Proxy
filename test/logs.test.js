@@ -12,20 +12,32 @@ function configureLogs({ level = "info", sinks = ["memory"], bufferSize = 500, l
   });
 }
 
-test("structured logs honor the configured minimum level", () => {
+test("admin logs retain info requests when external sinks use a higher minimum level", () => {
   configureLogs({ level: "warn" });
+  appendStructuredLog("debug", { event: "test.level.debug" });
   appendStructuredLog("info", { event: "test.level.info" });
   appendStructuredLog("warn", { event: "test.level.warn" });
 
-  assert.equal(queryLogs({ event: "test.level.info" }).total, 0);
+  assert.equal(queryLogs({ event: "test.level.debug" }).total, 0);
+  assert.equal(queryLogs({ event: "test.level.info" }).total, 1);
   assert.equal(queryLogs({ event: "test.level.warn" }).total, 1);
 });
 
-test("structured logs honor the memory sink setting", () => {
+test("admin logs keep the bounded memory sink available", () => {
   configureLogs({ sinks: [] });
   appendStructuredLog("error", { event: "test.sink.disabled" });
 
-  assert.equal(queryLogs({ event: "test.sink.disabled" }).total, 0);
+  assert.equal(queryLogs({ event: "test.sink.disabled" }).total, 1);
+  assert.equal(getLogRuntimeInfo().memoryEnabled, true);
+});
+
+test("non-standard log levels are normalized for admin filters", () => {
+  configureLogs();
+  appendStructuredLog("log", { event: "test.level.normalized" });
+
+  const result = queryLogs({ event: "test.level.normalized", level: "info" });
+  assert.equal(result.total, 1);
+  assert.equal(result.items[0].level, "info");
 });
 
 test("configured buffers can retain more than one hundred entries", () => {
@@ -124,14 +136,20 @@ test("HTTP logs skip successful admin reads and redact warning URLs", async (con
   const configResponse = await testContext.adminRequest("/admin/api/config");
   assert.equal(configResponse.status, 200, configResponse.text);
 
+  const modelsResponse = await testContext.publicRequest("/v1/models");
+  assert.equal(modelsResponse.status, 200, modelsResponse.text);
+
   const unauthorized = await testContext.request("/v1/models?api_key=HTTP_SECRET_PROBE");
   assert.equal(unauthorized.status, 401, unauthorized.text);
 
-  const logsResponse = await testContext.adminRequest("/admin/api/logs?level=warn&limit=50");
+  const logsResponse = await testContext.adminRequest("/admin/api/logs?level=warn,info&limit=50");
   assert.equal(logsResponse.status, 200, logsResponse.text);
   const httpEntries = logsResponse.json.items.filter((entry) => entry.event === "http.request_completed");
+  const success = httpEntries.find((entry) => entry.status === 200 && entry.fields.url === "/v1/models");
   const warning = httpEntries.find((entry) => entry.status === 401);
 
+  assert.ok(success);
+  assert.equal(success.level, "info");
   assert.ok(warning);
   assert.equal(warning.level, "warn");
   assert.equal(warning.source, "http");
