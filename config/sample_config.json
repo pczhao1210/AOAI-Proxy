@@ -79,7 +79,7 @@
     },
     "forwardHeaders": {
       "mode": "allowlist",
-      "allow": ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-correlation-id"],
+      "allow": ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id"],
       "deny": ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
       "addRequestIdHeader": true
     },
@@ -140,22 +140,33 @@
     "logs": {
       "level": "info",
       "bufferSize": 100,
+      "maxBufferBytes": 16777216,
+      "messageContentMode": "summary",
       "maxPayloadLogBytes": 102400
     },
     "logAnalytics": {
       "enabled": false,
+      "workspaceResourceId": "",
+      "dataCollectionEndpointResourceId": "",
+      "dataCollectionRuleName": "aoai-proxy-logs",
+      "dataCollectionRuleResourceId": "",
       "workspaceId": "",
       "endpoint": "",
       "dcrImmutableId": "",
       "streamName": "Custom-AOAIProxyLogs",
       "audience": "",
       "credentialRef": "",
-      "tableName": "AOAIProxyLogs",
+      "tableName": "AOAIProxyLogs_CL",
       "flushIntervalMs": 10000,
       "batchSize": 100,
       "samplingRatio": 1,
       "maxConcurrency": 1,
       "maxQueueSize": 5000,
+      "maxQueueBytes": 67108864,
+      "uploadTimeoutMs": 30000,
+      "maxUploadRetries": 3,
+      "retryBaseDelayMs": 1000,
+      "retryMaxDelayMs": 30000,
       "contentMode": "summary",
       "fieldPolicies": {}
     },

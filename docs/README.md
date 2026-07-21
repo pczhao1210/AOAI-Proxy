@@ -10,6 +10,8 @@ This directory contains the project documentation and deployment guides.
 
 ## Deployment Guides
 
+- Log Analytics through DCE (English): [log-analytics-dce.en.md](log-analytics-dce.en.md)
+- 通过 DCE 写入 Log Analytics（中文）: [log-analytics-dce.md](log-analytics-dce.md)
 - Database-first Azure deployment: [../README.md#azure-deployment](../README.md#azure-deployment)
 - Azure deployment overview: [../README.md#azure-deployment](../README.md#azure-deployment)
 - Azure Managed Application package: [../infra/azure_deployment_with_UI/README.md](../infra/azure_deployment_with_UI/README.md)

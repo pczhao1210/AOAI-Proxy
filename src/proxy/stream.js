@@ -72,7 +72,27 @@ async function writeSseDone(replyRaw) {
   await writeWithBackpressure(replyRaw, "data: [DONE]\n\n");
 }
 
-function extractUsageFromSseChunk(chunkText, usageState, onUsage, onModel) {
+function emitOutputDeltas(json, onContent) {
+  if (typeof onContent !== "function") return;
+  if (json?.type === "response.output_text.delta" && typeof json.delta === "string") {
+    onContent(json.delta, "text");
+  }
+  if (json?.type === "response.function_call_arguments.delta" && typeof json.delta === "string") {
+    onContent(json.delta, "tool");
+  }
+  for (const choice of Array.isArray(json?.choices) ? json.choices : []) {
+    if (typeof choice?.delta?.content === "string") {
+      onContent(choice.delta.content, "text");
+    }
+    for (const toolCall of Array.isArray(choice?.delta?.tool_calls) ? choice.delta.tool_calls : []) {
+      if (typeof toolCall?.function?.arguments === "string") {
+        onContent(toolCall.function.arguments, "tool");
+      }
+    }
+  }
+}
+
+function extractUsageFromSseChunk(chunkText, usageState, onUsage, onModel, onContent) {
   usageState.buffer += chunkText;
   let idx;
   while ((idx = usageState.buffer.indexOf("\n")) >= 0) {
@@ -92,6 +112,7 @@ function extractUsageFromSseChunk(chunkText, usageState, onUsage, onModel) {
         onUsage?.(usage);
         usageState.recorded = true;
       }
+      emitOutputDeltas(json, onContent);
     } catch {
       // ignore parse errors
     }
@@ -121,7 +142,8 @@ export async function streamPassthrough({
   policy,
   onFirstChunk,
   onUsage,
-  onModel
+  onModel,
+  onContent
 }) {
   const reader = upstreamResponse.body?.getReader();
   if (!reader) {
@@ -177,6 +199,7 @@ export async function streamPassthrough({
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (clientDisconnected) break;
       if (!firstChunkSeen) {
         firstChunkSeen = true;
         clearTimeout(firstByteTimer);
@@ -185,7 +208,7 @@ export async function streamPassthrough({
       resetIdle();
       const chunk = Buffer.from(value);
       const text = decoder.decode(value, { stream: true });
-      extractUsageFromSseChunk(text, usageState, onUsage, onModel);
+      extractUsageFromSseChunk(text, usageState, onUsage, onModel, onContent);
       providerBuffer += text;
       let idx;
       while ((idx = providerBuffer.indexOf("\n")) >= 0) {
@@ -272,7 +295,8 @@ export async function streamShim({
   policy,
   onFirstChunk,
   onUsage,
-  onModel
+  onModel,
+  onContent
 }) {
   const reader = upstreamResponse.body?.getReader();
   if (!reader) {
@@ -524,6 +548,7 @@ export async function streamShim({
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (clientDisconnected) break;
       if (!firstChunkSeen) {
         firstChunkSeen = true;
         clearTimeout(firstByteTimer);
@@ -563,6 +588,7 @@ export async function streamShim({
             break;
           } else if (t === "response.output_text.delta") {
             const delta = evt?.delta ?? "";
+            onContent?.(delta, "text");
             await writeSse(reply.raw, {
               id: streamId,
               object: "chat.completion.chunk",
@@ -587,6 +613,7 @@ export async function streamShim({
             const entry = toolCallMap.get(evt?.item_id);
             if (entry) {
               sawToolCall = true;
+              onContent?.(evt?.delta ?? "", "tool");
               await writeSse(reply.raw, {
                 id: streamId,
                 object: "chat.completion.chunk",
@@ -636,6 +663,7 @@ export async function streamShim({
           const choice = evt?.choices?.[0];
           const choiceDelta = choice?.delta?.content;
           if (typeof choiceDelta === "string" && choiceDelta.length > 0) {
+            onContent?.(choiceDelta, "text");
             const textItem = await ensureReverseTextItem();
             textItem.text += choiceDelta;
             await writeResponsesEvent({
@@ -651,6 +679,7 @@ export async function streamShim({
             const toolItem = await ensureReverseToolItem(toolDelta);
             const argumentsDelta = toolDelta?.function?.arguments;
             if (typeof argumentsDelta === "string" && argumentsDelta) {
+              onContent?.(argumentsDelta, "tool");
               toolItem.arguments += argumentsDelta;
               await writeResponsesEvent({
                 type: "response.function_call_arguments.delta",

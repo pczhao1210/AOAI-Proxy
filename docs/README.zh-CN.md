@@ -13,6 +13,7 @@
 - Proxy -> Azure AI Foundry / Azure OpenAI 根据 `auth.mode` 使用 AAD token 或 `api-key`
 - 静态管理页支持配置编辑、AAD 验证、统计查看和最近日志排查
 - 支持 `models[].routes` 与 `upstreams[].routes` 做模型级和上游级路由映射
+- 可选通过 DCE 将关联请求、用量和脱敏 Prompt/输出写入 Log Analytics；参见 [接入指南](log-analytics-dce.md)
 
 ## 部署资产
 

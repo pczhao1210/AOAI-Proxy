@@ -17,8 +17,10 @@ import { validateConfiguredModels } from "./model-validation.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
+import { attachRequestContext, getRequestContext } from "./request-context.js";
 import { closeSharedPostgresPools } from "./postgres.js";
 import { redactConfigSecrets, restoreConfigSecrets } from "./admin-config.js";
+import { initializeLogAnalytics } from "./log-analytics-admin.js";
 
 const { LogController } = fastify;
 
@@ -31,6 +33,7 @@ const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30000;
 
 let shutdownPromise = null;
+let logAnalyticsInitializationPromise = null;
 
 const app = fastify({
   logger: {
@@ -287,7 +290,7 @@ function shutdown(reason, exitCode) {
     const httpResults = await Promise.allSettled([app.close()]);
     const resourceResults = await Promise.allSettled([
       drainRuntimeState(),
-      flushLogAnalyticsSink()
+      flushLogAnalyticsSink({ force: true })
     ]);
     const results = [...httpResults, ...resourceResults];
     clearTimeout(forceExitTimer);
@@ -326,6 +329,10 @@ function logAdminApiError(event, error, fields = {}) {
     ...rest
   }, failureReason);
 }
+
+app.addHook("onRequest", async (req) => {
+  attachRequestContext(req);
+});
 
 app.addHook("preHandler", async (req, reply) => {
   const config = getConfig();
@@ -377,7 +384,7 @@ app.addHook("onResponse", async (req, reply) => {
     source: isAdminRoute(rawUrl, config.server.adminPath) ? "http.admin" : "http",
     event: "http.request_completed",
     message: status >= 400 ? "request completed with error" : "request completed",
-    requestId: req.id,
+    ...getRequestContext(req),
     method: req.method,
     url: rawUrl,
     status,
@@ -536,6 +543,49 @@ app.post("/admin/api/database/test", async (req, reply) => {
       status: 400
     });
     reply.code(400).send({ ok: false, error: error.message || "Database connection test failed" });
+  }
+});
+
+app.post("/admin/api/log-analytics/initialize", async (req, reply) => {
+  if (logAnalyticsInitializationPromise) {
+    return reply.code(409).send({
+      ok: false,
+      status: "busy",
+      error: { code: "LOG_ANALYTICS_INITIALIZATION_BUSY", message: "Log Analytics initialization is already running" }
+    });
+  }
+
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  logAnalyticsInitializationPromise = initializeLogAnalytics({
+    workspaceResourceId: body.workspaceResourceId,
+    dataCollectionEndpointResourceId: body.dataCollectionEndpointResourceId,
+    dataCollectionRuleName: body.dataCollectionRuleName,
+    tableName: body.tableName,
+    streamName: body.streamName,
+    audience: body.audience,
+    credentialRef: body.credentialRef
+  });
+  try {
+    const result = await logAnalyticsInitializationPromise;
+    appendStructuredLog(result.ok ? "info" : "warn", {
+      source: "admin",
+      event: result.ok ? "admin.log_analytics_initialized" : "admin.log_analytics_initialization_failed",
+      message: result.ok ? "Log Analytics initialized and tested" : "Log Analytics initialization did not complete",
+      ...getRequestContext(req),
+      status: result.ok ? 200 : result.error?.statusCode || 400,
+      initializationStatus: result.status,
+      probeRequestId: result.probe?.requestId || "",
+      errorCode: result.error?.code || "",
+      failureReason: result.error?.message || ""
+    });
+    if (result.ok || result.status === "needs_ingestion_permission" || result.status === "probe_failed") {
+      return reply.send(result);
+    }
+    const requestedStatus = Number(result.error?.statusCode) || 500;
+    const status = [400, 401, 403, 404, 409, 429].includes(requestedStatus) ? requestedStatus : 502;
+    return reply.code(status).send(result);
+  } finally {
+    logAnalyticsInitializationPromise = null;
   }
 });
 

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { getRuntimeStoreInfo, recordRuntimeRequest, setRuntimeStoreConfig } from "../src/runtime-store.js";
+import { getRuntimeStoreInfo, recordRuntimeError, recordRuntimeRequest, recordRuntimeUsage, setRuntimeStoreConfig } from "../src/runtime-store.js";
 
 async function waitFor(predicate, timeoutMs = 1000) {
   const startedAt = Date.now();
@@ -41,15 +41,22 @@ test("runtime events spill locally when database configuration is unavailable", 
 
   try {
     setRuntimeStoreConfig(config);
-    recordRuntimeRequest(config, { requestId: "spill-request", modelId: "model" });
-    await waitFor(() => getRuntimeStoreInfo(config).persistedEventCount === 1);
+    const correlation = { conversationId: "conversation-1", sessionId: "session-1" };
+    recordRuntimeRequest(config, { requestId: "spill-request", modelId: "model", ...correlation });
+    recordRuntimeUsage(config, { requestId: "spill-request", modelId: "model", totalTokens: 3, ...correlation });
+    recordRuntimeError(config, { requestId: "spill-request", modelId: "model", errorCode: "TEST_ERROR", ...correlation });
+    await waitFor(() => getRuntimeStoreInfo(config).persistedEventCount === 3);
 
     const info = getRuntimeStoreInfo(config);
     const persisted = await fs.readFile(localBufferPath, "utf8");
     assert.equal(info.configured, false);
     assert.equal(info.spilloverActive, true);
-    assert.equal(info.persistedEventCount, 1);
+    assert.equal(info.persistedEventCount, 3);
     assert.match(persisted, /spill-request/);
+    const events = persisted.trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(events.map((event) => event.eventType), ["request", "usage", "error"]);
+    assert.ok(events.every((event) => event.payload.conversationId === "conversation-1"));
+    assert.ok(events.every((event) => event.payload.sessionId === "session-1"));
   } finally {
     setRuntimeStoreConfig(null);
     await fs.rm(tempDir, { recursive: true, force: true });

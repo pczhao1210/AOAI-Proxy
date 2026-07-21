@@ -126,7 +126,7 @@ const DEFAULTS = {
     },
     forwardHeaders: {
       mode: "denylist",
-      allow: ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-correlation-id", "anthropic-beta", "openai-organization"],
+      allow: ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id", "anthropic-beta", "openai-organization"],
       deny: ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
       addRequestIdHeader: true
     },
@@ -222,6 +222,7 @@ const DEFAULTS = {
       level: "info",
       sinks: ["memory", "console"],
       bufferSize: 100,
+      maxBufferBytes: 16777216,
       redactSecrets: true,
       redactApiKeyInfo: true,
       messageContentMode: "summary",
@@ -233,18 +234,27 @@ const DEFAULTS = {
     },
     logAnalytics: {
       enabled: false,
+      workspaceResourceId: "",
+      dataCollectionEndpointResourceId: "",
+      dataCollectionRuleName: "aoai-proxy-logs",
+      dataCollectionRuleResourceId: "",
       workspaceId: "",
       endpoint: "",
       dcrImmutableId: "",
-      streamName: "",
+      streamName: "Custom-AOAIProxyLogs",
       audience: "",
       credentialRef: "",
-      tableName: "AOAIProxyLogs",
+      tableName: "AOAIProxyLogs_CL",
       flushIntervalMs: 10000,
       batchSize: 100,
       samplingRatio: 1,
       maxConcurrency: 1,
       maxQueueSize: 5000,
+      maxQueueBytes: 67108864,
+      uploadTimeoutMs: 30000,
+      maxUploadRetries: 3,
+      retryBaseDelayMs: 1000,
+      retryMaxDelayMs: 30000,
       contentMode: "summary",
       fieldPolicies: {}
     },
@@ -1119,15 +1129,25 @@ function validateConfig(cfg) {
       if (logAnalytics.enabled != null && typeof logAnalytics.enabled !== "boolean") {
         throw new Error("observability.logAnalytics.enabled must be a boolean");
       }
-      for (const key of ["workspaceId", "endpoint", "dcrImmutableId", "streamName", "audience", "credentialRef", "tableName"]) {
+      for (const key of ["workspaceResourceId", "dataCollectionEndpointResourceId", "dataCollectionRuleName", "dataCollectionRuleResourceId", "workspaceId", "endpoint", "dcrImmutableId", "streamName", "audience", "credentialRef", "tableName"]) {
         if (logAnalytics[key] != null && typeof logAnalytics[key] !== "string") {
           throw new Error(`observability.logAnalytics.${key} must be a string`);
         }
       }
-      for (const key of ["flushIntervalMs", "batchSize", "maxConcurrency", "maxQueueSize"]) {
+      for (const key of ["flushIntervalMs", "batchSize", "maxConcurrency", "maxQueueSize", "maxQueueBytes", "uploadTimeoutMs", "retryBaseDelayMs", "retryMaxDelayMs"]) {
         if (logAnalytics[key] != null && (!Number.isInteger(logAnalytics[key]) || logAnalytics[key] <= 0)) {
           throw new Error(`observability.logAnalytics.${key} must be a positive integer`);
         }
+      }
+      if (logAnalytics.maxUploadRetries != null && (!Number.isInteger(logAnalytics.maxUploadRetries) || logAnalytics.maxUploadRetries < 0)) {
+        throw new Error("observability.logAnalytics.maxUploadRetries must be a non-negative integer");
+      }
+      if (
+        Number.isInteger(logAnalytics.retryBaseDelayMs)
+        && Number.isInteger(logAnalytics.retryMaxDelayMs)
+        && logAnalytics.retryMaxDelayMs < logAnalytics.retryBaseDelayMs
+      ) {
+        throw new Error("observability.logAnalytics.retryMaxDelayMs must be greater than or equal to retryBaseDelayMs");
       }
       if (logAnalytics.samplingRatio != null && (typeof logAnalytics.samplingRatio !== "number" || logAnalytics.samplingRatio < 0 || logAnalytics.samplingRatio > 1)) {
         throw new Error("observability.logAnalytics.samplingRatio must be between 0 and 1");
@@ -1143,6 +1163,9 @@ function validateConfig(cfg) {
       }
       if (logs.bufferSize != null && (!Number.isInteger(logs.bufferSize) || logs.bufferSize <= 0)) {
         throw new Error("observability.logs.bufferSize must be a positive integer");
+      }
+      if (logs.maxBufferBytes != null && (!Number.isInteger(logs.maxBufferBytes) || logs.maxBufferBytes <= 0)) {
+        throw new Error("observability.logs.maxBufferBytes must be a positive integer");
       }
     }
     if (cfg.observability.runtimeStore != null) {

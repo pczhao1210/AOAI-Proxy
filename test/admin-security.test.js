@@ -72,6 +72,28 @@ test("admin APIs redact secrets and preserve them on config save", async () => {
     assert.equal(databaseDefaults.json.config.connectionStringConfigured, true);
     assert.doesNotMatch(databaseDefaults.text, /database-secret/);
 
+    const unauthenticatedInitialize = await context.request("/admin/api/log-analytics/initialize", {
+      method: "POST",
+      headers: { "x-aoai-admin-csrf": "1" },
+      json: {}
+    });
+    assert.equal(unauthenticatedInitialize.status, 401, unauthenticatedInitialize.text);
+
+    const initializeWithoutCsrf = await context.adminRequest("/admin/api/log-analytics/initialize", {
+      method: "POST",
+      json: {}
+    });
+    assert.equal(initializeWithoutCsrf.status, 403, initializeWithoutCsrf.text);
+
+    const invalidInitialize = await context.adminRequest("/admin/api/log-analytics/initialize", {
+      method: "POST",
+      headers: { "x-aoai-admin-csrf": "1" },
+      json: {}
+    });
+    assert.equal(invalidInitialize.status, 400, invalidInitialize.text);
+    assert.equal(invalidInitialize.json?.status, "failed");
+    assert.equal(invalidInitialize.json?.error?.code, "INVALID_AZURE_RESOURCE_ID");
+
     const runtimeConfig = saved.json.config;
     runtimeConfig.routing.routeProfiles.chatCompletions.enabled = false;
     const disabledSave = await context.adminRequest("/admin/api/config", {

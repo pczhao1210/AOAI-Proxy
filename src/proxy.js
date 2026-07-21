@@ -1,5 +1,5 @@
 import { getUpstreamAuthHeaders } from "./auth.js";
-import { appendStructuredLog } from "./logs.js";
+import { appendStructuredLog, buildContentLogSnapshot, resolveLogContentMode } from "./logs.js";
 import { recordError, recordRequest, recordUsage } from "./stats.js";
 import { recordRuntimeError, recordRuntimeRequest, recordRuntimeUsage } from "./runtime-store.js";
 import {
@@ -59,6 +59,7 @@ import {
   recordGovernanceUsage
 } from "./governance.js";
 import { getRequestNetworkContext } from "./request-network.js";
+import { buildCorrelationHeaders, getRequestContext } from "./request-context.js";
 
 const DEFAULT_MAX_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
 
@@ -142,7 +143,7 @@ function buildTimingFields(timing) {
 }
 
 function emitTimingLog({
-  requestId,
+  requestContext,
   requestNetworkContext,
   modelId,
   routeKey,
@@ -156,7 +157,7 @@ function emitTimingLog({
 }) {
   const timingFields = buildTimingFields(timing);
   emitInfoLog({
-    requestId,
+    ...requestContext,
     ...requestNetworkContext,
     modelId,
     routeKey,
@@ -247,6 +248,97 @@ function validateImageGenerationPolicy(body, config) {
   return null;
 }
 
+function buildContentSnapshotFields(prefix, snapshot) {
+  return {
+    [`${prefix}Preview`]: snapshot.preview,
+    [`${prefix}BodyJson`]: snapshot.bodyJson,
+    [`${prefix}Bytes`]: snapshot.bytes,
+    [`${prefix}Sha256`]: snapshot.sha256,
+    [`${prefix}Truncated`]: snapshot.truncated,
+    [`${prefix}MessageCount`]: snapshot.messageCount,
+    [`${prefix}ToolCount`]: snapshot.toolCount,
+    [`${prefix}ItemCount`]: snapshot.itemCount
+  };
+}
+
+function estimateLocalTokensFromBytes(value) {
+  const bytes = Number(value);
+  return Number.isFinite(bytes) && bytes > 0 ? Math.max(1, Math.ceil(bytes / 4)) : 0;
+}
+
+function estimateSemanticTextBytes(value) {
+  const visited = new WeakSet();
+  let totalBytes = 0;
+
+  const visit = (current, key = "", parentType = "") => {
+    if (typeof current === "string") {
+      const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const mediaValue = /(?:image|audio|file|blob|bytes|base64|b64)/.test(normalizedKey)
+        || /(?:image|audio|file|screenshot)/.test(parentType);
+      const encodedValue = /^data:[^,]*;base64,/i.test(current)
+        || (
+          current.length >= 256
+          && current.length % 4 === 0
+          && !/\s/.test(current)
+          && /^[A-Za-z0-9+/_-]+={0,2}$/.test(current)
+        );
+      if (!mediaValue && !encodedValue) totalBytes += Buffer.byteLength(current, "utf8");
+      return;
+    }
+    if (!current || typeof current !== "object" || visited.has(current)) return;
+    visited.add(current);
+    const currentType = typeof current.type === "string" ? current.type.toLowerCase() : parentType;
+    for (const [childKey, childValue] of Object.entries(current)) {
+      visit(childValue, childKey, currentType);
+    }
+  };
+
+  visit(value);
+  return totalBytes;
+}
+
+function createStreamContentCollector(maxPayloadBytes) {
+  const configuredLimit = Number(maxPayloadBytes);
+  const limit = Number.isInteger(configuredLimit) && configuredLimit > 0
+    ? Math.min(configuredLimit, 10 * 1024 * 1024)
+    : 102400;
+  let captured = "";
+  let capturedBytes = 0;
+  let observedBytes = 0;
+  let truncated = false;
+  let lastKind = "";
+
+  return {
+    append(value, kind = "text") {
+      if (typeof value !== "string" || !value) return;
+      const separator = kind === "tool" && lastKind !== "tool" ? "\n[tool]\n" : "";
+      const semanticChunk = `${separator}${value}`;
+      const chunkBytes = Buffer.from(semanticChunk, "utf8");
+      observedBytes += chunkBytes.length;
+      lastKind = kind;
+      const remaining = limit - capturedBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      const retained = chunkBytes.length <= remaining ? chunkBytes : chunkBytes.subarray(0, remaining);
+      captured += retained.toString("utf8").replace(/\ufffd$/, "");
+      capturedBytes += retained.length;
+      if (retained.length < chunkBytes.length) truncated = true;
+    },
+    finish() {
+      return {
+        payload: {
+          output: [{ type: "stream_text", text: captured }]
+        },
+        observedBytes,
+        capturedBytes,
+        truncated
+      };
+    }
+  };
+}
+
 export async function proxyRequest({
   config,
   routeKey,
@@ -255,9 +347,8 @@ export async function proxyRequest({
 }) {
   const consumer = req.proxyAccess?.consumer || { keyId: "anonymous", displayName: "anonymous", isAnonymous: true, apiKey: null };
   const startAt = Date.now();
-  const requestId = typeof req.headers["x-request-id"] === "string" && req.headers["x-request-id"]
-    ? req.headers["x-request-id"]
-    : req.id;
+  const requestContext = getRequestContext(req);
+  const { requestId, conversationId, sessionId } = requestContext;
   const requestNetworkContext = getRequestNetworkContext(config, req);
   const timing = {
     enabled: hasEnabledDebugLatencyHeader(req.headers[DEBUG_LATENCY_HEADER_NAME]),
@@ -275,7 +366,7 @@ export async function proxyRequest({
   };
   let isStream = false;
   let governanceLease = null;
-  const log = req.log;
+  const log = req.log.child(requestContext);
   const finishTiming = ({ status = null, outcome = "", errorCode = "", source = "proxy" } = {}) => {
     if (!timing.enabled) {
       return;
@@ -288,7 +379,7 @@ export async function proxyRequest({
     }
     markTiming(timing, "completedAt");
     emitTimingLog({
-      requestId,
+      requestContext,
       requestNetworkContext,
       modelId,
       routeKey,
@@ -541,6 +632,8 @@ export async function proxyRequest({
     recordRuntimeError(config, {
       occurredAt: new Date().toISOString(),
       requestId,
+      conversationId,
+      sessionId,
       keyId: consumer?.keyId,
       modelId: model.id,
       routeKey,
@@ -725,6 +818,14 @@ export async function proxyRequest({
     }
   }
 
+  const contentLogOptions = {
+    mode: resolveLogContentMode(config),
+    maxPayloadBytes: config?.observability?.logs?.maxPayloadLogBytes
+  };
+  const requestContentSnapshot = buildContentLogSnapshot(nextBody, { ...contentLogOptions, kind: "requestBody" });
+  const requestLogFields = buildContentSnapshotFields("request", requestContentSnapshot);
+  const streamContentCollector = createStreamContentCollector(contentLogOptions.maxPayloadBytes);
+
   markTiming(timing, "requestPreparedAt");
   markTiming(timing, "governanceStartAt");
   const governanceResult = await acquireRequestGovernance(config, consumer, model, Date.now(), {
@@ -770,6 +871,8 @@ export async function proxyRequest({
     recordRuntimeError(config, {
       occurredAt: new Date().toISOString(),
       requestId,
+      conversationId,
+      sessionId,
       keyId: consumer?.keyId,
       modelId: model.id,
       actualModelName: resolvedUpstreamModel,
@@ -782,13 +885,21 @@ export async function proxyRequest({
     });
   };
   let resolvedUpstreamModel = "";
+  let usageRecorded = false;
+  let usageSource = "none";
+  let usageEstimated = false;
+  let usageEstimationReason = "";
   const noteResolvedUpstreamModel = (value) => {
     if (typeof value === "string" && value.trim()) {
       resolvedUpstreamModel = value.trim();
     }
   };
-  const recordProxyUsage = (usage, actualModelName = "") => {
-    if (!usage) return;
+  const recordProxyUsage = (usage, actualModelName = "", metadata = {}) => {
+    if (!usage || usageRecorded) return;
+    usageRecorded = true;
+    usageSource = metadata.source || "upstream";
+    usageEstimated = metadata.estimated === true;
+    usageEstimationReason = metadata.reason || "";
     noteResolvedUpstreamModel(actualModelName);
     const cost = recordGovernanceUsage(config, consumer, model, usage, Date.now(), actualModelName || resolvedUpstreamModel, {
       requestId,
@@ -803,6 +914,8 @@ export async function proxyRequest({
     recordRuntimeUsage(config, {
       occurredAt: new Date().toISOString(),
       requestId,
+      conversationId,
+      sessionId,
       keyId: consumer?.keyId,
       modelId: model.id,
       actualModelName: cost?.actualModelName || actualModelName || resolvedUpstreamModel,
@@ -816,7 +929,100 @@ export async function proxyRequest({
       modelRouterCostAmount: cost?.modelRouterCostAmount,
       actualModelCostAmount: cost?.actualModelCostAmount,
       currency: cost?.currency,
-      source: "proxy"
+      source: "proxy",
+      usageSource,
+      usageEstimated,
+      usageEstimationReason
+    });
+    emitInfoLog({
+      ...requestContext,
+      modelId,
+      actualModelName: cost?.actualModelName || actualModelName || resolvedUpstreamModel,
+      event: "proxy.usage_recorded",
+      routeKey,
+      backendRouteKey,
+      consumerKeyId: consumer?.keyId || "anonymous",
+      usageAvailable: true,
+      usageSource,
+      usageEstimated,
+      usageEstimationReason,
+      promptTokens: cost?.promptTokens,
+      completionTokens: cost?.completionTokens,
+      totalTokens: cost?.totalTokens,
+      cachedTokens: cost?.cachedTokens,
+      estimatedCostAmount: cost?.amount,
+      modelRouterCostAmount: cost?.modelRouterCostAmount,
+      actualModelCostAmount: cost?.actualModelCostAmount,
+      currency: cost?.currency,
+      message: usageEstimated ? "proxy usage estimated locally" : "proxy usage recorded"
+    });
+  };
+  const recordEstimatedUsageIfMissing = (completionBytes, reason) => {
+    if (usageRecorded || !["chat/completions", "responses"].includes(routeKey)) return false;
+    const semanticPromptBytes = estimateSemanticTextBytes(nextBody);
+    const promptTokens = estimateLocalTokensFromBytes(semanticPromptBytes || requestContentSnapshot.bytes);
+    const completionTokens = estimateLocalTokensFromBytes(completionBytes);
+    recordProxyUsage({
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens
+    }, resolvedUpstreamModel, {
+      source: "local_estimate",
+      estimated: true,
+      reason
+    });
+    return true;
+  };
+  const finalizeStreamObservation = (reason) => {
+    const collectedResponse = streamContentCollector.finish();
+    const responseContentSnapshot = buildContentLogSnapshot(
+      collectedResponse.payload,
+      { ...contentLogOptions, kind: "responseBody" }
+    );
+    const responseLogFields = buildContentSnapshotFields("response", responseContentSnapshot);
+    recordEstimatedUsageIfMissing(collectedResponse.observedBytes, reason);
+    return { collectedResponse, responseLogFields };
+  };
+  const deferPostResponse = (operation) => {
+    setImmediate(() => {
+      try {
+        operation();
+      } catch (error) {
+        log.error({
+          source: "proxy",
+          ...requestContext,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          event: "proxy.post_response_logging_failed",
+          errorCode: error?.code || "POST_RESPONSE_LOGGING_FAILED",
+          failureReason: error?.message || "post-response logging failed"
+        }, "post-response logging failed");
+      }
+    });
+  };
+  const emitRequestCompleted = ({ responsePayload, status, attempt }) => {
+    const responseContentSnapshot = buildContentLogSnapshot(responsePayload, { ...contentLogOptions, kind: "responseBody" });
+    const responseLogFields = buildContentSnapshotFields("response", responseContentSnapshot);
+    recordEstimatedUsageIfMissing(responseContentSnapshot.bytes, "upstream_usage_missing");
+    emitInfoLog({
+      ...requestContext,
+      ...requestLogFields,
+      ...responseLogFields,
+      modelId,
+      actualModelName: resolvedUpstreamModel,
+      event: "proxy.request_completed",
+      routeKey,
+      backendRouteKey,
+      stream: false,
+      attempt,
+      status,
+      usageAvailable: usageRecorded,
+      usageSource,
+      usageEstimated,
+      usageEstimationReason,
+      latencyMs: Date.now() - startAt,
+      message: "proxy request completed"
     });
   };
 
@@ -825,6 +1031,8 @@ export async function proxyRequest({
     recordRuntimeRequest(config, {
       occurredAt: new Date().toISOString(),
       requestId,
+      conversationId,
+      sessionId,
       keyId: consumer?.keyId,
       modelId: model.id,
       routeKey,
@@ -833,7 +1041,8 @@ export async function proxyRequest({
       targetUrl
     });
     emitInfoLog({
-      requestId,
+      ...requestContext,
+      ...requestLogFields,
       modelId,
       event: "proxy.request_started",
       routeKey,
@@ -849,7 +1058,7 @@ export async function proxyRequest({
       ...sanitizeConfiguredUpstreamHeaders(upstream.headersTemplate),
       "content-type": "application/json",
       ...upstreamAuthHeaders,
-      ...(config?.proxy?.forwardHeaders?.addRequestIdHeader === false ? {} : { "x-request-id": requestId })
+      ...(config?.proxy?.forwardHeaders?.addRequestIdHeader === false ? {} : buildCorrelationHeaders(requestContext))
     };
     const bodyText = JSON.stringify(nextBody);
     const maxRequestBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxRequestBodyBytes);
@@ -1001,7 +1210,8 @@ export async function proxyRequest({
               startStreamingResponse();
             },
             onUsage: recordProxyUsage,
-            onModel: noteResolvedUpstreamModel
+            onModel: noteResolvedUpstreamModel,
+            onContent: streamContentCollector.append
           })
           : await streamShim({
             upstreamResponse,
@@ -1016,7 +1226,8 @@ export async function proxyRequest({
               startStreamingResponse();
             },
             onUsage: recordProxyUsage,
-            onModel: noteResolvedUpstreamModel
+            onModel: noteResolvedUpstreamModel,
+            onContent: streamContentCollector.append
           });
 
         if (streamResult.ok) {
@@ -1049,6 +1260,7 @@ export async function proxyRequest({
               failureReason: classified.detail
             }, "stream ended before any data was sent");
             reply.code(classified.status).send(errBody);
+            deferPostResponse(() => finalizeStreamObservation("empty_stream_before_usage"));
             finishTiming({
               status: classified.status,
               outcome: "upstream_empty_stream",
@@ -1058,15 +1270,30 @@ export async function proxyRequest({
             return;
           }
           reply.raw.end();
-          emitInfoLog({
-            requestId,
-            modelId,
-            event: "proxy.stream_completed",
-            routeKey,
-            backendRouteKey,
-            attempt,
-            latencyMs: Date.now() - startAt,
-            message: "stream request completed"
+          deferPostResponse(() => {
+            const { collectedResponse, responseLogFields } = finalizeStreamObservation("stream_usage_missing");
+            emitInfoLog({
+              ...requestContext,
+              ...requestLogFields,
+              ...responseLogFields,
+              responseBytes: collectedResponse.observedBytes,
+              responseSha256: responseLogFields.responseSha256,
+              responseTruncated: collectedResponse.truncated || responseLogFields.responseTruncated,
+              modelId,
+              actualModelName: resolvedUpstreamModel,
+              event: "proxy.stream_completed",
+              routeKey,
+              backendRouteKey,
+              stream: true,
+              attempt,
+              status: 200,
+              usageAvailable: usageRecorded,
+              usageSource,
+              usageEstimated,
+              usageEstimationReason,
+              latencyMs: Date.now() - startAt,
+              message: "stream request completed"
+            });
           });
           finishTiming({
             status: 200,
@@ -1078,13 +1305,25 @@ export async function proxyRequest({
 
         const classified = classifyFetchError(streamResult.error);
         if (streamResult.clientDisconnected || classified.code === "CLIENT_DISCONNECTED") {
+          const { collectedResponse, responseLogFields } = finalizeStreamObservation("client_disconnected_before_usage");
           emitInfoLog({
-            requestId,
+            ...requestContext,
+            ...requestLogFields,
+            ...responseLogFields,
+            responseBytes: collectedResponse.observedBytes,
+            responseTruncated: collectedResponse.truncated || responseLogFields.responseTruncated,
             modelId,
+            actualModelName: resolvedUpstreamModel,
             event: "proxy.stream_client_disconnected",
             routeKey,
             backendRouteKey,
+            stream: true,
             attempt,
+            status: 499,
+            usageAvailable: usageRecorded,
+            usageSource,
+            usageEstimated,
+            usageEstimationReason,
             latencyMs: Date.now() - startAt,
             message: "client disconnected during stream"
           });
@@ -1131,6 +1370,9 @@ export async function proxyRequest({
         } else {
           reply.raw.end();
         }
+        deferPostResponse(() => finalizeStreamObservation(
+          providerError ? "provider_error_before_usage" : "stream_interrupted_before_usage"
+        ));
         log.error({
           source: providerError ? "provider" : "upstream",
           requestId,
@@ -1164,6 +1406,7 @@ export async function proxyRequest({
         code: "STREAM_INTERRUPTED",
         message: "stream retry budget exhausted"
       });
+      deferPostResponse(() => finalizeStreamObservation("stream_retry_exhausted_before_usage"));
       finishTiming({
         status: 502,
         outcome: "stream_retry_exhausted",
@@ -1286,9 +1529,12 @@ export async function proxyRequest({
     if (needsChatResponsesShim) {
       if (routeKey === "chat/completions" && backendRouteKey === "responses") {
         const mapped = mapResponsesJsonToChatCompletion(payload, modelId);
-        noteResolvedUpstreamModel(payload?.model || mapped?.model);
-        if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
         reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
         finishTiming({
           status: 200,
           outcome: "success",
@@ -1298,9 +1544,12 @@ export async function proxyRequest({
       }
       if (routeKey === "responses" && backendRouteKey === "chat/completions") {
         const mapped = mapChatCompletionJsonToResponses(payload, modelId);
-        noteResolvedUpstreamModel(payload?.model || mapped?.model);
-        if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
         reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
         finishTiming({
           status: 200,
           outcome: "success",
@@ -1310,22 +1559,14 @@ export async function proxyRequest({
       }
     }
 
-    noteResolvedUpstreamModel(payload?.model);
-    if (payload?.usage) {
-      recordProxyUsage(payload.usage, payload?.model);
-    }
-    emitInfoLog({
-      requestId,
-      modelId,
-      event: "proxy.request_completed",
-      routeKey,
-      backendRouteKey,
-      attempt: fetchResult.attempt,
-      status: upstreamResponse.status,
-      latencyMs: Date.now() - startAt,
-      message: "proxy request completed"
-    });
     reply.code(upstreamResponse.status).send(payload);
+    deferPostResponse(() => {
+      noteResolvedUpstreamModel(payload?.model);
+      if (payload?.usage) {
+        recordProxyUsage(payload.usage, payload?.model);
+      }
+      emitRequestCompleted({ responsePayload: payload, status: upstreamResponse.status, attempt: fetchResult.attempt });
+    });
     finishTiming({
       status: upstreamResponse.status,
       outcome: "success",

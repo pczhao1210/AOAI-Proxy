@@ -9,6 +9,7 @@ import { streamPassthrough, streamShim } from "../src/proxy/stream.js";
 import { chatToResponsesRequest, mapChatCompletionJsonToResponses, mapResponsesJsonToChatCompletion } from "../src/proxy/shim.js";
 import { REDACTED_SECRET_VALUE, redactConfigSecrets, restoreConfigSecrets } from "../src/admin-config.js";
 import { getRequestNetworkContext } from "../src/request-network.js";
+import { buildCorrelationHeaders, resolveRequestContext } from "../src/request-context.js";
 
 const STREAM_POLICY = {
   firstByteTimeoutMs: 1000,
@@ -48,7 +49,7 @@ function createReader(chunks, onCancel = () => {}) {
   };
 }
 
-async function runResponsesToChatShim(chunks, raw = new FakeReplyRaw()) {
+async function runResponsesToChatShim(chunks, raw = new FakeReplyRaw(), onContent = null) {
   const result = await streamShim({
     upstreamResponse: { body: { getReader: () => createReader(chunks) } },
     reply: { raw },
@@ -59,7 +60,8 @@ async function runResponsesToChatShim(chunks, raw = new FakeReplyRaw()) {
     policy: STREAM_POLICY,
     onFirstChunk() {},
     onUsage() {},
-    onModel() {}
+    onModel() {},
+    onContent
   });
   return { result, raw };
 }
@@ -67,6 +69,52 @@ async function runResponsesToChatShim(chunks, raw = new FakeReplyRaw()) {
 function encodeEvents(events) {
   return events.map((event) => Buffer.from(`data: ${JSON.stringify(event)}\n\n`));
 }
+
+test("request context normalizes correlation IDs and falls back to request ID", () => {
+  const complete = resolveRequestContext({
+    id: "generated-id",
+    headers: {
+      "x-request-id": " request\u0000-id ",
+      "x-conversation-id": "conversation-id",
+      "x-session-id": "session-id",
+      "x-correlation-id": "legacy-id"
+    }
+  });
+  assert.deepEqual(complete, {
+    requestId: "request-id",
+    conversationId: "conversation-id",
+    sessionId: "session-id"
+  });
+  assert.deepEqual(buildCorrelationHeaders(complete), {
+    "x-request-id": "request-id",
+    "x-conversation-id": "conversation-id",
+    "x-session-id": "session-id"
+  });
+
+  assert.deepEqual(resolveRequestContext({
+    id: "generated-id",
+    headers: { "x-session-id": "session-only" }
+  }), {
+    requestId: "generated-id",
+    conversationId: "session-only",
+    sessionId: "session-only"
+  });
+
+  assert.deepEqual(resolveRequestContext({
+    id: "generated-id",
+    headers: { "x-request-id": "   ", "x-correlation-id": "legacy-id" }
+  }), {
+    requestId: "generated-id",
+    conversationId: "legacy-id",
+    sessionId: "legacy-id"
+  });
+
+  assert.deepEqual(resolveRequestContext({ id: "generated-id", headers: {} }), {
+    requestId: "generated-id",
+    conversationId: "generated-id",
+    sessionId: "generated-id"
+  });
+});
 
 test("disabled models cannot be called directly", () => {
   const disabledModel = { id: "disabled-model", status: "disabled" };
@@ -313,14 +361,16 @@ test("Responses-to-Chat shim preserves UTF-8 and emits one terminal frame", asyn
   );
   const split = bytes.indexOf(Buffer.from("你")) + 1;
   const raw = new FakeReplyRaw({ backpressure: true });
+  const outputParts = [];
   const { result } = await runResponsesToChatShim([
     bytes.subarray(0, split),
     bytes.subarray(split)
-  ], raw);
+  ], raw, (value, kind) => outputParts.push({ value, kind }));
 
   assert.equal(result.ok, true);
   assert.match(raw.output, /你/);
   assert.doesNotMatch(raw.output, /�/);
+  assert.deepEqual(outputParts, [{ value: "你", kind: "text" }]);
   assert.equal((raw.output.match(/data: \[DONE\]/g) || []).length, 1);
 });
 
@@ -519,4 +569,38 @@ test("client disconnect cancels the upstream stream", async () => {
   assert.equal(result.clientDisconnected, true);
   assert.equal(result.error?.code, "CLIENT_DISCONNECTED");
   assert.equal(cancelReason, "client-disconnected");
+});
+
+test("client disconnect stops parsing a chunk released by reader cancellation", async () => {
+  let releaseRead;
+  let readCount = 0;
+  let contentCallbacks = 0;
+  const chunk = new TextEncoder().encode(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "must not be parsed" })}\n\n`);
+  const reader = {
+    read() {
+      readCount += 1;
+      if (readCount > 1) return Promise.resolve({ done: true });
+      return new Promise((resolve) => { releaseRead = resolve; });
+    },
+    async cancel() {
+      releaseRead?.({ done: false, value: chunk });
+    }
+  };
+  const raw = new FakeReplyRaw();
+  const streamPromise = streamPassthrough({
+    upstreamResponse: { body: { getReader: () => reader } },
+    reply: { raw },
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {},
+    onContent() { contentCallbacks += 1; }
+  });
+
+  queueMicrotask(() => raw.emit("close"));
+  const result = await streamPromise;
+
+  assert.equal(result.clientDisconnected, true);
+  assert.equal(contentCallbacks, 0);
+  assert.equal(raw.output, "");
 });

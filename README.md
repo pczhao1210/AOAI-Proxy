@@ -13,6 +13,7 @@
 - Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or `api-key`, based on `auth.mode`
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
+- Optional DCE-based Log Analytics export for correlated proxy events, usage, and redacted prompt/output content; see the [setup guide](docs/log-analytics-dce.en.md)
 
 ## Deployment Assets
 

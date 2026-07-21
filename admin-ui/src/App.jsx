@@ -8,6 +8,7 @@ import {
   fetchPricingLibrary,
   fetchRuntime,
   fetchStats,
+  initializeLogAnalytics,
   reloadConfig,
   restartService,
   saveConfig,
@@ -117,6 +118,7 @@ export default function App() {
   const [pricingSyncSource, setPricingSyncSource] = useState({ owner: "", repo: "", path: "pricing", ref: "" });
   const [databaseConfigForm, setDatabaseConfigForm] = useState(() => normalizeDatabaseConfigForm());
   const [databaseTestResult, setDatabaseTestResult] = useState(null);
+  const [logAnalyticsInitializationResult, setLogAnalyticsInitializationResult] = useState(null);
   const [logs, setLogs] = useState({ total: 0, limit: 100, items: [] });
   const [caddyStatus, setCaddyStatus] = useState(null);
   const [message, setMessage] = useState("");
@@ -131,7 +133,7 @@ export default function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logFilters, setLogFilters] = useState(DEFAULT_LOG_FILTERS);
   const [aadStatus, setAadStatus] = useState(null);
-  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false, databaseTest: false, databaseDefaults: false, runtimeSync: false, modelValidation: false });
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false, databaseTest: false, databaseDefaults: false, logAnalyticsInitialize: false, runtimeSync: false, modelValidation: false });
   const [testEndpoint, setTestEndpoint] = useState(TEST_ENDPOINTS[0]);
   const [testApiKey, setTestApiKey] = useState("");
   const [testPayloadText, setTestPayloadText] = useState(JSON.stringify(buildDefaultTestPayload(TEST_ENDPOINTS[0], null), null, 2));
@@ -312,6 +314,7 @@ export default function App() {
     setPricingCatalogError("");
     setJsonError("");
     setDatabaseTestResult(null);
+    setLogAnalyticsInitializationResult(null);
   }
 
   async function loadSecondaryData(requestId, filters = runtimeFilters, options = {}) {
@@ -584,6 +587,51 @@ export default function App() {
       setError(testError.message || t("messages.databaseTestFailed", "Database connection test failed."));
     } finally {
       setDiagnosticsBusy((current) => ({ ...current, databaseTest: false }));
+    }
+  }
+
+  async function handleInitializeLogAnalytics() {
+    const settings = config?.observability?.logAnalytics || {};
+    setDiagnosticsBusy((current) => ({ ...current, logAnalyticsInitialize: true }));
+    setError("");
+    try {
+      const result = await initializeLogAnalytics({
+        workspaceResourceId: settings.workspaceResourceId,
+        dataCollectionEndpointResourceId: settings.dataCollectionEndpointResourceId,
+        dataCollectionRuleName: settings.dataCollectionRuleName,
+        tableName: settings.tableName,
+        streamName: settings.streamName,
+        audience: settings.audience,
+        credentialRef: settings.credentialRef
+      });
+      startTransition(() => {
+        setLogAnalyticsInitializationResult(result);
+        if (result.suggestedConfig) {
+          updateConfig((next) => {
+            next.observability ||= {};
+            next.observability.logAnalytics = {
+              ...(next.observability.logAnalytics || {}),
+              ...result.suggestedConfig
+            };
+          });
+        }
+      });
+      if (result.ok) {
+        setMessage(t("messages.logAnalyticsInitializeSuccess", "Log Analytics resources initialized and the probe was uploaded. Save the configuration to enable the sink."));
+      } else {
+        setError(result.error?.message || t("messages.logAnalyticsInitializeFailed", "Log Analytics initialization needs attention."));
+      }
+    } catch (initializationError) {
+      const result = initializationError.payload || {
+        ok: false,
+        status: "failed",
+        phases: [],
+        error: { message: initializationError.message }
+      };
+      startTransition(() => setLogAnalyticsInitializationResult(result));
+      setError(result.error?.message || initializationError.message || t("messages.logAnalyticsInitializeFailed", "Log Analytics initialization failed."));
+    } finally {
+      setDiagnosticsBusy((current) => ({ ...current, logAnalyticsInitialize: false }));
     }
   }
 
@@ -1387,9 +1435,11 @@ export default function App() {
           databaseConfigForm={databaseConfigForm}
           setDatabaseConfigForm={setDatabaseConfigForm}
           databaseTestResult={databaseTestResult}
+          logAnalyticsInitializationResult={logAnalyticsInitializationResult}
           diagnosticsBusy={diagnosticsBusy}
           onReloadDatabaseDefaults={handleReloadDatabaseDefaults}
           onTestDatabaseConnection={handleTestDatabaseConnection}
+          onInitializeLogAnalytics={handleInitializeLogAnalytics}
           formatDateTime={formatDateTime}
           t={t}
         />

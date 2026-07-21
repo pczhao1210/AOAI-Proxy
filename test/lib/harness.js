@@ -102,6 +102,9 @@ function createMockUpstreamServer() {
     }
 
     if (req.method === "POST" && pathname.endsWith("/responses")) {
+      const omitUsage = typeof body?.input === "string" && body.input.startsWith("local usage fallback");
+      const disconnectBeforeUsage = body?.input === "disconnect usage fallback";
+      const upstreamDisconnectBeforeUsage = body?.input === "upstream disconnect usage fallback";
       if (body?.stream === true) {
         const response = {
           id: "resp-stream-test",
@@ -110,14 +113,24 @@ function createMockUpstreamServer() {
           model: body?.model || "gpt-5.6-luna",
           status: "completed",
           output: [],
-          usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16 }
+          ...(omitUsage || disconnectBeforeUsage || upstreamDisconnectBeforeUsage ? {} : { usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16 } })
         };
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache"
         });
         res.write(`data: ${JSON.stringify({ type: "response.created", response: { ...response, status: "in_progress" } })}\n\n`);
-        res.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok from mock responses stream" })}\n\n`);
+        const deltaFrame = `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok from mock responses stream" })}\n\n`;
+        if (upstreamDisconnectBeforeUsage) {
+          res.write(deltaFrame, () => res.destroy(new Error("mock upstream disconnected")));
+          return;
+        }
+        res.write(deltaFrame);
+        if (disconnectBeforeUsage) {
+          const timer = setTimeout(() => res.end(), 5000);
+          res.once("close", () => clearTimeout(timer));
+          return;
+        }
         res.write(`data: ${JSON.stringify({ type: "response.output_text.done", text: "ok from mock responses stream" })}\n\n`);
         res.end(`data: ${JSON.stringify({ type: "response.completed", response })}\n\n`);
         return;
@@ -141,11 +154,13 @@ function createMockUpstreamServer() {
             ]
           }
         ],
-        usage: {
-          input_tokens: 10,
-          output_tokens: 6,
-          total_tokens: 16
-        }
+        ...(omitUsage ? {} : {
+          usage: {
+            input_tokens: 10,
+            output_tokens: 6,
+            total_tokens: 16
+          }
+        })
       });
       return;
     }

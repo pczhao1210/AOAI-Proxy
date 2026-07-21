@@ -924,6 +924,32 @@ th {
   border-color: rgba(255, 107, 125, 0.24);
 }
 
+.log-analytics-init-panel {
+  min-width: 0;
+}
+
+.resource-id-value {
+  margin-top: 0.45rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.phase-succeeded {
+  color: #78e0b8;
+}
+
+.phase-failed {
+  color: #ff8c9b;
+}
+
+.phase-missing,
+.phase-unknown,
+.phase-pending {
+  color: #f4ca76;
+}
+
 .database-probe-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
