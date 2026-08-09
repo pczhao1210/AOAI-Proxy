@@ -890,7 +890,7 @@ export async function proxyRequest({
 
   if (nextBody && typeof nextBody === "object") {
     normalizeReasoningConfig(nextBody, backendRouteKey);
-    sanitizeResponsesToolDescriptions(nextBody, backendRouteKey);
+    normalizeResponsesToolDescriptions(nextBody, backendRouteKey);
     if (backendRouteKey === "messages") {
       const anthropicCompatibilityError = applyAnthropicBodyCompatibility(
         nextBody,
@@ -2021,17 +2021,24 @@ function normalizeReasoningConfig(body, backendRouteKey) {
   }
 }
 
-function sanitizeResponsesToolDescriptions(body, backendRouteKey) {
-  if (backendRouteKey !== "responses" || !Array.isArray(body?.tools)) return;
-
-  for (const tool of body.tools) {
-    if (
-      tool?.type === "function"
-      && typeof tool.description === "string"
-      && !tool.description.trim()
-    ) {
-      delete tool.description;
+function normalizeResponsesToolDescriptionList(tools) {
+  if (!Array.isArray(tools)) return;
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") continue;
+    if (tool.type !== "function" && tool.type !== "custom") continue;
+    if (tool.description == null || (typeof tool.description === "string" && !tool.description.trim())) {
+      const toolName = typeof tool.name === "string" ? tool.name.trim() : "";
+      tool.description = toolName || "Tool";
     }
+  }
+}
+
+function normalizeResponsesToolDescriptions(body, backendRouteKey) {
+  if (backendRouteKey !== "responses") return;
+  normalizeResponsesToolDescriptionList(body?.tools);
+  if (!Array.isArray(body?.input)) return;
+  for (const item of body.input) {
+    normalizeResponsesToolDescriptionList(item?.tools);
   }
 }
 

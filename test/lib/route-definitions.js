@@ -60,16 +60,44 @@ export const routeTests = [
         method: "POST",
         json: {
           model: "gpt-5-mini",
-          input: "hello",
-          tools: [{
-            type: "function",
-            name: "lookup",
-            description: "",
-            parameters: {
-              type: "object",
-              properties: {}
+          input: [{
+            role: "user",
+            content: "hello",
+            tools: [
+              {
+                type: "custom",
+                name: "nested_lookup",
+                description: "   ",
+                format: { type: "text" }
+              },
+              {
+                type: "function",
+                name: "documented_lookup",
+                description: "Keep this description",
+                parameters: { type: "object", properties: {} }
+              },
+              {
+                type: "function",
+                name: "missing_description",
+                parameters: { type: "object", properties: {} }
+              }
+            ]
+          }],
+          tools: [
+            {
+              type: "function",
+              name: "lookup",
+              description: "",
+              parameters: {
+                type: "object",
+                properties: {}
+              }
+            },
+            {
+              type: "code_interpreter",
+              container: { type: "auto" }
             }
-          }]
+          ]
         }
       });
 
@@ -79,7 +107,11 @@ export const routeTests = [
       const upstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
       ensure(upstreamRequest, "Expected upstream responses request");
       assert.equal(upstreamRequest.body?.model, "gpt-5-mini");
-      assert.equal("description" in upstreamRequest.body.tools[0], false);
+      assert.equal(upstreamRequest.body.tools[0].description, "lookup");
+      assert.equal("description" in upstreamRequest.body.tools[1], false);
+      assert.equal(upstreamRequest.body.input[0].tools[0].description, "nested_lookup");
+      assert.equal(upstreamRequest.body.input[0].tools[1].description, "Keep this description");
+      assert.equal(upstreamRequest.body.input[0].tools[2].description, "missing_description");
     }
   },
   {
@@ -656,7 +688,7 @@ export const routeTests = [
           tools: [{
             type: "function",
             name: "lookup",
-            description: "Look up a value",
+            description: "",
             parameters: {
               type: "object",
               properties: { id: { type: "string" } },
@@ -679,6 +711,7 @@ export const routeTests = [
       assert.equal(upstreamRequest.body?.stream, true);
       assert.deepEqual(upstreamRequest.body?.reasoning, { effort: "max" });
       assert.equal(upstreamRequest.body?.tools?.[0]?.name, "lookup");
+      assert.equal(upstreamRequest.body?.tools?.[0]?.description, "lookup");
     }
   },
   {
