@@ -24,11 +24,19 @@ import {
 } from "./proxy/body.js";
 import { prepareImageGenerationRequest } from "./proxy/image-adapter.js";
 import {
+  chatToMessagesRequest,
   chatToResponsesRequest,
+  mapChatCompletionJsonToMessages,
   responsesToChatRequest,
+  responsesToMessagesRequest,
   sanitizeChatToolTranscript,
+  mapMessagesJsonToChatCompletion,
+  mapMessagesJsonToResponses,
   mapResponsesJsonToChatCompletion,
-  mapChatCompletionJsonToResponses
+  mapResponsesJsonToMessages,
+  mapChatCompletionJsonToResponses,
+  messagesToChatRequest,
+  messagesToResponsesRequest
 } from "./proxy/shim.js";
 import {
   resolveUpstreamPolicy,
@@ -39,7 +47,8 @@ import {
   buildErrorBody,
   fetchOnceWithConnectTimeout,
   fetchWithRetry,
-  parseJsonWithTimeout
+  parseJsonWithTimeout,
+  readTextWithTimeout
 } from "./proxy/reliability.js";
 import {
   setSseResponseHeaders,
@@ -62,6 +71,129 @@ import { getRequestNetworkContext } from "./request-network.js";
 import { buildCorrelationHeaders, getRequestContext } from "./request-context.js";
 
 const DEFAULT_MAX_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
+const TEXT_PROTOCOL_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
+const ANTHROPIC_REQUEST_HEADERS = new Set(["anthropic-version", "anthropic-beta"]);
+const VALID_ANTHROPIC_CACHE_TTLS = new Set(["5m", "1h"]);
+
+function anthropicCompatibility(config) {
+  return config?.compatibility?.anthropic || {};
+}
+
+function isSupportedAnthropicCacheLocation(path) {
+  if (path.length === 0) return true;
+  if (path.length === 2 && path[0] === "tools" && Number.isInteger(path[1])) return true;
+  if (path.length === 2 && path[0] === "system" && Number.isInteger(path[1])) return true;
+  return path.length === 4
+    && path[0] === "messages"
+    && Number.isInteger(path[1])
+    && path[2] === "content"
+    && Number.isInteger(path[3]);
+}
+
+function sanitizeAnthropicCacheControls(value, path = []) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => sanitizeAnthropicCacheControls(item, [...path, index]));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  const currentType = typeof value.type === "string" ? value.type : "";
+  if ("cache_control" in value) {
+    const cacheControl = value.cache_control;
+    const ttl = typeof cacheControl?.ttl === "string" ? cacheControl.ttl : "";
+    if (
+      !isSupportedAnthropicCacheLocation(path)
+      || currentType === "thinking"
+      || currentType === "redacted_thinking"
+      || (currentType === "text" && !String(value.text || ""))
+      || !cacheControl
+      || typeof cacheControl !== "object"
+      || Array.isArray(cacheControl)
+      || cacheControl.type !== "ephemeral"
+      || (ttl && !VALID_ANTHROPIC_CACHE_TTLS.has(ttl))
+    ) {
+      delete value.cache_control;
+    } else {
+      value.cache_control = {
+        type: "ephemeral",
+        ...(ttl ? { ttl } : {})
+      };
+    }
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key !== "cache_control") sanitizeAnthropicCacheControls(child, [...path, key]);
+  }
+}
+
+function resolveAnthropicThinkingTypes(config, modelId) {
+  const profiles = anthropicCompatibility(config).thinkingTypesByModel;
+  if (!profiles || typeof profiles !== "object") return null;
+  const deployment = String(modelId || "").trim().toLowerCase();
+  const types = profiles[deployment];
+  return Array.isArray(types) && types.length > 0 ? types : null;
+}
+
+function applyAnthropicBodyCompatibility(body, config, modelId) {
+  if (!body || typeof body !== "object") return null;
+  const policy = anthropicCompatibility(config);
+  const thinkingType = typeof body.thinking?.type === "string"
+    ? body.thinking.type.trim()
+    : "";
+  if (thinkingType && policy.validateThinkingByModel !== false) {
+    const allowedTypes = resolveAnthropicThinkingTypes(config, modelId);
+    if (allowedTypes && !allowedTypes.includes(thinkingType)) {
+      return {
+        param: "thinking.type",
+        message: `thinking.type=${thinkingType} is not supported by ${modelId}; use ${allowedTypes.join(" or ")}`
+      };
+    }
+  }
+  if (policy.normalizeManualThinkingToolChoice !== false && body.thinking?.type === "enabled") {
+    const choiceType = body.tool_choice?.type;
+    if (choiceType === "any" || choiceType === "tool") {
+      body.tool_choice = {
+        ...body.tool_choice,
+        type: "auto"
+      };
+      delete body.tool_choice.name;
+    }
+  }
+  if (policy.sanitizeCacheControl !== false) {
+    sanitizeAnthropicCacheControls(body);
+  }
+  return null;
+}
+
+function sanitizeToolControlsWithoutTools(body) {
+  if (!body || typeof body !== "object") return;
+  const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+  const hasLegacyFunctions = Array.isArray(body.functions) && body.functions.length > 0;
+  if (hasTools || hasLegacyFunctions) return;
+  delete body.tool_choice;
+  delete body.parallel_tool_calls;
+  delete body.function_call;
+}
+
+function applyAnthropicBetaPolicy(headers, config) {
+  const policy = anthropicCompatibility(config);
+  if (policy.betaAllowlistEnabled === false) return;
+  const allowed = new Set(normalizeStringList(policy.betaAllowlist));
+  const seen = new Set();
+  const accepted = [];
+  for (const headerName of Object.keys(headers)) {
+    if (headerName.toLowerCase() !== "anthropic-beta") continue;
+    const values = String(headers[headerName] || "").split(",");
+    delete headers[headerName];
+    for (const rawValue of values) {
+      const value = rawValue.trim();
+      if (!value || !allowed.has(value) || seen.has(value)) continue;
+      seen.add(value);
+      accepted.push(value);
+    }
+  }
+  if (accepted.length) headers["anthropic-beta"] = accepted.join(",");
+}
 
 function emitInfoLog(payload) {
   const normalizedPayload = {
@@ -108,6 +240,32 @@ function extractFailureDetails(detail) {
     ...(typeof upstreamError?.type === "string" && upstreamError.type ? { upstreamType: upstreamError.type } : {}),
     ...(upstreamError?.param != null ? { upstreamParam: String(upstreamError.param) } : {}),
     ...(innerMessage ? { upstreamInnerMessage: innerMessage } : {})
+  };
+}
+
+function getProviderPayloadError(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const explicitError = payload.error && typeof payload.error === "object"
+    ? payload.error
+    : null;
+  const failed = payload.status === "failed"
+    || payload.type === "error"
+    || payload.type === "response.failed"
+    || payload.object === "error"
+    || explicitError != null;
+  if (!failed) return null;
+  const source = explicitError || payload;
+  return {
+    message: typeof source.message === "string" && source.message
+      ? source.message
+      : "upstream provider returned a failed response",
+    code: typeof source.code === "string" && source.code
+      ? source.code
+      : "provider_response_failed",
+    type: typeof source.type === "string" && source.type
+      ? source.type
+      : "provider_error",
+    param: source.param ?? null
   };
 }
 
@@ -504,7 +662,7 @@ export async function proxyRequest({
     }
   }
 
-  if (Array.isArray(body.messages)) {
+  if (routeKey === "chat/completions" && Array.isArray(body.messages)) {
     const sanitizedToolTranscript = sanitizeChatToolTranscript(body.messages);
     if (sanitizedToolTranscript.changed) {
       body = {
@@ -593,6 +751,27 @@ export async function proxyRequest({
   let backendRouteKey = override
     ? inferBackendRouteKey(routeKey, override)
     : normalizeBackendRouteKey(effectiveRouteKey);
+  if (TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
+    log.error({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      status: 400,
+      event: "proxy.request_rejected",
+      errorCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+      failureReason: `Unsupported text backend protocol: ${backendRouteKey}`
+    }, "request rejected: unsupported text backend protocol");
+    sendProxyError(400, {
+      code: "UNSUPPORTED_PROTOCOL_ROUTE",
+      exposedCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+      message: `Cannot route ${routeKey} requests to unsupported backend protocol ${backendRouteKey}`,
+      detail: { clientProtocol: routeKey, backendProtocol: backendRouteKey }
+    });
+    return;
+  }
   if (
     routeKey === "chat/completions"
     && backendRouteKey === "chat/completions"
@@ -624,7 +803,11 @@ export async function proxyRequest({
   let upstreamAuthHeaders;
   try {
     markTiming(timing, "authStartAt");
-    upstreamAuthHeaders = await getUpstreamAuthHeaders(config.auth.scope);
+    const usesAnthropicMessages = backendRouteKey === "messages";
+    upstreamAuthHeaders = await getUpstreamAuthHeaders(
+      usesAnthropicMessages ? "https://ai.azure.com/.default" : config.auth.scope,
+      { apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key" }
+    );
     markTiming(timing, "authReadyAt");
   } catch (error) {
     recordError(model.id, consumer);
@@ -669,17 +852,24 @@ export async function proxyRequest({
   }
 
   isStream = getStreamFlag(body);
-  const needsChatResponsesShim =
-    (routeKey === "chat/completions" && backendRouteKey === "responses")
-    || (routeKey === "responses" && backendRouteKey === "chat/completions");
+  const needsProtocolShim =
+    routeKey !== backendRouteKey
+    && TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey)
+    && TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey);
 
   let nextBody;
-  if (needsChatResponsesShim && routeKey === "chat/completions" && backendRouteKey === "responses") {
+  if (routeKey === "chat/completions" && backendRouteKey === "responses") {
     nextBody = chatToResponsesRequest(body, deployment);
-    if (isStream) nextBody.stream = true;
-  } else if (needsChatResponsesShim && routeKey === "responses" && backendRouteKey === "chat/completions") {
+  } else if (routeKey === "responses" && backendRouteKey === "chat/completions") {
     nextBody = responsesToChatRequest(body, deployment);
-    if (isStream) nextBody.stream = true;
+  } else if (routeKey === "chat/completions" && backendRouteKey === "messages") {
+    nextBody = chatToMessagesRequest(body, deployment);
+  } else if (routeKey === "responses" && backendRouteKey === "messages") {
+    nextBody = responsesToMessagesRequest(body, deployment);
+  } else if (routeKey === "messages" && backendRouteKey === "chat/completions") {
+    nextBody = messagesToChatRequest(body, deployment);
+  } else if (routeKey === "messages" && backendRouteKey === "responses") {
+    nextBody = messagesToResponsesRequest(body, deployment);
   } else {
     nextBody = body.model === deployment
       ? body
@@ -688,6 +878,7 @@ export async function proxyRequest({
         model: deployment
       };
   }
+  if (isStream && needsProtocolShim) nextBody.stream = true;
 
   nextBody = prepareImageGenerationRequest({
     body: nextBody,
@@ -699,6 +890,37 @@ export async function proxyRequest({
 
   if (nextBody && typeof nextBody === "object") {
     normalizeReasoningConfig(nextBody, backendRouteKey);
+    sanitizeResponsesToolDescriptions(nextBody, backendRouteKey);
+    if (backendRouteKey === "messages") {
+      const anthropicCompatibilityError = applyAnthropicBodyCompatibility(
+        nextBody,
+        config,
+        deployment || modelId
+      );
+      if (anthropicCompatibilityError) {
+        log.error({
+          source: "proxy",
+          requestId,
+          ...requestNetworkContext,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          status: 400,
+          event: "proxy.request_rejected",
+          errorCode: "UNSUPPORTED_PARAMETER",
+          param: anthropicCompatibilityError.param,
+          failureReason: anthropicCompatibilityError.message
+        }, anthropicCompatibilityError.message);
+        sendProxyError(400, {
+          code: "UNSUPPORTED_PARAMETER",
+          exposedCode: "UnsupportedParameter",
+          message: anthropicCompatibilityError.message,
+          param: anthropicCompatibilityError.param
+        });
+        return;
+      }
+    }
+    sanitizeToolControlsWithoutTools(nextBody);
     const unsupportedWebSearch = sanitizeWebSearchRequest(nextBody, {
       backendRouteKey,
       upstream,
@@ -862,6 +1084,16 @@ export async function proxyRequest({
   }
   governanceLease = governanceResult.lease;
 
+  const upstreamAbortController = new AbortController();
+  const abortUpstream = () => {
+    if (!upstreamAbortController.signal.aborted && !reply.raw.writableEnded) {
+      upstreamAbortController.abort("client-disconnected");
+    }
+  };
+  req.raw?.once?.("aborted", abortUpstream);
+  reply.raw?.once?.("close", abortUpstream);
+  if (req.raw?.aborted || reply.raw?.destroyed) abortUpstream();
+
   const recordProxyError = ({ status = null, errorCode = "", failureReason = "", source = "proxy" } = {}) => {
     recordError(model.id, {
       keyId: consumer?.keyId,
@@ -958,7 +1190,7 @@ export async function proxyRequest({
     });
   };
   const recordEstimatedUsageIfMissing = (completionBytes, reason) => {
-    if (usageRecorded || !["chat/completions", "responses"].includes(routeKey)) return false;
+    if (usageRecorded || !TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey)) return false;
     const semanticPromptBytes = estimateSemanticTextBytes(nextBody);
     const promptTokens = estimateLocalTokensFromBytes(semanticPromptBytes || requestContentSnapshot.bytes);
     const completionTokens = estimateLocalTokensFromBytes(completionBytes);
@@ -1057,9 +1289,21 @@ export async function proxyRequest({
       ...sanitizeIncomingHeaders(req.headers, config),
       ...sanitizeConfiguredUpstreamHeaders(upstream.headersTemplate),
       "content-type": "application/json",
+      ...(backendRouteKey === "messages"
+        ? { "anthropic-version": String(req.headers["anthropic-version"] || "2023-06-01").trim() || "2023-06-01" }
+        : {}),
       ...upstreamAuthHeaders,
       ...(config?.proxy?.forwardHeaders?.addRequestIdHeader === false ? {} : buildCorrelationHeaders(requestContext))
     };
+    if (backendRouteKey !== "messages") {
+      for (const headerName of Object.keys(headers)) {
+        if (ANTHROPIC_REQUEST_HEADERS.has(headerName.toLowerCase())) {
+          delete headers[headerName];
+        }
+      }
+    } else {
+      applyAnthropicBetaPolicy(headers, config);
+    }
     const bodyText = JSON.stringify(nextBody);
     const maxRequestBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxRequestBodyBytes);
     if (maxRequestBodyBytes > 0 && Buffer.byteLength(bodyText) > maxRequestBodyBytes) {
@@ -1111,16 +1355,30 @@ export async function proxyRequest({
             connectTimeoutMs: policy.connectTimeoutMs,
             timeoutMs: policy.firstByteTimeoutMs,
             timeoutCode: "UPSTREAM_FIRST_BYTE_TIMEOUT",
-            timeoutLabel: "first byte"
+            timeoutLabel: "first byte",
+            signal: upstreamAbortController.signal
           });
           markTiming(timing, "upstreamHeadersAt");
         } catch (error) {
           const classified = classifyFetchError(error);
+          if (classified.code === "CLIENT_DISCONNECTED") {
+            finishTiming({ status: 499, outcome: "client_disconnected", errorCode: classified.code, source: "client" });
+            return;
+          }
           const retryableNetworkError = classified.retryable && policy.classifyNetworkErrorsAsRetryable !== false;
           if (attempt < maxAttempts && retryableNetworkError) {
             const backoffMs = computeBackoffMs(policy, attempt);
             log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream fetch retry");
-            await sleep(backoffMs);
+            try {
+              await sleep(backoffMs, upstreamAbortController.signal);
+            } catch (abortError) {
+              const aborted = classifyFetchError(abortError);
+              if (aborted.code === "CLIENT_DISCONNECTED") {
+                finishTiming({ status: 499, outcome: "client_disconnected", errorCode: aborted.code, source: "client" });
+                return;
+              }
+              throw abortError;
+            }
             continue;
           }
           recordProxyError({
@@ -1155,13 +1413,52 @@ export async function proxyRequest({
         }
 
         if (!upstreamResponse.ok) {
-          const detail = await upstreamResponse.text().catch(() => "");
+          let detail = "";
+          try {
+            detail = await readTextWithTimeout(
+              upstreamResponse,
+              policy.requestTimeoutMs,
+              1024 * 1024,
+              upstreamAbortController.signal
+            );
+          } catch (readError) {
+            const readFailure = classifyFetchError(readError);
+            if (readFailure.code === "CLIENT_DISCONNECTED") {
+              finishTiming({ status: 499, outcome: "client_disconnected", errorCode: readFailure.code, source: "client" });
+              return;
+            }
+            if (attempt < maxAttempts && readFailure.retryable && policy.classifyNetworkErrorsAsRetryable !== false) {
+              const backoffMs = computeBackoffMs(policy, attempt);
+              log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: readFailure.code }, "stream retry on HTTP error body read failure");
+              try {
+                await sleep(backoffMs, upstreamAbortController.signal);
+              } catch (abortError) {
+                const aborted = classifyFetchError(abortError);
+                if (aborted.code === "CLIENT_DISCONNECTED") {
+                  finishTiming({ status: 499, outcome: "client_disconnected", errorCode: aborted.code, source: "client" });
+                  return;
+                }
+                throw abortError;
+              }
+              continue;
+            }
+            detail = readFailure.detail;
+          }
           const classified = classifyHttpStatus(upstreamResponse.status);
           const retryableStatus = policy.retryStatuses.has(upstreamResponse.status) || classified.retryable;
           if (attempt < maxAttempts && retryableStatus) {
             const backoffMs = computeBackoffMs(policy, attempt);
             log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "stream upstream retry on status");
-            await sleep(backoffMs);
+            try {
+              await sleep(backoffMs, upstreamAbortController.signal);
+            } catch (abortError) {
+              const aborted = classifyFetchError(abortError);
+              if (aborted.code === "CLIENT_DISCONNECTED") {
+                finishTiming({ status: 499, outcome: "client_disconnected", errorCode: aborted.code, source: "client" });
+                return;
+              }
+              throw abortError;
+            }
             continue;
           }
           recordProxyError({
@@ -1200,10 +1497,11 @@ export async function proxyRequest({
           return;
         }
 
-        const streamResult = !needsChatResponsesShim
+        const streamResult = !needsProtocolShim
           ? await streamPassthrough({
             upstreamResponse,
             reply,
+            backendRouteKey,
             policy,
             onFirstChunk: () => {
               markTiming(timing, "firstChunkAt");
@@ -1342,7 +1640,16 @@ export async function proxyRequest({
         if (canRetry) {
           const backoffMs = computeBackoffMs(policy, attempt);
           log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream retry before first chunk");
-          await sleep(backoffMs);
+          try {
+            await sleep(backoffMs, upstreamAbortController.signal);
+          } catch (abortError) {
+            const aborted = classifyFetchError(abortError);
+            if (aborted.code === "CLIENT_DISCONNECTED") {
+              finishTiming({ status: 499, outcome: "client_disconnected", errorCode: aborted.code, source: "client" });
+              return;
+            }
+            throw abortError;
+          }
           continue;
         }
 
@@ -1365,7 +1672,7 @@ export async function proxyRequest({
         if (!streamingStarted) {
           reply.code(classified.status || 502).send(errBody);
         } else if (!streamResult.providerErrorForwarded) {
-          await writeSseError(reply.raw, errBody);
+          await writeSseError(reply.raw, errBody, routeKey);
           reply.raw.end();
         } else {
           reply.raw.end();
@@ -1423,10 +1730,15 @@ export async function proxyRequest({
       bodyText,
       policy,
       logMeta: { source: "upstream", requestId, modelId, routeKey, backendRouteKey },
-      log
+      log,
+      signal: upstreamAbortController.signal
     });
     timing.upstreamAttempts = fetchResult.attempt || timing.upstreamAttempts;
     if (!fetchResult.ok) {
+      if (fetchResult.classified.code === "CLIENT_DISCONNECTED") {
+        finishTiming({ status: 499, outcome: "client_disconnected", errorCode: fetchResult.classified.code, source: "client" });
+        return;
+      }
       recordProxyError({
         status: fetchResult.upstreamStatus || fetchResult.classified.status || 502,
         errorCode: fetchResult.classified.code,
@@ -1493,9 +1805,18 @@ export async function proxyRequest({
     }
     let payload = null;
     try {
-      payload = await parseJsonWithTimeout(upstreamResponse, policy.requestTimeoutMs, maxResponseBodyBytes);
+      payload = await parseJsonWithTimeout(
+        upstreamResponse,
+        policy.requestTimeoutMs,
+        maxResponseBodyBytes,
+        upstreamAbortController.signal
+      );
     } catch (error) {
       const classified = classifyFetchError(error);
+      if (classified.code === "CLIENT_DISCONNECTED") {
+        finishTiming({ status: 499, outcome: "client_disconnected", errorCode: classified.code, source: "client" });
+        return;
+      }
       recordProxyError({
         status: classified.status || 504,
         errorCode: classified.code,
@@ -1526,7 +1847,32 @@ export async function proxyRequest({
       return;
     }
 
-    if (needsChatResponsesShim) {
+    const providerPayloadError = getProviderPayloadError(payload);
+    if (providerPayloadError) {
+      recordProxyError({
+        status: 502,
+        errorCode: providerPayloadError.code,
+        failureReason: providerPayloadError.message,
+        source: "provider"
+      });
+      sendProxyError(502, {
+        code: "UPSTREAM_PROVIDER_RESPONSE_ERROR",
+        exposedCode: providerPayloadError.code,
+        type: providerPayloadError.type,
+        param: providerPayloadError.param,
+        message: providerPayloadError.message,
+        detail: payload
+      });
+      finishTiming({
+        status: 502,
+        outcome: "provider_response_failed",
+        errorCode: providerPayloadError.code,
+        source: "provider"
+      });
+      return;
+    }
+
+    if (needsProtocolShim) {
       if (routeKey === "chat/completions" && backendRouteKey === "responses") {
         const mapped = mapResponsesJsonToChatCompletion(payload, modelId);
         reply.code(200).send(mapped);
@@ -1557,6 +1903,50 @@ export async function proxyRequest({
         });
         return;
       }
+      if (routeKey === "chat/completions" && backendRouteKey === "messages") {
+        const mapped = mapMessagesJsonToChatCompletion(payload, modelId);
+        reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
+        finishTiming({ status: 200, outcome: "success", source: "proxy" });
+        return;
+      }
+      if (routeKey === "responses" && backendRouteKey === "messages") {
+        const mapped = mapMessagesJsonToResponses(payload, modelId);
+        reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
+        finishTiming({ status: 200, outcome: "success", source: "proxy" });
+        return;
+      }
+      if (routeKey === "messages" && backendRouteKey === "chat/completions") {
+        const mapped = mapChatCompletionJsonToMessages(payload, modelId);
+        reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
+        finishTiming({ status: 200, outcome: "success", source: "proxy" });
+        return;
+      }
+      if (routeKey === "messages" && backendRouteKey === "responses") {
+        const mapped = mapResponsesJsonToMessages(payload, modelId);
+        reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
+        finishTiming({ status: 200, outcome: "success", source: "proxy" });
+        return;
+      }
     }
 
     reply.code(upstreamResponse.status).send(payload);
@@ -1573,6 +1963,8 @@ export async function proxyRequest({
       source: "proxy"
     });
   } finally {
+    req.raw?.removeListener?.("aborted", abortUpstream);
+    reply.raw?.removeListener?.("close", abortUpstream);
     governanceLease?.release();
     finishTiming({
       status: reply.statusCode || null,
@@ -1626,6 +2018,20 @@ function normalizeReasoningConfig(body, backendRouteKey) {
     }
     delete body.reasoning;
     delete body.thinking;
+  }
+}
+
+function sanitizeResponsesToolDescriptions(body, backendRouteKey) {
+  if (backendRouteKey !== "responses" || !Array.isArray(body?.tools)) return;
+
+  for (const tool of body.tools) {
+    if (
+      tool?.type === "function"
+      && typeof tool.description === "string"
+      && !tool.description.trim()
+    ) {
+      delete tool.description;
+    }
   }
 }
 

@@ -36,6 +36,7 @@ function normalizePricingDefinition(rawDefinition) {
       routes: {
         "chat/completions": "/openai/v1/chat/completions",
         responses: "/openai/v1/responses",
+        messages: "/anthropic/v1/messages",
         "images/generations": "/openai/v1/images/generations"
       }
     }

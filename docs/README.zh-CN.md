@@ -8,7 +8,7 @@
 
 ## 概述
 
-- OpenAI 兼容端点：`/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/models`
+- OpenAI 与 Anthropic 兼容端点：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/images/generations`、`/v1/models`
 - Client -> Proxy 使用 API Key 鉴权
 - Proxy -> Azure AI Foundry / Azure OpenAI 根据 `auth.mode` 使用 AAD token 或 `api-key`
 - 静态管理页支持配置编辑、AAD 验证、统计查看和最近日志排查
@@ -422,6 +422,54 @@ az managedapp create \
 
 另外，代理现在会为流式 `chat/completions` 和 `responses` 请求保留 `stream_options`；只在 Foundry v1 可能拒绝的其他路由上移除它。
 
+## 协议路由
+
+代理提供三种文本生成协议：
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/messages`
+
+模型路由决定上游协议。同协议组合使用近似透传，不同协议组合执行显式的请求、JSON 响应和 SSE 转换。
+
+| 客户端协议 | Chat 上游 | Responses 上游 | Messages 上游 |
+| --- | --- | --- | --- |
+| Chat Completions | 近似透传 | 转换 | 转换 |
+| Responses | 转换 | 近似透传 | 转换 |
+| Anthropic Messages | 转换 | 转换 | 近似透传 |
+
+近似透传指 typed 语义保真，不是原始字节透传。代理仍会映射模型 ID、执行请求策略和图片处理、替换认证 header、采集 usage，并实施流超时。原生 Responses 保留 Responses item 和事件；原生 Messages 保留有序 Anthropic block 与 SSE 事件，包括 body 中的工具调用/结果和 thinking signature。
+
+跨协议转换覆盖文本、输入图片、函数工具、工具调用/结果、token 上限、停止原因、usage 与流式生命周期。Anthropic thinking signature 等缺少安全等价表达的协议专属字段，在跨协议路径上可能被省略或归一化。
+
+Microsoft Foundry 的 Claude deployment 应配置上游路由 `messages: "/anthropic/v1/messages"`。代理会自动把 Azure OpenAI resource host 切换为 `*.services.ai.azure.com`，缺省注入 `anthropic-version: 2023-06-01`，API key 模式使用 `x-api-key`，AAD 模式使用 `https://ai.azure.com/.default` scope。
+
+### Claude Code
+
+当请求包含 `Anthropic-Version`、使用 `format=anthropic/messages`，或 User-Agent 含 Claude/Anthropic 时，模型端点会返回 Anthropic Models 格式。因此可以开启 Claude Code 的网关模型发现：
+
+```bash
+export ANTHROPIC_BASE_URL="https://proxy.example.com"
+export ANTHROPIC_AUTH_TOKEN="your-proxy-api-key"
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+claude
+```
+
+代理默认开启 `compatibility.anthropic` 下的三项 Foundry 专属兼容策略：
+
+- `betaAllowlistEnabled`：只转发已审查的 beta token；默认包含细粒度工具流、交错 thinking 与上下文管理。
+- `normalizeManualThinkingToolChoice`：仅当 `thinking.type="enabled"` 为手动模式时，把强制 `any` / 指定工具改为 `auto`；adaptive thinking 不受影响。
+- `sanitizeCacheControl`：保留合法 ephemeral cache control 以及 Foundry 支持的 `5m` / `1h` TTL，移除不支持的字段和位置。
+- `validateThinkingByModel`：对微软文档已明确列出的 Claude 模型校验 `thinking.type`。未知或自定义 deployment alias 继续透传；当 deployment 名不等于标准模型 ID 时，可在 `thinkingTypesByModel` 中补充允许模式。
+
+这些设置只控制请求兼容性，不选择 wire protocol。需要回滚原生 Messages 时，应修改模型 route override，而不是关闭全部兼容策略。
+
+流输入支持 LF/CRLF、多条 `data:` 字段和末尾无换行的终态事件。只有源协议提供有效终态证据才记为成功：Chat 使用 `[DONE]` 或 EOF 前的最终 `finish_reason`，Responses 使用 completed/incomplete 或 EOF 前的 `.done` 终态，Anthropic 必须有 `message_stop`。提前 EOF 会返回 `UPSTREAM_INCOMPLETE_STREAM`，不会伪造成目标协议成功终止。
+
+并行工具调用在跨协议转换时保留 index 和稳定 call ID。连续 Responses function call 会合并成一个 Chat assistant 工具调用轮次；参数 delta 会等工具 identity 确定后再输出；当最终没有有效工具时会移除工具控制字段。HTTP 200 中携带 provider failed 状态的 payload 仍按失败处理，不会包装成空的成功响应。
+
+客户端取消会贯穿上游响应头等待、重试退避、流读取和非流 body 读取。非成功 error body 有大小与时间限制并可被取消，客户端断开后不会继续占用上游请求或重试循环。
+
 ## 模型级路由覆盖
 
 当客户端请求路由与后端能力不一致时，可使用 `models[].routes` 做覆盖：
@@ -441,6 +489,23 @@ az managedapp create \
 }
 ```
 
+把 Claude deployment 路由到原生 Messages 上游：
+
+```json
+{
+  "models": [
+    {
+      "id": "claude-sonnet-4-6",
+      "upstream": "foundry",
+      "targetModel": "claude-sonnet-4-6",
+      "routes": {
+        "*": "messages"
+      }
+    }
+  ]
+}
+```
+
 ## curl 示例
 
 列出模型：
@@ -450,3 +515,7 @@ az managedapp create \
 调用 chat：
 
 - `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer CHANGEME' -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`
+
+Anthropic Messages 请求：
+
+- `curl -sS http://127.0.0.1:3000/v1/messages -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' -H 'x-api-key: CHANGEME' -d '{"model":"claude-sonnet-4-6","max_tokens":256,"messages":[{"role":"user","content":"ping"}]}' | jq .`

@@ -126,7 +126,7 @@ const DEFAULTS = {
     },
     forwardHeaders: {
       mode: "denylist",
-      allow: ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id", "anthropic-beta", "openai-organization"],
+      allow: ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id", "anthropic-version", "anthropic-beta", "openai-organization"],
       deny: ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
       addRequestIdHeader: true
     },
@@ -146,6 +146,11 @@ const DEFAULTS = {
         allowedRequestFields: []
       },
       responses: {
+        enabled: true,
+        defaultParams: {},
+        allowedRequestFields: []
+      },
+      messages: {
         enabled: true,
         defaultParams: {},
         allowedRequestFields: []
@@ -347,7 +352,29 @@ const DEFAULTS = {
     mapImageCompressionToMediaInputCompression: true,
     mapServerUpstreamToProxyDefaults: true,
     warnOnDeprecatedFields: true,
-    failOnDeprecatedFieldsAfterVersion: 3
+    failOnDeprecatedFieldsAfterVersion: 3,
+    anthropic: {
+      betaAllowlistEnabled: true,
+      betaAllowlist: [
+        "fine-grained-tool-streaming-2025-05-14",
+        "interleaved-thinking-2025-05-14",
+        "context-management-2025-06-27"
+      ],
+      normalizeManualThinkingToolChoice: true,
+      sanitizeCacheControl: true,
+      validateThinkingByModel: true,
+      thinkingTypesByModel: {
+        "claude-mythos-5": ["adaptive"],
+        "claude-fable-5": ["adaptive"],
+        "claude-mythos-preview": ["adaptive", "enabled"],
+        "claude-opus-5": ["adaptive", "disabled"],
+        "claude-opus-4-8": ["adaptive", "disabled"],
+        "claude-opus-4-7": ["adaptive", "disabled"],
+        "claude-opus-4-6": ["adaptive", "enabled", "disabled"],
+        "claude-sonnet-5": ["adaptive", "disabled"],
+        "claude-sonnet-4-6": ["adaptive", "enabled", "disabled"]
+      }
+    }
   },
   apiKeys: [],
   upstreams: [],
@@ -673,7 +700,7 @@ function applySchemaCompatibility(rawConfig, merged) {
 
   merged.routing = deepMerge(DEFAULTS.routing, asPlainObject(merged.routing));
   merged.routing.routeProfiles = deepMerge(DEFAULTS.routing.routeProfiles, asPlainObject(merged.routing.routeProfiles));
-  for (const routeKey of ["chatCompletions", "responses", "imageGenerations"]) {
+  for (const routeKey of ["chatCompletions", "responses", "messages", "imageGenerations"]) {
     merged.routing.routeProfiles[routeKey] = deepMerge(DEFAULTS.routing.routeProfiles[routeKey], asPlainObject(merged.routing.routeProfiles[routeKey]));
     merged.routing.routeProfiles[routeKey].allowedRequestFields = normalizeStringArray(merged.routing.routeProfiles[routeKey].allowedRequestFields);
   }
@@ -683,6 +710,22 @@ function applySchemaCompatibility(rawConfig, merged) {
   merged.access = deepMerge(DEFAULTS.access, asPlainObject(merged.access));
   merged.access.defaults.keyHeaderNames = normalizeStringArray(merged.access.defaults.keyHeaderNames);
   merged.compatibility = deepMerge(DEFAULTS.compatibility, asPlainObject(merged.compatibility));
+  merged.compatibility.anthropic = deepMerge(
+    DEFAULTS.compatibility.anthropic,
+    asPlainObject(merged.compatibility.anthropic)
+  );
+  merged.compatibility.anthropic.betaAllowlist = normalizeStringArray(
+    merged.compatibility.anthropic.betaAllowlist
+  );
+  const thinkingTypesByModel = asPlainObject(merged.compatibility.anthropic.thinkingTypesByModel);
+  merged.compatibility.anthropic.thinkingTypesByModel = Object.fromEntries(
+    Object.entries(thinkingTypesByModel)
+      .map(([modelName, types]) => [
+        String(modelName).trim().toLowerCase(),
+        normalizeStringArray(types).map((type) => type.toLowerCase())
+      ])
+      .filter(([modelName, types]) => modelName && types.length > 0)
+  );
 
   merged.models = Array.isArray(merged.models)
     ? merged.models.map((model) => {
@@ -732,6 +775,7 @@ function applySchemaCompatibility(rawConfig, merged) {
         routes: {
           "chat/completions": "/openai/v1/chat/completions",
           responses: "/openai/v1/responses",
+          messages: "/anthropic/v1/messages",
           "images/generations": "/openai/v1/images/generations",
           "openai-image": "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview",
           "blackforest-image": "/providers/blackforestlabs/v1/{deployment}?api-version=preview"

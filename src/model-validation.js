@@ -36,11 +36,14 @@ function isDisabledStatus(status) {
 
 function inferValidationRouteKey(model, definition) {
   const interfaces = normalizeStringArray(definition?.interfaces);
-  if (interfaces.includes("images/generations")) {
-    return "images/generations";
-  }
-  const override = resolveModelRoute(model, "chat/completions");
-  return override ? inferBackendRouteKey("chat/completions", override) : "chat/completions";
+  const routeKey = interfaces.includes("images/generations")
+    ? "images/generations"
+    : interfaces.includes("messages")
+      ? "messages"
+      : interfaces.includes("responses") && !interfaces.includes("chat/completions")
+        ? "responses"
+        : "chat/completions";
+  return routeKey;
 }
 
 function buildValidationTarget(model, upstream, routeKey) {
@@ -67,6 +70,17 @@ function buildValidationPayload(target) {
       model: target.deployment,
       input: "health-check"
     }
+    : target.backendRouteKey === "messages"
+      ? {
+        model: target.deployment,
+        messages: [
+          {
+            role: "user",
+            content: "health-check"
+          }
+        ],
+        max_tokens: 1
+      }
     : target.backendRouteKey === "images/generations"
       ? {
         model: target.deployment,
@@ -285,9 +299,14 @@ async function probeConfiguredModel(config, item) {
     }
   });
 
+  const usesAnthropicMessages = target.backendRouteKey === "messages";
   const headers = {
     "content-type": "application/json",
-    ...await getUpstreamAuthHeaders(config?.auth?.scope),
+    ...(usesAnthropicMessages ? { "anthropic-version": "2023-06-01" } : {}),
+    ...await getUpstreamAuthHeaders(
+      usesAnthropicMessages ? "https://ai.azure.com/.default" : config?.auth?.scope,
+      { apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key" }
+    ),
     "x-request-id": `model-validate-${randomUUID()}`
   };
 

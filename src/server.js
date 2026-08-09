@@ -198,6 +198,29 @@ function buildModelList(config, consumer) {
   };
 }
 
+function buildAnthropicModelList(config, consumer) {
+  const createdAt = new Date().toISOString();
+  const data = filterModelsForConsumer(config.models, consumer).map((model) => ({
+    type: "model",
+    id: model.id,
+    display_name: model.displayName || model.id,
+    created_at: createdAt
+  }));
+  return {
+    data,
+    has_more: false,
+    ...(data.length ? { first_id: data[0].id, last_id: data.at(-1).id } : {})
+  };
+}
+
+function wantsAnthropicModelList(req) {
+  const format = String(req.query?.format || "").trim().toLowerCase();
+  if (["anthropic", "messages", "anthropic_messages"].includes(format)) return true;
+  if (String(req.headers["anthropic-version"] || "").trim()) return true;
+  const userAgent = String(req.headers["user-agent"] || "").toLowerCase();
+  return userAgent.includes("claude") || userAgent.includes("anthropic");
+}
+
 function attachAuth(config) {
   initAuth(config);
 }
@@ -402,7 +425,9 @@ app.get("/healthz", async () => ({ status: "ok" }));
 
 app.get("/v1/models", async (req) => {
   const config = getConfig();
-  return buildModelList(config, req.proxyAccess?.consumer);
+  return wantsAnthropicModelList(req)
+    ? buildAnthropicModelList(config, req.proxyAccess?.consumer)
+    : buildModelList(config, req.proxyAccess?.consumer);
 });
 
 app.post("/v1/chat/completions", async (req, reply) => {
@@ -413,6 +438,11 @@ app.post("/v1/chat/completions", async (req, reply) => {
 app.post("/v1/responses", async (req, reply) => {
   const config = getConfig();
   await proxyRequest({ config, routeKey: "responses", req, reply });
+});
+
+app.post("/v1/messages", async (req, reply) => {
+  const config = getConfig();
+  await proxyRequest({ config, routeKey: "messages", req, reply });
 });
 
 app.post("/v1/images/generations", async (req, reply) => {

@@ -11,10 +11,11 @@ const DEFAULT_GITHUB_OWNER = "pczhao1210";
 const DEFAULT_GITHUB_REPO = "AOAI-Proxy";
 const DEFAULT_GITHUB_PATH = "pricing";
 const PRICING_SYNC_METADATA_FILE = ".pricing-sync-meta";
-const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "stream", "images", "image"]);
+const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "messages", "stream", "images", "image"]);
 const DEFAULT_UPSTREAM_ROUTES = {
   "chat/completions": "/openai/v1/chat/completions",
   responses: "/openai/v1/responses",
+  messages: "/anthropic/v1/messages",
   "images/generations": "/openai/v1/images/generations"
 };
 

@@ -79,7 +79,7 @@
     },
     "forwardHeaders": {
       "mode": "allowlist",
-      "allow": ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id"],
+      "allow": ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id", "anthropic-version", "anthropic-beta"],
       "deny": ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
       "addRequestIdHeader": true
     },
@@ -99,6 +99,11 @@
         "allowedRequestFields": []
       },
       "responses": {
+        "enabled": true,
+        "defaultParams": {},
+        "allowedRequestFields": []
+      },
+      "messages": {
         "enabled": true,
         "defaultParams": {},
         "allowedRequestFields": []
@@ -240,6 +245,30 @@
       }
     }
   },
+  "compatibility": {
+    "anthropic": {
+      "betaAllowlistEnabled": true,
+      "betaAllowlist": [
+        "fine-grained-tool-streaming-2025-05-14",
+        "interleaved-thinking-2025-05-14",
+        "context-management-2025-06-27"
+      ],
+      "normalizeManualThinkingToolChoice": true,
+      "sanitizeCacheControl": true,
+      "validateThinkingByModel": true,
+      "thinkingTypesByModel": {
+        "claude-mythos-5": ["adaptive"],
+        "claude-fable-5": ["adaptive"],
+        "claude-mythos-preview": ["adaptive", "enabled"],
+        "claude-opus-5": ["adaptive", "disabled"],
+        "claude-opus-4-8": ["adaptive", "disabled"],
+        "claude-opus-4-7": ["adaptive", "disabled"],
+        "claude-opus-4-6": ["adaptive", "enabled", "disabled"],
+        "claude-sonnet-5": ["adaptive", "disabled"],
+        "claude-sonnet-4-6": ["adaptive", "enabled", "disabled"]
+      }
+    }
+  },
   "apiKeys": [
     {
       "id": "default",
@@ -258,6 +287,7 @@
       "routes": {
         "chat/completions": "/openai/v1/chat/completions",
         "responses": "/openai/v1/responses",
+        "messages": "/anthropic/v1/messages",
         "images/generations": "/openai/v1/images/generations"
       }
     }

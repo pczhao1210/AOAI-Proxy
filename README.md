@@ -8,9 +8,9 @@
 
 ## Overview
 
-- OpenAI-compatible proxy for `chat/completions`, `responses`, `images/generations`, and `models`
+- OpenAI- and Anthropic-compatible proxy for `chat/completions`, `responses`, `messages`, `images/generations`, and `models`
 - Client -> Proxy uses API key auth via `Authorization: Bearer` or `x-api-key`
-- Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or `api-key`, based on `auth.mode`
+- Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or protocol-appropriate `api-key` / `x-api-key` headers, based on `auth.mode`
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
 - Optional DCE-based Log Analytics export for correlated proxy events, usage, and redacted prompt/output content; see the [setup guide](docs/log-analytics-dce.en.md)
@@ -432,6 +432,54 @@ For `gpt-5` and newer models, plus `o*` reasoning models, the proxy now applies 
 
 The proxy also keeps `stream_options` for streaming `chat/completions` and `responses` requests, and strips it only for routes where Foundry v1 may reject it.
 
+## Protocol Routing
+
+The proxy exposes three text-generation protocols:
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/messages`
+
+The selected model route determines the upstream protocol. Matching protocol pairs use near-passthrough; mismatched pairs use explicit request, JSON response, and SSE conversion.
+
+| Client protocol | Chat backend | Responses backend | Messages backend |
+| --- | --- | --- | --- |
+| Chat Completions | near-passthrough | convert | convert |
+| Responses | convert | near-passthrough | convert |
+| Anthropic Messages | convert | convert | near-passthrough |
+
+Near-passthrough is semantic rather than byte-for-byte. The proxy still maps the model ID, applies request policy and media handling, replaces authentication headers, observes usage, and enforces stream timeouts. Native Responses preserves Responses items and events. Native Messages preserves ordered Anthropic blocks and SSE events, including tool use/results and thinking signatures present in the body.
+
+Cross-protocol conversion covers text, input images, function tools, tool calls/results, token limits, stop reasons, usage, and streaming lifecycle events. Protocol-specific fields without a safe equivalent, such as Anthropic thinking signatures and some provider-specific controls, can be omitted or normalized on cross-protocol paths.
+
+For Claude deployments in Microsoft Foundry, configure the upstream route as `messages: "/anthropic/v1/messages"`. The proxy automatically switches an Azure OpenAI resource host to `*.services.ai.azure.com`, injects `anthropic-version: 2023-06-01` when absent, uses `x-api-key` for key authentication, and uses the `https://ai.azure.com/.default` scope for AAD authentication.
+
+### Claude Code
+
+The model endpoint negotiates Anthropic's model-list shape when the request contains `Anthropic-Version`, uses `format=anthropic` / `format=messages`, or has a Claude/Anthropic user agent. Claude Code gateway model discovery can therefore be enabled:
+
+```bash
+export ANTHROPIC_BASE_URL="https://proxy.example.com"
+export ANTHROPIC_AUTH_TOKEN="your-proxy-api-key"
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+claude
+```
+
+The proxy enables three Foundry-specific Anthropic compatibility policies by default under `compatibility.anthropic`:
+
+- `betaAllowlistEnabled`: forwards only reviewed beta tokens. Defaults include fine-grained tool streaming, interleaved thinking, and context management.
+- `normalizeManualThinkingToolChoice`: changes forced `any` / named-tool choice to `auto` only for manual `thinking.type="enabled"`; adaptive thinking is unchanged.
+- `sanitizeCacheControl`: retains valid ephemeral cache controls and the Foundry-supported `5m` / `1h` TTL values while removing unsupported fields or placements.
+- `validateThinkingByModel`: validates `thinking.type` for Claude models whose capabilities are explicitly documented. Unknown/custom deployment aliases remain pass-through; add their allowed modes under `thinkingTypesByModel` when the deployment name doesn't match a standard model ID.
+
+These settings are request compatibility controls, not protocol selectors. Roll a model back from native Messages by changing its route override rather than disabling all compatibility policies.
+
+Streaming input accepts LF or CRLF SSE framing, multiple `data:` fields, and a terminal event without a trailing newline. A stream is successful only after the source protocol supplies valid terminal evidence: Chat `[DONE]` or a final `finish_reason` at EOF, Responses completed/incomplete or terminal `.done` evidence at EOF, and Anthropic `message_stop`. Premature EOF is reported as `UPSTREAM_INCOMPLETE_STREAM` and is never turned into a successful target terminator.
+
+Parallel tool calls retain their indexes and stable call IDs across protocol conversion. Consecutive Responses function calls become one Chat assistant tool-call turn, argument deltas are buffered until the tool identity is known, and tool controls are omitted when no valid tools remain. HTTP 200 payloads that carry a provider-level failed status remain failures rather than empty successful completions.
+
+Client cancellation propagates through upstream header waits, retry backoff, streaming reads, and non-stream response-body reads. Non-success error bodies are bounded and cancellation-aware, so a disconnected client does not leave an upstream request or retry loop running.
+
 ## Model Route Overrides
 
 Use `models[].routes` when the client-facing route and backend-supported route differ.
@@ -451,6 +499,23 @@ Use `models[].routes` when the client-facing route and backend-supported route d
 }
 ```
 
+Route a Claude deployment to its native Messages backend:
+
+```json
+{
+  "models": [
+    {
+      "id": "claude-sonnet-4-6",
+      "upstream": "foundry",
+      "targetModel": "claude-sonnet-4-6",
+      "routes": {
+        "*": "messages"
+      }
+    }
+  ]
+}
+```
+
 ## curl Examples
 
 List models:
@@ -460,3 +525,7 @@ List models:
 Chat request:
 
 - `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer CHANGEME' -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`
+
+Anthropic Messages request:
+
+- `curl -sS http://127.0.0.1:3000/v1/messages -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' -H 'x-api-key: CHANGEME' -d '{"model":"claude-sonnet-4-6","max_tokens":256,"messages":[{"role":"user","content":"ping"}]}' | jq .`

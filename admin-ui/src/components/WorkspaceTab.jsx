@@ -466,6 +466,12 @@ export default function WorkspaceTab({
               <Field label={t("field.routeResponsesAllowedFields", "Responses Allowed Fields")}>
                 <input value={formatList(getValueByPath(config, "routing.routeProfiles.responses.allowedRequestFields"))} onChange={(event) => updateField("routing.routeProfiles.responses.allowedRequestFields", parseList(event.target.value))} />
               </Field>
+              <Field label={t("field.routeMessagesAllowedFields", "Messages Allowed Fields")}>
+                <input value={formatList(getValueByPath(config, "routing.routeProfiles.messages.allowedRequestFields"))} onChange={(event) => updateField("routing.routeProfiles.messages.allowedRequestFields", parseList(event.target.value))} />
+              </Field>
+              <Field label={t("field.anthropicBetaAllowlist", "Anthropic Beta Allowlist")}>
+                <input value={formatList(getValueByPath(config, "compatibility.anthropic.betaAllowlist"))} onChange={(event) => updateField("compatibility.anthropic.betaAllowlist", parseList(event.target.value))} />
+              </Field>
               <Field label={t("field.routeImagesAllowedFields", "Image Allowed Fields")}>
                 <input value={formatList(getValueByPath(config, "routing.routeProfiles.imageGenerations.allowedRequestFields"))} onChange={(event) => updateField("routing.routeProfiles.imageGenerations.allowedRequestFields", parseList(event.target.value))} />
               </Field>
@@ -479,6 +485,11 @@ export default function WorkspaceTab({
             <div className="checkbox-row">
               <label><input type="checkbox" checked={getValueByPath(config, "routing.routeProfiles.chatCompletions.enabled") !== false} onChange={(event) => updateField("routing.routeProfiles.chatCompletions.enabled", event.target.checked)} /> {t("field.routeChatEnabled", "Enable chat/completions")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "routing.routeProfiles.responses.enabled") !== false} onChange={(event) => updateField("routing.routeProfiles.responses.enabled", event.target.checked)} /> {t("field.routeResponsesEnabled", "Enable responses")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "routing.routeProfiles.messages.enabled") !== false} onChange={(event) => updateField("routing.routeProfiles.messages.enabled", event.target.checked)} /> {t("field.routeMessagesEnabled", "Enable messages")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.betaAllowlistEnabled") !== false} onChange={(event) => updateField("compatibility.anthropic.betaAllowlistEnabled", event.target.checked)} /> {t("field.anthropicBetaAllowlistEnabled", "Filter Anthropic beta headers")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.normalizeManualThinkingToolChoice") !== false} onChange={(event) => updateField("compatibility.anthropic.normalizeManualThinkingToolChoice", event.target.checked)} /> {t("field.anthropicThinkingToolChoice", "Normalize manual thinking tool choice")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.sanitizeCacheControl") !== false} onChange={(event) => updateField("compatibility.anthropic.sanitizeCacheControl", event.target.checked)} /> {t("field.anthropicCacheControl", "Sanitize Anthropic cache controls")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.validateThinkingByModel") !== false} onChange={(event) => updateField("compatibility.anthropic.validateThinkingByModel", event.target.checked)} /> {t("field.anthropicThinkingByModel", "Validate thinking mode by model")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "routing.routeProfiles.imageGenerations.enabled") !== false} onChange={(event) => updateField("routing.routeProfiles.imageGenerations.enabled", event.target.checked)} /> {t("field.routeImagesEnabled", "Enable image generations")}</label>
             </div>
           </AccordionSection>

@@ -196,8 +196,12 @@ function buildResponsesInputFromMessages(messages) {
     if (!m || !m.role) continue;
     const role = m.role;
     if (role === "system" || role === "developer") continue;
-    if (role === "assistant" && Array.isArray(m.tool_calls)) {
-      for (const call of m.tool_calls) {
+    if (role === "assistant") {
+      const content = normalizeMessageContentForResponses(m.content, role);
+      if ((typeof content === "string" && content) || (Array.isArray(content) && content.length > 0)) {
+        input.push({ type: "message", role, content });
+      }
+      for (const call of Array.isArray(m.tool_calls) ? m.tool_calls : []) {
         if (!call || call.type !== "function") continue;
         const name = call.function?.name || call.name;
         if (!name) continue;
@@ -208,6 +212,7 @@ function buildResponsesInputFromMessages(messages) {
           arguments: call.function?.arguments || call.arguments || ""
         });
       }
+      continue;
     }
     if (role === "tool" && m.tool_call_id && typeof m.content === "string") {
       input.push({
@@ -217,7 +222,7 @@ function buildResponsesInputFromMessages(messages) {
       });
       continue;
     }
-    if (role === "user" || role === "assistant") {
+    if (role === "user") {
       const content = normalizeMessageContentForResponses(m.content, role);
       input.push({
         type: "message",
@@ -412,6 +417,7 @@ function normalizeResponsesContentToChatContent(content) {
 
 function buildChatMessagesFromResponsesInput(input, instructions) {
   const messages = [];
+  let pendingToolCalls = [];
 
   if (typeof instructions === "string" && instructions) {
     messages.push({ role: "system", content: instructions });
@@ -426,29 +432,34 @@ function buildChatMessagesFromResponsesInput(input, instructions) {
     messages.push(next);
   };
 
+  const flushToolCalls = () => {
+    if (!pendingToolCalls.length) return;
+    pushMessage({ role: "assistant", content: "", tool_calls: pendingToolCalls });
+    pendingToolCalls = [];
+  };
+
   const mapInputItem = (item) => {
     if (!item) return;
     if (typeof item === "string") {
+      flushToolCalls();
       pushMessage({ role: "user", content: item });
       return;
     }
     if (typeof item !== "object") return;
 
     if (item.type === "function_call") {
-      pushMessage({
-        role: "assistant",
-        content: "",
-        tool_calls: [{
-          id: item.call_id || item.id,
-          type: "function",
-          function: {
-            name: item.name || "",
-            arguments: item.arguments || ""
-          }
-        }]
+      pendingToolCalls.push({
+        id: item.call_id || item.id,
+        type: "function",
+        function: {
+          name: item.name || "",
+          arguments: item.arguments || ""
+        }
       });
       return;
     }
+
+    flushToolCalls();
 
     if (item.type === "function_call_output") {
       pushMessage({
@@ -477,6 +488,7 @@ function buildChatMessagesFromResponsesInput(input, instructions) {
   } else if (input != null) {
     mapInputItem(input);
   }
+  flushToolCalls();
 
   return messages;
 }
@@ -547,6 +559,351 @@ function normalizeResponseFormatForChat(textConfig) {
     };
   }
   return undefined;
+}
+
+function anthropicSystemToText(system) {
+  if (typeof system === "string") return system;
+  if (!Array.isArray(system)) return "";
+  return system
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("");
+}
+
+function anthropicImageToChatPart(source) {
+  if (!source || typeof source !== "object") return null;
+  if (
+    source.type === "base64"
+    && typeof source.media_type === "string"
+    && typeof source.data === "string"
+  ) {
+    return {
+      type: "image_url",
+      image_url: { url: `data:${source.media_type};base64,${source.data}` }
+    };
+  }
+  if (source.type === "url" && typeof source.url === "string") {
+    return { type: "image_url", image_url: { url: source.url } };
+  }
+  return null;
+}
+
+function anthropicContentToChatContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return normalizeMessageContentToText(content);
+
+  const parts = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    if (block.type === "text" && typeof block.text === "string") {
+      parts.push({ type: "text", text: block.text });
+      continue;
+    }
+    if (block.type === "image") {
+      const imagePart = anthropicImageToChatPart(block.source);
+      if (imagePart) parts.push(imagePart);
+    }
+  }
+
+  if (!parts.length) return "";
+  if (parts.every((part) => part.type === "text")) {
+    return parts.map((part) => part.text).join("");
+  }
+  return parts;
+}
+
+function anthropicToolResultToText(content) {
+  if (typeof content === "string") return content;
+  const text = normalizeMessageContentToText(content);
+  if (text) return text;
+  if (content == null) return "";
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content);
+  }
+}
+
+function buildChatMessagesFromAnthropic(body) {
+  const messages = [];
+  const system = anthropicSystemToText(body?.system);
+  if (system) messages.push({ role: "system", content: system });
+
+  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
+    if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
+    const blocks = Array.isArray(message.content) ? message.content : [];
+
+    if (message.role === "assistant") {
+      const toolCalls = [];
+      for (const block of blocks) {
+        if (block?.type !== "tool_use" || !block.name) continue;
+        toolCalls.push({
+          id: block.id,
+          type: "function",
+          function: {
+            name: block.name,
+            arguments: JSON.stringify(block.input ?? {})
+          }
+        });
+      }
+      const content = anthropicContentToChatContent(message.content);
+      if (content !== "" || toolCalls.length) {
+        messages.push({
+          role: "assistant",
+          content,
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {})
+        });
+      }
+      continue;
+    }
+
+    const regularBlocks = blocks.filter((block) => block?.type !== "tool_result");
+    const regularContent = Array.isArray(message.content)
+      ? anthropicContentToChatContent(regularBlocks)
+      : anthropicContentToChatContent(message.content);
+    if (regularContent !== "") {
+      messages.push({ role: "user", content: regularContent });
+    }
+    for (const block of blocks) {
+      if (block?.type !== "tool_result" || !block.tool_use_id) continue;
+      messages.push({
+        role: "tool",
+        tool_call_id: block.tool_use_id,
+        content: anthropicToolResultToText(block.content)
+      });
+    }
+  }
+
+  return messages;
+}
+
+function normalizeAnthropicToolsForChat(tools) {
+  if (!Array.isArray(tools)) return undefined;
+  const normalized = tools
+    .filter((tool) => tool && typeof tool === "object" && tool.name)
+    .map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.input_schema ?? { type: "object", properties: {} }
+      }
+    }));
+  return normalized.length ? normalized : undefined;
+}
+
+function normalizeAnthropicToolChoiceForChat(toolChoice) {
+  if (!toolChoice) return undefined;
+  if (typeof toolChoice === "string") return toolChoice;
+  if (toolChoice.type === "auto") return "auto";
+  if (toolChoice.type === "any") return "required";
+  if (toolChoice.type === "none") return "none";
+  if (toolChoice.type === "tool" && toolChoice.name) {
+    return { type: "function", function: { name: toolChoice.name } };
+  }
+  return undefined;
+}
+
+function chatImageToAnthropicBlock(part) {
+  const imageUrl = typeof part?.image_url === "string"
+    ? part.image_url
+    : part?.image_url?.url;
+  if (typeof imageUrl !== "string" || !imageUrl) return null;
+  const dataMatch = imageUrl.match(/^data:([^;,]+);base64,(.*)$/s);
+  if (dataMatch) {
+    return {
+      type: "image",
+      source: { type: "base64", media_type: dataMatch[1], data: dataMatch[2] }
+    };
+  }
+  return { type: "image", source: { type: "url", url: imageUrl } };
+}
+
+function chatContentToAnthropicBlocks(content) {
+  if (typeof content === "string") {
+    return content ? [{ type: "text", text: content }] : [];
+  }
+  if (!Array.isArray(content)) {
+    const text = normalizeMessageContentToText(content);
+    return text ? [{ type: "text", text }] : [];
+  }
+
+  const blocks = [];
+  for (const part of content) {
+    if (typeof part === "string") {
+      blocks.push({ type: "text", text: part });
+      continue;
+    }
+    if (!part || typeof part !== "object") continue;
+    if ((part.type === "text" || part.type === "input_text" || part.type === "output_text") && typeof part.text === "string") {
+      blocks.push({ type: "text", text: part.text });
+      continue;
+    }
+    if (part.type === "image_url" || part.type === "input_image" || part.type === "image") {
+      const imageBlock = chatImageToAnthropicBlock(part);
+      if (imageBlock) blocks.push(imageBlock);
+    }
+  }
+  return blocks;
+}
+
+function parseToolArguments(argumentsText) {
+  if (argumentsText && typeof argumentsText === "object") return argumentsText;
+  if (typeof argumentsText !== "string" || !argumentsText.trim()) return {};
+  try {
+    const parsed = JSON.parse(argumentsText);
+    return parsed && typeof parsed === "object" ? parsed : { value: parsed };
+  } catch {
+    return { value: argumentsText };
+  }
+}
+
+function appendAnthropicMessage(messages, role, blocks) {
+  if (!Array.isArray(blocks) || !blocks.length) return;
+  const previous = messages.at(-1);
+  if (previous?.role === role && Array.isArray(previous.content)) {
+    previous.content.push(...blocks);
+    return;
+  }
+  messages.push({ role, content: blocks });
+}
+
+function buildAnthropicMessagesFromChat(messages) {
+  const output = [];
+  const systemParts = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message || !message.role) continue;
+    if (message.role === "system" || message.role === "developer") {
+      const text = normalizeMessageContentToText(message.content);
+      if (text) systemParts.push(text);
+      continue;
+    }
+    if (message.role === "tool") {
+      if (!message.tool_call_id) continue;
+      appendAnthropicMessage(output, "user", [{
+        type: "tool_result",
+        tool_use_id: message.tool_call_id,
+        content: message.content ?? ""
+      }]);
+      continue;
+    }
+    if (message.role !== "user" && message.role !== "assistant") continue;
+
+    const blocks = chatContentToAnthropicBlocks(message.content);
+    if (message.role === "assistant") {
+      for (const toolCall of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
+        const name = toolCall?.function?.name || toolCall?.name;
+        if (!name) continue;
+        blocks.push({
+          type: "tool_use",
+          id: toolCall.id || toolCall.call_id,
+          name,
+          input: parseToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments)
+        });
+      }
+    }
+    appendAnthropicMessage(output, message.role, blocks);
+  }
+  return { messages: output, system: systemParts.join("\n\n") };
+}
+
+function normalizeChatToolsForAnthropic(tools) {
+  if (!Array.isArray(tools)) return undefined;
+  const normalized = [];
+  for (const tool of tools) {
+    const fn = tool?.type === "function" ? (tool.function || tool) : null;
+    if (!fn?.name) continue;
+    normalized.push({
+      name: fn.name,
+      description: fn.description,
+      input_schema: fn.parameters ?? { type: "object", properties: {} }
+    });
+  }
+  return normalized.length ? normalized : undefined;
+}
+
+function normalizeChatToolChoiceForAnthropic(toolChoice) {
+  if (!toolChoice) return undefined;
+  if (toolChoice === "auto") return { type: "auto" };
+  if (toolChoice === "required") return { type: "any" };
+  if (toolChoice === "none") return { type: "none" };
+  if (typeof toolChoice === "object" && toolChoice.type === "function") {
+    const name = toolChoice.function?.name || toolChoice.name;
+    return name ? { type: "tool", name } : undefined;
+  }
+  return undefined;
+}
+
+export function messagesToChatRequest(body, deployment) {
+  const out = { ...body, model: deployment };
+  out.messages = buildChatMessagesFromAnthropic(body);
+
+  const tools = normalizeAnthropicToolsForChat(body?.tools);
+  if (tools) out.tools = tools;
+  else delete out.tools;
+
+  const toolChoice = normalizeAnthropicToolChoiceForChat(body?.tool_choice);
+  if (toolChoice !== undefined) out.tool_choice = toolChoice;
+  else delete out.tool_choice;
+
+  if (body?.stop_sequences != null) out.stop = body.stop_sequences;
+  delete out.system;
+  delete out.stop_sequences;
+  delete out.thinking;
+  delete out.output_config;
+  delete out.top_k;
+  delete out.metadata;
+  return out;
+}
+
+export function chatToMessagesRequest(body, deployment) {
+  const converted = buildAnthropicMessagesFromChat(body?.messages);
+  const out = { ...body, model: deployment, messages: converted.messages };
+  const existingSystem = anthropicSystemToText(body?.system);
+  const system = [existingSystem, converted.system].filter(Boolean).join("\n\n");
+  if (system) out.system = system;
+  else delete out.system;
+
+  const tools = normalizeChatToolsForAnthropic(body?.tools);
+  if (tools) out.tools = tools;
+  else delete out.tools;
+
+  const toolChoice = normalizeChatToolChoiceForAnthropic(body?.tool_choice);
+  if (toolChoice !== undefined) out.tool_choice = toolChoice;
+  else delete out.tool_choice;
+
+  out.max_tokens = body?.max_tokens ?? body?.max_completion_tokens ?? body?.max_output_tokens ?? 4096;
+  if (body?.stop != null) out.stop_sequences = body.stop;
+
+  delete out.max_completion_tokens;
+  delete out.max_output_tokens;
+  delete out.stop;
+  delete out.functions;
+  delete out.function_call;
+  delete out.response_format;
+  delete out.text;
+  delete out.reasoning;
+  delete out.reasoning_effort;
+  delete out.stream_options;
+  delete out.n;
+  delete out.best_of;
+  delete out.seed;
+  delete out.logprobs;
+  delete out.top_logprobs;
+  delete out.frequency_penalty;
+  delete out.presence_penalty;
+  delete out.logit_bias;
+  delete out.prediction;
+  delete out.modalities;
+  return out;
+}
+
+export function messagesToResponsesRequest(body, deployment) {
+  return chatToResponsesRequest(messagesToChatRequest(body, deployment), deployment);
+}
+
+export function responsesToMessagesRequest(body, deployment) {
+  return chatToMessagesRequest(responsesToChatRequest(body, deployment), deployment);
 }
 
 export function chatToResponsesRequest(body, deployment) {
@@ -687,17 +1044,18 @@ export function responsesToChatRequest(body, deployment) {
 
 export function mapResponsesJsonToChatCompletion(payload, modelId) {
   const created = Math.floor(Date.now() / 1000);
+  const output = Array.isArray(payload?.output) ? payload.output : [];
   const outputText = payload?.output_text
-    ?? payload?.output?.filter((item) => item?.type === "message")
+    ?? output.filter((item) => item?.type === "message")
       .flatMap((item) => Array.isArray(item.content) ? item.content : [])
       .map((content) => content?.text)
       .filter((text) => typeof text === "string")
       .join("")
     ?? "";
   const toolCalls = [];
-  if (Array.isArray(payload?.output)) {
+  if (output.length > 0) {
     let index = 0;
-    for (const item of payload.output) {
+    for (const item of output) {
       if (!item || item.type !== "function_call") continue;
       const callId = item.call_id || item.id || `call_${index}`;
       toolCalls.push({
@@ -724,16 +1082,20 @@ export function mapResponsesJsonToChatCompletion(payload, modelId) {
           content: outputText,
           tool_calls: toolCalls.length ? toolCalls : undefined
         },
-        finish_reason: toolCalls.length ? "tool_calls" : "stop"
+        finish_reason: payload?.status === "incomplete" ? "length" : toolCalls.length ? "tool_calls" : "stop"
       }
     ],
-    usage: payload?.usage ? {
-      prompt_tokens: payload.usage.input_tokens ?? payload.usage.prompt_tokens ?? 0,
-      completion_tokens: payload.usage.output_tokens ?? payload.usage.completion_tokens ?? 0,
-      total_tokens: payload.usage.total_tokens ?? 0,
+    usage: payload?.usage ? (() => {
+      const promptTokens = payload.usage.input_tokens ?? payload.usage.prompt_tokens ?? 0;
+      const completionTokens = payload.usage.output_tokens ?? payload.usage.completion_tokens ?? 0;
+      return {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: payload.usage.total_tokens ?? payload.usage.total ?? promptTokens + completionTokens,
       ...(payload.usage.input_tokens_details ? { prompt_tokens_details: payload.usage.input_tokens_details } : {}),
       ...(payload.usage.output_tokens_details ? { completion_tokens_details: payload.usage.output_tokens_details } : {})
-    } : undefined
+      };
+    })() : undefined
   };
 }
 
@@ -764,13 +1126,17 @@ export function mapChatCompletionJsonToResponses(payload, modelId) {
     });
   }
   const incomplete = choice.finish_reason === "length";
-  const usage = payload?.usage ? {
-    input_tokens: payload.usage.prompt_tokens ?? payload.usage.input_tokens ?? 0,
-    output_tokens: payload.usage.completion_tokens ?? payload.usage.output_tokens ?? 0,
-    total_tokens: payload.usage.total_tokens ?? 0,
+  const usage = payload?.usage ? (() => {
+    const inputTokens = payload.usage.prompt_tokens ?? payload.usage.input_tokens ?? 0;
+    const outputTokens = payload.usage.completion_tokens ?? payload.usage.output_tokens ?? 0;
+    return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: payload.usage.total_tokens ?? payload.usage.total ?? inputTokens + outputTokens,
     ...(payload.usage.prompt_tokens_details ? { input_tokens_details: payload.usage.prompt_tokens_details } : {}),
     ...(payload.usage.completion_tokens_details ? { output_tokens_details: payload.usage.completion_tokens_details } : {})
-  } : undefined;
+    };
+  })() : undefined;
   return {
     id: responseId,
     object: "response",
@@ -785,4 +1151,119 @@ export function mapChatCompletionJsonToResponses(payload, modelId) {
     parallel_tool_calls: true,
     usage
   };
+}
+
+function anthropicStopReasonToChat(reason, hasToolCalls) {
+  if (reason === "max_tokens") return "length";
+  if (reason === "tool_use" || hasToolCalls) return "tool_calls";
+  return "stop";
+}
+
+function chatFinishReasonToAnthropic(reason, hasToolCalls) {
+  if (reason === "length") return "max_tokens";
+  if (reason === "tool_calls" || hasToolCalls) return "tool_use";
+  return "end_turn";
+}
+
+export function mapMessagesJsonToChatCompletion(payload, modelId) {
+  const text = [];
+  const reasoning = [];
+  const toolCalls = [];
+  for (const block of Array.isArray(payload?.content) ? payload.content : []) {
+    if (block?.type === "text" && typeof block.text === "string") {
+      text.push(block.text);
+      continue;
+    }
+    if (block?.type === "thinking" && typeof block.thinking === "string") {
+      reasoning.push(block.thinking);
+      continue;
+    }
+    if (block?.type === "tool_use" && block.name) {
+      toolCalls.push({
+        id: block.id,
+        type: "function",
+        function: { name: block.name, arguments: JSON.stringify(block.input ?? {}) }
+      });
+    }
+  }
+  const usage = payload?.usage ? (() => {
+    const uncachedInputTokens = payload.usage.input_tokens ?? 0;
+    const cachedTokens = payload.usage.cache_read_input_tokens ?? payload.usage.cached_tokens ?? 0;
+    const cacheCreationTokens = payload.usage.cache_creation_input_tokens ?? 0;
+    const promptTokens = uncachedInputTokens + cachedTokens + cacheCreationTokens;
+    const completionTokens = payload.usage.output_tokens ?? 0;
+    return {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: payload.usage.total_tokens ?? promptTokens + completionTokens,
+      ...((payload.usage.cache_read_input_tokens ?? payload.usage.cached_tokens) != null
+        ? { prompt_tokens_details: { cached_tokens: cachedTokens } }
+        : {})
+    };
+  })() : undefined;
+  return {
+    id: payload?.id || `chatcmpl_${Math.floor(Date.now() / 1000)}`,
+    object: "chat.completion",
+    created: payload?.created_at || Math.floor(Date.now() / 1000),
+    model: payload?.model || modelId,
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: text.join(""),
+        ...(reasoning.length ? { reasoning_content: reasoning.join("") } : {}),
+        ...(toolCalls.length ? { tool_calls: toolCalls } : {})
+      },
+      finish_reason: anthropicStopReasonToChat(payload?.stop_reason, toolCalls.length > 0)
+    }],
+    usage
+  };
+}
+
+export function mapChatCompletionJsonToMessages(payload, modelId) {
+  const choice = payload?.choices?.[0] || {};
+  const message = choice.message || {};
+  const content = [];
+  if (typeof message.content === "string" && message.content) {
+    content.push({ type: "text", text: message.content });
+  }
+  for (const toolCall of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
+    const name = toolCall?.function?.name || toolCall?.name;
+    if (!name) continue;
+    content.push({
+      type: "tool_use",
+      id: toolCall.id || toolCall.call_id,
+      name,
+      input: parseToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments)
+    });
+  }
+  const usage = payload?.usage ? (() => {
+    const promptTokens = payload.usage.prompt_tokens ?? payload.usage.input_tokens ?? 0;
+    const cachedTokens = payload.usage.prompt_tokens_details?.cached_tokens ?? payload.usage.cached_tokens ?? 0;
+    return {
+      input_tokens: Math.max(0, promptTokens - cachedTokens),
+      output_tokens: payload.usage.completion_tokens ?? payload.usage.output_tokens ?? 0,
+      ...((payload.usage.prompt_tokens_details?.cached_tokens ?? payload.usage.cached_tokens) != null
+        ? { cache_read_input_tokens: cachedTokens }
+        : {})
+    };
+  })() : undefined;
+  return {
+    id: payload?.id || `msg_${Math.floor(Date.now() / 1000)}`,
+    type: "message",
+    role: "assistant",
+    model: payload?.model || modelId,
+    content,
+    stop_reason: chatFinishReasonToAnthropic(choice.finish_reason, content.some((block) => block.type === "tool_use")),
+    stop_sequence: null,
+    usage
+  };
+}
+
+export function mapMessagesJsonToResponses(payload, modelId) {
+  return mapChatCompletionJsonToResponses(mapMessagesJsonToChatCompletion(payload, modelId), modelId);
+}
+
+export function mapResponsesJsonToMessages(payload, modelId) {
+  return mapChatCompletionJsonToMessages(mapResponsesJsonToChatCompletion(payload, modelId), modelId);
 }

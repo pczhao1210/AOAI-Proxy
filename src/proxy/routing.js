@@ -121,11 +121,12 @@ function shouldUseFoundryServicesHost({ upstream, routeKey = "", routePath = "",
   const explicitHostType = normalizeLower(upstream?.hostType);
   if (explicitHostType === "services") return true;
   if (explicitHostType === "openai") return false;
+  if (routeKey === "messages") return true;
   if (routeKey === "blackforest-image") return true;
   if (routeKey === "openai-image") return false;
 
   const routeText = normalizeLower(routePath || upstream?.routes?.[routeKey]);
-  if (routeText.includes("/providers/")) {
+  if (routeText.includes("/providers/") || routeText.includes("/anthropic/")) {
     return true;
   }
 
@@ -223,6 +224,7 @@ export function inferBackendRouteKey(routeKey, override) {
   if (override?.type === "path") {
     const p = override.value.toLowerCase().split(/[?#]/, 1)[0].replace(/\/+$/, "");
     if (p.endsWith("/responses")) return "responses";
+    if (p.endsWith("/messages")) return "messages";
     if (p.endsWith("/chat/completions")) return "chat/completions";
     if (p.endsWith("/images/generations")) return "images/generations";
     if (p.includes("/providers/blackforestlabs/")) return "images/generations";

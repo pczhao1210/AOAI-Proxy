@@ -223,11 +223,12 @@ export async function warmBearerToken(scope) {
   return token.token;
 }
 
-export async function getUpstreamAuthHeaders(scope) {
+export async function getUpstreamAuthHeaders(scope, options = {}) {
   const auth = getActiveAuth();
   if (isApiKeyMode(auth)) {
+    const apiKeyHeader = options.apiKeyHeader === "x-api-key" ? "x-api-key" : "api-key";
     return {
-      "api-key": requireApiKey(auth)
+      [apiKeyHeader]: requireApiKey(auth)
     };
   }
   return {

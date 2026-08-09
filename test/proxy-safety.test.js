@@ -1,15 +1,30 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import http from "node:http";
 import test from "node:test";
 import { resolveApiConsumer, filterModelsForConsumer, checkConsumerModelAccess, getGovernanceSnapshot } from "../src/governance.js";
 import { extractProxyRequestControls } from "../src/proxy/body.js";
-import { parseJsonWithTimeout } from "../src/proxy/reliability.js";
-import { inferBackendRouteKey } from "../src/proxy/routing.js";
+import { fetchOnceWithConnectTimeout, fetchWithRetry, parseJsonWithTimeout } from "../src/proxy/reliability.js";
+import { buildUpstreamUrl, inferBackendRouteKey } from "../src/proxy/routing.js";
 import { streamPassthrough, streamShim } from "../src/proxy/stream.js";
-import { chatToResponsesRequest, mapChatCompletionJsonToResponses, mapResponsesJsonToChatCompletion } from "../src/proxy/shim.js";
+import {
+  chatToMessagesRequest,
+  chatToResponsesRequest,
+  mapChatCompletionJsonToMessages,
+  mapChatCompletionJsonToResponses,
+  mapMessagesJsonToChatCompletion,
+  mapMessagesJsonToResponses,
+  mapResponsesJsonToChatCompletion,
+  mapResponsesJsonToMessages,
+  messagesToChatRequest,
+  messagesToResponsesRequest,
+  responsesToChatRequest,
+  responsesToMessagesRequest
+} from "../src/proxy/shim.js";
 import { REDACTED_SECRET_VALUE, redactConfigSecrets, restoreConfigSecrets } from "../src/admin-config.js";
 import { getRequestNetworkContext } from "../src/request-network.js";
 import { buildCorrelationHeaders, resolveRequestContext } from "../src/request-context.js";
+import { getStats, recordUsage } from "../src/stats.js";
 
 const STREAM_POLICY = {
   firstByteTimeoutMs: 1000,
@@ -66,6 +81,25 @@ async function runResponsesToChatShim(chunks, raw = new FakeReplyRaw(), onConten
   return { result, raw };
 }
 
+async function runProtocolShim(routeKey, backendRouteKey, chunks) {
+  const raw = new FakeReplyRaw();
+  const observed = { usages: [], models: [], content: [] };
+  const result = await streamShim({
+    upstreamResponse: { body: { getReader: () => createReader(chunks) } },
+    reply: { raw },
+    modelId: "test-model",
+    routeKey,
+    backendRouteKey,
+    model: {},
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage(usage) { observed.usages.push(usage); },
+    onModel(model) { observed.models.push(model); },
+    onContent(value, kind) { observed.content.push([value, kind]); }
+  });
+  return { result, raw, observed };
+}
+
 function encodeEvents(events) {
   return events.map((event) => Buffer.from(`data: ${JSON.stringify(event)}\n\n`));
 }
@@ -118,6 +152,7 @@ test("request context normalizes correlation IDs and falls back to request ID", 
 
 test("disabled models cannot be called directly", () => {
   const disabledModel = { id: "disabled-model", status: "disabled" };
+  const differentlyCasedModel = { id: "disabled-model-uppercase", status: "DISABLED" };
   const config = {
     access: { defaults: { requireApiKey: true } },
     apiKeys: [{ id: "consumer", key: "secret", status: "active" }],
@@ -133,6 +168,8 @@ test("disabled models cannot be called directly", () => {
     code: "MODEL_NOT_FOUND",
     message: "model disabled-model not found"
   });
+  assert.deepEqual(filterModelsForConsumer([differentlyCasedModel], consumer), []);
+  assert.equal(checkConsumerModelAccess(consumer, differentlyCasedModel).code, "MODEL_NOT_FOUND");
 });
 
 test("zero-valued key limits inherit global rate-limit defaults", async () => {
@@ -249,6 +286,16 @@ test("path overrides infer protocols when Azure API-version queries are present"
   );
 });
 
+test("Anthropic Messages routes use the Foundry services host", () => {
+  assert.equal(
+    buildUpstreamUrl({
+      baseUrl: "https://example.openai.azure.com/",
+      routes: { messages: "/anthropic/v1/messages" }
+    }, "messages", "claude-sonnet-4-6"),
+    "https://example.services.ai.azure.com/anthropic/v1/messages"
+  );
+});
+
 test("Chat and Responses conversion preserves multimodal and structured semantics", () => {
   const converted = chatToResponsesRequest({
     model: "model",
@@ -320,6 +367,175 @@ test("Chat and Responses conversion preserves multimodal and structured semantic
   assert.equal(chatPayload.choices[0].message.content, "done");
   assert.equal(chatPayload.choices[0].message.tool_calls[0].function.name, "lookup");
   assert.deepEqual(chatPayload.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+
+  const missingTotalChat = mapResponsesJsonToChatCompletion({
+    output: [],
+    usage: { input_tokens: 8, output_tokens: 3 }
+  }, "model");
+  assert.equal(missingTotalChat.usage.total_tokens, 11);
+  const malformedOutputChat = mapResponsesJsonToChatCompletion({ output: {} }, "model");
+  assert.equal(malformedOutputChat.choices[0].message.content, "");
+
+  const missingTotalResponses = mapChatCompletionJsonToResponses({
+    choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 7, completion_tokens: 2 }
+  }, "model");
+  assert.equal(missingTotalResponses.usage.total_tokens, 9);
+
+  const parallelChat = responsesToChatRequest({
+    input: [
+      { type: "function_call", call_id: "call_1", name: "read", arguments: "{\"path\":\"a\"}" },
+      { type: "function_call", call_id: "call_2", name: "write", arguments: "{\"path\":\"b\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "A" },
+      { type: "function_call_output", call_id: "call_2", output: "B" }
+    ]
+  }, "chat-model");
+  assert.equal(parallelChat.messages.length, 3);
+  assert.equal(parallelChat.messages[0].role, "assistant");
+  assert.deepEqual(parallelChat.messages[0].tool_calls.map((call) => call.id), ["call_1", "call_2"]);
+  assert.deepEqual(parallelChat.messages.slice(1).map((message) => message.tool_call_id), ["call_1", "call_2"]);
+});
+
+test("Messages cross-protocol requests preserve text, images, and tool history", () => {
+  const messagesRequest = {
+    model: "claude",
+    system: [{ type: "text", text: "system instruction" }],
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "inspect" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }
+        ]
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "calling" },
+          { type: "tool_use", id: "toolu_1", name: "lookup", input: { id: 1 } }
+        ]
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "found" }]
+      }
+    ],
+    tools: [{ name: "lookup", description: "Look up", input_schema: { type: "object" } }],
+    tool_choice: { type: "tool", name: "lookup" },
+    max_tokens: 256,
+    stop_sequences: ["STOP"]
+  };
+
+  const chat = messagesToChatRequest(messagesRequest, "chat-deployment");
+  assert.equal(chat.model, "chat-deployment");
+  assert.deepEqual(chat.messages[0], { role: "system", content: "system instruction" });
+  assert.deepEqual(chat.messages[1].content, [
+    { type: "text", text: "inspect" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }
+  ]);
+  assert.equal(chat.messages[2].tool_calls[0].function.arguments, "{\"id\":1}");
+  assert.deepEqual(chat.messages[3], { role: "tool", tool_call_id: "toolu_1", content: "found" });
+  assert.equal(chat.tools[0].function.name, "lookup");
+  assert.deepEqual(chat.tool_choice, { type: "function", function: { name: "lookup" } });
+  assert.deepEqual(chat.stop, ["STOP"]);
+
+  const responses = messagesToResponsesRequest(messagesRequest, "responses-deployment");
+  assert.equal(responses.model, "responses-deployment");
+  assert.equal(responses.instructions, "system instruction");
+  assert.deepEqual(responses.input.map((item) => item.type), [
+    "message",
+    "message",
+    "function_call",
+    "function_call_output"
+  ]);
+  assert.equal(responses.input.find((item) => item.type === "function_call")?.name, "lookup");
+  assert.equal(responses.input.find((item) => item.type === "function_call_output")?.output, "found");
+  assert.equal(responses.tools[0].name, "lookup");
+
+  const roundTripMessages = responsesToMessagesRequest(responses, "messages-deployment");
+  assert.equal(roundTripMessages.model, "messages-deployment");
+  assert.equal(roundTripMessages.system, "system instruction");
+  assert.equal(roundTripMessages.messages.flatMap((message) => message.content).find((block) => block.type === "tool_use")?.name, "lookup");
+  assert.equal(roundTripMessages.messages.flatMap((message) => message.content).find((block) => block.type === "tool_result")?.content, "found");
+
+  const chatToMessages = chatToMessagesRequest(chat, "messages-deployment");
+  assert.equal(chatToMessages.system, "system instruction");
+  assert.equal(chatToMessages.max_tokens, 256);
+  assert.deepEqual(chatToMessages.stop_sequences, ["STOP"]);
+
+  const toolOnly = chatToResponsesRequest({
+    messages: [{
+      role: "assistant",
+      content: "",
+      tool_calls: [{
+        id: "call_1",
+        type: "function",
+        function: { name: "lookup", arguments: "{}" }
+      }]
+    }]
+  }, "responses-deployment");
+  assert.deepEqual(toolOnly.input.map((item) => item.type), ["function_call"]);
+});
+
+test("Messages cross-protocol JSON responses preserve tools, stop reasons, and usage", () => {
+  const messagesPayload = {
+    id: "msg_1",
+    type: "message",
+    role: "assistant",
+    model: "claude",
+    content: [
+      { type: "text", text: "done" },
+      { type: "tool_use", id: "toolu_1", name: "lookup", input: { id: 1 } }
+    ],
+    stop_reason: "tool_use",
+    stop_sequence: null,
+    usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 2 }
+  };
+
+  const chat = mapMessagesJsonToChatCompletion(messagesPayload, "fallback");
+  assert.equal(chat.choices[0].message.content, "done");
+  assert.equal(chat.choices[0].message.tool_calls[0].function.arguments, "{\"id\":1}");
+  assert.equal(chat.choices[0].finish_reason, "tool_calls");
+  assert.equal(chat.usage.prompt_tokens, 12);
+  assert.equal(chat.usage.total_tokens, 17);
+  assert.equal(chat.usage.prompt_tokens_details.cached_tokens, 2);
+
+  const responses = mapMessagesJsonToResponses(messagesPayload, "fallback");
+  assert.equal(responses.output[0].content[0].text, "done");
+  assert.equal(responses.output[1].type, "function_call");
+  assert.deepEqual(responses.usage, {
+    input_tokens: 12,
+    output_tokens: 5,
+    total_tokens: 17,
+    input_tokens_details: { cached_tokens: 2 }
+  });
+
+  const chatPayload = {
+    id: "chatcmpl_1",
+    model: "chat-model",
+    choices: [{
+      finish_reason: "length",
+      message: {
+        role: "assistant",
+        content: "partial",
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "lookup", arguments: "{\"id\":1}" }
+        }]
+      }
+    }],
+    usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 }
+  };
+  const mappedMessages = mapChatCompletionJsonToMessages(chatPayload, "fallback");
+  assert.equal(mappedMessages.stop_reason, "max_tokens");
+  assert.equal(mappedMessages.content[1].type, "tool_use");
+  assert.deepEqual(mappedMessages.usage, { input_tokens: 7, output_tokens: 3 });
+
+  const responsesPayload = mapChatCompletionJsonToResponses(chatPayload, "fallback");
+  const responsesAsMessages = mapResponsesJsonToMessages(responsesPayload, "fallback");
+  assert.equal(responsesAsMessages.stop_reason, "max_tokens");
+  assert.equal(responsesAsMessages.content[1].name, "lookup");
 });
 
 test("chunked JSON responses are bounded and timed-out bodies are cancelled", async () => {
@@ -353,6 +569,87 @@ test("chunked JSON responses are bounded and timed-out bodies are cancelled", as
   assert.equal(cancelled, true);
 });
 
+test("client cancellation aborts upstream header and body waits", async () => {
+  let requestSeen;
+  const seenPromise = new Promise((resolve) => { requestSeen = resolve; });
+  const server = http.createServer((request) => {
+    requestSeen();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const headerController = new AbortController();
+  const headerPromise = fetchOnceWithConnectTimeout({
+    targetUrl: `http://127.0.0.1:${address.port}/hang`,
+    headers: { "content-type": "application/json" },
+    bodyText: "{}",
+    timeoutMs: 10000,
+    signal: headerController.signal
+  });
+  await seenPromise;
+  headerController.abort("client-disconnected");
+  await assert.rejects(headerPromise, (error) => error?.code === "CLIENT_DISCONNECTED");
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+
+  let bodyCancelled = false;
+  const stalled = new Response(new ReadableStream({
+    pull() {
+      return new Promise(() => {});
+    },
+    cancel(reason) {
+      bodyCancelled = reason === "client-disconnected";
+    }
+  }));
+  const bodyController = new AbortController();
+  const bodyPromise = parseJsonWithTimeout(stalled, 10000, 1024, bodyController.signal);
+  bodyController.abort("client-disconnected");
+  await assert.rejects(bodyPromise, (error) => error?.code === "CLIENT_DISCONNECTED");
+  assert.equal(bodyCancelled, true);
+});
+
+test("client cancellation aborts a stalled retryable HTTP error body", async () => {
+  let requestSeen;
+  const seenPromise = new Promise((resolve) => { requestSeen = resolve; });
+  const server = http.createServer((request, response) => {
+    response.writeHead(503, { "content-type": "text/plain" });
+    response.write("partial error");
+    requestSeen();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const controller = new AbortController();
+  const resultPromise = fetchWithRetry({
+    targetUrl: `http://127.0.0.1:${address.port}/error`,
+    headers: { "content-type": "application/json" },
+    bodyText: "{}",
+    policy: {
+      connectTimeoutMs: 1000,
+      firstByteTimeoutMs: 1000,
+      requestTimeoutMs: 10000,
+      maxRetries: 1,
+      retryBaseMs: 1,
+      retryMaxMs: 1,
+      retryStatuses: new Set([503]),
+      classifyNetworkErrorsAsRetryable: true
+    },
+    logMeta: {},
+    log: { warn() {} },
+    signal: controller.signal
+  });
+  await seenPromise;
+  controller.abort("client-disconnected");
+  const raced = await Promise.race([
+    resultPromise,
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 100))
+  ]);
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+
+  assert.notEqual(raced, "timeout");
+  assert.equal(raced.classified?.code, "CLIENT_DISCONNECTED");
+  assert.equal(raced.attempt, 1);
+});
+
 test("Responses-to-Chat shim preserves UTF-8 and emits one terminal frame", async () => {
   const bytes = Buffer.from(
     `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "你" })}\n\n`
@@ -372,6 +669,70 @@ test("Responses-to-Chat shim preserves UTF-8 and emits one terminal frame", asyn
   assert.doesNotMatch(raw.output, /�/);
   assert.deepEqual(outputParts, [{ value: "你", kind: "text" }]);
   assert.equal((raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+});
+
+test("protocol shim ignores events after the source terminal marker", async () => {
+  const source = Buffer.from(
+    `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n`
+      + `data: ${JSON.stringify({ type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1 } } })}\n\n`
+      + `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "must-not-appear" })}\n\n`
+      + `data: ${JSON.stringify({ type: "error", error: { message: "must-not-fail" } })}\n\n`
+  );
+  const converted = await runProtocolShim("chat/completions", "responses", [source]);
+
+  assert.equal(converted.result.ok, true);
+  assert.match(converted.raw.output, /"content":"ok"/);
+  assert.doesNotMatch(converted.raw.output, /must-not-appear/);
+  assert.doesNotMatch(converted.raw.output, /must-not-fail/);
+  assert.equal((converted.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+});
+
+test("Responses-to-Chat waits for stable tool identity", async () => {
+  const source = encodeEvents([
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { id: "fc_1", type: "function_call", call_id: "", name: "", arguments: "" }
+    },
+    { type: "response.function_call_arguments.delta", item_id: "fc_1", output_index: 0, delta: "{\"id\":1}" },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        id: "fc_1",
+        type: "function_call",
+        status: "completed",
+        call_id: "call_real",
+        name: "lookup",
+        arguments: "{\"id\":1}"
+      }
+    },
+    { type: "response.completed", response: { usage: { input_tokens: 2, output_tokens: 1 } } }
+  ]);
+  const converted = await runProtocolShim("chat/completions", "responses", source);
+
+  assert.equal(converted.result.ok, true);
+  assert.match(converted.raw.output, /"id":"call_real"/);
+  assert.match(converted.raw.output, /"name":"lookup"/);
+  assert.match(converted.raw.output, /"arguments":"\{\\"id\\":1\}"/);
+  assert.doesNotMatch(converted.raw.output, /"id":"fc_1"/);
+});
+
+test("protocol shim aggregates multi-line SSE data fields", async () => {
+  const source = Buffer.from(
+    'event: response.output_text.delta\r\n'
+      + 'data: {"type":"response.output_text.delta",\r\n'
+      + 'data: "delta":"hello"}\r\n\r\n'
+      + 'event: response.completed\r\n'
+      + 'data: {"type":"response.completed",\r\n'
+      + 'data: "response":{"usage":{"input_tokens":2,"output_tokens":1}}}'
+  );
+  const converted = await runProtocolShim("chat/completions", "responses", [source]);
+
+  assert.equal(converted.result.ok, true);
+  assert.match(converted.raw.output, /"content":"hello"/);
+  assert.match(converted.raw.output, /"finish_reason":"stop"/);
+  assert.equal((converted.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
 });
 
 test("Chat-to-Responses shim emits a complete text and tool lifecycle", async () => {
@@ -441,6 +802,204 @@ test("Chat-to-Responses shim emits a complete text and tool lifecycle", async ()
   assert.equal((raw.output.match(/data: \[DONE\]/g) || []).length, 1);
 });
 
+test("Messages stream converts to Chat and Responses lifecycles", async () => {
+  const source = encodeEvents([
+    {
+      type: "message_start",
+      message: {
+        id: "msg_1",
+        model: "claude-sonnet-4-6",
+        usage: { input_tokens: 10, output_tokens: 1 }
+      }
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "content_block_start",
+      index: 1,
+      content_block: { type: "tool_use", id: "toolu_1", name: "lookup", input: {} }
+    },
+    { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"id\":1}" } },
+    { type: "content_block_stop", index: 1 },
+    { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
+    { type: "message_stop" }
+  ]);
+
+  const chat = await runProtocolShim("chat/completions", "messages", source);
+  assert.equal(chat.result.ok, true);
+  assert.match(chat.raw.output, /"content":"hello"/);
+  assert.match(chat.raw.output, /"name":"lookup"/);
+  assert.match(chat.raw.output, /"arguments":"\{\\"id\\":1\}"/);
+  assert.match(chat.raw.output, /"finish_reason":"tool_calls"/);
+  assert.equal((chat.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+
+  const responses = await runProtocolShim("responses", "messages", source);
+  assert.equal(responses.result.ok, true);
+  assert.match(responses.raw.output, /"type":"response.output_text.delta"/);
+  assert.match(responses.raw.output, /"type":"response.function_call_arguments.delta"/);
+  assert.match(responses.raw.output, /"type":"response.completed"/);
+  assert.equal((responses.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+});
+
+test("Chat and Responses streams convert to Anthropic Messages lifecycle", async () => {
+  const chatSource = encodeEvents([
+    {
+      id: "chatcmpl_1",
+      model: "chat-model",
+      choices: [{ index: 0, delta: { content: "hello" }, finish_reason: null }]
+    },
+    {
+      id: "chatcmpl_1",
+      model: "chat-model",
+      choices: [{
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id: "call_1",
+            type: "function",
+            function: { name: "lookup", arguments: "{\"id\":1}" }
+          }]
+        },
+        finish_reason: null
+      }]
+    },
+    {
+      id: "chatcmpl_1",
+      model: "chat-model",
+      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
+    }
+  ]).concat(Buffer.from("data: [DONE]\n\n"));
+  const chat = await runProtocolShim("messages", "chat/completions", chatSource);
+  assert.equal(chat.result.ok, true);
+  assert.match(chat.raw.output, /event: message_start/);
+  assert.match(chat.raw.output, /"type":"text_delta","text":"hello"/);
+  assert.match(chat.raw.output, /"type":"tool_use","id":"call_1","name":"lookup"/);
+  assert.match(chat.raw.output, /"type":"input_json_delta","partial_json":"\{\\"id\\":1\}"/);
+  assert.match(chat.raw.output, /"stop_reason":"tool_use"/);
+  assert.match(chat.raw.output, /event: message_stop/);
+  assert.doesNotMatch(chat.raw.output, /data: \[DONE\]/);
+
+  const responsesSource = encodeEvents([
+    { type: "response.created", response: { id: "resp_1", model: "responses-model" } },
+    { type: "response.output_text.delta", delta: "hello" },
+    {
+      type: "response.output_item.added",
+      output_index: 1,
+      item: { id: "fc_1", type: "function_call", call_id: "call_1", name: "lookup", arguments: "" }
+    },
+    { type: "response.function_call_arguments.delta", item_id: "fc_1", delta: "{\"id\":1}" },
+    {
+      type: "response.completed",
+      response: { model: "responses-model", usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } }
+    }
+  ]);
+  const responses = await runProtocolShim("messages", "responses", responsesSource);
+  assert.equal(responses.result.ok, true);
+  assert.match(responses.raw.output, /event: message_start/);
+  assert.match(responses.raw.output, /"type":"text_delta","text":"hello"/);
+  assert.match(responses.raw.output, /"type":"tool_use","id":"call_1","name":"lookup"/);
+  assert.match(responses.raw.output, /"stop_reason":"tool_use"/);
+  assert.match(responses.raw.output, /event: message_stop/);
+  assert.doesNotMatch(responses.raw.output, /data: \[DONE\]/);
+});
+
+test("streaming cache usage is projected without double counting", async () => {
+  const chatSource = encodeEvents([
+    {
+      id: "chatcmpl_1",
+      model: "chat-model",
+      choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 12,
+        completion_tokens: 2,
+        total_tokens: 14,
+        prompt_tokens_details: { cached_tokens: 3 }
+      }
+    },
+    "[DONE]"
+  ].filter((event) => event !== "[DONE]")).concat(Buffer.from("data: [DONE]\n\n"));
+  const asMessages = await runProtocolShim("messages", "chat/completions", chatSource);
+  assert.match(asMessages.raw.output, /"usage":\{"input_tokens":9,"output_tokens":2,"cache_read_input_tokens":3\}/);
+
+  const messagesSource = encodeEvents([
+    {
+      type: "message_start",
+      message: {
+        id: "msg_1",
+        model: "claude",
+        usage: { input_tokens: 2, output_tokens: 0, cache_read_input_tokens: 7, cache_creation_input_tokens: 3 }
+      }
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
+    { type: "message_stop" }
+  ]);
+  const asResponses = await runProtocolShim("responses", "messages", messagesSource);
+  const completedFrame = asResponses.raw.output
+    .split("\n\n")
+    .map((frame) => frame.startsWith("data: ") && frame.slice(6) !== "[DONE]" ? JSON.parse(frame.slice(6)) : null)
+    .find((event) => event?.type === "response.completed");
+  assert.deepEqual(completedFrame.response.usage, {
+    input_tokens: 12,
+    output_tokens: 2,
+    total_tokens: 14,
+    input_tokens_details: { cached_tokens: 7 }
+  });
+});
+
+test("Chat tool deltas keep one Anthropic block when identity aliases change", async () => {
+  const source = encodeEvents([
+    {
+      id: "chatcmpl_1",
+      choices: [{
+        index: 0,
+        delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "lookup", arguments: "{\"id\":" } }] },
+        finish_reason: null
+      }]
+    },
+    {
+      id: "chatcmpl_1",
+      choices: [{
+        index: 0,
+        delta: { tool_calls: [{ id: "call_1", function: { arguments: "1}" } }] },
+        finish_reason: "tool_calls"
+      }]
+    },
+    { id: "chatcmpl_1", choices: [], usage: { prompt_tokens: 2, completion_tokens: 1 } }
+  ]).concat(Buffer.from("data: [DONE]\n\n"));
+  const converted = await runProtocolShim("messages", "chat/completions", source);
+
+  assert.equal(converted.result.ok, true);
+  assert.equal((converted.raw.output.match(/"type":"tool_use"/g) || []).length, 1);
+  assert.match(converted.raw.output, /"partial_json":"\{\\"id\\":"/);
+  assert.match(converted.raw.output, /"partial_json":"1\}"/);
+});
+
+test("Anthropic conversion closes mixed tool and text blocks in index order", async () => {
+  const source = encodeEvents([
+    { type: "response.created", response: { id: "resp_1", model: "responses-model" } },
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { id: "fc_1", type: "function_call", call_id: "call_1", name: "lookup", arguments: "" }
+    },
+    { type: "response.function_call_arguments.delta", item_id: "fc_1", delta: "{}" },
+    { type: "response.output_text.delta", delta: "after tool" },
+    { type: "response.completed", response: { usage: { input_tokens: 4, output_tokens: 2 } } }
+  ]);
+  const converted = await runProtocolShim("messages", "responses", source);
+  const stopIndexes = [...converted.raw.output.matchAll(/event: content_block_stop\ndata: \{"type":"content_block_stop","index":(\d+)\}/g)]
+    .map((match) => Number(match[1]));
+
+  assert.equal(converted.result.ok, true);
+  assert.deepEqual(stopIndexes, [0, 1]);
+});
+
 test("protocol-shim provider errors are surfaced", async () => {
   const { result, raw } = await runResponsesToChatShim(encodeEvents([
     { type: "error", error: { code: "provider_failed", message: "upstream failed" } }
@@ -468,7 +1027,7 @@ test("Responses incomplete events finish Chat streams without becoming provider 
   assert.equal((raw.output.match(/data: \[DONE\]/g) || []).length, 1);
 });
 
-test("empty reverse shim streams do not write a synthetic success response", async () => {
+test("empty reverse shim streams fail without a synthetic success response", async () => {
   const raw = new FakeReplyRaw();
   const result = await streamShim({
     upstreamResponse: { body: { getReader: () => createReader([]) } },
@@ -483,8 +1042,9 @@ test("empty reverse shim streams do not write a synthetic success response", asy
     onModel() {}
   });
 
-  assert.equal(result.ok, true);
-  assert.equal(result.firstChunkSeen, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+  assert.equal(result.beforeFirstChunk, true);
   assert.equal(raw.output, "");
 });
 
@@ -513,6 +1073,231 @@ test("Responses passthrough preserves successful SSE framing", async () => {
 
   assert.equal(result.ok, true);
   assert.deepEqual(Buffer.concat(writtenChunks), source);
+});
+
+test("passthrough does not forward events after a terminal marker", async () => {
+  const terminal = `event: response.completed\r\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed" } })}\r\n\r\n`;
+  const trailing = `event: response.output_text.delta\r\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "must-not-appear" })}\r\n\r\n`;
+  const raw = new FakeReplyRaw();
+  const result = await streamPassthrough({
+    upstreamResponse: { body: { getReader: () => createReader([Buffer.from(terminal + trailing)]) } },
+    reply: { raw },
+    backendRouteKey: "responses",
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(raw.output, terminal);
+  assert.doesNotMatch(raw.output, /must-not-appear/);
+});
+
+test("passthrough records terminal usage instead of an early partial snapshot", async () => {
+  const source = encodeEvents([
+    {
+      type: "response.created",
+      response: { model: "model", usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } }
+    },
+    {
+      type: "response.completed",
+      response: {
+        model: "model",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 4,
+          total_tokens: 14,
+          input_tokens_details: { cached_tokens: 3 }
+        }
+      }
+    }
+  ]);
+  const observed = [];
+  const result = await streamPassthrough({
+    upstreamResponse: { body: { getReader: () => createReader(source) } },
+    reply: { raw: new FakeReplyRaw() },
+    backendRouteKey: "responses",
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage(usage) { observed.push(usage); },
+    onModel() {}
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(observed, [{
+    input_tokens: 10,
+    output_tokens: 4,
+    total_tokens: 14,
+    input_tokens_details: { cached_tokens: 3 }
+  }]);
+});
+
+test("native Anthropic cache-read tokens are counted", () => {
+  const before = { ...getStats().totals };
+  recordUsage("anthropic-cache-test", {
+    input_tokens: 2,
+    output_tokens: 1,
+    cache_read_input_tokens: 7,
+    cache_creation_input_tokens: 3
+  });
+  assert.equal(getStats().totals.cachedTokens - before.cachedTokens, 7);
+  assert.equal(getStats().totals.promptTokens - before.promptTokens, 12);
+  assert.equal(getStats().totals.totalTokens - before.totalTokens, 13);
+});
+
+test("passthrough requires a protocol terminal marker", async () => {
+  const source = Buffer.from(
+    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_1" } })}\n\n`
+      + `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } })}\n\n`
+  );
+  const raw = new FakeReplyRaw();
+  const result = await streamPassthrough({
+    upstreamResponse: { body: { getReader: () => createReader([source]) } },
+    reply: { raw },
+    backendRouteKey: "messages",
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+  assert.doesNotMatch(raw.output, /message_stop/);
+});
+
+test("passthrough parses a terminal event without trailing EOL", async () => {
+  const source = Buffer.from(
+    `event: response.output_text.delta\r\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\r\n\r\n`
+      + `event: response.completed\r\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed" } })}`
+  );
+  const raw = new FakeReplyRaw();
+  const result = await streamPassthrough({
+    upstreamResponse: { body: { getReader: () => createReader([source]) } },
+    reply: { raw },
+    backendRouteKey: "responses",
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(raw.output, source.toString("utf8"));
+});
+
+test("Responses passthrough accepts output done evidence at EOF", async () => {
+  const source = Buffer.from(
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n`
+      + `event: response.output_text.done\ndata: ${JSON.stringify({ type: "response.output_text.done", text: "ok" })}\n\n`
+      + `event: response.output_item.done\ndata: ${JSON.stringify({
+        type: "response.output_item.done",
+        item: { id: "msg_1", type: "message", status: "completed" }
+      })}`
+  );
+  const raw = new FakeReplyRaw();
+  const result = await streamPassthrough({
+    upstreamResponse: { body: { getReader: () => createReader([source]) } },
+    reply: { raw },
+    backendRouteKey: "responses",
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(raw.output, source.toString("utf8"));
+});
+
+test("shim refuses to synthesize success after premature EOF", async () => {
+  const source = encodeEvents([
+    { type: "response.output_text.delta", delta: "partial" }
+  ]);
+  const { result, raw } = await runProtocolShim("messages", "responses", source);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+  assert.doesNotMatch(raw.output, /event: message_stop/);
+});
+
+test("shim accepts Chat finish_reason as terminal evidence at EOF", async () => {
+  const source = encodeEvents([
+    {
+      id: "chatcmpl_1",
+      model: "chat-model",
+      choices: [{ index: 0, delta: { content: "complete" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 2, completion_tokens: 1 }
+    }
+  ]);
+  const converted = await runProtocolShim("messages", "chat/completions", source);
+
+  assert.equal(converted.result.ok, true);
+  assert.match(converted.raw.output, /"text":"complete"/);
+  assert.match(converted.raw.output, /event: message_stop/);
+});
+
+test("shim accepts Responses output done as terminal evidence at EOF", async () => {
+  const source = encodeEvents([
+    { type: "response.output_text.delta", delta: "complete" },
+    { type: "response.output_text.done", text: "complete" },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: { id: "msg_1", type: "message", status: "completed", role: "assistant" }
+    }
+  ]);
+  const converted = await runProtocolShim("chat/completions", "responses", source);
+
+  assert.equal(converted.result.ok, true);
+  assert.match(converted.raw.output, /"content":"complete"/);
+  assert.equal((converted.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+});
+
+test("Anthropic Messages passthrough observes native SSE without rewriting it", async () => {
+  const source = Buffer.from(
+    `event: message_start\ndata: ${JSON.stringify({
+      type: "message_start",
+      message: {
+        model: "claude-sonnet-4-6",
+        usage: { input_tokens: 12, output_tokens: 1, cache_read_input_tokens: 3 }
+      }
+    })}\n\n`
+      + `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "你" } })}\n\n`
+      + `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"id\":1}" } })}\n\n`
+      + `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } })}\n\n`
+      + `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`
+  );
+  const raw = new FakeReplyRaw();
+  const writtenChunks = [];
+  const observed = { usages: [], models: [], content: [] };
+  raw.write = (value) => {
+    writtenChunks.push(Buffer.from(value));
+    return true;
+  };
+
+  const result = await streamPassthrough({
+    upstreamResponse: { body: { getReader: () => createReader([source]) } },
+    reply: { raw },
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage(usage) { observed.usages.push(usage); },
+    onModel(model) { observed.models.push(model); },
+    onContent(value, kind) { observed.content.push([value, kind]); }
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(Buffer.concat(writtenChunks), source);
+  assert.deepEqual(observed.models, ["claude-sonnet-4-6"]);
+  assert.deepEqual(observed.usages, [{
+    input_tokens: 12,
+    output_tokens: 5,
+    cache_read_input_tokens: 3,
+    total_tokens: 20,
+    cached_tokens: 3
+  }]);
+  assert.deepEqual(observed.content, [["你", "text"], ["{\"id\":1}", "tool"]]);
 });
 
 test("Responses passthrough recognizes top-level provider error events", async () => {
