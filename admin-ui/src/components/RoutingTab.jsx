@@ -279,7 +279,7 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                         {upstreamOptions.map((upstream) => <option key={upstream.name} value={upstream.name}>{upstream.name}</option>)}
                       </select>
                     </Field>
-                    {hostingModes.length ? (
+                    {hostingModes.length > 1 ? (
                       <Field
                         label={t("routing.field.hostingMode", "Claude Hosting Mode")}
                         hint={t("routing.hint.hostingMode", "Select the deployment hosting mode so the proxy can choose the correct native protocol.")}
