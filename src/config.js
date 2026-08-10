@@ -127,7 +127,7 @@ const DEFAULTS = {
     forwardHeaders: {
       mode: "denylist",
       allow: ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id", "anthropic-version", "anthropic-beta", "openai-organization"],
-      deny: ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
+      deny: ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "cookie", "set-cookie", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
       addRequestIdHeader: true
     },
     guards: {
@@ -353,6 +353,12 @@ const DEFAULTS = {
     mapServerUpstreamToProxyDefaults: true,
     warnOnDeprecatedFields: true,
     failOnDeprecatedFieldsAfterVersion: 3,
+    claudeCode: {
+      enabled: true
+    },
+    codex: {
+      enabled: true
+    },
     anthropic: {
       betaAllowlistEnabled: true,
       betaAllowlist: [
@@ -547,6 +553,29 @@ function asPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function validateRawCompatibilityShape(raw) {
+  if (
+    !raw
+    || typeof raw !== "object"
+    || !Object.prototype.hasOwnProperty.call(raw, "compatibility")
+  ) return;
+  const compatibility = raw?.compatibility;
+  if (!compatibility || typeof compatibility !== "object" || Array.isArray(compatibility)) {
+    throw new Error("compatibility must be an object");
+  }
+  for (const clientName of ["claudeCode", "codex", "anthropic"]) {
+    if (!Object.prototype.hasOwnProperty.call(compatibility, clientName)) continue;
+    const clientCompatibility = compatibility[clientName];
+    if (
+      !clientCompatibility
+      || typeof clientCompatibility !== "object"
+      || Array.isArray(clientCompatibility)
+    ) {
+      throw new Error(`compatibility.${clientName} must be an object`);
+    }
+  }
+}
+
 function normalizeStringArray(value) {
   return Array.isArray(value)
     ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
@@ -710,6 +739,14 @@ function applySchemaCompatibility(rawConfig, merged) {
   merged.access = deepMerge(DEFAULTS.access, asPlainObject(merged.access));
   merged.access.defaults.keyHeaderNames = normalizeStringArray(merged.access.defaults.keyHeaderNames);
   merged.compatibility = deepMerge(DEFAULTS.compatibility, asPlainObject(merged.compatibility));
+  merged.compatibility.claudeCode = deepMerge(
+    DEFAULTS.compatibility.claudeCode,
+    asPlainObject(merged.compatibility.claudeCode)
+  );
+  merged.compatibility.codex = deepMerge(
+    DEFAULTS.compatibility.codex,
+    asPlainObject(merged.compatibility.codex)
+  );
   merged.compatibility.anthropic = deepMerge(
     DEFAULTS.compatibility.anthropic,
     asPlainObject(merged.compatibility.anthropic)
@@ -746,7 +783,12 @@ function applySchemaCompatibility(rawConfig, merged) {
         fallbackModels: [],
         pricingRef: "",
         accessTags: [],
-        deprecatedAliasOf: ""
+        deprecatedAliasOf: "",
+        clientCompatibility: {
+          claudeCode: false,
+          codex: false
+        },
+        codex: {}
       }, model || {});
       next.capabilities = normalizeStringArray(next.capabilities);
       next.fallbackModels = normalizeStringArray(next.fallbackModels);
@@ -826,6 +868,7 @@ function applySchemaCompatibility(rawConfig, merged) {
 }
 
 function normalizeConfig(raw, options = {}) {
+  validateRawCompatibilityShape(raw);
   const merged = deepMerge(DEFAULTS, raw || {});
   merged.apiKeys = Array.isArray(merged.apiKeys) ? merged.apiKeys : [];
   merged.upstreams = Array.isArray(merged.upstreams) ? merged.upstreams : [];
@@ -1111,6 +1154,20 @@ function validateConfig(cfg) {
       throw new Error("proxy.retries.retryBeforeFirstChunkOnly must remain true because streamed requests cannot be safely replayed after output starts");
     }
   }
+  if (cfg.compatibility != null) {
+    if (typeof cfg.compatibility !== "object" || Array.isArray(cfg.compatibility)) {
+      throw new Error("compatibility must be an object");
+    }
+    for (const clientName of ["claudeCode", "codex"]) {
+      const clientCompatibility = cfg.compatibility[clientName];
+      if (clientCompatibility != null && (typeof clientCompatibility !== "object" || Array.isArray(clientCompatibility))) {
+        throw new Error(`compatibility.${clientName} must be an object`);
+      }
+      if (clientCompatibility?.enabled != null && typeof clientCompatibility.enabled !== "boolean") {
+        throw new Error(`compatibility.${clientName}.enabled must be a boolean`);
+      }
+    }
+  }
   if (cfg.persistence != null) {
     if (typeof cfg.persistence !== "object") {
       throw new Error("persistence must be an object");
@@ -1279,10 +1336,19 @@ function validateConfig(cfg) {
     throw new Error("models must be a non-empty array");
   }
 
+  const modelIds = new Set();
   for (const [idx, model] of cfg.models.entries()) {
     if (!model?.id || typeof model.id !== "string") {
       throw new Error(`models[${idx}].id is required`);
     }
+    const modelId = model.id.trim();
+    if (!modelId) {
+      throw new Error(`models[${idx}].id is required`);
+    }
+    if (modelIds.has(modelId)) {
+      throw new Error(`models[${idx}].id duplicates model ID "${modelId}"`);
+    }
+    modelIds.add(modelId);
     if (!model?.upstream || typeof model.upstream !== "string") {
       throw new Error(`models[${idx}].upstream is required`);
     }
@@ -1291,6 +1357,19 @@ function validateConfig(cfg) {
     }
     if (model.capabilities != null && (!Array.isArray(model.capabilities) || model.capabilities.some((value) => typeof value !== "string"))) {
       throw new Error(`models[${idx}].capabilities must be an array of strings`);
+    }
+    if (model.clientCompatibility != null) {
+      if (typeof model.clientCompatibility !== "object" || Array.isArray(model.clientCompatibility)) {
+        throw new Error(`models[${idx}].clientCompatibility must be an object`);
+      }
+      for (const clientName of ["claudeCode", "codex"]) {
+        if (model.clientCompatibility[clientName] != null && typeof model.clientCompatibility[clientName] !== "boolean") {
+          throw new Error(`models[${idx}].clientCompatibility.${clientName} must be a boolean`);
+        }
+      }
+    }
+    if (model.codex != null && (typeof model.codex !== "object" || Array.isArray(model.codex))) {
+      throw new Error(`models[${idx}].codex must be an object`);
     }
     if (Array.isArray(model.fallbackModels) && model.fallbackModels.length > 0) {
       throw new Error(`models[${idx}].fallbackModels is not supported by this proxy version`);

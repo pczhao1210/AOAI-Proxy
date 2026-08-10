@@ -323,6 +323,7 @@ export async function streamPassthrough({
   upstreamResponse,
   reply,
   backendRouteKey = "",
+  strictResponsesCompletion = false,
   policy,
   onFirstChunk,
   onUsage,
@@ -381,7 +382,10 @@ export async function streamPassthrough({
       providerError = buildProviderStreamError(event);
       return;
     }
-    if (event?.type === "response.completed" || event?.type === "response.incomplete") {
+    if (
+      (!backendRouteKey || backendRouteKey === "responses")
+      && (event?.type === "response.completed" || event?.type === "response.incomplete")
+    ) {
       terminalMarkerSeen = true;
     }
     if (
@@ -398,7 +402,7 @@ export async function streamPassthrough({
     ) {
       responsesTerminalOutputSeen = true;
     }
-    if (event?.type === "message_stop") {
+    if ((!backendRouteKey || backendRouteKey === "messages") && event?.type === "message_stop") {
       terminalMarkerSeen = true;
     }
     if (Array.isArray(event?.choices) && event.choices.some((choice) => choice?.finish_reason)) {
@@ -524,7 +528,7 @@ export async function streamPassthrough({
   if (
     !terminalMarkerSeen
     && !(backendRouteKey === "chat/completions" && chatFinishReasonSeen)
-    && !(backendRouteKey === "responses" && responsesTerminalOutputSeen)
+    && !(backendRouteKey === "responses" && responsesTerminalOutputSeen && !strictResponsesCompletion)
   ) {
     return {
       ok: false,
@@ -545,6 +549,7 @@ export async function streamShim({
   modelId,
   routeKey,
   backendRouteKey,
+  strictResponsesCompletion = false,
   model,
   policy,
   onFirstChunk,
@@ -1546,7 +1551,7 @@ export async function streamShim({
           flushUsage();
           if (routeKey === "messages") await finishMessagesStream();
           else if (routeKey === "responses") await finishResponsesStream();
-        } else if (backendRouteKey === "responses" && responsesTerminalOutputSeen) {
+        } else if (backendRouteKey === "responses" && responsesTerminalOutputSeen && !strictResponsesCompletion) {
           sourceTerminalSeen = true;
           flushUsage();
           if (routeKey === "messages") await finishMessagesStream();

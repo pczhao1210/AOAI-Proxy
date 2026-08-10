@@ -470,7 +470,7 @@ For Claude deployments in Microsoft Foundry, configure the upstream route as `me
 
 ### Claude Code
 
-The model endpoint negotiates Anthropic's model-list shape when the request contains `Anthropic-Version`, uses `format=anthropic` / `format=messages`, or has a Claude/Anthropic user agent. Claude Code gateway model discovery can therefore be enabled:
+The model endpoint negotiates Anthropic's model-list shape when the request contains `Anthropic-Version`, uses `format=anthropic` / `format=messages`, or has a Claude/Anthropic user agent. When Claude Code compatibility is enabled, a Claude Code User-Agent or `format=claude-code` returns only models explicitly marked for Claude Code that resolve to native Messages; generic Anthropic SDK discovery retains the broader accessible model list. Claude Code gateway model discovery can therefore be enabled:
 
 ```bash
 export ANTHROPIC_BASE_URL="https://proxy.example.com"
@@ -478,6 +478,19 @@ export ANTHROPIC_AUTH_TOKEN="your-proxy-api-key"
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 claude
 ```
+
+`compatibility.claudeCode.enabled` defaults to `true`. On Messages routes it safely forwards Claude/Anthropic and Stainless metadata header prefixes while continuing to block client credentials. Direct Anthropic upstreams preserve unknown `anthropic-beta` values in order for forward compatibility. Azure/Foundry upstreams continue to use the reviewed allowlist below; filtered values are recorded under the structured log event `proxy.anthropic_betas_filtered`.
+
+Mark each production Claude Code model explicitly and keep it on native Messages. Config load/save fails when a marked model resolves to another backend protocol while compatibility is enabled:
+
+```json
+{
+  "clientCompatibility": { "claudeCode": true },
+  "routes": { "*": "messages" }
+}
+```
+
+Model IDs must be unique. This prevents discovery metadata and runtime routing from resolving the same public ID to different model entries.
 
 The proxy enables three Foundry-specific Anthropic compatibility policies by default under `compatibility.anthropic`:
 
@@ -488,7 +501,24 @@ The proxy enables three Foundry-specific Anthropic compatibility policies by def
 
 These settings are request compatibility controls, not protocol selectors. Roll a model back from native Messages by changing its route override rather than disabling all compatibility policies.
 
-Streaming input accepts LF or CRLF SSE framing, multiple `data:` fields, and a terminal event without a trailing newline. A stream is successful only after the source protocol supplies valid terminal evidence: Chat `[DONE]` or a final `finish_reason` at EOF, Responses completed/incomplete or terminal `.done` evidence at EOF, and Anthropic `message_stop`. Premature EOF is reported as `UPSTREAM_INCOMPLETE_STREAM` and is never turned into a successful target terminator.
+### Codex
+
+`compatibility.codex.enabled` also defaults to `true`. A `/v1/models` request from a Codex User-Agent, or one using `format=codex`, receives Codex's `{ "models": [...] }` catalog rather than the standard OpenAI list. The catalog includes only models marked for Codex that resolve natively to Responses:
+
+```json
+{
+  "clientCompatibility": { "codex": true },
+  "routes": { "*": "responses" },
+  "codex": {
+    "contextWindow": 128000,
+    "supportedReasoningEfforts": ["low", "medium", "high"]
+  }
+}
+```
+
+Configure Codex with a custom provider whose `base_url` ends in `/v1`, `wire_api = "responses"`, and `supports_websockets = false`. Marked Codex models are rejected by config validation if they resolve through Chat or Messages conversion.
+
+Streaming input accepts LF or CRLF SSE framing, multiple `data:` fields, and a terminal event without a trailing newline. A stream completes only after the source protocol supplies matching terminal evidence: Chat `[DONE]` or a final `finish_reason` at EOF, Responses `response.completed` or `response.incomplete`, and Anthropic `message_stop`. Responses `response.failed` and provider error events are terminal failures. With Codex compatibility disabled, the legacy Responses output-done EOF fallback remains available. Premature EOF is reported as `UPSTREAM_INCOMPLETE_STREAM` and is never turned into a successful target terminator.
 
 Parallel tool calls retain their indexes and stable call IDs across protocol conversion. Consecutive Responses function calls become one Chat assistant tool-call turn, argument deltas are buffered until the tool identity is known, and tool controls are omitted when no valid tools remain. HTTP 200 payloads that carry a provider-level failed status remain failures rather than empty successful completions.
 
@@ -522,6 +552,9 @@ Route a Claude deployment to its native Messages backend:
       "id": "claude-sonnet-4-6",
       "upstream": "foundry",
       "targetModel": "claude-sonnet-4-6",
+      "clientCompatibility": {
+        "claudeCode": true
+      },
       "routes": {
         "*": "messages"
       }

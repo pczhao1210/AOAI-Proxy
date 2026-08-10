@@ -28,6 +28,24 @@ node test/routes/blackforest-image.js
 
 Each script starts a disposable proxy process with a temporary config and a local mock upstream, then asserts the route and model call both succeed.
 
+Claude Code CLI contract test:
+
+```bash
+npm run test:cli:claude-code
+```
+
+This test runs the pinned Claude Code `2.1.226` package through `npx`, using an isolated config directory. It verifies native Messages streaming, new beta and SDK metadata forwarding, model mapping, and upstream credential isolation. Set `CLAUDE_CODE_EXPECTED_VERSION` to test another explicitly supported version.
+
+Codex CLI contract test:
+
+```bash
+npm run test:cli:codex
+```
+
+This test requires Codex `0.147.0` on `PATH` and uses a temporary workspace-local `CODEX_HOME`. It uses command-backed test auth to make `codex debug models` refresh and parse the remote catalog, then uses the production-style `env_key` provider for `codex exec`. It verifies the Responses item lifecycle, terminal event, agent message, and upstream credential isolation. Set `CODEX_EXPECTED_VERSION` to test another explicitly supported version.
+
+On POSIX systems, both CLI scripts terminate the full process group on timeout so package-manager or CLI descendants cannot keep CI pipes open. Windows currently terminates only the direct child process; run these pinned smoke tests in Linux CI when descendant cleanup is required.
+
 Real model scripts:
 
 - `test/routes/real-chat-completion.js`

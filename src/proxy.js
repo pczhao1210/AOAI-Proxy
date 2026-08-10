@@ -10,7 +10,9 @@ import {
   resolveModelRoute,
   resolveEffectiveRouteKey,
   normalizeBackendRouteKey,
+  isPublicRouteEnabled,
   inferBackendRouteKey,
+  reconcileBackendRouteKey,
   resolveUpstreamBaseUrl,
   hasUsableUpstreamBaseUrl
 } from "./proxy/routing.js";
@@ -73,10 +75,26 @@ import { buildCorrelationHeaders, getRequestContext } from "./request-context.js
 const DEFAULT_MAX_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
 const TEXT_PROTOCOL_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
 const ANTHROPIC_REQUEST_HEADERS = new Set(["anthropic-version", "anthropic-beta"]);
+const CLAUDE_CODE_HEADER_PREFIXES = ["anthropic-", "x-anthropic-", "x-claude-", "x-stainless-"];
 const VALID_ANTHROPIC_CACHE_TTLS = new Set(["5m", "1h"]);
 
 function anthropicCompatibility(config) {
   return config?.compatibility?.anthropic || {};
+}
+
+function claudeCodeCompatibilityEnabled(config) {
+  return config?.compatibility?.claudeCode?.enabled !== false;
+}
+
+function isDirectAnthropicUpstream(upstream, targetUrl) {
+  const provider = String(upstream?.provider || "").trim().toLowerCase();
+  if (["anthropic", "anthropic-api"].includes(provider)) return true;
+  try {
+    const hostname = new URL(targetUrl).hostname.toLowerCase();
+    return hostname === "api.anthropic.com" || hostname.endsWith(".anthropic.com");
+  } catch {
+    return false;
+  }
 }
 
 function isSupportedAnthropicCacheLocation(path) {
@@ -175,24 +193,31 @@ function sanitizeToolControlsWithoutTools(body) {
   delete body.function_call;
 }
 
-function applyAnthropicBetaPolicy(headers, config) {
+function applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl } = {}) {
   const policy = anthropicCompatibility(config);
-  if (policy.betaAllowlistEnabled === false) return;
+  const allowUnknownBetas = claudeCodeCompatibilityEnabled(config)
+    && isDirectAnthropicUpstream(upstream, targetUrl);
   const allowed = new Set(normalizeStringList(policy.betaAllowlist));
   const seen = new Set();
   const accepted = [];
+  const filtered = [];
   for (const headerName of Object.keys(headers)) {
     if (headerName.toLowerCase() !== "anthropic-beta") continue;
     const values = String(headers[headerName] || "").split(",");
     delete headers[headerName];
     for (const rawValue of values) {
       const value = rawValue.trim();
-      if (!value || !allowed.has(value) || seen.has(value)) continue;
+      if (!value || seen.has(value)) continue;
       seen.add(value);
+      if (!allowUnknownBetas && policy.betaAllowlistEnabled !== false && !allowed.has(value)) {
+        filtered.push(value);
+        continue;
+      }
       accepted.push(value);
     }
   }
   if (accepted.length) headers["anthropic-beta"] = accepted.join(",");
+  return filtered;
 }
 
 function emitInfoLog(payload) {
@@ -334,7 +359,6 @@ function emitTimingLog({
 
 function normalizeRouteProfileKey(routeKey) {
   if (routeKey === "chat/completions") return "chatCompletions";
-  if (routeKey === "responses") return "responses";
   if (routeKey === "images/generations") return "imageGenerations";
   return routeKey;
 }
@@ -594,7 +618,7 @@ export async function proxyRequest({
     return;
   }
   const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(routeKey)] || {};
-  if (routeProfile.enabled === false || (routeKey === "images/generations" && config?.media?.generation?.enabled === false)) {
+  if (!isPublicRouteEnabled(config, routeKey)) {
     sendProxyError(404, {
       code: "ROUTE_DISABLED",
       exposedCode: "RouteDisabled",
@@ -799,6 +823,28 @@ export async function proxyRequest({
   const targetUrl = override?.type === "path"
     ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
     : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
+  backendRouteKey = reconcileBackendRouteKey(backendRouteKey, targetUrl);
+  if (TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
+    log.error({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      status: 400,
+      event: "proxy.request_rejected",
+      errorCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+      failureReason: `Unsupported text backend protocol: ${backendRouteKey}`
+    }, "request rejected: unsupported text backend protocol");
+    sendProxyError(400, {
+      code: "UNSUPPORTED_PROTOCOL_ROUTE",
+      exposedCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+      message: `Cannot route ${routeKey} requests to unsupported backend protocol ${backendRouteKey}`,
+      detail: { clientProtocol: routeKey, backendProtocol: backendRouteKey }
+    });
+    return;
+  }
   const policy = resolveUpstreamPolicy(config, { routeKey, model, upstream, requestOverrides });
   let upstreamAuthHeaders;
   try {
@@ -1286,7 +1332,11 @@ export async function proxyRequest({
     });
 
     const headers = {
-      ...sanitizeIncomingHeaders(req.headers, config),
+      ...sanitizeIncomingHeaders(req.headers, config, {
+        allowPrefixes: backendRouteKey === "messages" && claudeCodeCompatibilityEnabled(config)
+          ? CLAUDE_CODE_HEADER_PREFIXES
+          : []
+      }),
       ...sanitizeConfiguredUpstreamHeaders(upstream.headersTemplate),
       "content-type": "application/json",
       ...(backendRouteKey === "messages"
@@ -1302,7 +1352,22 @@ export async function proxyRequest({
         }
       }
     } else {
-      applyAnthropicBetaPolicy(headers, config);
+      const filteredBetas = applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl });
+      if (filteredBetas.length > 0) {
+        emitInfoLog({
+          ...requestContext,
+          ...requestLogFields,
+          modelId,
+          event: "proxy.anthropic_betas_filtered",
+          routeKey,
+          backendRouteKey,
+          upstreamName: `upstream:${upstream.name || "unknown"}`,
+          upstreamProvider: `provider:${upstream.provider || "unknown"}`,
+          filteredBetas: JSON.stringify(filteredBetas),
+          filteredBetaCount: filteredBetas.length,
+          message: "unsupported Anthropic beta values filtered for upstream"
+        });
+      }
     }
     const bodyText = JSON.stringify(nextBody);
     const maxRequestBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxRequestBodyBytes);
@@ -1502,6 +1567,7 @@ export async function proxyRequest({
             upstreamResponse,
             reply,
             backendRouteKey,
+            strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
             policy,
             onFirstChunk: () => {
               markTiming(timing, "firstChunkAt");
@@ -1517,6 +1583,7 @@ export async function proxyRequest({
             modelId,
             routeKey,
             backendRouteKey,
+            strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
             model,
             policy,
             onFirstChunk: () => {

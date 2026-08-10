@@ -51,6 +51,11 @@ export const DEFAULT_MODEL_TEMPLATE = {
   capabilities: [],
   pricingRef: "",
   accessTags: [],
+  clientCompatibility: {
+    claudeCode: false,
+    codex: false
+  },
+  codex: {},
   fallbackModels: [],
   defaultParams: {},
   requestPolicy: {

@@ -12,7 +12,9 @@ import {
   resolveModelRoute,
   resolveEffectiveRouteKey,
   normalizeBackendRouteKey,
-  inferBackendRouteKey
+  isPublicRouteEnabled,
+  inferBackendRouteKey,
+  reconcileBackendRouteKey
 } from "./proxy/routing.js";
 import { classifyFetchError, resolveUpstreamPolicy } from "./proxy/reliability.js";
 
@@ -48,12 +50,18 @@ function inferValidationRouteKey(model, definition) {
 
 function buildValidationTarget(model, upstream, routeKey) {
   const deployment = normalizeString(model?.targetModel) || normalizeString(model?.id);
+  const usesModelRouter = deployment.toLowerCase() === "model-router";
   const override = resolveModelRoute(model, routeKey);
-  const effectiveRouteKey = resolveEffectiveRouteKey(routeKey, model, upstream, override);
-  const backendRouteKey = override ? inferBackendRouteKey(routeKey, override) : normalizeBackendRouteKey(effectiveRouteKey);
+  const effectiveRouteKey = usesModelRouter
+    ? "chat/completions"
+    : resolveEffectiveRouteKey(routeKey, model, upstream, override);
+  const configuredBackendRouteKey = override
+    ? inferBackendRouteKey(routeKey, override)
+    : normalizeBackendRouteKey(effectiveRouteKey);
   const targetUrl = override?.type === "path"
     ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
     : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
+  const backendRouteKey = reconcileBackendRouteKey(configuredBackendRouteKey, targetUrl);
 
   return {
     deployment,
@@ -142,6 +150,41 @@ function buildStaticIssue(model, message) {
   };
 }
 
+const CLIENT_COMPATIBILITY_PROTOCOLS = {
+  claudeCode: { label: "Claude Code", routeKey: "messages" },
+  codex: { label: "Codex", routeKey: "responses" }
+};
+
+function getClientCompatibilityIssues(config, model, upstream) {
+  const issues = [];
+  for (const [clientName, protocol] of Object.entries(CLIENT_COMPATIBILITY_PROTOCOLS)) {
+    if (config?.compatibility?.[clientName]?.enabled === false) continue;
+    if (model?.clientCompatibility?.[clientName] !== true) continue;
+    if (!isPublicRouteEnabled(config, protocol.routeKey)) {
+      issues.push(buildStaticIssue(
+        model,
+        `model "${model.id}" is marked for ${protocol.label} but public route ${protocol.routeKey} is disabled`
+      ));
+      continue;
+    }
+    try {
+      const target = buildValidationTarget(model, upstream, protocol.routeKey);
+      if (target.backendRouteKey !== protocol.routeKey) {
+        issues.push(buildStaticIssue(
+          model,
+          `model "${model.id}" is marked for ${protocol.label} but ${protocol.routeKey} resolves to ${target.backendRouteKey}; native ${protocol.routeKey} is required`
+        ));
+      }
+    } catch (error) {
+      issues.push(buildStaticIssue(
+        model,
+        `model "${model.id}" is marked for ${protocol.label} but has no usable native ${protocol.routeKey} route: ${error?.message || "route resolution failed"}`
+      ));
+    }
+  }
+  return issues;
+}
+
 export function getConfiguredModelBindingIssues(config) {
   const issues = [];
   for (const model of Array.isArray(config?.models) ? config.models : []) {
@@ -155,6 +198,8 @@ export function getConfiguredModelBindingIssues(config) {
     if (isDisabledStatus(upstream?.status)) {
       issues.push(buildStaticIssue(model, `model \"${model.id}\" is bound to disabled upstream \"${upstream.name}\"`));
     }
+
+    issues.push(...getClientCompatibilityIssues(config, model, upstream));
 
     const definition = findPricingDefinitionForModel(model);
     const definitionProvider = normalizeProvider(definition?.provider);

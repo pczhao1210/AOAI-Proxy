@@ -80,7 +80,7 @@
     "forwardHeaders": {
       "mode": "allowlist",
       "allow": ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id", "anthropic-version", "anthropic-beta"],
-      "deny": ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
+      "deny": ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "cookie", "set-cookie", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
       "addRequestIdHeader": true
     },
     "guards": {
@@ -246,6 +246,12 @@
     }
   },
   "compatibility": {
+    "claudeCode": {
+      "enabled": true
+    },
+    "codex": {
+      "enabled": true
+    },
     "anthropic": {
       "betaAllowlistEnabled": true,
       "betaAllowlist": [
@@ -325,6 +331,9 @@
       "targetModel": "gpt-5.2-codex",
       "capabilities": ["reasoning", "vision", "code-optimized", "function-calling", "structured-outputs", "parallel-tool-calling"],
       "pricingRef": "gpt-5.2-codex",
+      "clientCompatibility": {
+        "codex": true
+      },
       "defaultParams": {},
       "routes": {
         "*": "responses"

@@ -3,6 +3,12 @@ import { findPricingDefinitionForModel } from "../pricing-library.js";
 const upstreamIndexCache = new WeakMap();
 const modelIndexCache = new WeakMap();
 const IMAGE_ROUTE_KEY_ALIASES = new Set(["openai-image", "blackforest-image"]);
+const KNOWN_BACKEND_ROUTE_KEYS = new Set([
+  "chat/completions",
+  "responses",
+  "messages",
+  "images/generations"
+]);
 const LEGACY_OPENAI_IMAGE_ROUTE = "/openai/v1/images/generations";
 const DEFAULT_OPENAI_IMAGE_ROUTE = "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview";
 const DEFAULT_BLACKFOREST_IMAGE_ROUTE = "/providers/blackforestlabs/v1/{deployment}?api-version=preview";
@@ -77,6 +83,16 @@ function resolveRouteDeploymentSegment(routeKey, deployment, model = null) {
 
 export function normalizeBackendRouteKey(routeKey) {
   return IMAGE_ROUTE_KEY_ALIASES.has(routeKey) ? "images/generations" : routeKey;
+}
+
+export function isPublicRouteEnabled(config, routeKey) {
+  const profileKey = routeKey === "chat/completions"
+    ? "chatCompletions"
+    : routeKey === "images/generations"
+      ? "imageGenerations"
+      : routeKey;
+  if (config?.routing?.routeProfiles?.[profileKey]?.enabled === false) return false;
+  return routeKey !== "images/generations" || config?.media?.generation?.enabled !== false;
 }
 
 export function resolveEffectiveRouteKey(routeKey, model, upstream, override = null) {
@@ -228,8 +244,18 @@ export function inferBackendRouteKey(routeKey, override) {
     if (p.endsWith("/chat/completions")) return "chat/completions";
     if (p.endsWith("/images/generations")) return "images/generations";
     if (p.includes("/providers/blackforestlabs/")) return "images/generations";
+    return "unknown";
   }
   return normalizeBackendRouteKey(routeKey);
+}
+
+export function reconcileBackendRouteKey(configuredBackendRouteKey, targetUrl) {
+  const normalizedRouteKey = normalizeBackendRouteKey(configuredBackendRouteKey);
+  if (!KNOWN_BACKEND_ROUTE_KEYS.has(normalizedRouteKey)) return normalizedRouteKey;
+  return inferBackendRouteKey(normalizedRouteKey, {
+    type: "path",
+    value: targetUrl
+  });
 }
 
 export function isPlaceholderBaseUrl(baseUrl) {

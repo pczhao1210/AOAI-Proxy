@@ -5,6 +5,8 @@ const HARD_BLOCKED_HEADERS = new Set([
   "x-api-key",
   "api-key",
   "ocp-apim-subscription-key",
+  "cookie",
+  "set-cookie",
   "content-length",
   "host",
   "connection",
@@ -14,6 +16,23 @@ const HARD_BLOCKED_HEADERS = new Set([
   "upgrade",
   "te",
   "trailer"
+]);
+const CREDENTIAL_HEADER_MARKERS = [
+  "authorization",
+  "apikey",
+  "accesstoken",
+  "authtoken",
+  "bearertoken",
+  "clientsecret",
+  "credential"
+];
+const CREDENTIAL_HEADER_SEGMENTS = new Set([
+  "authorization",
+  "credential",
+  "key",
+  "password",
+  "secret",
+  "token"
 ]);
 
 const REQUEST_OVERRIDE_FIELD_ALIASES = {
@@ -50,6 +69,19 @@ function normalizeHeaderList(value) {
     : [];
 }
 
+function matchesAllowedHeaderPrefix(headerName, prefixes) {
+  return prefixes.some((prefix) => headerName.startsWith(prefix));
+}
+
+function isBlockedIncomingHeader(headerName) {
+  if (HARD_BLOCKED_HEADERS.has(headerName)) return true;
+  const compactName = headerName.replace(/[^a-z0-9]/g, "");
+  if (CREDENTIAL_HEADER_MARKERS.some((marker) => compactName.includes(marker))) return true;
+  return headerName
+    .split(/[^a-z0-9]+/)
+    .some((segment) => CREDENTIAL_HEADER_SEGMENTS.has(segment));
+}
+
 function getForwardHeaderPolicy(config) {
   const policy = config?.proxy?.forwardHeaders || {};
   return {
@@ -59,14 +91,20 @@ function getForwardHeaderPolicy(config) {
   };
 }
 
-export function sanitizeIncomingHeaders(headers, config) {
+export function sanitizeIncomingHeaders(headers, config, options = {}) {
   const policy = getForwardHeaderPolicy(config);
+  const allowPrefixes = normalizeHeaderList(options.allowPrefixes);
   const filtered = {};
   for (const [key, value] of Object.entries(headers)) {
     const normalizedKey = key.toLowerCase();
-    if (HARD_BLOCKED_HEADERS.has(normalizedKey)) continue;
+    if (isBlockedIncomingHeader(normalizedKey)) continue;
     if (policy.deny.has(normalizedKey)) continue;
-    if (policy.mode === "allowlist" && policy.allow.size > 0 && !policy.allow.has(normalizedKey)) continue;
+    if (
+      policy.mode === "allowlist"
+      && policy.allow.size > 0
+      && !policy.allow.has(normalizedKey)
+      && !matchesAllowedHeaderPrefix(normalizedKey, allowPrefixes)
+    ) continue;
     filtered[key] = value;
   }
   return filtered;

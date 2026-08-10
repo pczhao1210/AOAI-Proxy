@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import http from "node:http";
 import test from "node:test";
 import { resolveApiConsumer, filterModelsForConsumer, checkConsumerModelAccess, getGovernanceSnapshot } from "../src/governance.js";
-import { extractProxyRequestControls } from "../src/proxy/body.js";
+import { extractProxyRequestControls, sanitizeIncomingHeaders } from "../src/proxy/body.js";
 import { fetchOnceWithConnectTimeout, fetchWithRetry, parseJsonWithTimeout } from "../src/proxy/reliability.js";
 import { buildUpstreamUrl, inferBackendRouteKey } from "../src/proxy/routing.js";
 import { streamPassthrough, streamShim } from "../src/proxy/stream.js";
@@ -31,6 +31,35 @@ const STREAM_POLICY = {
   idleTimeoutMs: 1000,
   maxStreamDurationMs: 0
 };
+
+test("Claude compatibility prefixes cannot forward credential-like headers", () => {
+  const headers = sanitizeIncomingHeaders({
+    "anthropic-api-key": "secret-1",
+    "x-anthropic-api-key": "secret-2",
+    "x-claude-authorization": "Bearer secret-3",
+    "x-stainless-access-token": "secret-4",
+    "x-stainless-client-secret": "secret-5",
+    "x-anthropic-key": "secret-6",
+    "x-claude-oauth-token": "secret-7",
+    "x-stainless-password": "secret-8",
+    "x-claude-code-session-id": "session_123",
+    "x-stainless-package-version": "1.2.3"
+  }, {
+    proxy: {
+      forwardHeaders: {
+        mode: "allowlist",
+        allow: []
+      }
+    }
+  }, {
+    allowPrefixes: ["anthropic-", "x-anthropic-", "x-claude-", "x-stainless-"]
+  });
+
+  assert.deepEqual(headers, {
+    "x-claude-code-session-id": "session_123",
+    "x-stainless-package-version": "1.2.3"
+  });
+});
 
 class FakeReplyRaw extends EventEmitter {
   constructor({ backpressure = false } = {}) {
@@ -1211,6 +1240,63 @@ test("Responses passthrough accepts output done evidence at EOF", async () => {
   assert.equal(raw.output, source.toString("utf8"));
 });
 
+test("strict Responses passthrough rejects output done evidence at EOF", async () => {
+  const source = encodeEvents([
+    { type: "response.output_text.delta", delta: "partial" },
+    { type: "response.output_text.done", text: "partial" },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: { id: "msg_1", type: "message", status: "completed", role: "assistant" }
+    }
+  ]);
+  const result = await streamPassthrough({
+    upstreamResponse: { body: { getReader: () => createReader(source) } },
+    reply: { raw: new FakeReplyRaw() },
+    backendRouteKey: "responses",
+    strictResponsesCompletion: true,
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+});
+
+test("passthrough rejects completion markers from another backend protocol", async () => {
+  const cases = [
+    {
+      backendRouteKey: "responses",
+      source: encodeEvents([{ type: "message_stop" }])
+    },
+    {
+      backendRouteKey: "messages",
+      source: encodeEvents([{
+        type: "response.completed",
+        response: { status: "completed" }
+      }])
+    }
+  ];
+
+  for (const { backendRouteKey, source } of cases) {
+    const result = await streamPassthrough({
+      upstreamResponse: { body: { getReader: () => createReader(source) } },
+      reply: { raw: new FakeReplyRaw() },
+      backendRouteKey,
+      strictResponsesCompletion: true,
+      policy: STREAM_POLICY,
+      onFirstChunk() {},
+      onUsage() {},
+      onModel() {}
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+  }
+});
+
 test("shim refuses to synthesize success after premature EOF", async () => {
   const source = encodeEvents([
     { type: "response.output_text.delta", delta: "partial" }
@@ -1253,6 +1339,36 @@ test("shim accepts Responses output done as terminal evidence at EOF", async () 
   assert.equal(converted.result.ok, true);
   assert.match(converted.raw.output, /"content":"complete"/);
   assert.equal((converted.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+});
+
+test("strict Responses shim rejects output done evidence at EOF", async () => {
+  const source = encodeEvents([
+    { type: "response.output_text.delta", delta: "partial" },
+    { type: "response.output_text.done", text: "partial" },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: { id: "msg_1", type: "message", status: "completed", role: "assistant" }
+    }
+  ]);
+  const raw = new FakeReplyRaw();
+  const result = await streamShim({
+    upstreamResponse: { body: { getReader: () => createReader(source) } },
+    reply: { raw },
+    modelId: "test-model",
+    routeKey: "chat/completions",
+    backendRouteKey: "responses",
+    strictResponsesCompletion: true,
+    model: {},
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+  assert.doesNotMatch(raw.output, /data: \[DONE\]/);
 });
 
 test("Anthropic Messages passthrough observes native SSE without rewriting it", async () => {

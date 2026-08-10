@@ -12,6 +12,8 @@
     "build": "npm run build:admin",
     "test:unit": "node --test test/*.test.js",
     "test:routes": "node test/run-all-routes.js",
+    "test:cli:claude-code": "node test/cli/claude-code-smoke.js",
+    "test:cli:codex": "node test/cli/codex-smoke.js",
     "test:real": "node test/run-all-real-routes.js",
     "test:latency": "node test/analyze-first-token-latency.js",
     "test:real:chat": "node test/routes/real-chat-completion.js",
