@@ -202,7 +202,40 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 - 保持 `supports_websockets = false`。代理已提供原生 `/v1/responses/compact`，但 Codex `0.147.0` 的自定义 provider 没有独立 compact 能力开关；不要通过伪装 provider 名称或地址来强制启用未经真实 CLI 验证的远端 compact。
 - 代理已负责首字节前重试，示例关闭 Codex 的 request/stream 重试，避免多层重试放大流量。若要在客户端恢复重试，必须先验证工具调用幂等性和总超时。
 
-## 6. 当前缺口和需要适配的点
+## 6. 实施状态与待办
+
+### 6.1 状态总览
+
+| 工作流 | 状态 | 已完成 | 待完成 |
+| --- | --- | --- | --- |
+| P0 核心协议兼容 | **已完成** | 固定版本原生文本流、header/beta、模型目录、路由门禁、严格终态和凭据隔离 | 无 P0 阻塞项 |
+| P1 常用高级能力 | **已完成** | token counting、Responses compact、严格 shim 门禁、参数 policy、可选原生错误透传 | 无 P1 实现阻塞项 |
+| 真实 CLI 扩展矩阵 | **部分完成** | Claude Code `2.1.226` 与 Codex `0.147.0` 单轮原生文本流 smoke | 多轮、普通/并行工具、thinking/reasoning、缓存、取消和错误矩阵 |
+| 真实上游能力验证 | **部分完成** | 代理级 mock/contract 覆盖和官方协议依据 | 在实际 Anthropic/Azure/OpenAI deployment 验证 utility endpoint、参数 policy 与错误透传 |
+| P2 未来能力 | **待开始** | 已保留原生协议和配置扩展边界 | Responses WebSocket、能力探测/版本矩阵、自动发布门禁 |
+
+### 6.2 已完成
+
+- **P0 核心验收已关闭**：Claude Code 与 Codex 的固定版本原生 HTTP/SSE 基础工作流、模型发现、路由约束和安全边界均有自动化及真实 CLI smoke 证据。
+- **P1 四项均已完成**：`messages/count_tokens`、`responses/compact`、现代 item/content 的无损 shim 门禁，以及显式参数/错误保真策略。
+- **回归基线已建立**：93/93 单元测试、32/32 路由契约、两条固定版本 CLI smoke 和管理端生产构建均通过。
+- **通用兼容性边界已明确**：原生路径透明保留未知结构；shim 只承诺基础文本、URL/base64 图片和普通 function tool 的有限兼容，其他结构明确失败。
+
+### 6.3 待完成
+
+按优先级建议继续：
+
+1. **真实 CLI agentic 闭环**：先补 Codex，再补 Claude Code 的多轮、普通函数工具和并行函数工具执行/回传。
+2. **真实 CLI 高级语义**：thinking/reasoning、prompt cache、客户端取消、429/5xx、流中错误和缺失终态。
+3. **真实上游验证**：对实际部署验证 `count_tokens`、`responses/compact`、参数保留/阻断 policy、原生错误透传及计量结果。
+4. **Codex 远端 compact**：确认 Codex `0.147.0` 是否自动调用端点，并验证压缩后续接和恢复语义。
+5. **P2 实现**：Responses WebSocket、上游能力/版本探测，以及升级客户端或 API 版本时自动运行双 CLI smoke 的发布门禁。
+
+### 6.4 当前非阻塞项
+
+- 长上下文极限、真实缓存命中率以及所有未来 beta/item 的穷举验证高度依赖上游版本和配额，不作为当前 P0/P1 阻塞项。
+- shim 不追求成为 Messages、Responses 与 Chat Completions 的协议等价层；无法无损转换的能力保持明确拒绝。
+- 在真实 Codex 自动触发与恢复测试通过前，只声明 `/responses/compact` API 可用，不声明 Codex CLI 已自动启用远端压缩。
 
 ### P0：当前实施状态
 
@@ -216,7 +249,7 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
    - 通过 User-Agent 或显式 `format=codex` query 选择方言，同时保留现有 OpenAI、Anthropic 列表。
    - 模型 metadata 必须来自代理配置和能力矩阵，并与实际 deployment 同步。
 
-3. **[部分完成] 扩展真实 CLI 契约测试**
+3. **[核心已完成，扩展矩阵待完成] 扩展真实 CLI 契约测试**
    - 已固定 Claude Code `2.1.226` 和 Codex `0.147.0`，并提供 `npm run test:cli:claude-code`、`npm run test:cli:codex`。
    - 两条 smoke 均断言客户端输出、上游原生协议请求、SSE 生命周期、模型发现/header 和凭据隔离。
    - 尚需补齐真实 CLI 的多轮、普通/并行工具、长上下文、thinking/reasoning、缓存、客户端取消、429/5xx、流中错误和缺失终止事件矩阵；其中错误终态和取消已有代理级自动化覆盖。
@@ -271,9 +304,9 @@ P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单�
 
 ### P2：性能及未来能力
 
-1. **支持 Responses WebSocket**，并在握手、重连和中断语义完成后才向 Codex provider 声明。
-2. **建立上游能力探测/版本矩阵**，替代模型名和 beta 的长期静态白名单。
-3. **加入发布门禁**：升级 Claude Code、Codex 或上游 API 版本时自动运行双 CLI smoke test。
+1. **[待开始] 支持 Responses WebSocket**，并在握手、重连和中断语义完成后才向 Codex provider 声明。
+2. **[待开始] 建立上游能力探测/版本矩阵**，替代模型名和 beta 的长期静态白名单。
+3. **[待开始] 加入发布门禁**：升级 Claude Code、Codex 或上游 API 版本时自动运行双 CLI smoke test。
 
 ## 7. 建议验证矩阵
 
