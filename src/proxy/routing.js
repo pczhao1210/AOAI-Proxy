@@ -222,6 +222,46 @@ export function buildDirectUpstreamUrl(upstream, routePath, deployment, model = 
   return new URL(renderedRoute, resolveUpstreamBaseUrl(upstream, { routePath: renderedRoute, model })).toString();
 }
 
+export function buildMessagesCountTokensUrl(upstream, messagesUrl, deployment, model = null) {
+  const configuredRoute = resolveRouteTemplate(upstream, "messages/count_tokens");
+  if (configuredRoute) {
+    const configuredUrl = buildUpstreamUrl(upstream, "messages/count_tokens", deployment, model);
+    const parsedConfiguredUrl = new URL(configuredUrl);
+    if (!parsedConfiguredUrl.pathname.replace(/\/+$/, "").endsWith("/messages/count_tokens")) {
+      throw new Error("messages/count_tokens route must end with /messages/count_tokens");
+    }
+    return configuredUrl;
+  }
+
+  const parsedMessagesUrl = new URL(messagesUrl);
+  const messagesPath = parsedMessagesUrl.pathname.replace(/\/+$/, "");
+  if (!messagesPath.endsWith("/messages")) {
+    throw new Error("native messages route must end with /messages");
+  }
+  parsedMessagesUrl.pathname = `${messagesPath}/count_tokens`;
+  return parsedMessagesUrl.toString();
+}
+
+export function buildResponsesCompactUrl(upstream, responsesUrl, deployment, model = null) {
+  const configuredRoute = resolveRouteTemplate(upstream, "responses/compact");
+  if (configuredRoute) {
+    const configuredUrl = buildUpstreamUrl(upstream, "responses/compact", deployment, model);
+    const parsedConfiguredUrl = new URL(configuredUrl);
+    if (!parsedConfiguredUrl.pathname.replace(/\/+$/, "").endsWith("/responses/compact")) {
+      throw new Error("responses/compact route must end with /responses/compact");
+    }
+    return configuredUrl;
+  }
+
+  const parsedResponsesUrl = new URL(responsesUrl);
+  const responsesPath = parsedResponsesUrl.pathname.replace(/\/+$/, "");
+  if (!responsesPath.endsWith("/responses")) {
+    throw new Error("native responses route must end with /responses");
+  }
+  parsedResponsesUrl.pathname = `${responsesPath}/compact`;
+  return parsedResponsesUrl.toString();
+}
+
 export function resolveModelRoute(model, incomingRouteKey) {
   const routes = model?.routes;
   if (!routes || typeof routes !== "object") return null;

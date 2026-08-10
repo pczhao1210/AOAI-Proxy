@@ -620,9 +620,19 @@ app.post("/v1/responses", async (req, reply) => {
   await proxyRequest({ config, routeKey: "responses", req, reply });
 });
 
+app.post("/v1/responses/compact", async (req, reply) => {
+  const config = getConfig();
+  await proxyRequest({ config, routeKey: "responses/compact", req, reply });
+});
+
 app.post("/v1/messages", async (req, reply) => {
   const config = getConfig();
   await proxyRequest({ config, routeKey: "messages", req, reply });
+});
+
+app.post("/v1/messages/count_tokens", async (req, reply) => {
+  const config = getConfig();
+  await proxyRequest({ config, routeKey: "messages/count_tokens", req, reply });
 });
 
 app.post("/v1/images/generations", async (req, reply) => {

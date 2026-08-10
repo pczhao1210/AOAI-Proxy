@@ -32,10 +32,20 @@ export const DEFAULT_UPSTREAM_TEMPLATE = {
   status: "active",
   priority: 100,
   capabilities: [],
+  requestPolicy: {
+    allowedParams: [],
+    blockedParams: [],
+    dropUnsupportedParams: false
+  },
+  errorPolicy: {
+    nativePassthrough: false
+  },
   routes: {
     "chat/completions": "/openai/v1/chat/completions",
     responses: "/openai/v1/responses",
+    "responses/compact": "/openai/v1/responses/compact",
     messages: "/anthropic/v1/messages",
+    "messages/count_tokens": "/anthropic/v1/messages/count_tokens",
     "images/generations": "/openai/v1/images/generations",
     "openai-image": "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview",
     "blackforest-image": "/providers/blackforestlabs/v1/{deployment}?api-version=preview"

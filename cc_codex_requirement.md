@@ -18,16 +18,16 @@
 
 | 客户端与路径 | 当前评级 | 结论 |
 | --- | --- | --- |
-| Claude Code -> 原生 Messages | **核心兼容** | Claude Code `2.1.226` 的真实单轮流式请求已通过；动态 beta、SDK 元数据、模型映射和凭据隔离均已验证。高级工具/缓存/异常矩阵仍需扩展。 |
+| Claude Code -> 原生 Messages | **核心兼容** | Claude Code `2.1.226` 的真实单轮流式请求已通过；动态 beta、SDK 元数据、模型映射、凭据隔离和原生 token counting 均已验证。高级工具/缓存/异常矩阵仍需扩展。 |
 | Claude Code -> Responses/Chat shim | **有限兼容** | 可转换基础文本和函数工具，但会丢失部分 Anthropic 特有字段、内容块和缓存/思考语义。 |
-| Codex -> 原生 Responses | **核心兼容** | Codex `0.147.0` 的专用模型目录、合法 Responses item 生命周期、顶层终态、文本输出和凭据隔离已通过真实 CLI 验证。compact、WebSocket 和部分现代 item 尚未覆盖。 |
+| Codex -> 原生 Responses | **核心兼容** | Codex `0.147.0` 的专用模型目录、合法 Responses item 生命周期、顶层终态、文本输出和凭据隔离已通过真实 CLI 验证。原生 compact API 已覆盖，但该固定版本自定义 provider 是否自动调用尚未验证；WebSocket 和部分现代 item 仍未覆盖。 |
 | Codex -> Messages/Chat shim | **有限兼容，不建议生产使用** | 不能保持完整 Responses item、会话连续性、内置工具及加密 reasoning 等语义。 |
 
 因此，对“是否能够满足这两个工具的请求和正常响应”的直接回答是：
 
 - **固定版本的基础交互可以满足**，前提是每类模型显式标记并路由到对应的原生协议上游。
 - Claude Code 的 header/beta 前向兼容、Codex 专用模型目录、Responses 严格终态和配置路由门禁已经实现。
-- **所有高级能力仍不能一概保证正常**。真实 CLI 的多轮、工具、thinking/reasoning、缓存、取消和错误矩阵尚未全部完成；`count_tokens`、Responses compact 和 WebSocket 属于后续能力。
+- **所有高级能力仍不能一概保证正常**。真实 CLI 的多轮、工具、thinking/reasoning、缓存、取消和错误矩阵尚未全部完成；Codex 自动触发远端 compact 和 Responses WebSocket 仍属于后续能力。
 
 ## 2. 审计依据和范围
 
@@ -72,7 +72,7 @@
 - Responses 函数工具缺少 description 时会补充非空描述，可兼容部分 Azure Responses 校验要求。
 - 代理支持模型 ID 到实际 deployment/target model 的映射，因此 CLI 可以使用稳定别名。
 
-注意：原生路径也不是绝对字节级请求透传。现代模型策略会删除 `service_tier`、`serviceTier`、`verbosity` 和 `top_k`；配置的字段白/黑名单也可能拒绝或删除参数。
+注意：原生路径也不是绝对字节级请求透传。`serviceTier` 会规范化为 `service_tier`；`service_tier`、`verbosity` 和 `top_k` 默认保留。route/model/upstream 的字段白名单或黑名单仍可明确拒绝或删除参数。
 
 ### 3.3 SSE 与正常响应
 
@@ -199,7 +199,7 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 - `base_url` 应包含 `/v1`，Codex 会在其后请求 `/responses`。
 - `<responses-model-id>` 必须设置 `clientCompatibility.codex=true` 并原生路由到 `responses`。
 - 建议显式设置 `model`；代理 `/models` 已能返回 Codex 专用模型目录，不再需要额外 `model_catalog_json` 来规避解析告警。
-- 保持 `supports_websockets = false`。自定义 provider 名称和代理地址也不应伪装成 OpenAI/Azure provider，以免 Codex 错误启用远端 compact。
+- 保持 `supports_websockets = false`。代理已提供原生 `/v1/responses/compact`，但 Codex `0.147.0` 的自定义 provider 没有独立 compact 能力开关；不要通过伪装 provider 名称或地址来强制启用未经真实 CLI 验证的远端 compact。
 - 代理已负责首字节前重试，示例关闭 Codex 的 request/stream 重试，避免多层重试放大流量。若要在客户端恢复重试，必须先验证工具调用幂等性和总超时。
 
 ## 6. 当前缺口和需要适配的点
@@ -230,23 +230,44 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
    - 为标记为 Claude Code/Codex 的模型校验 backend route，避免配置失误后静默启用 shim。
    - 管理界面可设置两个全局开关和每模型标记，并显示“原生”或“协议转换”状态；配置还拒绝重复模型 ID、关闭的公开协议和协议键/实际 URL 不一致。
 
+P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单轮 CLI smoke 已满足 P0；多轮、函数/并行工具、reasoning、取消、429/5xx、流中错误和缺失终止事件仍是高价值后续门禁。长上下文极限、真实缓存命中和所有未来 beta/item 的穷举验证高度依赖上游版本与配额，不要求作为 P0 阻塞项。
+
 ### P1：补齐常用高级能力
 
-1. **实现 `POST /v1/messages/count_tokens`**
-   - Claude Code 在缺失时通常可以本地估算，但上下文余量、自动压缩时机和费用预估会变得不精确。
-   - 最佳实现是原生上游透传；没有上游能力时应返回明确“不支持”，不要伪造精确 token 数。
+1. **[已完成] 实现 `POST /v1/messages/count_tokens`**
+   - 对所有原生 Messages 模型开放，不要求模型额外标记 `clientCompatibility.claudeCode=true`，避免把通用 Anthropic API 能力绑定到单一客户端。
+   - 请求复用模型权限、deployment 映射、Anthropic header/beta 策略、上游鉴权、大小限制、治理、超时、重试和错误包装；响应保留上游 `{ "input_tokens": number }`，但不记为生成 usage 或费用。
+   - 优先使用 `upstreams[].routes["messages/count_tokens"]`；缺省时仅从合法的原生 Messages URL 追加 `/count_tokens`。跨协议模型明确返回 `TokenCountingNotSupported`，不会进入 shim，也不会用本地估算伪造精确值。
+   - 已覆盖直接 Anthropic、显式上游路径、模型映射、system/tools、beta/header、凭据隔离、畸形响应、关闭路由和 no-shim 门禁。
 
-2. **实现 `POST /v1/responses/compact`**
-   - 对支持服务端压缩的 Codex/provider 原生透传该端点。
-   - 在未实现前不要对 Codex 声明服务端 compact 能力。
+2. **[已完成] 实现 `POST /v1/responses/compact`**
+   - 对所有原生 Responses 模型开放，不要求模型标记 `clientCompatibility.codex=true`，避免把通用 Responses 能力绑定到单一客户端。
+   - 优先使用 `upstreams[].routes["responses/compact"]`；缺省时仅从合法的原生 Responses URL 追加 `/compact`。Chat/Messages 后端明确返回 `ResponseCompactionNotSupported`，不会进入 shim。
+   - 原样返回 `response.compaction`、加密 compaction item 和官方 usage；compaction usage 正常进入计量与成本记录。已覆盖显式路径、deployment 映射、凭据隔离、畸形响应、关闭路由和 no-shim 门禁。
+   - Microsoft Learn 已确认 Azure OpenAI `/openai/v1/responses/compact` 支持。当前只声明 API 可用；Codex `0.147.0` 自定义 provider 是否自动调用仍需长上下文真实 CLI 验证。
 
-3. **扩展 Responses item 和 Anthropic content block 覆盖**
-   - 增加并测试 `custom_tool_call/output`、`web_search_call`、`computer_call`、`shell/local_shell`、MCP item、图片/文件内容块、引用和完整 reasoning item。
-   - 未知事件和未知 item 在原生路径应透明保留；shim 应显式拒绝无法无损转换的能力，而不是静默丢字段。
+3. **[已完成] 扩展 Responses item 和 Anthropic content block 覆盖**
+   - 原生 HTTP/JSON 与 SSE 路径继续透明保留未知 item、未知事件和 content block，不把客户端能力限制在代理已知集合内。
+   - 跨协议请求在访问上游前校验可表示性；无法无损转换时返回 `400 UnsupportedProtocolShim`。跨协议非流式响应返回 `502 UnsupportedProtocolShimResponse`；流式响应发送目标协议错误帧并按该协议正常结束连接。
+   - 已明确覆盖 `custom_tool_call/output`、`web_search_call`、`computer_call/output`、`shell/local_shell`、MCP、文件引用、引用/annotations、reasoning、compaction、Anthropic document/file image、server tool、redacted thinking 和 tool error 状态。
+   - 同时拒绝会改变控制流但曾被静默删除的会话状态、非默认工具上限、多候选、非文本 modalities、prediction、top-k/metadata 和无法映射的异常终止原因。空 SDK 默认值（如 `include: []`、空状态对象、null reasoning 扩展）不会误触发门禁。
+   - shim 仍保留基础文本、URL/base64 图片和普通 function tool 的有限兼容；这不是现代 item 的跨协议等价实现。
 
-4. **提高请求和错误保真度**
-   - 将 `service_tier`、`verbosity` 等策略从按模型名称硬编码改为 capability/provider 配置。
-   - 提供可选的原生错误响应透传模式，同时保留代理 request ID 到响应头和日志。
+4. **[已完成] 提高请求和错误保真度**
+   - 删除按 `gpt-*`/`o*` 名称无条件剥离 `service_tier`、`verbosity` 和 `top_k` 的策略。`serviceTier` 统一规范化为 `service_tier`，可选字段默认保留，以优先保证 OpenAI 和其他 provider 的通用协议保真。
+   - model 与 upstream 均支持 `requestPolicy.allowedParams`、`blockedParams` 和 `dropUnsupportedParams`。provider 可显式选择保留、删除或拒绝字段；非法 policy 在配置合并前 fail-closed，不会因 normalize 变成空策略。
+   - 原生错误透传可通过 `upstreams[].errorPolicy.nativePassthrough` 或 route profile 的 `nativeErrorPassthrough` 显式开启，默认仍使用代理统一错误结构。该模式只作用于原生路由；shim、DNS/TLS/连接/超时和错误体读取失败继续统一包装。
+   - 原生非 2xx、首字节前流请求错误、HTTP 200 failed JSON 和 SSE provider error 均受同一 opt-in 控制；透传保留原始 JSON 文本、`Content-Type`、`Retry-After` 和代理 `x-request-id`，但不转发任意或敏感上游 header。
+   - undici 的 `error.cause.code` 已纳入网络错误分类，连接超时、连接拒绝和 TLS 失败不会被误归类或错误重试。
+
+### 已确认的兼容性取舍
+
+- 不追求把固定版本 CLI 的全部未来能力作为 P0 阻塞项；优先验证会影响日常 agent 工作流的多轮、工具、reasoning、取消和错误语义。
+- `count_tokens` 是通用 Anthropic Messages 能力，不绑定 Claude Code 标记；它只做原生透传，不为 Responses/Chat 模型增加有损 shim 或不精确估算。
+- 原生协议继续透明保留未知 item/content block。shim 对无法无损转换的能力采用显式拒绝，而不是静默丢字段；部分过去 best-effort 返回 200 的请求现在会改为请求侧 400、响应侧 502 或流内错误帧，避免错误语义被伪装成成功。
+- 原生错误体透传只作为可选模式，默认继续使用代理统一错误结构，避免破坏现有通用客户端；即使开启，shim 与网络层错误也不透传。
+- 请求字段默认保真意味着：过去会被代理静默删除的 `service_tier`、`verbosity`、`top_k` 现在可能被不支持它们的 Azure deployment 明确拒绝。此类部署应配置 upstream `blockedParams`，而不是恢复模型名猜测。
+- `/responses/compact` 作为通用原生 Responses 能力提供，但不通过伪装 provider 来强迫 Codex 使用；端点兼容与 CLI 自动触发分开验收。
 
 ### P2：性能及未来能力
 
@@ -264,18 +285,18 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 | thinking/reasoning | 原生应通过 | 原生应通过 | 有部分覆盖 |
 | prompt cache | 直接 Anthropic beta 可透传 | 原生字段可保留 | 缺真实缓存命中测试 |
 | 模型发现 | Anthropic 格式已有覆盖 | **Codex 专用格式已通过** | 有路由覆盖和真实 Codex smoke |
-| 并行及现代内置工具 | 未完整验证 | 未完整验证 | 覆盖不足 |
-| token counting | 缺少端点 | 不适用 | 未覆盖 |
-| server-side compact | 不适用 | 缺少端点 | 未覆盖 |
+| 并行及现代内置工具 | 原生透明透传；shim 无损子集或明确拒绝 | 原生透明透传；shim 无损子集或明确拒绝 | 有请求、JSON 响应、SSE、no-shim 与原生透传覆盖 |
+| token counting | 原生 Messages 已支持 | 不适用 | 有路由、URL、安全和 no-shim 覆盖 |
+| server-side compact | 不适用 | 原生 Responses 已支持；Codex 自动触发未验证 | 有路由、URL、usage 和 no-shim 覆盖 |
 | SSE 非正常 EOF | 基础检查已有 | 严格模式已拒绝 output done 假终态 | 有 passthrough/shim 错误测试，缺真实 CLI 错误矩阵 |
 | WebSocket | 不适用 | 不支持 | 未覆盖 |
 | 真实 CLI | **`2.1.226` 基础文本流通过** | **`0.147.0` 基础文本流通过** | 两条固定版本 smoke 已固化 |
 
 ## 8. 本次验证结果
 
-- `npm run test:routes`：27/27 通过，覆盖原生 Messages、原生 Responses、协议转换、客户端专用模型目录、路由门禁、SSE 和错误帧。
-- `npm run test:unit`：87/87 通过，覆盖请求安全、转换语义、严格且协议绑定的流终止、usage、取消、POSIX CLI 进程组升级清理和测试夹具失败清理；与路由套件合计 114 项代理级检查通过。
-- `npm run test:cli:claude-code`：Claude Code `2.1.226` 通过原生 Messages stream；新 beta、Claude/Stainless 元数据、模型映射和上游凭据隔离均通过。
+- `npm run test:routes`：32/32 通过，覆盖原生 Messages、Messages token counting、原生 Responses、Responses compact、参数 policy、可选原生错误、严格 shim 门禁、协议转换、客户端专用模型目录、路由门禁、SSE 和错误帧。
+- `npm run test:unit`：93/93 通过，覆盖请求安全、utility URL 门禁、现代 item/content block 可表示性、参数保真、undici 网络错误分类、默认关闭的 SSE 错误透传、转换语义、严格且协议绑定的流终止、usage、取消、POSIX CLI 进程组升级清理和测试夹具失败清理；与路由套件合计 125 项代理级检查通过。
+- `npm run test:cli:claude-code`：Claude Code `2.1.226` 在本轮复核中再次通过原生 Messages stream；新 beta、Claude/Stainless 元数据、模型映射和上游凭据隔离均通过。
 - `npm run test:cli:codex`：Codex `0.147.0` 在隔离 `CODEX_HOME` 下通过 command-backed test auth 刷新并解析专用模型目录，再以生产式 `env_key` provider 验证合法 Responses item 生命周期，生成 `agent_message` 并正常退出。
 - `npm run build:admin`：107 个模块成功构建；Settings 开关和模型兼容状态已进入生产静态资源。
 - Foundry beta 可观测性：路由测试确认 `unknown-beta` 被过滤，同时日志事件准确记录过滤值和 upstream 类型。
@@ -287,20 +308,20 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 - 原生 `/v1/messages` 文本、工具、thinking、prompt cache 和取消流程通过真实 Claude Code 测试。
 - 新增未知 `anthropic-beta` 时代理能够按 upstream 策略转发，而无需发版修改代码。
 - `message_stop`、`error`、429 和 5xx 行为可被 CLI 正确识别。
-- `count_tokens` 已实现，或文档明确标为降级并验证本地估算不会阻断使用。
+- `count_tokens` 已通过原生 Messages 透传实现；非原生模型明确拒绝，不使用本地估算冒充精确计数。
 
 当前已满足 Codex 的基础兼容门槛：专用模型目录、原生文本流、Responses 严格终态、模型原生路由门禁和凭据隔离。完整兼容仍需：
 
 - 自定义 provider 使用 `wire_api = "responses"`，文本、reasoning、函数工具、多轮和取消通过真实 Codex 测试。
 - `/models` 能返回 Codex 专用模型目录，或部署文档强制提供经过验证的静态 `model_catalog_json`。
 - 所有启用的 Responses item/event 均能原生透传，并正确处理 completed、incomplete、failed 和异常 EOF。
-- 若声明 server-side compact 或 WebSocket，对应端点和恢复语义必须通过测试；否则保持关闭。
+- 原生 server-side compact 端点已通过代理级测试；在真实 Codex 自动触发和恢复语义通过前，不把它描述为已启用的 Codex CLI 行为。WebSocket 继续保持关闭。
 - shim 路径不作为兼容验收依据。
 
 ## 10. 最终建议
 
 短期不需要重写代理。当前架构已经把路由、鉴权、原生透传、shim 和 SSE 分层，适合在现有实现上补齐协议边界。
 
-最小可靠落地顺序是：将 Claude 模型标记并固定到原生 Messages，将 Codex 模型标记并固定到原生 Responses；在发布时运行两条固定版本 CLI smoke；随后补齐真实 CLI 的工具、thinking/reasoning、取消和错误矩阵。`count_tokens`、`responses/compact` 和 WebSocket 再按实际启用需求推进。
+最小可靠落地顺序是：将 Claude 模型标记并固定到原生 Messages，将 Codex 模型标记并固定到原生 Responses；在发布时运行两条固定版本 CLI smoke；随后补齐真实 CLI 的工具、thinking/reasoning、取消和错误矩阵。P1 的 `count_tokens`、`responses/compact`、严格 shim 门禁、参数 policy 与可选原生错误透传均已完成；Codex 自动触发 compact 和 WebSocket 再按实际需求推进。
 
 当前对外描述建议使用：**“支持 Claude Code `2.1.226` 和 Codex `0.147.0` 的核心 HTTP/SSE 工作流，要求使用已标记的原生协议模型；工具、缓存、压缩和 WebSocket 等高级能力仍按矩阵验证。”**

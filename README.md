@@ -8,11 +8,12 @@
 
 ## Overview
 
-- OpenAI- and Anthropic-compatible proxy for `chat/completions`, `responses`, `messages`, `images/generations`, and `models`
+- OpenAI- and Anthropic-compatible proxy for `chat/completions`, `responses`, `responses/compact`, `messages`, `messages/count_tokens`, `images/generations`, and `models`
 - Client -> Proxy uses API key auth via `Authorization: Bearer` or `x-api-key`
 - Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or protocol-appropriate `api-key` / `x-api-key` headers, based on `auth.mode`
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
+- Native protocol routes preserve modern Responses items and Anthropic content blocks; cross-protocol shims reject structures they cannot represent without loss
 - Optional DCE-based Log Analytics export for correlated proxy events, usage, and redacted prompt/output content; see the [setup guide](docs/log-analytics-dce.en.md)
 
 ## Deployment Assets
@@ -441,7 +442,8 @@ For `gpt-5` and newer models, plus `o*` reasoning models, the proxy now applies 
 - `max_tokens` is upgraded to `max_completion_tokens` for `chat/completions`
 - `top_logprobs` implies `logprobs: true` when the client omits it
 - `reasoning_effort` and `reasoning.effort` accept `low`, `medium`, and `high`; `xhigh` is downgraded to `high`
-- `service_tier`, `verbosity`, and `top_k` are stripped for modern models because they are common sources of `unknown_parameter` errors against Foundry
+- `serviceTier` is normalized to `service_tier`; `service_tier`, `verbosity`, and `top_k` are preserved by default instead of being guessed from the model name
+- Providers that reject optional fields can list them in `upstreams[].requestPolicy.blockedParams`; set `dropUnsupportedParams: true` to remove them, or leave it false to reject the request explicitly
 - `web_search_preview` tools are rejected early with a `400` because Azure Foundry does not currently support web search tools
 
 The proxy also keeps `stream_options` for streaming `chat/completions` and `responses` requests, and strips it only for routes where Foundry v1 may reject it.
@@ -455,6 +457,8 @@ The proxy exposes three text-generation protocols:
 - `POST /v1/messages`
 
 The selected model route determines the upstream protocol. Matching protocol pairs use near-passthrough; mismatched pairs use explicit request, JSON response, and SSE conversion.
+
+Upstream errors use the proxy's normalized error envelope by default. Set `upstreams[].errorPolicy.nativePassthrough` or a route profile's `nativeErrorPassthrough` to `true` only when a native protocol client needs provider-specific error bodies. This opt-in is limited to native routes and preserves safe response metadata such as `Content-Type`, `Retry-After`, and the proxy request ID; protocol shims and network failures remain normalized.
 
 | Client protocol | Chat backend | Responses backend | Messages backend |
 | --- | --- | --- | --- |

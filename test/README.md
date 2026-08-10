@@ -13,10 +13,20 @@ Included scripts:
 - `test/routes/openai-image.js`
 - `test/routes/blackforest-image.js`
 
-Run all four:
+Run the full route batch:
 
 ```bash
 npm run test:routes
+```
+
+The route batch also covers client-specific model discovery, native Messages token counting, native Responses compaction, strict protocol-shim compatibility guards, SSE terminal events, and route-validation gates. Focused contracts can be run by ID:
+
+```bash
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("message-count-tokens")'
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("response-compact")'
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("shim-compatibility-guards")'
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("request-parameter-policy")'
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("native-error-passthrough")'
 ```
 
 Run one script directly:

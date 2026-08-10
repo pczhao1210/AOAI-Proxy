@@ -7,6 +7,8 @@ import {
   findModel,
   buildUpstreamUrl,
   buildDirectUpstreamUrl,
+  buildMessagesCountTokensUrl,
+  buildResponsesCompactUrl,
   resolveModelRoute,
   resolveEffectiveRouteKey,
   normalizeBackendRouteKey,
@@ -37,6 +39,7 @@ import {
   mapResponsesJsonToChatCompletion,
   mapResponsesJsonToMessages,
   mapChatCompletionJsonToResponses,
+  getProtocolShimCompatibilityIssue,
   messagesToChatRequest,
   messagesToResponsesRequest
 } from "./proxy/shim.js";
@@ -74,6 +77,8 @@ import { buildCorrelationHeaders, getRequestContext } from "./request-context.js
 
 const DEFAULT_MAX_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
 const TEXT_PROTOCOL_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
+const MESSAGES_COUNT_TOKENS_ROUTE_KEY = "messages/count_tokens";
+const RESPONSES_COMPACT_ROUTE_KEY = "responses/compact";
 const ANTHROPIC_REQUEST_HEADERS = new Set(["anthropic-version", "anthropic-beta"]);
 const CLAUDE_CODE_HEADER_PREFIXES = ["anthropic-", "x-anthropic-", "x-claude-", "x-stainless-"];
 const VALID_ANTHROPIC_CACHE_TTLS = new Set(["5m", "1h"]);
@@ -380,20 +385,25 @@ function isAllowedByAllNonEmptyLists(fieldName, lists) {
   return true;
 }
 
-function applyConfiguredRequestPolicy(body, { config, routeKey, model }) {
+function applyConfiguredRequestPolicy(body, { config, routeKey, model, upstream }) {
   if (!body || typeof body !== "object") return null;
   const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(routeKey)] || {};
   const routeAllowed = new Set(normalizeStringList(routeProfile.allowedRequestFields));
   const modelPolicy = model?.requestPolicy || {};
   const modelAllowed = new Set(normalizeStringList(modelPolicy.allowedParams));
   const modelBlocked = new Set(normalizeStringList(modelPolicy.blockedParams));
-  const dropUnsupported = modelPolicy.dropUnsupportedParams === true || config?.proxy?.guards?.dropUnsupportedOpenAiParams === true;
+  const upstreamPolicy = upstream?.requestPolicy || {};
+  const upstreamAllowed = new Set(normalizeStringList(upstreamPolicy.allowedParams));
+  const upstreamBlocked = new Set(normalizeStringList(upstreamPolicy.blockedParams));
+  const dropUnsupported = modelPolicy.dropUnsupportedParams === true
+    || upstreamPolicy.dropUnsupportedParams === true
+    || config?.proxy?.guards?.dropUnsupportedOpenAiParams === true;
   const rejectedFields = [];
 
   for (const fieldName of Object.keys(body)) {
     if (fieldName === "model") continue;
-    const blocked = modelBlocked.has(fieldName);
-    const allowed = isAllowedByAllNonEmptyLists(fieldName, [routeAllowed, modelAllowed]);
+    const blocked = modelBlocked.has(fieldName) || upstreamBlocked.has(fieldName);
+    const allowed = isAllowedByAllNonEmptyLists(fieldName, [routeAllowed, modelAllowed, upstreamAllowed]);
     if (!blocked && allowed) continue;
     if (dropUnsupported) {
       delete body[fieldName];
@@ -408,6 +418,17 @@ function applyConfiguredRequestPolicy(body, { config, routeKey, model }) {
     fields: rejectedFields,
     message: `Unsupported request field${rejectedFields.length > 1 ? "s" : ""}: ${rejectedFields.join(", ")}`
   };
+}
+
+function sendNativeErrorResponse(reply, { status, payload, contentType, retryAfter, requestId }) {
+  if (requestId) reply.header("x-request-id", requestId);
+  if (typeof contentType === "string" && contentType.trim()) {
+    reply.header("content-type", contentType);
+  }
+  if (typeof retryAfter === "string" && retryAfter.trim()) {
+    reply.header("retry-after", retryAfter);
+  }
+  reply.code(status).send(payload);
 }
 
 function validateImageGenerationPolicy(body, config) {
@@ -527,6 +548,14 @@ export async function proxyRequest({
   req,
   reply
 }) {
+  const isMessagesCountTokens = routeKey === MESSAGES_COUNT_TOKENS_ROUTE_KEY;
+  const isResponsesCompact = routeKey === RESPONSES_COMPACT_ROUTE_KEY;
+  const isNativeUtilityRequest = isMessagesCountTokens || isResponsesCompact;
+  const protocolRouteKey = isMessagesCountTokens
+    ? "messages"
+    : isResponsesCompact
+      ? "responses"
+      : routeKey;
   const consumer = req.proxyAccess?.consumer || { keyId: "anonymous", displayName: "anonymous", isAnonymous: true, apiKey: null };
   const startAt = Date.now();
   const requestContext = getRequestContext(req);
@@ -591,8 +620,11 @@ export async function proxyRequest({
       type: options.type
     }));
   };
-  let body = sanitizeRequestBody(req.body || {}, {
-    preserveNull: routeKey === "responses",
+  const rawBody = isNativeUtilityRequest && req.body && typeof req.body === "object"
+    ? structuredClone(req.body)
+    : req.body || {};
+  let body = sanitizeRequestBody(rawBody, {
+    preserveNull: protocolRouteKey === "responses",
     sanitizeMeaninglessValues: config?.proxy?.guards?.sanitizeMeaninglessValues !== false
   });
   let requestOverrides = {};
@@ -617,8 +649,8 @@ export async function proxyRequest({
     });
     return;
   }
-  const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(routeKey)] || {};
-  if (!isPublicRouteEnabled(config, routeKey)) {
+  const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(protocolRouteKey)] || {};
+  if (!isPublicRouteEnabled(config, protocolRouteKey)) {
     sendProxyError(404, {
       code: "ROUTE_DISABLED",
       exposedCode: "RouteDisabled",
@@ -667,12 +699,14 @@ export async function proxyRequest({
     return;
   }
 
-  body = {
-    ...(routeProfile.defaultParams && typeof routeProfile.defaultParams === "object" ? routeProfile.defaultParams : {}),
-    ...(model.defaultParams && typeof model.defaultParams === "object" ? model.defaultParams : {}),
-    ...body,
-    model: modelId
-  };
+  body = isNativeUtilityRequest
+    ? { ...body, model: modelId }
+    : {
+      ...(routeProfile.defaultParams && typeof routeProfile.defaultParams === "object" ? routeProfile.defaultParams : {}),
+      ...(model.defaultParams && typeof model.defaultParams === "object" ? model.defaultParams : {}),
+      ...body,
+      model: modelId
+    };
   if (routeKey === "images/generations") {
     const imagePolicyError = validateImageGenerationPolicy(body, config);
     if (imagePolicyError) {
@@ -746,7 +780,7 @@ export async function proxyRequest({
     return;
   }
 
-  if (!hasUsableUpstreamBaseUrl(upstream, { routeKey, model })) {
+  if (!hasUsableUpstreamBaseUrl(upstream, { routeKey: protocolRouteKey, model })) {
     log.error({
       source: "proxy",
       requestId,
@@ -768,14 +802,14 @@ export async function proxyRequest({
   }
   const deployment = model.targetModel || model.id;
   const usesModelRouter = String(deployment || "").trim().toLowerCase() === "model-router";
-  const override = resolveModelRoute(model, routeKey);
+  const override = resolveModelRoute(model, protocolRouteKey);
   let effectiveRouteKey = usesModelRouter
     ? "chat/completions"
-    : resolveEffectiveRouteKey(routeKey, model, upstream, override);
+    : resolveEffectiveRouteKey(protocolRouteKey, model, upstream, override);
   let backendRouteKey = override
-    ? inferBackendRouteKey(routeKey, override)
+    ? inferBackendRouteKey(protocolRouteKey, override)
     : normalizeBackendRouteKey(effectiveRouteKey);
-  if (TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
+  if (TEXT_PROTOCOL_ROUTE_KEYS.has(protocolRouteKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
     log.error({
       source: "proxy",
       requestId,
@@ -791,8 +825,8 @@ export async function proxyRequest({
     sendProxyError(400, {
       code: "UNSUPPORTED_PROTOCOL_ROUTE",
       exposedCode: "UNSUPPORTED_PROTOCOL_ROUTE",
-      message: `Cannot route ${routeKey} requests to unsupported backend protocol ${backendRouteKey}`,
-      detail: { clientProtocol: routeKey, backendProtocol: backendRouteKey }
+      message: `Cannot route ${protocolRouteKey} requests to unsupported backend protocol ${backendRouteKey}`,
+      detail: { clientProtocol: protocolRouteKey, backendProtocol: backendRouteKey }
     });
     return;
   }
@@ -820,11 +854,11 @@ export async function proxyRequest({
     }, "promoted chat/completions request with web_search to responses backend");
   }
 
-  const targetUrl = override?.type === "path"
+  const protocolTargetUrl = override?.type === "path"
     ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
     : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
-  backendRouteKey = reconcileBackendRouteKey(backendRouteKey, targetUrl);
-  if (TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
+  backendRouteKey = reconcileBackendRouteKey(backendRouteKey, protocolTargetUrl);
+  if (TEXT_PROTOCOL_ROUTE_KEYS.has(protocolRouteKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
     log.error({
       source: "proxy",
       requestId,
@@ -840,12 +874,90 @@ export async function proxyRequest({
     sendProxyError(400, {
       code: "UNSUPPORTED_PROTOCOL_ROUTE",
       exposedCode: "UNSUPPORTED_PROTOCOL_ROUTE",
-      message: `Cannot route ${routeKey} requests to unsupported backend protocol ${backendRouteKey}`,
-      detail: { clientProtocol: routeKey, backendProtocol: backendRouteKey }
+      message: `Cannot route ${protocolRouteKey} requests to unsupported backend protocol ${backendRouteKey}`,
+      detail: { clientProtocol: protocolRouteKey, backendProtocol: backendRouteKey }
     });
     return;
   }
-  const policy = resolveUpstreamPolicy(config, { routeKey, model, upstream, requestOverrides });
+  if (isMessagesCountTokens && backendRouteKey !== "messages") {
+    sendProxyError(400, {
+      code: "TOKEN_COUNTING_REQUIRES_NATIVE_MESSAGES",
+      exposedCode: "TokenCountingNotSupported",
+      message: `Token counting is not supported for model ${modelId}; a native Messages route is required`,
+      detail: { modelId, backendProtocol: backendRouteKey }
+    });
+    return;
+  }
+  if (isResponsesCompact && backendRouteKey !== "responses") {
+    sendProxyError(400, {
+      code: "COMPACTION_REQUIRES_NATIVE_RESPONSES",
+      exposedCode: "ResponseCompactionNotSupported",
+      message: `Response compaction is not supported for model ${modelId}; a native Responses route is required`,
+      detail: { modelId, backendProtocol: backendRouteKey }
+    });
+    return;
+  }
+  let targetUrl;
+  try {
+    if (isMessagesCountTokens) {
+      targetUrl = buildMessagesCountTokensUrl(upstream, protocolTargetUrl, deployment, model);
+    } else if (isResponsesCompact) {
+      targetUrl = buildResponsesCompactUrl(upstream, protocolTargetUrl, deployment, model);
+    } else {
+      targetUrl = protocolTargetUrl;
+    }
+  } catch (error) {
+    const operation = isMessagesCountTokens ? "Token counting" : "Response compaction";
+    sendProxyError(501, {
+      code: isMessagesCountTokens ? "TOKEN_COUNTING_NOT_CONFIGURED" : "COMPACTION_NOT_CONFIGURED",
+      exposedCode: isMessagesCountTokens ? "TokenCountingNotSupported" : "ResponseCompactionNotSupported",
+      message: `${operation} is not configured for model ${modelId}`,
+      detail: error?.message || `No usable ${routeKey} route`
+    });
+    return;
+  }
+  const needsProtocolShim =
+    routeKey !== backendRouteKey
+    && TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey)
+    && TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey);
+  const nativeErrorPassthrough = !needsProtocolShim
+    && protocolRouteKey === backendRouteKey
+    && (
+      upstream?.errorPolicy?.nativePassthrough === true
+      || routeProfile?.nativeErrorPassthrough === true
+    );
+  const shimRequestIssue = needsProtocolShim
+    ? getProtocolShimCompatibilityIssue(body, {
+      phase: "request",
+      sourceProtocol: routeKey,
+      targetProtocol: backendRouteKey
+    })
+    : null;
+  if (shimRequestIssue) {
+    log.warn({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      status: 400,
+      event: "proxy.protocol_shim_rejected",
+      errorCode: "UNSUPPORTED_PROTOCOL_SHIM_REQUEST",
+      param: shimRequestIssue.path,
+      unsupportedType: shimRequestIssue.type,
+      failureReason: shimRequestIssue.message
+    }, "protocol shim request rejected");
+    sendProxyError(400, {
+      code: "UNSUPPORTED_PROTOCOL_SHIM_REQUEST",
+      exposedCode: "UnsupportedProtocolShim",
+      message: shimRequestIssue.message,
+      param: shimRequestIssue.path,
+      detail: shimRequestIssue
+    });
+    return;
+  }
+  const policy = resolveUpstreamPolicy(config, { routeKey: protocolRouteKey, model, upstream, requestOverrides });
   let upstreamAuthHeaders;
   try {
     markTiming(timing, "authStartAt");
@@ -897,11 +1009,7 @@ export async function proxyRequest({
     return;
   }
 
-  isStream = getStreamFlag(body);
-  const needsProtocolShim =
-    routeKey !== backendRouteKey
-    && TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey)
-    && TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey);
+  isStream = !isNativeUtilityRequest && getStreamFlag(body);
 
   let nextBody;
   if (routeKey === "chat/completions" && backendRouteKey === "responses") {
@@ -1021,7 +1129,12 @@ export async function proxyRequest({
       });
       return;
     }
-    const configuredPolicyRejection = applyConfiguredRequestPolicy(nextBody, { config, routeKey, model });
+    const configuredPolicyRejection = applyConfiguredRequestPolicy(nextBody, {
+      config,
+      routeKey: protocolRouteKey,
+      model,
+      upstream
+    });
     if (configuredPolicyRejection) {
       log.error({
         source: "proxy",
@@ -1058,7 +1171,7 @@ export async function proxyRequest({
 
   if (nextBody && typeof nextBody === "object") {
     try {
-      nextBody = await maybeCompressImages(nextBody, config, routeKey);
+      nextBody = await maybeCompressImages(nextBody, config, protocolRouteKey);
     } catch (error) {
       log.error({
         source: "proxy",
@@ -1479,6 +1592,7 @@ export async function proxyRequest({
 
         if (!upstreamResponse.ok) {
           let detail = "";
+          let nativeErrorBodyAvailable = true;
           try {
             detail = await readTextWithTimeout(
               upstreamResponse,
@@ -1487,6 +1601,7 @@ export async function proxyRequest({
               upstreamAbortController.signal
             );
           } catch (readError) {
+            nativeErrorBodyAvailable = false;
             const readFailure = classifyFetchError(readError);
             if (readFailure.code === "CLIENT_DISCONNECTED") {
               finishTiming({ status: 499, outcome: "client_disconnected", errorCode: readFailure.code, source: "client" });
@@ -1532,6 +1647,36 @@ export async function proxyRequest({
             failureReason: detail,
             source: "upstream"
           });
+          if (nativeErrorPassthrough && nativeErrorBodyAvailable) {
+            log.error({
+              source: "upstream",
+              requestId,
+              ...requestNetworkContext,
+              modelId,
+              routeKey,
+              backendRouteKey,
+              attempt,
+              status: upstreamResponse.status,
+              event: "proxy.native_error_passthrough",
+              errorCode: classified.code,
+              latencyMs: Date.now() - startAt,
+              ...extractFailureDetails(detail)
+            }, "native upstream error passed through");
+            sendNativeErrorResponse(reply, {
+              status: upstreamResponse.status,
+              payload: detail,
+              contentType: upstreamResponse.headers.get("content-type") || "",
+              retryAfter: upstreamResponse.headers.get("retry-after") || "",
+              requestId
+            });
+            finishTiming({
+              status: upstreamResponse.status,
+              outcome: "native_upstream_error_passthrough",
+              errorCode: classified.code,
+              source: "upstream"
+            });
+            return;
+          }
           const errBody = buildErrorBody({
             classified: { ...classified, retryable: retryableStatus && attempt < maxAttempts },
             requestId,
@@ -1568,6 +1713,7 @@ export async function proxyRequest({
             reply,
             backendRouteKey,
             strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
+            forwardProviderErrors: nativeErrorPassthrough,
             policy,
             onFirstChunk: () => {
               markTiming(timing, "firstChunkAt");
@@ -1813,6 +1959,36 @@ export async function proxyRequest({
         source: "upstream"
       });
       const status = fetchResult.upstreamStatus || fetchResult.classified.status || 502;
+      if (nativeErrorPassthrough && fetchResult.hasUpstreamHttpResponse) {
+        log.error({
+          source: "upstream",
+          requestId,
+          ...requestNetworkContext,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          attempt: fetchResult.attempt,
+          status,
+          event: "proxy.native_error_passthrough",
+          errorCode: fetchResult.classified.code,
+          latencyMs: Date.now() - startAt,
+          ...extractFailureDetails(fetchResult.detail)
+        }, "native upstream error passed through");
+        sendNativeErrorResponse(reply, {
+          status,
+          payload: fetchResult.detail,
+          contentType: fetchResult.upstreamContentType,
+          retryAfter: fetchResult.upstreamRetryAfter,
+          requestId
+        });
+        finishTiming({
+          status,
+          outcome: "native_upstream_error_passthrough",
+          errorCode: fetchResult.classified.code,
+          source: "upstream"
+        });
+        return;
+      }
       const errBody = buildErrorBody({
         classified: fetchResult.classified,
         requestId,
@@ -1871,13 +2047,24 @@ export async function proxyRequest({
       return;
     }
     let payload = null;
+    let rawPayloadText = null;
     try {
-      payload = await parseJsonWithTimeout(
-        upstreamResponse,
-        policy.requestTimeoutMs,
-        maxResponseBodyBytes,
-        upstreamAbortController.signal
-      );
+      if (nativeErrorPassthrough) {
+        rawPayloadText = await readTextWithTimeout(
+          upstreamResponse,
+          policy.requestTimeoutMs,
+          maxResponseBodyBytes,
+          upstreamAbortController.signal
+        );
+        payload = JSON.parse(rawPayloadText);
+      } else {
+        payload = await parseJsonWithTimeout(
+          upstreamResponse,
+          policy.requestTimeoutMs,
+          maxResponseBodyBytes,
+          upstreamAbortController.signal
+        );
+      }
     } catch (error) {
       const classified = classifyFetchError(error);
       if (classified.code === "CLIENT_DISCONNECTED") {
@@ -1922,6 +2109,34 @@ export async function proxyRequest({
         failureReason: providerPayloadError.message,
         source: "provider"
       });
+      if (nativeErrorPassthrough) {
+        log.error({
+          source: "provider",
+          requestId,
+          ...requestNetworkContext,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          status: upstreamResponse.status,
+          event: "proxy.native_error_passthrough",
+          errorCode: providerPayloadError.code,
+          failureReason: providerPayloadError.message
+        }, "native provider failure payload passed through");
+        sendNativeErrorResponse(reply, {
+          status: upstreamResponse.status,
+          payload: rawPayloadText ?? JSON.stringify(payload),
+          contentType: upstreamResponse.headers.get("content-type") || "application/json",
+          retryAfter: upstreamResponse.headers.get("retry-after") || "",
+          requestId
+        });
+        finishTiming({
+          status: upstreamResponse.status,
+          outcome: "native_provider_error_passthrough",
+          errorCode: providerPayloadError.code,
+          source: "provider"
+        });
+        return;
+      }
       sendProxyError(502, {
         code: "UPSTREAM_PROVIDER_RESPONSE_ERROR",
         exposedCode: providerPayloadError.code,
@@ -1934,6 +2149,106 @@ export async function proxyRequest({
         status: 502,
         outcome: "provider_response_failed",
         errorCode: providerPayloadError.code,
+        source: "provider"
+      });
+      return;
+    }
+
+    const shimResponseIssue = needsProtocolShim
+      ? getProtocolShimCompatibilityIssue(payload, {
+        phase: "response",
+        sourceProtocol: backendRouteKey,
+        targetProtocol: routeKey
+      })
+      : null;
+    if (shimResponseIssue) {
+      recordProxyError({
+        status: 502,
+        errorCode: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
+        failureReason: shimResponseIssue.message,
+        source: "provider"
+      });
+      log.error({
+        source: "provider",
+        requestId,
+        ...requestNetworkContext,
+        modelId,
+        routeKey,
+        backendRouteKey,
+        status: 502,
+        event: "proxy.protocol_shim_response_rejected",
+        errorCode: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
+        param: shimResponseIssue.path,
+        unsupportedType: shimResponseIssue.type,
+        failureReason: shimResponseIssue.message
+      }, "protocol shim response rejected");
+      sendProxyError(502, {
+        code: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
+        exposedCode: "UnsupportedProtocolShimResponse",
+        message: shimResponseIssue.message,
+        param: shimResponseIssue.path,
+        detail: shimResponseIssue
+      });
+      finishTiming({
+        status: 502,
+        outcome: "protocol_shim_response_rejected",
+        errorCode: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
+        source: "provider"
+      });
+      return;
+    }
+
+    if (
+      isMessagesCountTokens
+      && (!Number.isInteger(payload?.input_tokens) || payload.input_tokens < 0)
+    ) {
+      recordProxyError({
+        status: 502,
+        errorCode: "INVALID_TOKEN_COUNT_RESPONSE",
+        failureReason: "upstream token count response must contain a non-negative integer input_tokens",
+        source: "provider"
+      });
+      sendProxyError(502, {
+        code: "INVALID_TOKEN_COUNT_RESPONSE",
+        exposedCode: "InvalidTokenCountResponse",
+        message: "Upstream token count response is invalid",
+        detail: payload
+      });
+      finishTiming({
+        status: 502,
+        outcome: "provider_response_invalid",
+        errorCode: "INVALID_TOKEN_COUNT_RESPONSE",
+        source: "provider"
+      });
+      return;
+    }
+
+    if (
+      isResponsesCompact
+      && (
+        payload?.object !== "response.compaction"
+        || !Array.isArray(payload.output)
+        || !payload.usage
+        || typeof payload.usage !== "object"
+        || Array.isArray(payload.usage)
+      )
+    ) {
+      recordProxyError({
+        status: 502,
+        errorCode: "INVALID_COMPACTION_RESPONSE",
+        failureReason: "upstream compaction response must contain object=response.compaction, output, and usage",
+        source: "provider"
+      });
+      sendProxyError(502, {
+        code: "INVALID_COMPACTION_RESPONSE",
+        exposedCode: "InvalidCompactionResponse",
+        message: "Upstream compaction response is invalid",
+        detail: payload
+      });
+      finishTiming({
+        status: 502,
+        outcome: "provider_response_invalid",
+        errorCode: "INVALID_COMPACTION_RESPONSE",
         source: "provider"
       });
       return;
@@ -2020,7 +2335,7 @@ export async function proxyRequest({
     deferPostResponse(() => {
       noteResolvedUpstreamModel(payload?.model);
       if (payload?.usage) {
-        recordProxyUsage(payload.usage, payload?.model);
+        recordProxyUsage(payload.usage, payload?.model || (isResponsesCompact ? deployment : ""));
       }
       emitRequestCompleted({ responsePayload: payload, status: upstreamResponse.status, attempt: fetchResult.attempt });
     });
@@ -2258,10 +2573,10 @@ function sanitizeModernModelRequest(body, { backendRouteKey, modelId, model }) {
     return null;
   }
 
+  if (body.service_tier == null && body.serviceTier != null) {
+    body.service_tier = body.serviceTier;
+  }
   delete body.serviceTier;
-  delete body.service_tier;
-  delete body.verbosity;
-  delete body.top_k;
 
   if (backendRouteKey === "chat/completions") {
     if (typeof body.max_completion_tokens !== "number" && typeof body.max_tokens === "number") {

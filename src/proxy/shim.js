@@ -1,3 +1,833 @@
+const SHIM_PROTOCOLS = new Set(["chat/completions", "responses", "messages"]);
+const TEXT_CONTENT_TYPES = new Set(["text", "input_text", "output_text"]);
+const IMAGE_CONTENT_TYPES = new Set(["image", "image_url", "input_image"]);
+const RESPONSES_SHIM_STREAM_LIFECYCLE_EVENTS = new Set([
+  "response.created",
+  "response.in_progress",
+  "response.completed",
+  "response.incomplete",
+  "response.failed",
+  "response.output_text.delta",
+  "response.output_text.done",
+  "response.function_call_arguments.delta",
+  "response.function_call_arguments.done",
+  "error"
+]);
+const SUPPORTED_CHAT_FINAL_FINISH_REASONS = new Set(["stop", "length", "tool_calls"]);
+const SUPPORTED_CHAT_STREAM_FINISH_REASONS = new Set([null, undefined, ...SUPPORTED_CHAT_FINAL_FINISH_REASONS]);
+const SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS = new Set(["end_turn", "max_tokens", "stop_sequence", "tool_use"]);
+const SUPPORTED_ANTHROPIC_STREAM_STOP_REASONS = new Set([null, undefined, ...SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS]);
+
+function createShimCompatibilityIssue({ phase, sourceProtocol, targetProtocol, path, type, reason }) {
+  return {
+    phase,
+    sourceProtocol,
+    targetProtocol,
+    path,
+    type: type || "unknown",
+    reason,
+    message: `Cannot losslessly convert ${sourceProtocol} ${phase} ${path} (${type || "unknown"}) to ${targetProtocol}: ${reason}`
+  };
+}
+
+function hasNonEmptyArray(value) {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function hasMeaningfulShimValue(value) {
+  if (value == null || value === false || value === "") return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).some((key) => value[key] != null);
+  return true;
+}
+
+function hasStructuredMetadata(value) {
+  return value?.cache_control != null
+    || value?.prompt_cache_breakpoint != null
+    || hasNonEmptyArray(value?.citations)
+    || hasNonEmptyArray(value?.annotations)
+    || hasNonEmptyArray(value?.logprobs);
+}
+
+function validateTextOnlyValue(value, context, path) {
+  if (typeof value === "string" || value == null) return null;
+  if (!Array.isArray(value)) {
+    return createShimCompatibilityIssue({
+      ...context,
+      path,
+      type: typeof value,
+      reason: "tool output must be text"
+    });
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const part = value[index];
+    if (typeof part === "string") continue;
+    const partType = part?.type;
+    if (!part || !TEXT_CONTENT_TYPES.has(partType) || typeof part.text !== "string" || hasStructuredMetadata(part)) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `${path}[${index}]`,
+        type: partType || typeof part,
+        reason: "tool output contains non-text or annotated content"
+      });
+    }
+  }
+  return null;
+}
+
+function validateResponsesContent(content, context, path) {
+  if (typeof content === "string" || content == null) return null;
+  if (!Array.isArray(content)) {
+    return createShimCompatibilityIssue({
+      ...context,
+      path,
+      type: typeof content,
+      reason: "message content must be text or a supported content array"
+    });
+  }
+  for (let index = 0; index < content.length; index += 1) {
+    const part = content[index];
+    if (typeof part === "string") continue;
+    const partPath = `${path}[${index}]`;
+    const partType = part?.type;
+    if (!part || typeof part !== "object") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: partPath,
+        type: typeof part,
+        reason: "invalid content part"
+      });
+    }
+    if (TEXT_CONTENT_TYPES.has(partType)) {
+      if (hasStructuredMetadata(part)) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: partPath,
+          type: partType,
+          reason: "citations, annotations, logprobs, and cache metadata are not preserved by the target protocol"
+        });
+      }
+      continue;
+    }
+    if (context.phase === "request" && IMAGE_CONTENT_TYPES.has(partType)) {
+      const imageUrl = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+      if (!imageUrl) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: partPath,
+          type: partType,
+          reason: "file-backed image references cannot be represented by the target protocol"
+        });
+      }
+      if (context.targetProtocol === "messages" && (part.detail || part.image_url?.detail)) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: partPath,
+          type: partType,
+          reason: "image detail is not represented by Anthropic Messages"
+        });
+      }
+      continue;
+    }
+    return createShimCompatibilityIssue({
+      ...context,
+      path: partPath,
+      type: partType || "unknown",
+      reason: "unsupported Responses content type"
+    });
+  }
+  return null;
+}
+
+function validateResponsesPayload(payload, context) {
+  if (context.phase === "request") {
+    if (context.targetProtocol === "messages") {
+      for (const field of ["service_tier", "serviceTier", "verbosity", "top_k"]) {
+        if (hasMeaningfulShimValue(payload?.[field])) {
+          return createShimCompatibilityIssue({
+            ...context,
+            path: field,
+            type: field,
+            reason: "Responses request control is not represented by Anthropic Messages"
+          });
+        }
+      }
+    }
+    const stateFields = [
+      "context_management",
+      "conversation",
+      "include",
+      "previous_response_id",
+      "prompt",
+      "prompt_cache_key",
+      "prompt_cache_retention",
+      "truncation"
+    ];
+    for (const field of stateFields) {
+      if (hasMeaningfulShimValue(payload?.[field])) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: field,
+          type: field,
+          reason: "Responses conversation or cache state cannot be preserved"
+        });
+      }
+    }
+    if (payload?.max_tool_calls != null) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "max_tool_calls",
+        type: "max_tool_calls",
+        reason: "Responses tool-call limits cannot be preserved"
+      });
+    }
+    if (payload?.background === true || payload?.store === true) {
+      const field = payload.background === true ? "background" : "store";
+      return createShimCompatibilityIssue({
+        ...context,
+        path: field,
+        type: field,
+        reason: "Responses server-side state cannot be preserved"
+      });
+    }
+    if (payload?.reasoning != null) {
+      const reasoningKeys = payload.reasoning && typeof payload.reasoning === "object"
+        ? Object.keys(payload.reasoning).filter((key) => payload.reasoning[key] != null)
+        : [];
+      if (context.targetProtocol === "messages" || reasoningKeys.some((key) => key !== "effort")) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: "reasoning",
+          type: "reasoning",
+          reason: "reasoning configuration is not fully represented by the target protocol"
+        });
+      }
+    }
+    if (context.targetProtocol === "messages" && payload?.text?.format != null) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "text.format",
+        type: payload.text.format?.type || "format",
+        reason: "structured output format is not represented by Anthropic Messages"
+      });
+    }
+  } else if (payload?.status === "incomplete" && payload?.incomplete_details?.reason !== "max_output_tokens") {
+    return createShimCompatibilityIssue({
+      ...context,
+      path: "incomplete_details.reason",
+      type: payload?.incomplete_details?.reason || "unknown",
+      reason: "only max_output_tokens can be represented by the target protocol's length termination"
+    });
+  }
+
+  const tools = Array.isArray(payload?.tools) ? payload.tools : [];
+  for (let index = 0; index < tools.length; index += 1) {
+    if (tools[index]?.type !== "function") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `tools[${index}]`,
+        type: tools[index]?.type || "unknown",
+        reason: "only function tools can be converted across protocols"
+      });
+    }
+  }
+  if (payload?.tool_choice && typeof payload.tool_choice === "object" && payload.tool_choice.type !== "function") {
+    return createShimCompatibilityIssue({
+      ...context,
+      path: "tool_choice",
+      type: payload.tool_choice.type || "unknown",
+      reason: "only function tool choices can be converted across protocols"
+    });
+  }
+
+  const items = context.phase === "request" ? payload?.input : payload?.output;
+  if (items == null || typeof items === "string") return null;
+  const itemList = Array.isArray(items) ? items : [items];
+  for (let index = 0; index < itemList.length; index += 1) {
+    const item = itemList[index];
+    const itemPath = `${context.phase === "request" ? "input" : "output"}[${index}]`;
+    if (typeof item === "string") continue;
+    if (!item || typeof item !== "object") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: itemPath,
+        type: typeof item,
+        reason: "invalid Responses item"
+      });
+    }
+    const itemType = item.type || (item.role ? "message" : "unknown");
+    if (itemType === "message") {
+      const issue = validateResponsesContent(item.content, context, `${itemPath}.content`);
+      if (issue) return issue;
+      continue;
+    }
+    if (itemType === "function_call") continue;
+    if (context.phase === "request" && itemType === "function_call_output") {
+      const issue = validateTextOnlyValue(item.output, context, `${itemPath}.output`);
+      if (issue) return issue;
+      continue;
+    }
+    return createShimCompatibilityIssue({
+      ...context,
+      path: itemPath,
+      type: itemType,
+      reason: "unsupported Responses item type"
+    });
+  }
+  return null;
+}
+
+function validateAnthropicTextBlock(block, context, path) {
+  if (hasStructuredMetadata(block)) {
+    return createShimCompatibilityIssue({
+      ...context,
+      path,
+      type: block?.type || "text",
+      reason: "citations and cache metadata are not preserved by the target protocol"
+    });
+  }
+  return null;
+}
+
+function validateAnthropicContent(content, context, path) {
+  if (typeof content === "string" || content == null) return null;
+  if (!Array.isArray(content)) {
+    return createShimCompatibilityIssue({
+      ...context,
+      path,
+      type: typeof content,
+      reason: "Anthropic content must be text or a supported content array"
+    });
+  }
+  for (let index = 0; index < content.length; index += 1) {
+    const block = content[index];
+    const blockPath = `${path}[${index}]`;
+    if (typeof block === "string") continue;
+    const blockType = block?.type;
+    if (blockType === "text") {
+      const issue = validateAnthropicTextBlock(block, context, blockPath);
+      if (issue) return issue;
+      continue;
+    }
+    if (context.phase === "request" && blockType === "image" && block?.source && !block.cache_control) {
+      const sourceType = block.source.type;
+      const supportedSource = sourceType === "base64"
+        ? typeof block.source.media_type === "string" && typeof block.source.data === "string"
+        : sourceType === "url" && typeof block.source.url === "string";
+      if (supportedSource) continue;
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `${blockPath}.source`,
+        type: sourceType || "unknown",
+        reason: "only base64 and URL Anthropic image sources can be converted"
+      });
+    }
+    if (blockType === "tool_use" && !block?.cache_control && !block?.caller) continue;
+    if (context.phase === "request" && blockType === "tool_result" && !block?.cache_control) {
+      if (block.is_error === true) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${blockPath}.is_error`,
+          type: "is_error",
+          reason: "Anthropic tool error state cannot be preserved by the target protocol"
+        });
+      }
+      const issue = validateTextOnlyValue(block.content, context, `${blockPath}.content`);
+      if (issue) return issue;
+      continue;
+    }
+    if (context.phase === "response" && context.targetProtocol === "chat/completions" && blockType === "thinking" && !block?.signature) {
+      continue;
+    }
+    return createShimCompatibilityIssue({
+      ...context,
+      path: blockPath,
+      type: blockType || "unknown",
+      reason: "unsupported Anthropic content block"
+    });
+  }
+  return null;
+}
+
+function validateMessagesPayload(payload, context) {
+  if (context.phase === "request") {
+    for (const field of ["thinking", "output_config"]) {
+      if (payload?.[field] != null) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: field,
+          type: field,
+          reason: "Anthropic reasoning or output configuration cannot be preserved"
+        });
+      }
+    }
+    for (const field of ["top_k", "metadata", "service_tier", "serviceTier", "verbosity"]) {
+      if (hasMeaningfulShimValue(payload?.[field])) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: field,
+          type: field,
+          reason: "Anthropic request control is not represented by the target protocol"
+        });
+      }
+    }
+    if (Array.isArray(payload?.system)) {
+      for (let index = 0; index < payload.system.length; index += 1) {
+        const block = payload.system[index];
+        if (block?.type !== "text") {
+          return createShimCompatibilityIssue({
+            ...context,
+            path: `system[${index}]`,
+            type: block?.type || "unknown",
+            reason: "only text system blocks can be converted across protocols"
+          });
+        }
+        const issue = validateAnthropicTextBlock(block, context, `system[${index}]`);
+        if (issue) return issue;
+      }
+    }
+    const tools = Array.isArray(payload?.tools) ? payload.tools : [];
+    for (let index = 0; index < tools.length; index += 1) {
+      const toolType = tools[index]?.type;
+      if (toolType && toolType !== "custom") {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `tools[${index}]`,
+          type: toolType,
+          reason: "only custom function tools can be converted across protocols"
+        });
+      }
+    }
+    if (payload?.tool_choice?.disable_parallel_tool_use === true) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "tool_choice.disable_parallel_tool_use",
+        type: "disable_parallel_tool_use",
+        reason: "Anthropic parallel tool-call restrictions cannot be preserved"
+      });
+    }
+  } else if (!SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS.has(payload?.stop_reason)) {
+    return createShimCompatibilityIssue({
+      ...context,
+      path: "stop_reason",
+      type: payload?.stop_reason || "unknown",
+      reason: "Anthropic termination reason cannot be represented by the target protocol"
+    });
+  }
+
+  const messages = context.phase === "request"
+    ? (Array.isArray(payload?.messages) ? payload.messages : [])
+    : [{ content: payload?.content }];
+  for (let index = 0; index < messages.length; index += 1) {
+    const issue = validateAnthropicContent(
+      messages[index]?.content,
+      context,
+      context.phase === "request" ? `messages[${index}].content` : "content"
+    );
+    if (issue) return issue;
+  }
+  return null;
+}
+
+function validateChatContent(content, context, path) {
+  if (typeof content === "string" || content == null) return null;
+  if (!Array.isArray(content)) {
+    return createShimCompatibilityIssue({
+      ...context,
+      path,
+      type: typeof content,
+      reason: "Chat content must be text or a supported content array"
+    });
+  }
+  if (context.phase === "response") {
+    return createShimCompatibilityIssue({
+      ...context,
+      path,
+      type: "content_array",
+      reason: "structured Chat response content is not preserved by the target protocol"
+    });
+  }
+  for (let index = 0; index < content.length; index += 1) {
+    const part = content[index];
+    if (typeof part === "string") continue;
+    const partPath = `${path}[${index}]`;
+    const partType = part?.type;
+    if (TEXT_CONTENT_TYPES.has(partType) && !hasStructuredMetadata(part)) continue;
+    if (IMAGE_CONTENT_TYPES.has(partType)) {
+      const imageUrl = typeof part?.image_url === "string" ? part.image_url : part?.image_url?.url;
+      if (!imageUrl || (context.targetProtocol === "messages" && (part.detail || part.image_url?.detail))) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: partPath,
+          type: partType,
+          reason: "image reference or detail cannot be represented by the target protocol"
+        });
+      }
+      continue;
+    }
+    if (partType === "input_file" && context.targetProtocol === "responses") continue;
+    return createShimCompatibilityIssue({
+      ...context,
+      path: partPath,
+      type: partType || "unknown",
+      reason: "unsupported Chat content type"
+    });
+  }
+  return null;
+}
+
+function validateChatPayload(payload, context) {
+  if (context.phase === "request") {
+    if (context.targetProtocol === "messages") {
+      for (const field of ["service_tier", "serviceTier", "verbosity"]) {
+        if (hasMeaningfulShimValue(payload?.[field])) {
+          return createShimCompatibilityIssue({
+            ...context,
+            path: field,
+            type: field,
+            reason: "Chat request control is not represented by Anthropic Messages"
+          });
+        }
+      }
+    }
+    if (payload?.n != null && payload.n !== 1) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "n",
+        type: "n",
+        reason: "the target protocol cannot preserve multiple completion candidates"
+      });
+    }
+    const droppedControls = [
+      "frequency_penalty",
+      "logit_bias",
+      "logprobs",
+      "prediction",
+      "presence_penalty",
+      "seed",
+      "stop",
+      "stream_options",
+      "top_k",
+      "top_logprobs",
+      "top_p"
+    ];
+    for (const field of droppedControls) {
+      const value = payload?.[field];
+      const isNoOpPenalty = (field === "frequency_penalty" || field === "presence_penalty") && value === 0;
+      const isNoOpLogprobs = field === "logprobs" && value === false;
+      const isNoOpTopLogprobs = field === "top_logprobs" && value === 0;
+      if (!isNoOpPenalty && !isNoOpLogprobs && !isNoOpTopLogprobs && hasMeaningfulShimValue(value)) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: field,
+          type: field,
+          reason: "Chat request control is not represented by the target protocol"
+        });
+      }
+    }
+    if (payload?.best_of != null && payload.best_of !== 1) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "best_of",
+        type: "best_of",
+        reason: "the target protocol cannot preserve multiple completion candidates"
+      });
+    }
+    const modalities = payload?.modalities;
+    if (hasNonEmptyArray(modalities) && !(modalities.length === 1 && modalities[0] === "text")) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "modalities",
+        type: "modalities",
+        reason: "non-text Chat modalities cannot be preserved"
+      });
+    }
+    if (context.targetProtocol === "messages" && payload?.parallel_tool_calls != null) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "parallel_tool_calls",
+        type: "parallel_tool_calls",
+        reason: "Chat parallel tool-call policy cannot be preserved by Anthropic Messages"
+      });
+    }
+  } else {
+    const choices = Array.isArray(payload?.choices) ? payload.choices : [];
+    if (choices.length !== 1) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "choices",
+        type: choices.length > 1 ? "multiple_choices" : "missing_choice",
+        reason: choices.length > 1
+          ? "the target protocol cannot preserve multiple completion candidates"
+          : "a final Chat response must contain exactly one completion choice"
+      });
+    }
+    const finishReason = choices[0]?.finish_reason;
+    if (!SUPPORTED_CHAT_FINAL_FINISH_REASONS.has(finishReason)) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "choices[0].finish_reason",
+        type: finishReason || "unknown",
+        reason: "Chat termination reason cannot be represented by the target protocol"
+      });
+    }
+  }
+  if (context.phase === "request" && context.targetProtocol === "messages") {
+    for (const field of ["function_call", "functions", "reasoning", "reasoning_effort", "response_format"]) {
+      if (payload?.[field] != null) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: field,
+          type: field,
+          reason: "Chat structured configuration is not represented by Anthropic Messages"
+        });
+      }
+    }
+  }
+  const tools = Array.isArray(payload?.tools) ? payload.tools : [];
+  for (let index = 0; index < tools.length; index += 1) {
+    if (tools[index]?.type !== "function") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `tools[${index}]`,
+        type: tools[index]?.type || "unknown",
+        reason: "only function tools can be converted across protocols"
+      });
+    }
+  }
+
+  const messages = context.phase === "request"
+    ? (Array.isArray(payload?.messages) ? payload.messages : [])
+    : [payload?.choices?.[0]?.message].filter(Boolean);
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    const basePath = context.phase === "request" ? `messages[${index}]` : "choices[0].message";
+    if (message?.role === "function") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `${basePath}.role`,
+        type: "function",
+        reason: "legacy Chat function messages cannot be converted losslessly"
+      });
+    }
+    if (message?.function_call != null) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `${basePath}.function_call`,
+        type: "function_call",
+        reason: "legacy Chat function calls cannot be converted losslessly"
+      });
+    }
+    if (message?.reasoning_content != null || message?.refusal != null || message?.audio != null) {
+      const field = message.reasoning_content != null ? "reasoning_content" : message.refusal != null ? "refusal" : "audio";
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `${basePath}.${field}`,
+        type: field,
+        reason: "structured assistant content is not preserved by the target protocol"
+      });
+    }
+    const contentIssue = validateChatContent(message?.content, context, `${basePath}.content`);
+    if (contentIssue) return contentIssue;
+    for (let toolIndex = 0; toolIndex < (Array.isArray(message?.tool_calls) ? message.tool_calls.length : 0); toolIndex += 1) {
+      const toolCall = message.tool_calls[toolIndex];
+      if (toolCall?.type !== "function") {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${basePath}.tool_calls[${toolIndex}]`,
+          type: toolCall?.type || "unknown",
+          reason: "only function tool calls can be converted across protocols"
+        });
+      }
+    }
+    if (message?.role === "tool") {
+      if (context.targetProtocol === "responses" && typeof message.content !== "string") {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${basePath}.content`,
+          type: Array.isArray(message.content) ? "content_array" : typeof message.content,
+          reason: "Responses function_call_output conversion requires a string tool result"
+        });
+      }
+      const outputIssue = validateTextOnlyValue(message.content, context, `${basePath}.content`);
+      if (outputIssue) return outputIssue;
+    }
+  }
+  return null;
+}
+
+export function getProtocolShimCompatibilityIssue(payload, {
+  phase = "request",
+  sourceProtocol,
+  targetProtocol
+} = {}) {
+  if (
+    !payload
+    || typeof payload !== "object"
+    || sourceProtocol === targetProtocol
+    || !SHIM_PROTOCOLS.has(sourceProtocol)
+    || !SHIM_PROTOCOLS.has(targetProtocol)
+  ) {
+    return null;
+  }
+  const context = { phase, sourceProtocol, targetProtocol };
+  if (sourceProtocol === "responses") return validateResponsesPayload(payload, context);
+  if (sourceProtocol === "messages") return validateMessagesPayload(payload, context);
+  return validateChatPayload(payload, context);
+}
+
+export function getProtocolShimStreamCompatibilityIssue(event, {
+  sourceProtocol,
+  targetProtocol
+} = {}) {
+  if (
+    !event
+    || typeof event !== "object"
+    || sourceProtocol === targetProtocol
+    || !SHIM_PROTOCOLS.has(sourceProtocol)
+    || !SHIM_PROTOCOLS.has(targetProtocol)
+  ) {
+    return null;
+  }
+  const context = { phase: "stream", sourceProtocol, targetProtocol };
+
+  if (sourceProtocol === "responses") {
+    const eventType = event.type;
+    if (eventType === "response.output_item.added" || eventType === "response.output_item.done") {
+      return validateResponsesPayload({ output: [event.item] }, { ...context, phase: "response" });
+    }
+    if (eventType === "response.content_part.added" || eventType === "response.content_part.done") {
+      return validateResponsesContent([event.part], { ...context, phase: "response" }, "part");
+    }
+    if (["response.created", "response.in_progress", "response.completed", "response.incomplete"].includes(eventType) && event.response) {
+      const responseIssue = validateResponsesPayload(event.response, { ...context, phase: "response" });
+      if (responseIssue) return responseIssue;
+    }
+    if (eventType === "response.incomplete" && !event.response) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "response.incomplete_details.reason",
+        type: "unknown",
+        reason: "Responses incomplete termination lacks a representable reason"
+      });
+    }
+    if (RESPONSES_SHIM_STREAM_LIFECYCLE_EVENTS.has(eventType)) return null;
+    return createShimCompatibilityIssue({
+      ...context,
+      path: "event.type",
+      type: eventType || "unknown",
+      reason: "unsupported Responses stream event"
+    });
+  }
+
+  if (sourceProtocol === "messages") {
+    const eventType = event.type;
+    if (["message_start", "message_delta", "message_stop", "content_block_stop", "ping", "error"].includes(eventType)) {
+      if (eventType === "message_start" && hasNonEmptyArray(event?.message?.content)) {
+        return validateAnthropicContent(event.message.content, { ...context, phase: "response" }, "message.content");
+      }
+      if (eventType === "message_delta" && !SUPPORTED_ANTHROPIC_STREAM_STOP_REASONS.has(event?.delta?.stop_reason)) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: "delta.stop_reason",
+          type: event?.delta?.stop_reason || "unknown",
+          reason: "Anthropic termination reason cannot be represented by the target protocol"
+        });
+      }
+      return null;
+    }
+    if (eventType === "content_block_start") {
+      return validateAnthropicContent([event.content_block], { ...context, phase: "response" }, "content_block");
+    }
+    if (eventType === "content_block_delta") {
+      const deltaType = event?.delta?.type;
+      if (deltaType === "text_delta" || deltaType === "input_json_delta") return null;
+      if (deltaType === "thinking_delta" && targetProtocol === "chat/completions") return null;
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "delta.type",
+        type: deltaType || "unknown",
+        reason: "unsupported Anthropic stream delta"
+      });
+    }
+    return createShimCompatibilityIssue({
+      ...context,
+      path: "event.type",
+      type: eventType || "unknown",
+      reason: "unsupported Anthropic stream event"
+    });
+  }
+
+  if (event.type === "error" || event.error) return null;
+  const choices = Array.isArray(event.choices) ? event.choices : [];
+  if (choices.length > 1) {
+    return createShimCompatibilityIssue({
+      ...context,
+      path: "choices",
+      type: "multiple_choices",
+      reason: "the target protocol cannot preserve multiple completion candidates"
+    });
+  }
+  for (let choiceIndex = 0; choiceIndex < choices.length; choiceIndex += 1) {
+    const choice = choices[choiceIndex];
+    const delta = choice?.delta || {};
+    if (!SUPPORTED_CHAT_STREAM_FINISH_REASONS.has(choice?.finish_reason)) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `choices[${choiceIndex}].finish_reason`,
+        type: choice?.finish_reason || "unknown",
+        reason: "Chat termination reason cannot be represented by the target protocol"
+      });
+    }
+    if (delta.function_call != null) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `choices[${choiceIndex}].delta.function_call`,
+        type: "function_call",
+        reason: "legacy Chat function-call deltas cannot be converted losslessly"
+      });
+    }
+    for (const field of ["reasoning_content", "refusal", "audio"]) {
+      if (delta[field] != null) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `choices[${choiceIndex}].delta.${field}`,
+          type: field,
+          reason: "structured Chat stream content is not preserved by the target protocol"
+        });
+      }
+    }
+    if (delta.content != null && typeof delta.content !== "string") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `choices[${choiceIndex}].delta.content`,
+        type: typeof delta.content,
+        reason: "structured Chat stream content is not preserved by the target protocol"
+      });
+    }
+    if (choice?.logprobs != null) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `choices[${choiceIndex}].logprobs`,
+        type: "logprobs",
+        reason: "Chat stream logprobs are not preserved by the target protocol"
+      });
+    }
+    for (let toolIndex = 0; toolIndex < (Array.isArray(delta.tool_calls) ? delta.tool_calls.length : 0); toolIndex += 1) {
+      const toolCall = delta.tool_calls[toolIndex];
+      if (toolCall?.type && toolCall.type !== "function") {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `choices[${choiceIndex}].delta.tool_calls[${toolIndex}]`,
+          type: toolCall.type,
+          reason: "only function tool calls can be converted across protocols"
+        });
+      }
+    }
+  }
+  return null;
+}
+
 function extractLastUserTextFromMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return "";
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -915,6 +1745,9 @@ export function chatToResponsesRequest(body, deployment) {
     ...body,
     model: deployment
   };
+  if (out.service_tier == null && out.serviceTier != null) {
+    out.service_tier = out.serviceTier;
+  }
   if (out.input == null) {
     out.input = inputItems.length ? inputItems : text;
   }
@@ -931,10 +1764,12 @@ export function chatToResponsesRequest(body, deployment) {
   delete out.functions;
 
   if (out.function_call) {
-    out.tool_choice = normalizeToolChoiceForResponses({
-      type: "function",
-      name: out.function_call.name
-    });
+    out.tool_choice = typeof out.function_call === "string"
+      ? normalizeToolChoiceForResponses(out.function_call)
+      : normalizeToolChoiceForResponses({
+        type: "function",
+        name: out.function_call.name
+      });
     delete out.function_call;
   }
 
@@ -978,7 +1813,6 @@ export function chatToResponsesRequest(body, deployment) {
   delete out.best_of;
   delete out.stream_options;
   delete out.serviceTier;
-  delete out.verbosity;
   delete out.seed;
   delete out.top_p;
   delete out.top_k;
@@ -998,6 +1832,10 @@ export function responsesToChatRequest(body, deployment) {
     ...body,
     model: deployment
   };
+  if (out.service_tier == null && out.serviceTier != null) {
+    out.service_tier = out.serviceTier;
+  }
+  delete out.serviceTier;
   if (out.messages == null) {
     out.messages = messages.length ? messages : [{ role: "user", content: coerceToText(body?.input) }];
   }

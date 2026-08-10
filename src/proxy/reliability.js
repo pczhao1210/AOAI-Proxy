@@ -169,8 +169,8 @@ export function classifyHttpStatus(status) {
 }
 
 export function classifyFetchError(error) {
-  const code = String(error?.code || "");
-  const message = String(error?.message || "");
+  const code = String(error?.code || error?.cause?.code || "");
+  const message = [error?.message, error?.cause?.message].filter(Boolean).map(String).join(": ");
   if (code === "CLIENT_DISCONNECTED") {
     return { code: "CLIENT_DISCONNECTED", retryable: false, status: 499, detail: message || "client disconnected" };
   }
@@ -365,6 +365,8 @@ export async function fetchWithRetry({
         return { ok: true, upstreamResponse, attempt };
       }
       const classified = classifyHttpStatus(upstreamResponse.status);
+      const upstreamContentType = upstreamResponse.headers.get("content-type") || "";
+      const upstreamRetryAfter = upstreamResponse.headers.get("retry-after") || "";
       let detail = "";
       try {
         detail = await readTextWithTimeout(upstreamResponse, policy.requestTimeoutMs, 1024 * 1024, signal);
@@ -404,7 +406,10 @@ export async function fetchWithRetry({
       return {
         ok: false,
         classified: { ...classified, retryable: retryableStatus && attempt < maxAttempts },
+        hasUpstreamHttpResponse: true,
         upstreamStatus: upstreamResponse.status,
+        upstreamContentType,
+        upstreamRetryAfter,
         detail,
         attempt
       };

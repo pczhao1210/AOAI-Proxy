@@ -8,11 +8,12 @@
 
 ## 概述
 
-- OpenAI 与 Anthropic 兼容端点：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/images/generations`、`/v1/models`
+- OpenAI 与 Anthropic 兼容端点：`/v1/chat/completions`、`/v1/responses`、`/v1/responses/compact`、`/v1/messages`、`/v1/messages/count_tokens`、`/v1/images/generations`、`/v1/models`
 - Client -> Proxy 使用 API Key 鉴权
 - Proxy -> Azure AI Foundry / Azure OpenAI 根据 `auth.mode` 使用 AAD token 或 `api-key`
 - 静态管理页支持配置编辑、AAD 验证、统计查看和最近日志排查
 - 支持 `models[].routes` 与 `upstreams[].routes` 做模型级和上游级路由映射
+- 原生协议路由透明保留现代 Responses item 与 Anthropic content block；跨协议 shim 会明确拒绝无法无损表示的结构
 - 可选通过 DCE 将关联请求、用量和脱敏 Prompt/输出写入 Log Analytics；参见 [接入指南](log-analytics-dce.md)
 
 ## 部署资产
@@ -431,7 +432,8 @@ az managedapp create \
 - 在 `chat/completions` 上把 `max_tokens` 自动升级为 `max_completion_tokens`
 - 当客户端只传 `top_logprobs` 而未传 `logprobs` 时，自动补 `logprobs: true`
 - `reasoning_effort` 和 `reasoning.effort` 只接受 `low`、`medium`、`high`；如果传入常见的 `xhigh`，会自动降级为 `high`
-- 对现代模型会提前移除 `service_tier`、`verbosity`、`top_k`，减少 Foundry 返回 `unknown_parameter` 的概率
+- `serviceTier` 会规范化为 `service_tier`；`service_tier`、`verbosity`、`top_k` 默认保留，不再根据模型名猜测是否支持
+- 如果某个 provider 会拒绝可选字段，可在 `upstreams[].requestPolicy.blockedParams` 中列出；`dropUnsupportedParams: true` 表示删除，否则会明确返回请求错误
 - 如果请求里使用了 `web_search_preview` 相关 tools，代理会直接返回 `400`，因为 Azure Foundry 当前不支持 web search tools
 
 另外，代理现在会为流式 `chat/completions` 和 `responses` 请求保留 `stream_options`；只在 Foundry v1 可能拒绝的其他路由上移除它。
@@ -445,6 +447,8 @@ az managedapp create \
 - `POST /v1/messages`
 
 模型路由决定上游协议。同协议组合使用近似透传，不同协议组合执行显式的请求、JSON 响应和 SSE 转换。
+
+上游错误默认使用代理统一错误结构。只有原生协议客户端确实依赖 provider 错误体时，才应将 `upstreams[].errorPolicy.nativePassthrough` 或 route profile 的 `nativeErrorPassthrough` 设为 `true`。该选项仅作用于原生路由，并保留安全的 `Content-Type`、`Retry-After` 和代理 request ID；协议 shim 与网络错误仍保持统一包装。
 
 | 客户端协议 | Chat 上游 | Responses 上游 | Messages 上游 |
 | --- | --- | --- | --- |

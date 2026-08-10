@@ -1,4 +1,5 @@
 import { markErrorWithCode } from "./reliability.js";
+import { getProtocolShimStreamCompatibilityIssue } from "./shim.js";
 
 const MAX_SSE_BUFFER_CHARS = 8 * 1024 * 1024;
 
@@ -324,6 +325,7 @@ export async function streamPassthrough({
   reply,
   backendRouteKey = "",
   strictResponsesCompletion = false,
+  forwardProviderErrors = false,
   policy,
   onFirstChunk,
   onUsage,
@@ -458,7 +460,9 @@ export async function streamPassthrough({
       for (const event of sseParser.feed(value)) {
         if (providerError || terminalMarkerSeen) break;
         processPayload(event.payload);
-        await writeWithBackpressure(reply.raw, event.raw);
+        if (!providerError || forwardProviderErrors) {
+          await writeWithBackpressure(reply.raw, event.raw);
+        }
       }
       if (sseParser.bufferedLength > MAX_SSE_BUFFER_CHARS) {
         throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
@@ -472,7 +476,9 @@ export async function streamPassthrough({
       for (const event of sseParser.finish()) {
         if (providerError || terminalMarkerSeen) break;
         processPayload(event.payload);
-        await writeWithBackpressure(reply.raw, event.raw);
+        if (!providerError || forwardProviderErrors) {
+          await writeWithBackpressure(reply.raw, event.raw);
+        }
       }
     }
   } catch (error) {
@@ -518,7 +524,7 @@ export async function streamPassthrough({
       ok: false,
       beforeFirstChunk: !firstChunkSeen,
       error: markErrorWithCode(new Error(providerError.message), "UPSTREAM_PROVIDER_STREAM_ERROR"),
-      providerErrorForwarded: true,
+      providerErrorForwarded: forwardProviderErrors,
       providerError
     };
   }
@@ -1117,6 +1123,20 @@ export async function streamShim({
           evt = JSON.parse(payload);
         } catch {
           continue;
+        }
+        const shimEventIssue = getProtocolShimStreamCompatibilityIssue(evt, {
+          sourceProtocol: backendRouteKey,
+          targetProtocol: routeKey
+        });
+        if (shimEventIssue) {
+          providerError = {
+            type: "protocol_error",
+            code: "unsupported_protocol_shim_stream",
+            message: shimEventIssue.message,
+            param: shimEventIssue.path,
+            azureRequestId: ""
+          };
+          break;
         }
         if (
           backendRouteKey === "responses"

@@ -40,11 +40,12 @@ async function readRequestBody(req) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function jsonResponse(res, statusCode, body) {
+function jsonResponse(res, statusCode, body, headers = {}) {
   const payload = JSON.stringify(body);
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(payload)
+    "content-length": Buffer.byteLength(payload),
+    ...headers
   });
   res.end(payload);
 }
@@ -70,11 +71,32 @@ function createMockUpstreamServer() {
 
     const url = new URL(req.url || "/", `http://${HOST}`);
     const pathname = url.pathname;
-    const receivedApiKey = pathname.endsWith("/messages")
+    const receivedApiKey = pathname.endsWith("/messages") || pathname.endsWith("/messages/count_tokens")
       ? req.headers["x-api-key"]
       : req.headers["api-key"];
     if (receivedApiKey !== UPSTREAM_API_KEY) {
       jsonResponse(res, 401, { error: { message: "missing upstream api-key" } });
+      return;
+    }
+
+    if (JSON.stringify(body).includes("trigger native HTTP error")) {
+      jsonResponse(res, 429, {
+        type: "error",
+        error: {
+          type: "rate_limit_error",
+          code: "native_rate_limit",
+          message: "native upstream rate limit"
+        },
+        native_marker: "preserved"
+      }, { "retry-after": "2" });
+      return;
+    }
+    if (JSON.stringify(body).includes("trigger interrupted native HTTP error")) {
+      res.writeHead(429, {
+        "content-type": "application/json; charset=utf-8",
+        "retry-after": "2"
+      });
+      res.write('{"error":', () => res.destroy(new Error("mock error body interrupted")));
       return;
     }
 
@@ -124,12 +146,49 @@ function createMockUpstreamServer() {
       return;
     }
 
+    if (req.method === "POST" && pathname.endsWith("/responses/compact")) {
+      if (body?.instructions === "trigger invalid compaction") {
+        jsonResponse(res, 200, { object: "response", output: [] });
+        return;
+      }
+      jsonResponse(res, 200, {
+        id: "cmp-test",
+        object: "response.compaction",
+        created_at: Math.floor(Date.now() / 1000),
+        output: [
+          {
+            id: "msg-compact-test",
+            type: "message",
+            status: "completed",
+            role: "user",
+            content: [{ type: "input_text", text: "compact this conversation" }]
+          },
+          {
+            id: "cmp-item-test",
+            type: "compaction",
+            encrypted_content: "encrypted-compaction-state"
+          }
+        ],
+        usage: {
+          input_tokens: 21,
+          input_tokens_details: { cached_tokens: 3 },
+          output_tokens: 8,
+          output_tokens_details: { reasoning_tokens: 2 },
+          total_tokens: 29
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && pathname.endsWith("/responses")) {
       const omitUsage = typeof body?.input === "string" && body.input.startsWith("local usage fallback");
       const disconnectBeforeUsage = body?.input === "disconnect usage fallback";
       const upstreamDisconnectBeforeUsage = body?.input === "upstream disconnect usage fallback";
       const providerErrorAfterDelta = JSON.stringify(body).includes("trigger provider error");
       const failedJsonResponse = JSON.stringify(body).includes("trigger failed json");
+      const modernItemResponse = JSON.stringify(body).includes("trigger modern Responses item");
+      const modernItemStream = JSON.stringify(body).includes("trigger modern Responses stream item");
+      const nativeProviderStreamError = JSON.stringify(body).includes("trigger native stream error");
       if (body?.stream === true) {
         const outputText = "ok from mock responses stream";
         const outputItem = {
@@ -152,7 +211,34 @@ function createMockUpstreamServer() {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache"
         });
+        if (nativeProviderStreamError) {
+          res.end(`data: ${JSON.stringify({
+            type: "error",
+            error: {
+              type: "server_error",
+              code: "native_stream_failure",
+              message: "native upstream stream failed"
+            },
+            native_marker: "preserved"
+          })}\n\n`);
+          return;
+        }
         res.write(`data: ${JSON.stringify({ type: "response.created", response: { ...response, status: "in_progress" } })}\n\n`);
+        if (modernItemStream) {
+          const modernItem = {
+            id: "computer-stream-test",
+            type: "computer_call",
+            call_id: "computer-call-stream-test",
+            status: "completed",
+            pending_safety_checks: [],
+            action: { type: "screenshot" }
+          };
+          const modernResponse = { ...response, output: [modernItem] };
+          res.write(`data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { ...modernItem, status: "in_progress" } })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: modernItem })}\n\n`);
+          res.end(`data: ${JSON.stringify({ type: "response.completed", response: modernResponse })}\n\n`);
+          return;
+        }
         res.write(`data: ${JSON.stringify({
           type: "response.output_item.added",
           output_index: 0,
@@ -210,13 +296,44 @@ function createMockUpstreamServer() {
         return;
       }
       if (failedJsonResponse) {
+        const failedBody = `{
+  "id": "resp-failed-test",
+  "object": "response",
+  "model": ${JSON.stringify(body?.model || "gpt-5.6-luna")},
+  "status": "failed",
+  "error": {"type":"model_error","code":"model_failed","message":"mock JSON response failed"},
+  "output": []
+}`;
+        res.writeHead(200, {
+          "content-type": "application/json; charset=utf-8",
+          "content-length": Buffer.byteLength(failedBody),
+          "retry-after": "3"
+        });
+        res.end(failedBody);
+        return;
+      }
+      if (modernItemResponse) {
         jsonResponse(res, 200, {
-          id: "resp-failed-test",
+          id: "resp-modern-test",
           object: "response",
           model: body?.model || "gpt-5.6-luna",
-          status: "failed",
-          error: { type: "model_error", code: "model_failed", message: "mock JSON response failed" },
-          output: []
+          status: "completed",
+          output: [
+            {
+              id: "ws-modern-test",
+              type: "web_search_call",
+              status: "completed",
+              action: { type: "search", query: "latest protocol" }
+            },
+            {
+              id: "msg-modern-test",
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [{ type: "output_text", text: "modern response", annotations: [], logprobs: [] }]
+            }
+          ],
+          usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16 }
         });
         return;
       }
@@ -250,7 +367,16 @@ function createMockUpstreamServer() {
       return;
     }
 
+    if (req.method === "POST" && pathname.endsWith("/messages/count_tokens")) {
+      jsonResponse(res, 200, body?.system === "trigger invalid token count"
+        ? { input_tokens: "42" }
+        : { input_tokens: 42 });
+      return;
+    }
+
     if (req.method === "POST" && pathname.endsWith("/messages")) {
+      const modernContentResponse = JSON.stringify(body).includes("trigger modern Messages block");
+      const modernContentStream = JSON.stringify(body).includes("trigger modern Messages stream block");
       if (body?.stream === true) {
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
@@ -269,6 +395,21 @@ function createMockUpstreamServer() {
             usage: { input_tokens: 12, output_tokens: 1, cache_read_input_tokens: 3 }
           }
         })}\n\n`);
+        if (modernContentStream) {
+          res.write(`event: content_block_start\ndata: ${JSON.stringify({
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "server_tool_use", id: "srvtool-stream-test", name: "web_search", input: {} }
+          })}\n\n`);
+          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+          res.write(`event: message_delta\ndata: ${JSON.stringify({
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { output_tokens: 5 }
+          })}\n\n`);
+          res.end(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+          return;
+        }
         res.write(`event: content_block_start\ndata: ${JSON.stringify({
           type: "content_block_start",
           index: 0,
@@ -286,6 +427,19 @@ function createMockUpstreamServer() {
           usage: { output_tokens: 5 }
         })}\n\n`);
         res.end(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+        return;
+      }
+      if (modernContentResponse) {
+        jsonResponse(res, 200, {
+          id: "msg-modern-test",
+          type: "message",
+          role: "assistant",
+          model: body?.model || "claude-native-deployment",
+          content: [{ type: "redacted_thinking", data: "opaque-thinking-state" }],
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 12, output_tokens: 5 }
+        });
         return;
       }
       jsonResponse(res, 200, {

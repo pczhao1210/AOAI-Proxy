@@ -4,12 +4,14 @@ import http from "node:http";
 import test from "node:test";
 import { resolveApiConsumer, filterModelsForConsumer, checkConsumerModelAccess, getGovernanceSnapshot } from "../src/governance.js";
 import { extractProxyRequestControls, sanitizeIncomingHeaders } from "../src/proxy/body.js";
-import { fetchOnceWithConnectTimeout, fetchWithRetry, parseJsonWithTimeout } from "../src/proxy/reliability.js";
-import { buildUpstreamUrl, inferBackendRouteKey } from "../src/proxy/routing.js";
+import { classifyFetchError, fetchOnceWithConnectTimeout, fetchWithRetry, parseJsonWithTimeout } from "../src/proxy/reliability.js";
+import { buildMessagesCountTokensUrl, buildResponsesCompactUrl, buildUpstreamUrl, inferBackendRouteKey } from "../src/proxy/routing.js";
 import { streamPassthrough, streamShim } from "../src/proxy/stream.js";
 import {
   chatToMessagesRequest,
   chatToResponsesRequest,
+  getProtocolShimCompatibilityIssue,
+  getProtocolShimStreamCompatibilityIssue,
   mapChatCompletionJsonToMessages,
   mapChatCompletionJsonToResponses,
   mapMessagesJsonToChatCompletion,
@@ -298,6 +300,42 @@ test("per-request proxy controls cannot exceed configured limits", () => {
   );
 });
 
+test("fetch failures classify undici cause codes", () => {
+  assert.deepEqual(
+    classifyFetchError(new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect timed out"), { code: "UND_ERR_CONNECT_TIMEOUT" })
+    })),
+    {
+      code: "UPSTREAM_CONNECT_TIMEOUT",
+      retryable: true,
+      status: 504,
+      detail: "fetch failed: connect timed out"
+    }
+  );
+  assert.deepEqual(
+    classifyFetchError(new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" })
+    })),
+    {
+      code: "UPSTREAM_NETWORK_ERROR",
+      retryable: true,
+      status: 502,
+      detail: "fetch failed: connection refused"
+    }
+  );
+  assert.deepEqual(
+    classifyFetchError(new TypeError("fetch failed", {
+      cause: Object.assign(new Error("certificate rejected"), { code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" })
+    })),
+    {
+      code: "UPSTREAM_TLS_ERROR",
+      retryable: false,
+      status: 502,
+      detail: "fetch failed: certificate rejected"
+    }
+  );
+});
+
 test("path overrides infer protocols when Azure API-version queries are present", () => {
   assert.equal(
     inferBackendRouteKey("chat/completions", {
@@ -322,6 +360,76 @@ test("Anthropic Messages routes use the Foundry services host", () => {
       routes: { messages: "/anthropic/v1/messages" }
     }, "messages", "claude-sonnet-4-6"),
     "https://example.services.ai.azure.com/anthropic/v1/messages"
+  );
+});
+
+test("Anthropic token count routes are explicit or safely derived from Messages", () => {
+  assert.equal(
+    buildMessagesCountTokensUrl(
+      { baseUrl: "https://example.services.ai.azure.com/", routes: {} },
+      "https://example.services.ai.azure.com/anthropic/v1/messages?api-version=preview",
+      "claude-sonnet"
+    ),
+    "https://example.services.ai.azure.com/anthropic/v1/messages/count_tokens?api-version=preview"
+  );
+  assert.equal(
+    buildMessagesCountTokensUrl({
+      baseUrl: "https://api.anthropic.com/",
+      routes: {
+        "messages/count_tokens": "/v1/messages/count_tokens?deployment={deployment}"
+      }
+    }, "https://api.anthropic.com/v1/messages", "team model"),
+    "https://api.anthropic.com/v1/messages/count_tokens?deployment=team%20model"
+  );
+  assert.throws(
+    () => buildMessagesCountTokensUrl({
+      baseUrl: "https://api.anthropic.com/",
+      routes: { "messages/count_tokens": "/v1/tokenize" }
+    }, "https://api.anthropic.com/v1/messages", "claude-sonnet"),
+    /must end with \/messages\/count_tokens/
+  );
+  assert.throws(
+    () => buildMessagesCountTokensUrl(
+      { baseUrl: "https://example.test/", routes: {} },
+      "https://example.test/v1/responses",
+      "claude-sonnet"
+    ),
+    /must end with \/messages/
+  );
+});
+
+test("Responses compact routes are explicit or safely derived from Responses", () => {
+  assert.equal(
+    buildResponsesCompactUrl(
+      { baseUrl: "https://example.openai.azure.com/", routes: {} },
+      "https://example.openai.azure.com/openai/v1/responses?api-version=preview",
+      "gpt-codex"
+    ),
+    "https://example.openai.azure.com/openai/v1/responses/compact?api-version=preview"
+  );
+  assert.equal(
+    buildResponsesCompactUrl({
+      baseUrl: "https://api.openai.com/",
+      routes: {
+        "responses/compact": "/v1/responses/compact?deployment={deployment}"
+      }
+    }, "https://api.openai.com/v1/responses", "team model"),
+    "https://api.openai.com/v1/responses/compact?deployment=team%20model"
+  );
+  assert.throws(
+    () => buildResponsesCompactUrl({
+      baseUrl: "https://api.openai.com/",
+      routes: { "responses/compact": "/v1/compact" }
+    }, "https://api.openai.com/v1/responses", "gpt-codex"),
+    /must end with \/responses\/compact/
+  );
+  assert.throws(
+    () => buildResponsesCompactUrl(
+      { baseUrl: "https://example.test/", routes: {} },
+      "https://example.test/v1/chat/completions",
+      "gpt-codex"
+    ),
+    /must end with \/responses/
   );
 });
 
@@ -368,6 +476,35 @@ test("Chat and Responses conversion preserves multimodal and structured semantic
   }, "gpt-5.6-luna");
   assert.deepEqual(gpt56Request.reasoning, { effort: "max" });
   assert.equal("reasoning_effort" in gpt56Request, false);
+
+  const legacyFunctionChoice = chatToResponsesRequest({
+    model: "model",
+    messages: [{ role: "user", content: "do not call tools" }],
+    functions: [{ name: "lookup", parameters: { type: "object" } }],
+    function_call: "none"
+  }, "deployment");
+  assert.equal(legacyFunctionChoice.tool_choice, "none");
+  assert.equal("function_call" in legacyFunctionChoice, false);
+
+  const canonicalServiceTier = chatToResponsesRequest({
+    model: "model",
+    messages: [{ role: "user", content: "use priority" }],
+    serviceTier: "priority",
+    verbosity: "high"
+  }, "deployment");
+  assert.equal(canonicalServiceTier.service_tier, "priority");
+  assert.equal(canonicalServiceTier.verbosity, "high");
+  assert.equal("serviceTier" in canonicalServiceTier, false);
+
+  const reverseCanonicalServiceTier = responsesToChatRequest({
+    model: "model",
+    input: "use priority",
+    serviceTier: "priority",
+    verbosity: "high"
+  }, "deployment");
+  assert.equal(reverseCanonicalServiceTier.service_tier, "priority");
+  assert.equal(reverseCanonicalServiceTier.verbosity, "high");
+  assert.equal("serviceTier" in reverseCanonicalServiceTier, false);
 
   const responsesPayload = mapChatCompletionJsonToResponses({
     id: "chatcmpl-test",
@@ -423,6 +560,480 @@ test("Chat and Responses conversion preserves multimodal and structured semantic
   assert.equal(parallelChat.messages[0].role, "assistant");
   assert.deepEqual(parallelChat.messages[0].tool_calls.map((call) => call.id), ["call_1", "call_2"]);
   assert.deepEqual(parallelChat.messages.slice(1).map((message) => message.tool_call_id), ["call_1", "call_2"]);
+});
+
+test("protocol shim compatibility rejects structured semantics it cannot preserve", () => {
+  const cases = [
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { input: [{ type: "custom_tool_call", call_id: "call_1", name: "shell", input: "pwd" }] },
+      path: "input[0]",
+      type: "custom_tool_call"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "messages",
+      payload: { input: [{ type: "mcp_call", server_label: "repo", name: "read" }] },
+      path: "input[0]",
+      type: "mcp_call"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { input: [{ type: "custom_tool_call_output", call_id: "call_1", output: "done" }] },
+      path: "input[0]",
+      type: "custom_tool_call_output"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { input: [{ type: "computer_call_output", call_id: "computer_1", output: { type: "computer_screenshot", file_id: "file_1" } }] },
+      path: "input[0]",
+      type: "computer_call_output"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "messages",
+      payload: { input: [{ type: "local_shell_call", call_id: "shell_1", action: { type: "exec", command: ["pwd"] } }] },
+      path: "input[0]",
+      type: "local_shell_call"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { input: [{ type: "shell_call_output", call_id: "shell_1", output: [{ stdout: "/tmp", stderr: "", outcome: { type: "exit", exit_code: 0 } }] }] },
+      path: "input[0]",
+      type: "shell_call_output"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { previous_response_id: "resp_1", input: "continue" },
+      path: "previous_response_id",
+      type: "previous_response_id"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { max_tool_calls: 0, input: "do not call tools" },
+      path: "max_tool_calls",
+      type: "max_tool_calls"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "messages",
+      payload: { verbosity: "high", input: "hello" },
+      path: "verbosity",
+      type: "verbosity"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "messages",
+      payload: { service_tier: "priority", input: "hello" },
+      path: "service_tier",
+      type: "service_tier"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { input: [{ role: "user", content: [{ type: "input_file", file_id: "file_1" }] }] },
+      path: "input[0].content[0]",
+      type: "input_file"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "responses",
+      payload: { messages: [{ role: "user", content: [{ type: "document", source: { type: "url", url: "https://example.test/a.pdf" } }] }] },
+      path: "messages[0].content[0]",
+      type: "document"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "chat/completions",
+      payload: { messages: [{ role: "assistant", content: [{ type: "thinking", thinking: "reason", signature: "sig" }] }] },
+      path: "messages[0].content[0]",
+      type: "thinking"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "responses",
+      payload: { messages: [{ role: "user", content: [{ type: "image", source: { type: "file", file_id: "file_1" } }] }] },
+      path: "messages[0].content[0].source",
+      type: "file"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "chat/completions",
+      payload: { messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "tool_1", content: "failed", is_error: true }] }] },
+      path: "messages[0].content[0].is_error",
+      type: "is_error"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "responses",
+      payload: { top_k: 40, messages: [{ role: "user", content: "hello" }] },
+      path: "top_k",
+      type: "top_k"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "chat/completions",
+      payload: { metadata: { user_id: "user_1" }, messages: [{ role: "user", content: "hello" }] },
+      path: "metadata",
+      type: "metadata"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "responses",
+      payload: {
+        tool_choice: { type: "auto", disable_parallel_tool_use: true },
+        messages: [{ role: "user", content: "hello" }]
+      },
+      path: "tool_choice.disable_parallel_tool_use",
+      type: "disable_parallel_tool_use"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { messages: [{ role: "assistant", content: "", tool_calls: [{ type: "custom", id: "call_1", name: "shell", input: "pwd" }] }] },
+      path: "messages[0].tool_calls[0]",
+      type: "custom"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { n: 2, messages: [{ role: "user", content: "two answers" }] },
+      path: "n",
+      type: "n"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { modalities: ["text", "audio"], messages: [{ role: "user", content: "speak" }] },
+      path: "modalities",
+      type: "modalities"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { prediction: { type: "content", content: "expected" }, messages: [{ role: "user", content: "continue" }] },
+      path: "prediction",
+      type: "prediction"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { frequency_penalty: 0.5, messages: [{ role: "user", content: "hello" }] },
+      path: "frequency_penalty",
+      type: "frequency_penalty"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { stop: ["END"], messages: [{ role: "user", content: "hello" }] },
+      path: "stop",
+      type: "stop"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { top_p: 0.5, messages: [{ role: "user", content: "hello" }] },
+      path: "top_p",
+      type: "top_p"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "messages",
+      payload: { parallel_tool_calls: false, messages: [{ role: "user", content: "hello" }] },
+      path: "parallel_tool_calls",
+      type: "parallel_tool_calls"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "messages",
+      payload: { service_tier: "priority", messages: [{ role: "user", content: "hello" }] },
+      path: "service_tier",
+      type: "service_tier"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { messages: [{ role: "assistant", content: null, function_call: { name: "lookup", arguments: "{}" } }] },
+      path: "messages[0].function_call",
+      type: "function_call"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "messages",
+      payload: { messages: [{ role: "function", name: "lookup", content: "done" }] },
+      path: "messages[0].role",
+      type: "function"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { messages: [{ role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "done" }] }] },
+      path: "messages[0].content",
+      type: "content_array"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { output: [{ type: "web_search_call", id: "ws_1", status: "completed" }] },
+      path: "output[0]",
+      type: "web_search_call"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "responses",
+      targetProtocol: "messages",
+      payload: { output: [{ type: "reasoning", id: "rs_1", encrypted_content: "opaque", summary: [] }] },
+      path: "output[0]",
+      type: "reasoning"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { output: [{ type: "compaction", id: "cmp_1", encrypted_content: "opaque" }] },
+      path: "output[0]",
+      type: "compaction"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: {
+        output: [{
+          type: "message",
+          role: "assistant",
+          content: [{
+            type: "output_text",
+            text: "cited",
+            annotations: [{ type: "url_citation", url: "https://example.test", start_index: 0, end_index: 5 }]
+          }]
+        }]
+      },
+      path: "output[0].content[0]",
+      type: "output_text"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "messages",
+      targetProtocol: "responses",
+      payload: { stop_reason: "end_turn", content: [{ type: "redacted_thinking", data: "opaque" }] },
+      path: "content[0]",
+      type: "redacted_thinking"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "messages",
+      targetProtocol: "chat/completions",
+      payload: { stop_reason: "end_turn", content: [{ type: "text", text: "cited", citations: [{ type: "char_location", start_char_index: 0, end_char_index: 5 }] }] },
+      path: "content[0]",
+      type: "text"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      payload: { status: "incomplete", incomplete_details: { reason: "content_filter" }, output: [] },
+      path: "incomplete_details.reason",
+      type: "content_filter"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "messages",
+      targetProtocol: "chat/completions",
+      payload: { stop_reason: "pause_turn", content: [] },
+      path: "stop_reason",
+      type: "pause_turn"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "chat/completions",
+      targetProtocol: "messages",
+      payload: { choices: [{ finish_reason: "content_filter", message: { role: "assistant", content: "blocked" } }] },
+      path: "choices[0].finish_reason",
+      type: "content_filter"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: {
+        choices: [
+          { index: 0, finish_reason: "stop", message: { role: "assistant", content: "one" } },
+          { index: 1, finish_reason: "stop", message: { role: "assistant", content: "two" } }
+        ]
+      },
+      path: "choices",
+      type: "multiple_choices"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { choices: [{ message: { role: "assistant", content: "missing terminal reason" } }] },
+      path: "choices[0].finish_reason",
+      type: "unknown"
+    },
+    {
+      phase: "response",
+      sourceProtocol: "messages",
+      targetProtocol: "responses",
+      payload: { content: [{ type: "text", text: "missing terminal reason" }] },
+      path: "stop_reason",
+      type: "unknown"
+    }
+  ];
+
+  for (const item of cases) {
+    const issue = getProtocolShimCompatibilityIssue(item.payload, {
+      phase: item.phase || "request",
+      sourceProtocol: item.sourceProtocol,
+      targetProtocol: item.targetProtocol
+    });
+    assert.equal(issue?.path, item.path);
+    assert.equal(issue?.type, item.type);
+    assert.match(issue?.message || "", /Cannot losslessly convert/);
+  }
+
+  assert.equal(getProtocolShimCompatibilityIssue({
+    input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }, { type: "input_image", image_url: "data:image/png;base64,AAAA" }] },
+      { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_1", output: "done" }
+    ],
+    tools: [{ type: "function", name: "lookup", parameters: { type: "object" } }]
+  }, {
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  }), null);
+  assert.equal(getProtocolShimCompatibilityIssue({
+    include: [],
+    context_management: {},
+    reasoning: { effort: "medium", summary: null },
+    input: "hello"
+  }, {
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  }), null);
+  assert.equal(getProtocolShimCompatibilityIssue({
+    n: 1,
+    frequency_penalty: 0,
+    modalities: ["text"],
+    messages: [{ role: "user", content: "hello" }]
+  }, {
+    sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  }), null);
+  assert.equal(getProtocolShimCompatibilityIssue({
+    serviceTier: "priority",
+    messages: [{ role: "user", content: "hello" }]
+  }, {
+    sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  }), null);
+});
+
+test("protocol shim stream compatibility rejects unsupported event semantics", () => {
+  const cases = [
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      event: {
+        type: "response.output_item.added",
+        item: { type: "computer_call", id: "computer_1", status: "in_progress" }
+      },
+      type: "computer_call"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "messages",
+      event: { type: "response.reasoning_summary_text.delta", delta: "summary" },
+      type: "response.reasoning_summary_text.delta"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "responses",
+      event: {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "server_tool_use", id: "srv_1", name: "web_search", input: {} }
+      },
+      type: "server_tool_use"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "chat/completions",
+      event: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } },
+      type: "signature_delta"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      event: {
+        choices: [{ index: 0, delta: { reasoning_content: "private reasoning" }, finish_reason: null }]
+      },
+      type: "reasoning_content"
+    },
+    {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions",
+      event: {
+        type: "response.incomplete",
+        response: { status: "incomplete", incomplete_details: { reason: "content_filter" }, output: [] }
+      },
+      type: "content_filter"
+    },
+    {
+      sourceProtocol: "messages",
+      targetProtocol: "responses",
+      event: { type: "message_delta", delta: { stop_reason: "model_context_window_exceeded" } },
+      type: "model_context_window_exceeded"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "messages",
+      event: { choices: [{ index: 0, delta: {}, finish_reason: "content_filter" }] },
+      type: "content_filter"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      event: { choices: [{ index: 0, delta: { function_call: { name: "lookup", arguments: "{}" } }, finish_reason: null }] },
+      type: "function_call"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      event: {
+        choices: [
+          { index: 0, delta: { content: "one" }, finish_reason: null },
+          { index: 1, delta: { content: "two" }, finish_reason: null }
+        ]
+      },
+      type: "multiple_choices"
+    }
+  ];
+
+  for (const item of cases) {
+    const issue = getProtocolShimStreamCompatibilityIssue(item.event, item);
+    assert.equal(issue?.type, item.type);
+    assert.match(issue?.message || "", /Cannot losslessly convert/);
+  }
+
+  assert.equal(getProtocolShimStreamCompatibilityIssue({
+    type: "response.output_item.added",
+    output_index: 0,
+    item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "lookup", arguments: "" }
+  }, {
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  }), null);
 });
 
 test("Messages cross-protocol requests preserve text, images, and tool history", () => {
@@ -1427,6 +2038,7 @@ test("Responses passthrough recognizes top-level provider error events", async (
       }
     },
     reply: { raw },
+    forwardProviderErrors: true,
     policy: STREAM_POLICY,
     onFirstChunk() {},
     onUsage() {},
@@ -1438,6 +2050,29 @@ test("Responses passthrough recognizes top-level provider error events", async (
   assert.equal(result.providerErrorForwarded, true);
   assert.equal(result.providerError?.code, "provider_failed");
   assert.match(raw.output, /"type":"error"/);
+});
+
+test("Responses passthrough hides provider error events by default", async () => {
+  const raw = new FakeReplyRaw();
+  const result = await streamPassthrough({
+    upstreamResponse: {
+      body: {
+        getReader: () => createReader(encodeEvents([
+          { type: "error", code: "provider_failed", message: "upstream failed", param: null }
+        ]))
+      }
+    },
+    reply: { raw },
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.providerErrorForwarded, false);
+  assert.equal(result.providerError?.code, "provider_failed");
+  assert.equal(raw.output, "");
 });
 
 test("client disconnect cancels the upstream stream", async () => {

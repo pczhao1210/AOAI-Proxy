@@ -142,21 +142,25 @@ const DEFAULTS = {
     routeProfiles: {
       chatCompletions: {
         enabled: true,
+        nativeErrorPassthrough: false,
         defaultParams: {},
         allowedRequestFields: []
       },
       responses: {
         enabled: true,
+        nativeErrorPassthrough: false,
         defaultParams: {},
         allowedRequestFields: []
       },
       messages: {
         enabled: true,
+        nativeErrorPassthrough: false,
         defaultParams: {},
         allowedRequestFields: []
       },
       imageGenerations: {
         enabled: true,
+        nativeErrorPassthrough: false,
         defaultParams: {},
         allowedRequestFields: [],
         polling: {
@@ -576,6 +580,77 @@ function validateRawCompatibilityShape(raw) {
   }
 }
 
+function validateRawStringArray(value, path) {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${path} must be an array of strings`);
+  }
+}
+
+function validateRawRequestPolicy(value, path) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${path} must be an object`);
+  }
+  for (const field of ["allowedParams", "blockedParams"]) {
+    if (Object.prototype.hasOwnProperty.call(value, field)) {
+      validateRawStringArray(value[field], `${path}.${field}`);
+    }
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "dropUnsupportedParams")
+    && typeof value.dropUnsupportedParams !== "boolean"
+  ) {
+    throw new Error(`${path}.dropUnsupportedParams must be a boolean`);
+  }
+}
+
+function validateRawPolicyShape(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  for (const [collectionName, items] of [["models", raw.models], ["upstreams", raw.upstreams]]) {
+    if (!Array.isArray(items)) continue;
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      if (Object.prototype.hasOwnProperty.call(item, "requestPolicy")) {
+        validateRawRequestPolicy(item.requestPolicy, `${collectionName}[${index}].requestPolicy`);
+      }
+      if (collectionName === "upstreams" && Object.prototype.hasOwnProperty.call(item, "errorPolicy")) {
+        const errorPolicy = item.errorPolicy;
+        if (!errorPolicy || typeof errorPolicy !== "object" || Array.isArray(errorPolicy)) {
+          throw new Error(`upstreams[${index}].errorPolicy must be an object`);
+        }
+        if (
+          Object.prototype.hasOwnProperty.call(errorPolicy, "nativePassthrough")
+          && typeof errorPolicy.nativePassthrough !== "boolean"
+        ) {
+          throw new Error(`upstreams[${index}].errorPolicy.nativePassthrough must be a boolean`);
+        }
+      }
+    }
+  }
+
+  const routeProfiles = raw?.routing?.routeProfiles;
+  if (!routeProfiles || typeof routeProfiles !== "object" || Array.isArray(routeProfiles)) return;
+  for (const routeKey of ["chatCompletions", "responses", "messages", "imageGenerations"]) {
+    if (!Object.prototype.hasOwnProperty.call(routeProfiles, routeKey)) continue;
+    const routeProfile = routeProfiles[routeKey];
+    if (!routeProfile || typeof routeProfile !== "object" || Array.isArray(routeProfile)) {
+      throw new Error(`routing.routeProfiles.${routeKey} must be an object`);
+    }
+    if (Object.prototype.hasOwnProperty.call(routeProfile, "allowedRequestFields")) {
+      validateRawStringArray(
+        routeProfile.allowedRequestFields,
+        `routing.routeProfiles.${routeKey}.allowedRequestFields`
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(routeProfile, "nativeErrorPassthrough")
+      && typeof routeProfile.nativeErrorPassthrough !== "boolean"
+    ) {
+      throw new Error(`routing.routeProfiles.${routeKey}.nativeErrorPassthrough must be a boolean`);
+    }
+  }
+}
+
 function normalizeStringArray(value) {
   return Array.isArray(value)
     ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
@@ -824,6 +899,14 @@ function applySchemaCompatibility(rawConfig, merged) {
         },
         timeoutProfile: {},
         retryProfile: {},
+        requestPolicy: {
+          allowedParams: [],
+          blockedParams: [],
+          dropUnsupportedParams: false
+        },
+        errorPolicy: {
+          nativePassthrough: false
+        },
         headersTemplate: {},
         healthCheck: {
           enabled: false,
@@ -834,6 +917,8 @@ function applySchemaCompatibility(rawConfig, merged) {
       }, upstream || {});
       next.tags = normalizeStringArray(next.tags);
       next.capabilities = collectCapabilitiesForUpstream(merged.models, next.name);
+      next.requestPolicy.allowedParams = normalizeStringArray(next.requestPolicy.allowedParams);
+      next.requestPolicy.blockedParams = normalizeStringArray(next.requestPolicy.blockedParams);
       return next;
     })
     : [];
@@ -869,6 +954,7 @@ function applySchemaCompatibility(rawConfig, merged) {
 
 function normalizeConfig(raw, options = {}) {
   validateRawCompatibilityShape(raw);
+  validateRawPolicyShape(raw);
   const merged = deepMerge(DEFAULTS, raw || {});
   merged.apiKeys = Array.isArray(merged.apiKeys) ? merged.apiKeys : [];
   merged.upstreams = Array.isArray(merged.upstreams) ? merged.upstreams : [];
@@ -1336,6 +1422,13 @@ function validateConfig(cfg) {
     throw new Error("models must be a non-empty array");
   }
 
+  for (const routeKey of ["chatCompletions", "responses", "messages", "imageGenerations"]) {
+    const routeProfile = cfg?.routing?.routeProfiles?.[routeKey];
+    if (routeProfile?.nativeErrorPassthrough != null && typeof routeProfile.nativeErrorPassthrough !== "boolean") {
+      throw new Error(`routing.routeProfiles.${routeKey}.nativeErrorPassthrough must be a boolean`);
+    }
+  }
+
   const modelIds = new Set();
   for (const [idx, model] of cfg.models.entries()) {
     if (!model?.id || typeof model.id !== "string") {
@@ -1370,6 +1463,19 @@ function validateConfig(cfg) {
     }
     if (model.codex != null && (typeof model.codex !== "object" || Array.isArray(model.codex))) {
       throw new Error(`models[${idx}].codex must be an object`);
+    }
+    if (model.requestPolicy != null) {
+      if (typeof model.requestPolicy !== "object" || Array.isArray(model.requestPolicy)) {
+        throw new Error(`models[${idx}].requestPolicy must be an object`);
+      }
+      for (const field of ["allowedParams", "blockedParams"]) {
+        if (model.requestPolicy[field] != null && (!Array.isArray(model.requestPolicy[field]) || model.requestPolicy[field].some((value) => typeof value !== "string"))) {
+          throw new Error(`models[${idx}].requestPolicy.${field} must be an array of strings`);
+        }
+      }
+      if (model.requestPolicy.dropUnsupportedParams != null && typeof model.requestPolicy.dropUnsupportedParams !== "boolean") {
+        throw new Error(`models[${idx}].requestPolicy.dropUnsupportedParams must be a boolean`);
+      }
     }
     if (Array.isArray(model.fallbackModels) && model.fallbackModels.length > 0) {
       throw new Error(`models[${idx}].fallbackModels is not supported by this proxy version`);
@@ -1496,6 +1602,27 @@ function validateConfig(cfg) {
     }
     if (upstream.capabilities != null && (!Array.isArray(upstream.capabilities) || upstream.capabilities.some((value) => typeof value !== "string"))) {
       throw new Error(`upstreams[${idx}].capabilities must be an array of strings`);
+    }
+    if (upstream.requestPolicy != null) {
+      if (typeof upstream.requestPolicy !== "object" || Array.isArray(upstream.requestPolicy)) {
+        throw new Error(`upstreams[${idx}].requestPolicy must be an object`);
+      }
+      for (const field of ["allowedParams", "blockedParams"]) {
+        if (upstream.requestPolicy[field] != null && (!Array.isArray(upstream.requestPolicy[field]) || upstream.requestPolicy[field].some((value) => typeof value !== "string"))) {
+          throw new Error(`upstreams[${idx}].requestPolicy.${field} must be an array of strings`);
+        }
+      }
+      if (upstream.requestPolicy.dropUnsupportedParams != null && typeof upstream.requestPolicy.dropUnsupportedParams !== "boolean") {
+        throw new Error(`upstreams[${idx}].requestPolicy.dropUnsupportedParams must be a boolean`);
+      }
+    }
+    if (upstream.errorPolicy != null) {
+      if (typeof upstream.errorPolicy !== "object" || Array.isArray(upstream.errorPolicy)) {
+        throw new Error(`upstreams[${idx}].errorPolicy must be an object`);
+      }
+      if (upstream.errorPolicy.nativePassthrough != null && typeof upstream.errorPolicy.nativePassthrough !== "boolean") {
+        throw new Error(`upstreams[${idx}].errorPolicy.nativePassthrough must be a boolean`);
+      }
     }
     if (upstream.routes && typeof upstream.routes !== "object") {
       throw new Error(`upstreams[${idx}].routes must be an object`);

@@ -418,6 +418,122 @@ export const routeTests = [
     }
   },
   {
+    id: "response-compact",
+    description: "native Responses compaction route",
+    async run(ctx) {
+      ctx.clearUpstreamRequests();
+      const result = await ctx.publicRequest("/v1/responses/compact", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: [{ role: "user", content: "compact this conversation" }],
+          instructions: "Preserve the important state."
+        }
+      });
+
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.json?.object, "response.compaction");
+      assert.equal(result.json?.output?.[1]?.type, "compaction");
+      assert.equal(result.json?.output?.[1]?.encrypted_content, "encrypted-compaction-state");
+      assert.deepEqual(result.json?.usage, {
+        input_tokens: 21,
+        input_tokens_details: { cached_tokens: 3 },
+        output_tokens: 8,
+        output_tokens_details: { reasoning_tokens: 2 },
+        total_tokens: 29
+      });
+
+      const upstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses/compact"));
+      ensure(upstreamRequest, "Expected native Responses compaction upstream request");
+      assert.equal(upstreamRequest.body?.model, "gpt-5.6-luna");
+      assert.deepEqual(upstreamRequest.body?.input, [{ role: "user", content: "compact this conversation" }]);
+      assert.equal(upstreamRequest.body?.instructions, "Preserve the important state.");
+      assert.equal(upstreamRequest.headers["api-key"], "test-upstream-key");
+      assert.notEqual(upstreamRequest.headers.authorization, "Bearer test-client-key");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const stats = await ctx.adminRequest("/admin/api/stats");
+      assert.equal(stats.status, 200, stats.text);
+      assert.equal(stats.json?.totals?.promptTokens, 21);
+      assert.equal(stats.json?.totals?.completionTokens, 8);
+      assert.equal(stats.json?.totals?.totalTokens, 29);
+      assert.equal(stats.json?.totals?.cachedTokens, 3);
+
+      const config = await ctx.readConfigFile();
+      const foundryUpstream = config.upstreams.find((upstream) => upstream.name === "mock-foundry");
+      ensure(foundryUpstream, "Expected mock Foundry upstream");
+      foundryUpstream.routes["responses/compact"] = "/openai/v1/responses/compact?deployment={deployment}";
+      const explicitRouteConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(explicitRouteConfig.status, 200, explicitRouteConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const explicitRoute = await ctx.publicRequest("/v1/responses/compact", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          previous_response_id: "resp_previous"
+        }
+      });
+      assert.equal(explicitRoute.status, 200, explicitRoute.text);
+      const explicitUpstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/responses/compact"));
+      ensure(explicitUpstreamRequest, "Expected explicitly configured Responses compaction request");
+      assert.equal(
+        new URL(explicitUpstreamRequest.url, "http://mock").searchParams.get("deployment"),
+        "gpt-5.6-luna"
+      );
+
+      ctx.clearUpstreamRequests();
+      const invalidPayload = await ctx.publicRequest("/v1/responses/compact", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "Reject malformed provider payloads",
+          instructions: "trigger invalid compaction"
+        }
+      });
+      assert.equal(invalidPayload.status, 502, invalidPayload.text);
+      assert.equal(invalidPayload.json?.error?.code, "InvalidCompactionResponse");
+
+      ctx.clearUpstreamRequests();
+      const unsupported = await ctx.publicRequest("/v1/responses/compact", {
+        method: "POST",
+        json: {
+          model: "chat-only",
+          input: "Do not shim this request"
+        }
+      });
+      assert.equal(unsupported.status, 400, unsupported.text);
+      assert.equal(unsupported.json?.error?.code, "ResponseCompactionNotSupported");
+      assert.equal(ctx.upstreamRequests.length, 0, "Unsupported compaction must not call an upstream");
+
+      const disabledConfig = await ctx.readConfigFile();
+      disabledConfig.compatibility.codex.enabled = false;
+      disabledConfig.routing.routeProfiles.responses.enabled = false;
+      const savedDisabledConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: disabledConfig
+      });
+      assert.equal(savedDisabledConfig.status, 200, savedDisabledConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const disabled = await ctx.publicRequest("/v1/responses/compact", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "Responses is disabled"
+        }
+      });
+      assert.equal(disabled.status, 404, disabled.text);
+      assert.equal(disabled.json?.error?.code, "RouteDisabled");
+      assert.equal(ctx.upstreamRequests.length, 0, "Disabled compaction must not call an upstream");
+    }
+  },
+  {
     id: "empty-tool-controls",
     description: "tool controls are omitted without tools",
     async run(ctx) {
@@ -451,6 +567,127 @@ export const routeTests = [
       const messagesRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/messages"));
       ensure(messagesRequest, "Expected Messages upstream request");
       assert.equal("tool_choice" in messagesRequest.body, false);
+    }
+  },
+  {
+    id: "request-parameter-policy",
+    description: "model and upstream policies control request parameter fidelity",
+    async run(ctx) {
+      const invalidModelPolicy = await ctx.readConfigFile();
+      const invalidModel = invalidModelPolicy.models.find((model) => model.id === "gpt-5.6-luna");
+      invalidModel.requestPolicy = "invalid";
+      const rejectedModelPolicy = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: invalidModelPolicy
+      });
+      assert.equal(rejectedModelPolicy.status, 400, rejectedModelPolicy.text);
+      assert.match(rejectedModelPolicy.json?.error || "", /requestPolicy must be an object/);
+
+      const invalidUpstreamPolicy = await ctx.readConfigFile();
+      const invalidPolicyUpstream = invalidUpstreamPolicy.upstreams.find((upstream) => upstream.name === "mock-foundry");
+      invalidPolicyUpstream.requestPolicy = {
+        allowedParams: [],
+        blockedParams: ["verbosity", 123],
+        dropUnsupportedParams: false
+      };
+      const rejectedUpstreamPolicy = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: invalidUpstreamPolicy
+      });
+      assert.equal(rejectedUpstreamPolicy.status, 400, rejectedUpstreamPolicy.text);
+      assert.match(rejectedUpstreamPolicy.json?.error || "", /blockedParams must be an array of strings/);
+
+      const invalidRoutePolicy = await ctx.readConfigFile();
+      invalidRoutePolicy.routing = {
+        routeProfiles: {
+          responses: { allowedRequestFields: ["input", 123] }
+        }
+      };
+      const rejectedRoutePolicy = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: invalidRoutePolicy
+      });
+      assert.equal(rejectedRoutePolicy.status, 400, rejectedRoutePolicy.text);
+      assert.match(rejectedRoutePolicy.json?.error || "", /allowedRequestFields must be an array of strings/);
+
+      ctx.clearUpstreamRequests();
+      const preserved = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "preserve provider-supported parameters",
+          serviceTier: "priority",
+          verbosity: "high",
+          top_k: 7
+        }
+      });
+      assert.equal(preserved.status, 200, preserved.text);
+      const preservedRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(preservedRequest, "Expected preserved Responses request");
+      assert.equal(preservedRequest.body?.service_tier, "priority");
+      assert.equal("serviceTier" in preservedRequest.body, false);
+      assert.equal(preservedRequest.body?.verbosity, "high");
+      assert.equal(preservedRequest.body?.top_k, 7);
+
+      const dropConfig = await ctx.readConfigFile();
+      const foundryUpstream = dropConfig.upstreams.find((upstream) => upstream.name === "mock-foundry");
+      ensure(foundryUpstream, "Expected mock Foundry upstream");
+      foundryUpstream.requestPolicy = {
+        allowedParams: [],
+        blockedParams: ["verbosity", "top_k"],
+        dropUnsupportedParams: true
+      };
+      const savedDropConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: dropConfig
+      });
+      assert.equal(savedDropConfig.status, 200, savedDropConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const dropped = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "drop explicitly unsupported parameters",
+          service_tier: "priority",
+          verbosity: "high",
+          top_k: 7
+        }
+      });
+      assert.equal(dropped.status, 200, dropped.text);
+      const droppedRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(droppedRequest, "Expected policy-filtered Responses request");
+      assert.equal(droppedRequest.body?.service_tier, "priority");
+      assert.equal("verbosity" in droppedRequest.body, false);
+      assert.equal("top_k" in droppedRequest.body, false);
+
+      const rejectConfig = await ctx.readConfigFile();
+      const rejectUpstream = rejectConfig.upstreams.find((upstream) => upstream.name === "mock-foundry");
+      rejectUpstream.requestPolicy.dropUnsupportedParams = false;
+      const savedRejectConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: rejectConfig
+      });
+      assert.equal(savedRejectConfig.status, 200, savedRejectConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const rejected = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "reject explicitly unsupported parameters",
+          verbosity: "high"
+        }
+      });
+      assert.equal(rejected.status, 400, rejected.text);
+      assert.equal(rejected.json?.error?.code, "UnsupportedParameter");
+      assert.equal(rejected.json?.error?.param, "verbosity");
+      assert.equal(ctx.upstreamRequests.length, 0, "Rejected parameter policy must not call an upstream");
     }
   },
   {
@@ -1013,6 +1250,498 @@ export const routeTests = [
       assert.equal(result.json?.code, "UPSTREAM_PROVIDER_RESPONSE_ERROR");
       assert.equal(result.json?.error?.code, "model_failed");
       assert.match(result.json?.error?.message || "", /mock JSON response failed/);
+    }
+  },
+  {
+    id: "native-error-passthrough",
+    description: "native routes optionally preserve upstream error bodies",
+    async run(ctx) {
+      const invalidRouteConfig = await ctx.readConfigFile();
+      invalidRouteConfig.routing = {
+        ...(invalidRouteConfig.routing || {}),
+        routeProfiles: {
+          ...(invalidRouteConfig.routing?.routeProfiles || {}),
+          responses: {
+            ...(invalidRouteConfig.routing?.routeProfiles?.responses || {}),
+            nativeErrorPassthrough: "yes"
+          }
+        }
+      };
+      const rejectedRouteConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: invalidRouteConfig
+      });
+      assert.equal(rejectedRouteConfig.status, 400, rejectedRouteConfig.text);
+      assert.match(rejectedRouteConfig.json?.error || "", /nativeErrorPassthrough must be a boolean/);
+
+      const invalidUpstreamConfig = await ctx.readConfigFile();
+      const invalidUpstream = invalidUpstreamConfig.upstreams.find((upstream) => upstream.name === "mock-foundry");
+      invalidUpstream.errorPolicy = { nativePassthrough: "yes" };
+      const rejectedUpstreamConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: invalidUpstreamConfig
+      });
+      assert.equal(rejectedUpstreamConfig.status, 400, rejectedUpstreamConfig.text);
+      assert.match(rejectedUpstreamConfig.json?.error || "", /nativePassthrough must be a boolean/);
+
+      ctx.clearUpstreamRequests();
+      const normalized = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        headers: { "x-request-id": "req-normalized-error" },
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger native HTTP error"
+        }
+      });
+      assert.equal(normalized.status, 429, normalized.text);
+      assert.equal(normalized.json?.code, "UPSTREAM_RATE_LIMIT");
+      assert.equal(normalized.json?.error?.code, "native_rate_limit");
+      assert.equal(normalized.json?.native_marker, undefined);
+      assert.equal(normalized.headers.get("retry-after"), null);
+
+      const normalizedStreamEvent = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger native stream error",
+          stream: true
+        }
+      });
+      assert.equal(normalizedStreamEvent.status, 200, normalizedStreamEvent.text);
+      assert.match(normalizedStreamEvent.text, /event: error/);
+      assert.match(normalizedStreamEvent.text, /native_stream_failure/);
+      assert.doesNotMatch(normalizedStreamEvent.text, /native_marker/);
+
+      const upstreamConfig = await ctx.readConfigFile();
+      const foundryUpstream = upstreamConfig.upstreams.find((upstream) => upstream.name === "mock-foundry");
+      ensure(foundryUpstream, "Expected mock Foundry upstream");
+      foundryUpstream.errorPolicy = { nativePassthrough: true };
+      const savedUpstreamConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: upstreamConfig
+      });
+      assert.equal(savedUpstreamConfig.status, 200, savedUpstreamConfig.text);
+
+      const nativeHttpError = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        headers: { "x-request-id": "req-native-error" },
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger native HTTP error"
+        }
+      });
+      assert.equal(nativeHttpError.status, 429, nativeHttpError.text);
+      assert.equal(nativeHttpError.headers.get("x-request-id"), "req-native-error");
+      assert.match(nativeHttpError.headers.get("content-type") || "", /application\/json/);
+      assert.equal(nativeHttpError.headers.get("retry-after"), "2");
+      assert.deepEqual(nativeHttpError.json, {
+        type: "error",
+        error: {
+          type: "rate_limit_error",
+          code: "native_rate_limit",
+          message: "native upstream rate limit"
+        },
+        native_marker: "preserved"
+      });
+
+      const nativeStreamHttpError = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        headers: { "x-request-id": "req-native-stream-error" },
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger native HTTP error",
+          stream: true
+        }
+      });
+      assert.equal(nativeStreamHttpError.status, 429, nativeStreamHttpError.text);
+      assert.equal(nativeStreamHttpError.headers.get("x-request-id"), "req-native-stream-error");
+      assert.equal(nativeStreamHttpError.json?.native_marker, "preserved");
+
+      const nativeStreamEvent = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger native stream error",
+          stream: true
+        }
+      });
+      assert.equal(nativeStreamEvent.status, 200, nativeStreamEvent.text);
+      assert.match(nativeStreamEvent.text, /"native_marker":"preserved"/);
+      assert.doesNotMatch(nativeStreamEvent.text, /event: error/);
+
+      const nativeProviderFailure = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        headers: { "x-request-id": "req-native-provider-failure" },
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger failed json"
+        }
+      });
+      assert.equal(nativeProviderFailure.status, 200, nativeProviderFailure.text);
+      assert.equal(nativeProviderFailure.headers.get("x-request-id"), "req-native-provider-failure");
+      assert.equal(nativeProviderFailure.json?.status, "failed");
+      assert.equal(nativeProviderFailure.json?.error?.code, "model_failed");
+      assert.match(nativeProviderFailure.text, /^\{\n  "id": "resp-failed-test"/);
+      assert.equal(nativeProviderFailure.headers.get("retry-after"), "3");
+
+      const interruptedErrorBody = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger interrupted native HTTP error",
+          stream: true
+        }
+      });
+      assert.equal(typeof interruptedErrorBody.json?.error, "object", interruptedErrorBody.text);
+      assert.match(interruptedErrorBody.json?.code || "", /^UPSTREAM_/);
+      assert.equal(interruptedErrorBody.json?.native_marker, undefined);
+
+      const normalizedShimError = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "trigger native HTTP error" }]
+        }
+      });
+      assert.equal(normalizedShimError.status, 429, normalizedShimError.text);
+      assert.equal(normalizedShimError.json?.code, "UPSTREAM_RATE_LIMIT");
+      assert.equal(normalizedShimError.json?.native_marker, undefined);
+
+      const routeConfig = await ctx.readConfigFile();
+      const routeUpstream = routeConfig.upstreams.find((upstream) => upstream.name === "mock-foundry");
+      routeUpstream.errorPolicy.nativePassthrough = false;
+      routeConfig.routing.routeProfiles.responses.nativeErrorPassthrough = true;
+      const savedRouteConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: routeConfig
+      });
+      assert.equal(savedRouteConfig.status, 200, savedRouteConfig.text);
+
+      const routeNativeError = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger native HTTP error"
+        }
+      });
+      assert.equal(routeNativeError.status, 429, routeNativeError.text);
+      assert.equal(routeNativeError.json?.native_marker, "preserved");
+
+      const networkConfig = await ctx.readConfigFile();
+      const networkUpstream = networkConfig.upstreams.find((upstream) => upstream.name === "mock-foundry");
+      networkUpstream.baseUrl = "http://127.0.0.1:1/";
+      const savedNetworkConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: networkConfig
+      });
+      assert.equal(savedNetworkConfig.status, 200, savedNetworkConfig.text);
+
+      const networkFailure = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "network failure must stay normalized"
+        }
+      });
+      assert.equal(networkFailure.status, 502, networkFailure.text);
+      assert.equal(typeof networkFailure.json?.error, "object");
+      assert.match(networkFailure.json?.code || "", /^UPSTREAM_/);
+      assert.equal(networkFailure.json?.requestId != null, true);
+    }
+  },
+  {
+    id: "shim-compatibility-guards",
+    description: "protocol shims reject lossy modern items while native routes preserve them",
+    async run(ctx) {
+      ctx.clearUpstreamRequests();
+      const rejectedResponses = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "chat-only",
+          input: [{
+            type: "custom_tool_call",
+            call_id: "custom_1",
+            name: "shell",
+            input: "pwd"
+          }]
+        }
+      });
+      assert.equal(rejectedResponses.status, 400, rejectedResponses.text);
+      assert.equal(rejectedResponses.json?.error?.code, "UnsupportedProtocolShim");
+      assert.equal(rejectedResponses.json?.error?.param, "input[0]");
+      assert.equal(ctx.upstreamRequests.length, 0, "Rejected Responses shim must not call an upstream");
+
+      const rejectedMessages = await ctx.publicRequest("/v1/messages", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          max_tokens: 64,
+          messages: [{
+            role: "user",
+            content: [{
+              type: "document",
+              source: { type: "url", url: "https://example.test/manual.pdf" }
+            }]
+          }]
+        }
+      });
+      assert.equal(rejectedMessages.status, 400, rejectedMessages.text);
+      assert.equal(rejectedMessages.json?.error?.code, "UnsupportedProtocolShim");
+      assert.equal(rejectedMessages.json?.error?.param, "messages[0].content[0]");
+      assert.equal(ctx.upstreamRequests.length, 0, "Rejected Messages shim must not call an upstream");
+
+      const nativeResponses = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: [{
+            type: "custom_tool_call",
+            call_id: "custom_1",
+            name: "shell",
+            input: "pwd"
+          }]
+        }
+      });
+      assert.equal(nativeResponses.status, 200, nativeResponses.text);
+      const nativeResponsesRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(nativeResponsesRequest, "Expected native Responses request");
+      assert.equal(nativeResponsesRequest.body?.input?.[0]?.type, "custom_tool_call");
+
+      ctx.clearUpstreamRequests();
+      const nativeMessages = await ctx.publicRequest("/v1/messages", {
+        method: "POST",
+        json: {
+          model: "claude-native",
+          max_tokens: 64,
+          messages: [{
+            role: "user",
+            content: [{
+              type: "document",
+              source: { type: "url", url: "https://example.test/manual.pdf" }
+            }]
+          }]
+        }
+      });
+      assert.equal(nativeMessages.status, 200, nativeMessages.text);
+      const nativeMessagesRequest = ctx.getUpstreamRequest((item) => item.url.includes("/anthropic/v1/messages"));
+      ensure(nativeMessagesRequest, "Expected native Messages request");
+      assert.equal(nativeMessagesRequest.body?.messages?.[0]?.content?.[0]?.type, "document");
+
+      ctx.clearUpstreamRequests();
+      const rejectedResponsesOutput = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "trigger modern Responses item" }]
+        }
+      });
+      assert.equal(rejectedResponsesOutput.status, 502, rejectedResponsesOutput.text);
+      assert.equal(rejectedResponsesOutput.json?.error?.code, "UnsupportedProtocolShimResponse");
+      assert.equal(rejectedResponsesOutput.json?.error?.param, "output[0]");
+
+      const nativeResponsesOutput = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger modern Responses item"
+        }
+      });
+      assert.equal(nativeResponsesOutput.status, 200, nativeResponsesOutput.text);
+      assert.equal(nativeResponsesOutput.json?.output?.[0]?.type, "web_search_call");
+
+      const rejectedMessagesOutput = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "claude-sonnet-4-6",
+          input: "trigger modern Messages block"
+        }
+      });
+      assert.equal(rejectedMessagesOutput.status, 502, rejectedMessagesOutput.text);
+      assert.equal(rejectedMessagesOutput.json?.error?.code, "UnsupportedProtocolShimResponse");
+      assert.equal(rejectedMessagesOutput.json?.error?.param, "content[0]");
+
+      const nativeMessagesOutput = await ctx.publicRequest("/v1/messages", {
+        method: "POST",
+        json: {
+          model: "claude-native",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "trigger modern Messages block" }]
+        }
+      });
+      assert.equal(nativeMessagesOutput.status, 200, nativeMessagesOutput.text);
+      assert.equal(nativeMessagesOutput.json?.content?.[0]?.type, "redacted_thinking");
+
+      const rejectedResponsesStream = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "trigger modern Responses stream item" }],
+          stream: true
+        }
+      });
+      assert.equal(rejectedResponsesStream.status, 200, rejectedResponsesStream.text);
+      assert.match(rejectedResponsesStream.text, /unsupported_protocol_shim_stream/);
+      assert.equal((rejectedResponsesStream.text.match(/data: \[DONE\]/g) || []).length, 1);
+
+      const nativeResponsesStream = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger modern Responses stream item",
+          stream: true
+        }
+      });
+      assert.equal(nativeResponsesStream.status, 200, nativeResponsesStream.text);
+      assert.match(nativeResponsesStream.text, /"type":"computer_call"/);
+      assert.match(nativeResponsesStream.text, /"type":"response.completed"/);
+
+      const rejectedMessagesStream = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "claude-sonnet-4-6",
+          input: "trigger modern Messages stream block",
+          stream: true
+        }
+      });
+      assert.equal(rejectedMessagesStream.status, 200, rejectedMessagesStream.text);
+      assert.match(rejectedMessagesStream.text, /unsupported_protocol_shim_stream/);
+      assert.doesNotMatch(rejectedMessagesStream.text, /"type":"response.completed"/);
+
+      const nativeMessagesStream = await ctx.publicRequest("/v1/messages", {
+        method: "POST",
+        json: {
+          model: "claude-native",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "trigger modern Messages stream block" }],
+          stream: true
+        }
+      });
+      assert.equal(nativeMessagesStream.status, 200, nativeMessagesStream.text);
+      assert.match(nativeMessagesStream.text, /"type":"server_tool_use"/);
+      assert.match(nativeMessagesStream.text, /"type":"message_stop"/);
+    }
+  },
+  {
+    id: "message-count-tokens",
+    description: "native Anthropic token counting route",
+    async run(ctx) {
+      ctx.clearUpstreamRequests();
+      const result = await ctx.publicRequest("/v1/messages/count_tokens", {
+        method: "POST",
+        headers: {
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "prompt-caching-2024-07-31"
+        },
+        json: {
+          model: "claude-native",
+          messages: [{ role: "user", content: "Count these tokens" }],
+          system: "You count accurately.",
+          tools: [{
+            name: "lookup",
+            description: "Look up a value",
+            input_schema: { type: "object", properties: {} }
+          }]
+        }
+      });
+
+      assert.equal(result.status, 200, result.text);
+      assert.deepEqual(result.json, { input_tokens: 42 });
+      const upstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/anthropic/v1/messages/count_tokens"));
+      ensure(upstreamRequest, "Expected native token-counting upstream request");
+      assert.equal(upstreamRequest.body?.model, "claude-native-deployment");
+      assert.deepEqual(upstreamRequest.body?.messages, [{ role: "user", content: "Count these tokens" }]);
+      assert.equal(upstreamRequest.body?.system, "You count accurately.");
+      assert.equal(upstreamRequest.body?.tools?.[0]?.name, "lookup");
+      assert.equal(upstreamRequest.headers["anthropic-version"], "2023-06-01");
+      assert.equal(upstreamRequest.headers["anthropic-beta"], "prompt-caching-2024-07-31");
+      assert.equal(upstreamRequest.headers["x-api-key"], "test-upstream-key");
+      assert.notEqual(upstreamRequest.headers.authorization, "Bearer test-client-key");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const stats = await ctx.adminRequest("/admin/api/stats");
+      assert.equal(stats.status, 200, stats.text);
+      assert.equal(stats.json?.totals?.promptTokens, 0);
+      assert.equal(stats.json?.totals?.completionTokens, 0);
+      assert.equal(stats.json?.totals?.totalTokens, 0);
+      assert.equal(stats.json?.totals?.cachedTokens, 0);
+
+      const config = await ctx.readConfigFile();
+      const anthropicUpstream = config.upstreams.find((upstream) => upstream.name === "mock-anthropic");
+      ensure(anthropicUpstream, "Expected mock Anthropic upstream");
+      anthropicUpstream.routes["messages/count_tokens"] = "/anthropic/v1/messages/count_tokens?deployment={deployment}";
+      const explicitRouteConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(explicitRouteConfig.status, 200, explicitRouteConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const explicitRoute = await ctx.publicRequest("/v1/messages/count_tokens", {
+        method: "POST",
+        json: {
+          model: "claude-native",
+          messages: [{ role: "user", content: "Use the explicit route" }]
+        }
+      });
+      assert.equal(explicitRoute.status, 200, explicitRoute.text);
+      const explicitUpstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/messages/count_tokens"));
+      ensure(explicitUpstreamRequest, "Expected explicitly configured token-counting request");
+      assert.equal(
+        new URL(explicitUpstreamRequest.url, "http://mock").searchParams.get("deployment"),
+        "claude-native-deployment"
+      );
+
+      ctx.clearUpstreamRequests();
+      const invalidPayload = await ctx.publicRequest("/v1/messages/count_tokens", {
+        method: "POST",
+        json: {
+          model: "claude-native",
+          messages: [{ role: "user", content: "Reject malformed provider payloads" }],
+          system: "trigger invalid token count"
+        }
+      });
+      assert.equal(invalidPayload.status, 502, invalidPayload.text);
+      assert.equal(invalidPayload.json?.error?.code, "InvalidTokenCountResponse");
+
+      ctx.clearUpstreamRequests();
+      const unsupported = await ctx.publicRequest("/v1/messages/count_tokens", {
+        method: "POST",
+        json: {
+          model: "chat-only",
+          messages: [{ role: "user", content: "Do not shim this request" }]
+        }
+      });
+      assert.equal(unsupported.status, 400, unsupported.text);
+      assert.equal(unsupported.json?.error?.code, "TokenCountingNotSupported");
+      assert.equal(ctx.upstreamRequests.length, 0, "Unsupported token counting must not call an upstream");
+
+      const disabledConfig = await ctx.readConfigFile();
+      disabledConfig.compatibility.claudeCode.enabled = false;
+      disabledConfig.routing.routeProfiles.messages.enabled = false;
+      const savedDisabledConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: disabledConfig
+      });
+      assert.equal(savedDisabledConfig.status, 200, savedDisabledConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const disabled = await ctx.publicRequest("/v1/messages/count_tokens", {
+        method: "POST",
+        json: {
+          model: "claude-native",
+          messages: [{ role: "user", content: "Messages is disabled" }]
+        }
+      });
+      assert.equal(disabled.status, 404, disabled.text);
+      assert.equal(disabled.json?.error?.code, "RouteDisabled");
+      assert.equal(ctx.upstreamRequests.length, 0, "Disabled token counting must not call an upstream");
     }
   },
   {
