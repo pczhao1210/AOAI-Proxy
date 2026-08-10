@@ -1048,6 +1048,11 @@ export async function proxyRequest({
   if (nextBody && typeof nextBody === "object") {
     normalizeReasoningConfig(nextBody, backendRouteKey);
     normalizeResponsesToolDescriptions(nextBody, backendRouteKey);
+    sanitizeResponsesEncryptedContent(nextBody, {
+      backendRouteKey,
+      modelId: deployment || modelId,
+      model
+    });
     if (backendRouteKey === "messages") {
       const anthropicCompatibilityError = applyAnthropicBodyCompatibility(
         nextBody,
@@ -2440,6 +2445,27 @@ function normalizeResponsesToolDescriptions(body, backendRouteKey) {
 function isModernModel(modelId) {
   const value = String(modelId || "").toLowerCase();
   return /^gpt-(?:[5-9]|\d{2,})(?:$|[.-])/.test(value) || /^o\d(?:$|[.-])/.test(value);
+}
+
+function isClaudeModel(modelId, model) {
+  return [modelId, model?.id, model?.targetModel, model?.pricingRef]
+    .some((value) => /^claude(?:$|[.-])/.test(String(value || "").trim().toLowerCase()));
+}
+
+function sanitizeResponsesEncryptedContent(body, { backendRouteKey, modelId, model }) {
+  if (backendRouteKey !== "responses" || !isClaudeModel(modelId, model) || !Array.isArray(body?.include)) {
+    return;
+  }
+
+  const supportedIncludes = body.include.filter(
+    (item) => String(item || "").trim().toLowerCase() !== "reasoning.encrypted_content"
+  );
+  if (supportedIncludes.length === body.include.length) return;
+  if (supportedIncludes.length) {
+    body.include = supportedIncludes;
+  } else {
+    delete body.include;
+  }
 }
 
 function isGpt56Model(modelId, model) {

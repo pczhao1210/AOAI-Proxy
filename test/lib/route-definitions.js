@@ -1055,6 +1055,66 @@ export const routeTests = [
     }
   },
   {
+    id: "claude-responses-encrypted-content",
+    description: "Claude Responses requests omit unsupported encrypted reasoning content",
+    async run(ctx) {
+      const config = await ctx.readConfigFile();
+      const claudeModel = config.models.find((model) => model.id === "claude-sonnet-4-6");
+      ensure(claudeModel, "Expected Claude model config");
+      claudeModel.routes = { "*": "responses" };
+      const savedConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(savedConfig.status, 200, savedConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const claudeResult = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "claude-sonnet-4-6",
+          input: "hello",
+          include: ["reasoning.encrypted_content", "message.input_image.image_url"],
+          reasoning: { effort: "high" }
+        }
+      });
+      assert.equal(claudeResult.status, 200, claudeResult.text);
+      const claudeRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(claudeRequest, "Expected Claude Responses upstream request");
+      assert.deepEqual(claudeRequest.body?.include, ["message.input_image.image_url"]);
+      assert.deepEqual(claudeRequest.body?.reasoning, { effort: "high" });
+
+      ctx.clearUpstreamRequests();
+      const claudeOnlyEncryptedResult = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "claude-sonnet-4-6",
+          input: "hello",
+          include: ["reasoning.encrypted_content"]
+        }
+      });
+      assert.equal(claudeOnlyEncryptedResult.status, 200, claudeOnlyEncryptedResult.text);
+      const claudeOnlyEncryptedRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(claudeOnlyEncryptedRequest, "Expected Claude Responses upstream request");
+      assert.equal("include" in claudeOnlyEncryptedRequest.body, false);
+
+      ctx.clearUpstreamRequests();
+      const gptResult = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "hello",
+          include: ["reasoning.encrypted_content"]
+        }
+      });
+      assert.equal(gptResult.status, 200, gptResult.text);
+      const gptRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(gptRequest, "Expected GPT Responses upstream request");
+      assert.deepEqual(gptRequest.body?.include, ["reasoning.encrypted_content"]);
+    }
+  },
+  {
     id: "message-to-response",
     description: "Messages request through Responses upstream",
     async run(ctx) {
