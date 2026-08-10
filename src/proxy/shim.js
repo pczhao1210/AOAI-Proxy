@@ -156,7 +156,6 @@ function validateResponsesPayload(payload, context) {
     const stateFields = [
       "context_management",
       "conversation",
-      "include",
       "previous_response_id",
       "prompt",
       "prompt_cache_key",
@@ -170,6 +169,19 @@ function validateResponsesPayload(payload, context) {
           path: field,
           type: field,
           reason: "Responses conversation or cache state cannot be preserved"
+        });
+      }
+    }
+    if (hasMeaningfulShimValue(payload?.include)) {
+      const supportedInclude = context.targetProtocol === "messages"
+        && Array.isArray(payload.include)
+        && payload.include.every((value) => value === "reasoning.encrypted_content");
+      if (!supportedInclude) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: "include",
+          type: "include",
+          reason: "Responses include state cannot be preserved"
         });
       }
     }
@@ -194,7 +206,7 @@ function validateResponsesPayload(payload, context) {
       const reasoningKeys = payload.reasoning && typeof payload.reasoning === "object"
         ? Object.keys(payload.reasoning).filter((key) => payload.reasoning[key] != null)
         : [];
-      if (context.targetProtocol === "messages" || reasoningKeys.some((key) => key !== "effort")) {
+      if (reasoningKeys.some((key) => key !== "effort")) {
         return createShimCompatibilityIssue({
           ...context,
           path: "reasoning",
@@ -262,6 +274,17 @@ function validateResponsesPayload(payload, context) {
       continue;
     }
     if (itemType === "function_call") continue;
+    if (context.phase === "request" && context.targetProtocol === "messages" && itemType === "reasoning") {
+      const summary = Array.isArray(item.summary) ? item.summary : [];
+      const validSummary = summary.every((part) => part?.type === "summary_text" && typeof part.text === "string");
+      if (typeof item.encrypted_content === "string" && validSummary) continue;
+      return createShimCompatibilityIssue({
+        ...context,
+        path: itemPath,
+        type: itemType,
+        reason: "Anthropic thinking continuation requires encrypted_content and optional summary_text parts"
+      });
+    }
     if (context.phase === "request" && itemType === "function_call_output") {
       const issue = validateTextOnlyValue(item.output, context, `${itemPath}.output`);
       if (issue) return issue;
@@ -336,7 +359,16 @@ function validateAnthropicContent(content, context, path) {
       if (issue) return issue;
       continue;
     }
-    if (context.phase === "response" && context.targetProtocol === "chat/completions" && blockType === "thinking" && !block?.signature) {
+    if (context.phase === "response" && blockType === "thinking") {
+      if (context.targetProtocol === "chat/completions" && !block?.signature) continue;
+      if (context.targetProtocol === "responses" && typeof block.thinking === "string") continue;
+    }
+    if (
+      context.phase === "response"
+      && context.targetProtocol === "responses"
+      && blockType === "redacted_thinking"
+      && typeof block.data === "string"
+    ) {
       continue;
     }
     return createShimCompatibilityIssue({
@@ -742,7 +774,8 @@ export function getProtocolShimStreamCompatibilityIssue(event, {
     if (eventType === "content_block_delta") {
       const deltaType = event?.delta?.type;
       if (deltaType === "text_delta" || deltaType === "input_json_delta") return null;
-      if (deltaType === "thinking_delta" && targetProtocol === "chat/completions") return null;
+      if (deltaType === "thinking_delta" && (targetProtocol === "chat/completions" || targetProtocol === "responses")) return null;
+      if (deltaType === "signature_delta" && targetProtocol === "responses") return null;
       return createShimCompatibilityIssue({
         ...context,
         path: "delta.type",
@@ -1248,6 +1281,7 @@ function normalizeResponsesContentToChatContent(content) {
 function buildChatMessagesFromResponsesInput(input, instructions) {
   const messages = [];
   let pendingToolCalls = [];
+  let pendingReasoningBlocks = [];
 
   if (typeof instructions === "string" && instructions) {
     messages.push({ role: "system", content: instructions });
@@ -1262,16 +1296,21 @@ function buildChatMessagesFromResponsesInput(input, instructions) {
     messages.push(next);
   };
 
-  const flushToolCalls = () => {
-    if (!pendingToolCalls.length) return;
-    pushMessage({ role: "assistant", content: "", tool_calls: pendingToolCalls });
+  const flushAssistantItems = () => {
+    if (!pendingToolCalls.length && !pendingReasoningBlocks.length) return;
+    pushMessage({
+      role: "assistant",
+      content: pendingReasoningBlocks,
+      ...(pendingToolCalls.length ? { tool_calls: pendingToolCalls } : {})
+    });
     pendingToolCalls = [];
+    pendingReasoningBlocks = [];
   };
 
   const mapInputItem = (item) => {
     if (!item) return;
     if (typeof item === "string") {
-      flushToolCalls();
+      flushAssistantItems();
       pushMessage({ role: "user", content: item });
       return;
     }
@@ -1289,7 +1328,16 @@ function buildChatMessagesFromResponsesInput(input, instructions) {
       return;
     }
 
-    flushToolCalls();
+    if (item.type === "reasoning" && typeof item.encrypted_content === "string") {
+      const thinking = (Array.isArray(item.summary) ? item.summary : [])
+        .filter((part) => part?.type === "summary_text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("");
+      pendingReasoningBlocks.push({ type: "thinking", thinking, signature: item.encrypted_content });
+      return;
+    }
+
+    flushAssistantItems();
 
     if (item.type === "function_call_output") {
       pushMessage({
@@ -1318,7 +1366,7 @@ function buildChatMessagesFromResponsesInput(input, instructions) {
   } else if (input != null) {
     mapInputItem(input);
   }
-  flushToolCalls();
+  flushAssistantItems();
 
   return messages;
 }
@@ -1569,6 +1617,14 @@ function chatContentToAnthropicBlocks(content) {
       blocks.push({ type: "text", text: part.text });
       continue;
     }
+    if (part.type === "thinking" && typeof part.thinking === "string" && typeof part.signature === "string") {
+      blocks.push({ type: "thinking", thinking: part.thinking, signature: part.signature });
+      continue;
+    }
+    if (part.type === "redacted_thinking" && typeof part.data === "string") {
+      blocks.push({ type: "redacted_thinking", data: part.data });
+      continue;
+    }
     if (part.type === "image_url" || part.type === "input_image" || part.type === "image") {
       const imageBlock = chatImageToAnthropicBlock(part);
       if (imageBlock) blocks.push(imageBlock);
@@ -1733,7 +1789,19 @@ export function messagesToResponsesRequest(body, deployment) {
 }
 
 export function responsesToMessagesRequest(body, deployment) {
-  return chatToMessagesRequest(responsesToChatRequest(body, deployment), deployment);
+  const out = chatToMessagesRequest(responsesToChatRequest(body, deployment), deployment);
+  const effort = typeof body?.reasoning?.effort === "string"
+    ? body.reasoning.effort.trim().toLowerCase()
+    : "";
+  if (effort) {
+    out.output_config = {
+      ...(out.output_config && typeof out.output_config === "object" ? out.output_config : {}),
+      effort
+    };
+    if (!out.thinking) out.thinking = { type: "adaptive" };
+  }
+  delete out.include;
+  return out;
 }
 
 export function chatToResponsesRequest(body, deployment) {
@@ -2098,8 +2166,24 @@ export function mapChatCompletionJsonToMessages(payload, modelId) {
   };
 }
 
-export function mapMessagesJsonToResponses(payload, modelId) {
-  return mapChatCompletionJsonToResponses(mapMessagesJsonToChatCompletion(payload, modelId), modelId);
+export function mapMessagesJsonToResponses(payload, modelId, { includeEncryptedContent = false } = {}) {
+  const response = mapChatCompletionJsonToResponses(mapMessagesJsonToChatCompletion(payload, modelId), modelId);
+  const reasoningItems = [];
+  for (const [index, block] of (Array.isArray(payload?.content) ? payload.content : []).entries()) {
+    if (block?.type !== "thinking" && block?.type !== "redacted_thinking") continue;
+    const summaryText = block.type === "thinking" && typeof block.thinking === "string" ? block.thinking : "";
+    const encryptedContent = block.type === "thinking" ? block.signature : block.data;
+    reasoningItems.push({
+      id: `rs_${payload?.id || "message"}_${index}`,
+      type: "reasoning",
+      summary: summaryText ? [{ type: "summary_text", text: summaryText }] : [],
+      ...(includeEncryptedContent && typeof encryptedContent === "string"
+        ? { encrypted_content: encryptedContent }
+        : {})
+    });
+  }
+  if (reasoningItems.length) response.output = [...reasoningItems, ...response.output];
+  return response;
 }
 
 export function mapResponsesJsonToMessages(payload, modelId) {

@@ -952,7 +952,32 @@ export const routeTests = [
           messages: [{ role: "user", content: "hello alias" }]
         }
       });
-      assert.equal(aliasResult.status, 200, aliasResult.text);
+      assert.equal(aliasResult.status, 400, aliasResult.text);
+      assert.equal(aliasResult.json?.error?.param, "thinking.type");
+
+      const aliasConfig = await ctx.readConfigFile();
+      aliasConfig.compatibility = aliasConfig.compatibility || {};
+      aliasConfig.compatibility.anthropic = aliasConfig.compatibility.anthropic || {};
+      aliasConfig.compatibility.anthropic.thinkingTypesByModel = aliasConfig.compatibility.anthropic.thinkingTypesByModel || {};
+      aliasConfig.compatibility.anthropic.thinkingTypesByModel["team-sonnet-deployment"] = ["enabled"];
+      const savedAliasConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: aliasConfig
+      });
+      assert.equal(savedAliasConfig.status, 200, savedAliasConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const overriddenAliasResult = await ctx.publicRequest("/v1/messages", {
+        method: "POST",
+        json: {
+          model: "claude-sonnet-5-alias",
+          max_tokens: 2048,
+          thinking: { type: "enabled", budget_tokens: 1024 },
+          messages: [{ role: "user", content: "hello alias" }]
+        }
+      });
+      assert.equal(overriddenAliasResult.status, 200, overriddenAliasResult.text);
       const aliasRequest = ctx.getUpstreamRequest((item) => item.body?.model === "team-sonnet-deployment");
       ensure(aliasRequest, "Expected custom Claude deployment request");
       assert.deepEqual(aliasRequest.body?.thinking, { type: "enabled", budget_tokens: 1024 });
@@ -1055,13 +1080,14 @@ export const routeTests = [
     }
   },
   {
-    id: "claude-responses-encrypted-content",
-    description: "Claude Responses requests omit unsupported encrypted reasoning content",
+    id: "claude-responses-compatibility",
+    description: "Claude Responses reasoning follows model and hosting capabilities",
     async run(ctx) {
       const config = await ctx.readConfigFile();
       const claudeModel = config.models.find((model) => model.id === "claude-sonnet-4-6");
       ensure(claudeModel, "Expected Claude model config");
-      claudeModel.routes = { "*": "responses" };
+      claudeModel.routes = {};
+      claudeModel.hostingMode = "anthropic";
       const savedConfig = await ctx.adminRequest("/admin/api/config", {
         method: "PUT",
         headers: { "x-aoai-admin-csrf": "1" },
@@ -1075,43 +1101,70 @@ export const routeTests = [
         json: {
           model: "claude-sonnet-4-6",
           input: "hello",
-          include: ["reasoning.encrypted_content", "message.input_image.image_url"],
-          reasoning: { effort: "high" }
+          include: ["reasoning.encrypted_content"],
+          reasoning: { effort: "medium" }
         }
       });
       assert.equal(claudeResult.status, 200, claudeResult.text);
-      const claudeRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
-      ensure(claudeRequest, "Expected Claude Responses upstream request");
-      assert.deepEqual(claudeRequest.body?.include, ["message.input_image.image_url"]);
-      assert.deepEqual(claudeRequest.body?.reasoning, { effort: "high" });
+      const claudeRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/messages"));
+      ensure(claudeRequest, "Expected Claude Messages upstream request");
+      assert.deepEqual(claudeRequest.body?.output_config, { effort: "medium" });
+      assert.deepEqual(claudeRequest.body?.thinking, { type: "adaptive" });
+      assert.equal("reasoning" in claudeRequest.body, false);
+      assert.equal("include" in claudeRequest.body, false);
 
       ctx.clearUpstreamRequests();
-      const claudeOnlyEncryptedResult = await ctx.publicRequest("/v1/responses", {
+      const normalizedResult = await ctx.publicRequest("/v1/responses", {
         method: "POST",
         json: {
           model: "claude-sonnet-4-6",
           input: "hello",
-          include: ["reasoning.encrypted_content"]
+          reasoning: { effort: "xhigh" }
         }
       });
-      assert.equal(claudeOnlyEncryptedResult.status, 200, claudeOnlyEncryptedResult.text);
-      const claudeOnlyEncryptedRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
-      ensure(claudeOnlyEncryptedRequest, "Expected Claude Responses upstream request");
-      assert.equal("include" in claudeOnlyEncryptedRequest.body, false);
+      assert.equal(normalizedResult.status, 200, normalizedResult.text);
+      const normalizedRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/messages"));
+      ensure(normalizedRequest, "Expected normalized Claude Messages upstream request");
+      assert.deepEqual(normalizedRequest.body?.output_config, { effort: "max" });
 
       ctx.clearUpstreamRequests();
-      const gptResult = await ctx.publicRequest("/v1/responses", {
+      const invalidResult = await ctx.publicRequest("/v1/responses", {
         method: "POST",
         json: {
-          model: "gpt-5.6-luna",
+          model: "claude-sonnet-4-6",
           input: "hello",
-          include: ["reasoning.encrypted_content"]
+          reasoning: { effort: "minimal" }
         }
       });
-      assert.equal(gptResult.status, 200, gptResult.text);
-      const gptRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
-      ensure(gptRequest, "Expected GPT Responses upstream request");
-      assert.deepEqual(gptRequest.body?.include, ["reasoning.encrypted_content"]);
+      assert.equal(invalidResult.status, 400, invalidResult.text);
+      assert.equal(invalidResult.json?.error?.param, "output_config.effort");
+      assert.equal(ctx.upstreamRequests.length, 0);
+
+      const invalidHostingConfig = structuredClone(config);
+      const invalidHostingModel = invalidHostingConfig.models.find((model) => model.id === "claude-sonnet-4-6");
+      invalidHostingModel.hostingMode = "azure";
+      const invalidHostingResult = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: invalidHostingConfig
+      });
+      assert.equal(invalidHostingResult.status, 400, invalidHostingResult.text);
+      assert.match(invalidHostingResult.json?.error || "", /hostingMode=azure is not supported/);
+
+      const opusResult = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "claude-opus-4-8",
+          input: "hello",
+          include: ["reasoning.encrypted_content"],
+          reasoning: { effort: "xhigh" }
+        }
+      });
+      assert.equal(opusResult.status, 200, opusResult.text);
+      const opusRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(opusRequest, "Expected Azure-hosted Opus Responses upstream request");
+      assert.deepEqual(opusRequest.body?.include, ["reasoning.encrypted_content"]);
+      assert.deepEqual(opusRequest.body?.reasoning, { effort: "xhigh" });
     }
   },
   {
@@ -1614,16 +1667,17 @@ export const routeTests = [
       assert.equal(nativeResponsesOutput.status, 200, nativeResponsesOutput.text);
       assert.equal(nativeResponsesOutput.json?.output?.[0]?.type, "web_search_call");
 
-      const rejectedMessagesOutput = await ctx.publicRequest("/v1/responses", {
+      const convertedMessagesOutput = await ctx.publicRequest("/v1/responses", {
         method: "POST",
         json: {
           model: "claude-sonnet-4-6",
-          input: "trigger modern Messages block"
+          input: "trigger modern Messages block",
+          include: ["reasoning.encrypted_content"]
         }
       });
-      assert.equal(rejectedMessagesOutput.status, 502, rejectedMessagesOutput.text);
-      assert.equal(rejectedMessagesOutput.json?.error?.code, "UnsupportedProtocolShimResponse");
-      assert.equal(rejectedMessagesOutput.json?.error?.param, "content[0]");
+      assert.equal(convertedMessagesOutput.status, 200, convertedMessagesOutput.text);
+      assert.equal(convertedMessagesOutput.json?.output?.[0]?.type, "reasoning");
+      assert.equal(convertedMessagesOutput.json?.output?.[0]?.encrypted_content, "opaque-thinking-state");
 
       const nativeMessagesOutput = await ctx.publicRequest("/v1/messages", {
         method: "POST",

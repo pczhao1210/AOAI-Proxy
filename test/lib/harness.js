@@ -676,6 +676,16 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
         }
       },
       {
+        id: "claude-opus-4-8",
+        displayName: "Claude Opus 4.8",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "claude-opus-4-8",
+        pricingRef: "claude-opus-4-8",
+        hostingMode: "azure",
+        routes: {}
+      },
+      {
         id: "claude-native",
         displayName: "Claude Native",
         status: "active",

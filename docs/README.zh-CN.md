@@ -467,9 +467,11 @@ az managedapp create \
 
 近似透传指 typed 语义保真，不是原始字节透传。代理仍会映射模型 ID、执行请求策略和图片处理、替换认证 header、采集 usage，并实施流超时。原生 Responses 保留 Responses item 和事件；原生 Messages 保留有序 Anthropic block 与 SSE 事件，包括 body 中的工具调用/结果和 thinking signature。
 
-跨协议转换覆盖文本、输入图片、函数工具、工具调用/结果、token 上限、停止原因、usage 与流式生命周期。Anthropic thinking signature 等缺少安全等价表达的协议专属字段，在跨协议路径上可能被省略或归一化。
+跨协议转换覆盖文本、输入图片、函数工具、工具调用/结果、token 上限、停止原因、usage 与流式生命周期。Responses `reasoning.encrypted_content` 会与 Anthropic thinking signature 双向映射，包括流式续接。其他缺少安全等价表达的协议专属字段会被明确拒绝，不会静默丢弃。
 
 Microsoft Foundry 的 Claude deployment 应配置上游路由 `messages: "/anthropic/v1/messages"`。代理会自动把 Azure OpenAI resource host 切换为 `*.services.ai.azure.com`，缺省注入 `anthropic-version: 2023-06-01`，API key 模式使用 `x-api-key`，AAD 模式使用 `https://ai.azure.com/.default` scope。
+
+当匹配的 Claude pricing 模板同时提供两种托管模式时，通过 `models[].hostingMode` 选择 `azure` 或 `anthropic`。代理根据 `interfacesByHostingMode` 选择对应原生协议；显式 `models[].routes` 覆盖仍具有最高优先级。内置目录目前只对已验证的 Azure-hosted Claude Opus 4.8 开启原生 Responses。Anthropic-hosted Claude 使用 Messages，因此客户端 Responses 的 `reasoning.effort` 会转换为 `output_config.effort`，并设置 `thinking.type="adaptive"`。
 
 ### Claude Code
 
@@ -500,7 +502,8 @@ claude
 - `betaAllowlistEnabled`：只转发已审查的 beta token；默认包含细粒度工具流、交错 thinking 与上下文管理。
 - `normalizeManualThinkingToolChoice`：仅当 `thinking.type="enabled"` 为手动模式时，把强制 `any` / 指定工具改为 `auto`；adaptive thinking 不受影响。
 - `sanitizeCacheControl`：保留合法 ephemeral cache control 以及 Foundry 支持的 `5m` / `1h` TTL，移除不支持的字段和位置。
-- `validateThinkingByModel`：对微软文档已明确列出的 Claude 模型校验 `thinking.type`。未知或自定义 deployment alias 继续透传；当 deployment 名不等于标准模型 ID 时，可在 `thinkingTypesByModel` 中补充允许模式。
+- `validateThinkingByModel`：对微软文档已明确列出的 Claude 模型校验 `thinking.type`。解析顺序为 deployment 名、模型 ID、`pricingRef`；可在 `thinkingTypesByModel` 中添加 deployment 专属项覆盖标准模型 profile。完全未知的模型仍继续透传。
+- `effortLevelsByModel`：列出各 Claude 模型支持的 effort level。不支持的 level 会在调用上游前返回错误；仅当模型支持 `max` 而不支持 `xhigh` 时，才按 provider 文档中的等价关系把 `xhigh` 规范化为 `max`。
 
 这些设置只控制请求兼容性，不选择 wire protocol。需要回滚原生 Messages 时，应修改模型 route override，而不是关闭全部兼容策略。
 

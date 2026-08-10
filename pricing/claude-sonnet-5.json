@@ -5,6 +5,12 @@
   "family": "claude-5",
   "modelVersion": null,
   "status": "ga",
+  "hostingModes": ["azure", "anthropic"],
+  "defaultHostingMode": "anthropic",
+  "interfacesByHostingMode": {
+    "azure": ["messages"],
+    "anthropic": ["messages"]
+  },
   "interfaces": [
     "messages"
   ],

@@ -220,6 +220,7 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
               const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
               const clientCompatibilityMeta = getClientCompatibilityMeta(t, item, upstreams);
               const matchedTemplate = findPricingTemplateForModel(templateOptions, item);
+              const hostingModes = Array.isArray(matchedTemplate?.hostingModes) ? matchedTemplate.hostingModes : [];
               const wildcardRoute = typeof item?.routes?.["*"] === "string" ? item.routes["*"].trim() : "";
               const routeOptions = getSuggestedModelRouteValues(matchedTemplate || item);
               const hasCustomRoute = wildcardRoute && !isKnownModelRouteValue(wildcardRoute);
@@ -278,6 +279,18 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                         {upstreamOptions.map((upstream) => <option key={upstream.name} value={upstream.name}>{upstream.name}</option>)}
                       </select>
                     </Field>
+                    {hostingModes.length ? (
+                      <Field
+                        label={t("routing.field.hostingMode", "Claude Hosting Mode")}
+                        hint={t("routing.hint.hostingMode", "Select the deployment hosting mode so the proxy can choose the correct native protocol.")}
+                      >
+                        <select value={item.hostingMode || matchedTemplate?.defaultHostingMode || ""} onChange={(event) => updateConfig((next) => { next.models[index].hostingMode = event.target.value; })}>
+                          {hostingModes.map((mode) => (
+                            <option key={mode} value={mode}>{mode === "azure" ? t("routing.hosting.azure", "Hosted on Azure") : t("routing.hosting.anthropic", "Hosted on Anthropic infrastructure")}</option>
+                          ))}
+                        </select>
+                      </Field>
+                    ) : null}
                     <Field label={t("field.defaultRoute", "Default Route")}>
                       <select value={wildcardRoute} onChange={(event) => updateConfig((next) => { setModelWildcardRoute(next, index, event.target.value); })}>
                         <option value="">{t("routing.route.auto", "Use template default")}</option>

@@ -5,6 +5,12 @@
   "family": "claude-4",
   "modelVersion": "2025-09-29",
   "status": "preview",
+  "hostingModes": ["azure", "anthropic"],
+  "defaultHostingMode": "anthropic",
+  "interfacesByHostingMode": {
+    "azure": ["messages"],
+    "anthropic": ["messages"]
+  },
   "interfaces": [
     "messages"
   ],

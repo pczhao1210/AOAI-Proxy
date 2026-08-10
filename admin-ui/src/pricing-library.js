@@ -10,6 +10,11 @@ function asPlainObject(value) {
 
 function normalizePricingDefinition(rawDefinition) {
   const definition = asPlainObject(rawDefinition);
+  const interfacesByHostingMode = Object.fromEntries(
+    Object.entries(asPlainObject(definition.interfacesByHostingMode))
+      .map(([mode, interfaces]) => [String(mode).trim().toLowerCase(), normalizeStringArray(interfaces)])
+      .filter(([mode, interfaces]) => mode && interfaces.length > 0)
+  );
   const proxyTemplate = definition.proxyTemplate && typeof definition.proxyTemplate === "object"
     ? {
       ...asPlainObject(definition.proxyTemplate),
@@ -24,6 +29,9 @@ function normalizePricingDefinition(rawDefinition) {
     provider: String(definition.provider || "azure-openai"),
     family: String(definition.family || ""),
     interfaces: normalizeStringArray(definition.interfaces),
+    hostingModes: normalizeStringArray(definition.hostingModes).map((mode) => mode.toLowerCase()),
+    defaultHostingMode: String(definition.defaultHostingMode || "").trim().toLowerCase(),
+    interfacesByHostingMode,
     capabilities: normalizeStringArray(definition.capabilities),
     pricingCatalogEntry: definition.pricingCatalogEntry && typeof definition.pricingCatalogEntry === "object"
       ? asPlainObject(definition.pricingCatalogEntry)

@@ -477,9 +477,11 @@ Upstream errors use the proxy's normalized error envelope by default. Set `upstr
 
 Near-passthrough is semantic rather than byte-for-byte. The proxy still maps the model ID, applies request policy and media handling, replaces authentication headers, observes usage, and enforces stream timeouts. Native Responses preserves Responses items and events. Native Messages preserves ordered Anthropic blocks and SSE events, including tool use/results and thinking signatures present in the body.
 
-Cross-protocol conversion covers text, input images, function tools, tool calls/results, token limits, stop reasons, usage, and streaming lifecycle events. Protocol-specific fields without a safe equivalent, such as Anthropic thinking signatures and some provider-specific controls, can be omitted or normalized on cross-protocol paths.
+Cross-protocol conversion covers text, input images, function tools, tool calls/results, token limits, stop reasons, usage, and streaming lifecycle events. Responses `reasoning.encrypted_content` is mapped to Anthropic thinking signatures in both directions, including streaming continuations. Other protocol-specific fields without a safe equivalent are rejected instead of being silently discarded.
 
 For Claude deployments in Microsoft Foundry, configure the upstream route as `messages: "/anthropic/v1/messages"`. The proxy automatically switches an Azure OpenAI resource host to `*.services.ai.azure.com`, injects `anthropic-version: 2023-06-01` when absent, uses `x-api-key` for key authentication, and uses the `https://ai.azure.com/.default` scope for AAD authentication.
+
+Set `models[].hostingMode` to `azure` or `anthropic` when the matched Claude pricing template offers both hosting modes. The proxy selects the mode-specific native interfaces from `interfacesByHostingMode`; an explicit `models[].routes` override still takes precedence. The bundled catalog conservatively enables native Responses only for Azure-hosted Claude Opus 4.8, where that path has been verified. Anthropic-hosted Claude models use Messages, so incoming Responses `reasoning.effort` is converted to `output_config.effort` with `thinking.type="adaptive"`.
 
 ### Claude Code
 
@@ -510,7 +512,8 @@ The proxy enables three Foundry-specific Anthropic compatibility policies by def
 - `betaAllowlistEnabled`: forwards only reviewed beta tokens. Defaults include fine-grained tool streaming, interleaved thinking, and context management.
 - `normalizeManualThinkingToolChoice`: changes forced `any` / named-tool choice to `auto` only for manual `thinking.type="enabled"`; adaptive thinking is unchanged.
 - `sanitizeCacheControl`: retains valid ephemeral cache controls and the Foundry-supported `5m` / `1h` TTL values while removing unsupported fields or placements.
-- `validateThinkingByModel`: validates `thinking.type` for Claude models whose capabilities are explicitly documented. Unknown/custom deployment aliases remain pass-through; add their allowed modes under `thinkingTypesByModel` when the deployment name doesn't match a standard model ID.
+- `validateThinkingByModel`: validates `thinking.type` for Claude models whose capabilities are explicitly documented. Resolution checks the deployment name first, then the model ID and `pricingRef`; add a deployment-specific entry under `thinkingTypesByModel` to override the standard model profile. Fully unknown models remain pass-through.
+- `effortLevelsByModel`: lists each Claude model's supported effort levels. Unsupported levels fail before the upstream call; `xhigh` is normalized to `max` only when the model supports `max` but not `xhigh`, matching the provider's documented equivalence.
 
 These settings are request compatibility controls, not protocol selectors. Roll a model back from native Messages by changing its route override rather than disabling all compatibility policies.
 

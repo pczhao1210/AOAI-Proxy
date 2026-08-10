@@ -5,6 +5,11 @@
   "family": "claude-4",
   "modelVersion": "2025-08-05",
   "status": "preview",
+  "hostingModes": ["anthropic"],
+  "defaultHostingMode": "anthropic",
+  "interfacesByHostingMode": {
+    "anthropic": ["messages"]
+  },
   "interfaces": [
     "messages"
   ],

@@ -1,7 +1,7 @@
 import { getLogRuntimeInfo } from "./logs.js";
 import { getConfiguredModelBindingIssues } from "./model-validation.js";
 import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
-import { resolveNativeModelCapabilities } from "./pricing-library.js";
+import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from "./pricing-library.js";
 import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
 import { isSupportedPersistenceMode } from "./persistence-mode.js";
 
@@ -383,6 +383,16 @@ const DEFAULTS = {
         "claude-opus-4-6": ["adaptive", "enabled", "disabled"],
         "claude-sonnet-5": ["adaptive", "disabled"],
         "claude-sonnet-4-6": ["adaptive", "enabled", "disabled"]
+      },
+      effortLevelsByModel: {
+        "claude-mythos-5": ["low", "medium", "high", "xhigh"],
+        "claude-fable-5": ["low", "medium", "high", "xhigh"],
+        "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-6": ["low", "medium", "high", "max"],
+        "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-sonnet-4-6": ["low", "medium", "high", "max"]
       }
     }
   },
@@ -838,6 +848,15 @@ function applySchemaCompatibility(rawConfig, merged) {
       ])
       .filter(([modelName, types]) => modelName && types.length > 0)
   );
+  const effortLevelsByModel = asPlainObject(merged.compatibility.anthropic.effortLevelsByModel);
+  merged.compatibility.anthropic.effortLevelsByModel = Object.fromEntries(
+    Object.entries(effortLevelsByModel)
+      .map(([modelName, levels]) => [
+        String(modelName).trim().toLowerCase(),
+        normalizeStringArray(levels).map((level) => level.toLowerCase())
+      ])
+      .filter(([modelName, levels]) => modelName && levels.length > 0)
+  );
 
   merged.models = Array.isArray(merged.models)
     ? merged.models.map((model) => {
@@ -857,6 +876,7 @@ function applySchemaCompatibility(rawConfig, merged) {
         pricing: {},
         fallbackModels: [],
         pricingRef: "",
+        hostingMode: "",
         accessTags: [],
         deprecatedAliasOf: "",
         clientCompatibility: {
@@ -866,6 +886,7 @@ function applySchemaCompatibility(rawConfig, merged) {
         codex: {}
       }, model || {});
       next.capabilities = normalizeStringArray(next.capabilities);
+      next.hostingMode = String(next.hostingMode || "").trim().toLowerCase();
       next.fallbackModels = normalizeStringArray(next.fallbackModels);
       next.accessTags = normalizeStringArray(next.accessTags);
       next.requestPolicy.allowedParams = normalizeStringArray(next.requestPolicy.allowedParams);
@@ -1451,6 +1472,17 @@ function validateConfig(cfg) {
     }
     if (model.targetModel != null && typeof model.targetModel !== "string") {
       throw new Error(`models[${idx}].targetModel must be a string`);
+    }
+    if (model.hostingMode != null && !["", "azure", "anthropic"].includes(String(model.hostingMode).trim().toLowerCase())) {
+      throw new Error(`models[${idx}].hostingMode must be azure or anthropic`);
+    }
+    const hostingMode = String(model.hostingMode || "").trim().toLowerCase();
+    const pricingDefinition = findPricingDefinitionForModel(model);
+    const supportedHostingModes = Array.isArray(pricingDefinition?.hostingModes)
+      ? pricingDefinition.hostingModes
+      : [];
+    if (hostingMode && supportedHostingModes.length > 0 && !supportedHostingModes.includes(hostingMode)) {
+      throw new Error(`models[${idx}].hostingMode=${hostingMode} is not supported by ${pricingDefinition.id}; use ${supportedHostingModes.join(" or ")}`);
     }
     if (model.capabilities != null && (!Array.isArray(model.capabilities) || model.capabilities.some((value) => typeof value !== "string"))) {
       throw new Error(`models[${idx}].capabilities must be an array of strings`);

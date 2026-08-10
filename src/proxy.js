@@ -149,28 +149,47 @@ function sanitizeAnthropicCacheControls(value, path = []) {
   }
 }
 
-function resolveAnthropicThinkingTypes(config, modelId) {
-  const profiles = anthropicCompatibility(config).thinkingTypesByModel;
+function resolveAnthropicModelValues(config, profileName, modelId, model) {
+  const profiles = anthropicCompatibility(config)[profileName];
   if (!profiles || typeof profiles !== "object") return null;
-  const deployment = String(modelId || "").trim().toLowerCase();
-  const types = profiles[deployment];
-  return Array.isArray(types) && types.length > 0 ? types : null;
+  for (const candidate of [modelId, model?.targetModel, model?.id, model?.pricingRef]) {
+    const modelName = String(candidate || "").trim().toLowerCase();
+    const values = profiles[modelName];
+    if (Array.isArray(values) && values.length > 0) return values;
+  }
+  return null;
 }
 
-function applyAnthropicBodyCompatibility(body, config, modelId) {
+function applyAnthropicBodyCompatibility(body, config, modelId, model) {
   if (!body || typeof body !== "object") return null;
   const policy = anthropicCompatibility(config);
   const thinkingType = typeof body.thinking?.type === "string"
     ? body.thinking.type.trim()
     : "";
   if (thinkingType && policy.validateThinkingByModel !== false) {
-    const allowedTypes = resolveAnthropicThinkingTypes(config, modelId);
+    const allowedTypes = resolveAnthropicModelValues(config, "thinkingTypesByModel", modelId, model);
     if (allowedTypes && !allowedTypes.includes(thinkingType)) {
       return {
         param: "thinking.type",
         message: `thinking.type=${thinkingType} is not supported by ${modelId}; use ${allowedTypes.join(" or ")}`
       };
     }
+  }
+  const effort = typeof body.output_config?.effort === "string"
+    ? body.output_config.effort.trim().toLowerCase()
+    : "";
+  if (effort && policy.validateThinkingByModel !== false) {
+    const allowedLevels = resolveAnthropicModelValues(config, "effortLevelsByModel", modelId, model);
+    const normalizedEffort = effort === "xhigh" && allowedLevels?.includes("max") && !allowedLevels.includes("xhigh")
+      ? "max"
+      : effort;
+    if (allowedLevels && !allowedLevels.includes(normalizedEffort)) {
+      return {
+        param: "output_config.effort",
+        message: `output_config.effort=${effort} is not supported by ${modelId}; use ${allowedLevels.join(" or ")}`
+      };
+    }
+    body.output_config.effort = normalizedEffort;
   }
   if (policy.normalizeManualThinkingToolChoice !== false && body.thinking?.type === "enabled") {
     const choiceType = body.tool_choice?.type;
@@ -1048,16 +1067,12 @@ export async function proxyRequest({
   if (nextBody && typeof nextBody === "object") {
     normalizeReasoningConfig(nextBody, backendRouteKey);
     normalizeResponsesToolDescriptions(nextBody, backendRouteKey);
-    sanitizeResponsesEncryptedContent(nextBody, {
-      backendRouteKey,
-      modelId: deployment || modelId,
-      model
-    });
     if (backendRouteKey === "messages") {
       const anthropicCompatibilityError = applyAnthropicBodyCompatibility(
         nextBody,
         config,
-        deployment || modelId
+        deployment || modelId,
+        model
       );
       if (anthropicCompatibilityError) {
         log.error({
@@ -1581,6 +1596,8 @@ export async function proxyRequest({
             modelId,
             routeKey,
             backendRouteKey,
+            includeReasoningEncryptedContent: Array.isArray(body.include)
+              && body.include.includes("reasoning.encrypted_content"),
             attempt,
             status: classified.status || 502,
             event: "proxy.stream_fetch_failed",
@@ -2305,7 +2322,10 @@ export async function proxyRequest({
         return;
       }
       if (routeKey === "responses" && backendRouteKey === "messages") {
-        const mapped = mapMessagesJsonToResponses(payload, modelId);
+        const mapped = mapMessagesJsonToResponses(payload, modelId, {
+          includeEncryptedContent: Array.isArray(body.include)
+            && body.include.includes("reasoning.encrypted_content")
+        });
         reply.code(200).send(mapped);
         deferPostResponse(() => {
           noteResolvedUpstreamModel(payload?.model || mapped?.model);
@@ -2445,27 +2465,6 @@ function normalizeResponsesToolDescriptions(body, backendRouteKey) {
 function isModernModel(modelId) {
   const value = String(modelId || "").toLowerCase();
   return /^gpt-(?:[5-9]|\d{2,})(?:$|[.-])/.test(value) || /^o\d(?:$|[.-])/.test(value);
-}
-
-function isClaudeModel(modelId, model) {
-  return [modelId, model?.id, model?.targetModel, model?.pricingRef]
-    .some((value) => /^claude(?:$|[.-])/.test(String(value || "").trim().toLowerCase()));
-}
-
-function sanitizeResponsesEncryptedContent(body, { backendRouteKey, modelId, model }) {
-  if (backendRouteKey !== "responses" || !isClaudeModel(modelId, model) || !Array.isArray(body?.include)) {
-    return;
-  }
-
-  const supportedIncludes = body.include.filter(
-    (item) => String(item || "").trim().toLowerCase() !== "reasoning.encrypted_content"
-  );
-  if (supportedIncludes.length === body.include.length) return;
-  if (supportedIncludes.length) {
-    body.include = supportedIncludes;
-  } else {
-    delete body.include;
-  }
 }
 
 function isGpt56Model(modelId, model) {

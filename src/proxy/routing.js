@@ -14,6 +14,7 @@ const DEFAULT_OPENAI_IMAGE_ROUTE = "/openai/deployments/{deployment}/images/gene
 const DEFAULT_BLACKFOREST_IMAGE_ROUTE = "/providers/blackforestlabs/v1/{deployment}?api-version=preview";
 const AZURE_OPENAI_HOST_SUFFIX = ".openai.azure.com";
 const AZURE_FOUNDRY_HOST_SUFFIX = ".services.ai.azure.com";
+const TEXT_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -98,6 +99,19 @@ export function isPublicRouteEnabled(config, routeKey) {
 export function resolveEffectiveRouteKey(routeKey, model, upstream, override = null) {
   const requestedRouteKey = override?.type === "routeKey" ? override.value : routeKey;
   if (requestedRouteKey !== "images/generations") {
+    if (override || !TEXT_ROUTE_KEYS.has(requestedRouteKey)) return requestedRouteKey;
+    const definition = findPricingDefinitionForModel(model);
+    const hostingMode = normalizeLower(model?.hostingMode);
+    const configuredInterfaces = hostingMode && Array.isArray(definition?.interfacesByHostingMode?.[hostingMode])
+      ? definition.interfacesByHostingMode[hostingMode]
+      : definition?.interfaces;
+    const interfaces = Array.isArray(configuredInterfaces)
+      ? configuredInterfaces.filter((item) => TEXT_ROUTE_KEYS.has(item))
+      : [];
+    if (interfaces.includes(requestedRouteKey)) return requestedRouteKey;
+    if (interfaces.length === 1) return interfaces[0];
+    if (interfaces.includes("responses")) return "responses";
+    if (interfaces.includes("messages")) return "messages";
     return requestedRouteKey;
   }
 
@@ -201,7 +215,11 @@ function resolveRouteTemplate(upstream, routeKey) {
 }
 
 export function buildUpstreamUrl(upstream, routeKey, deployment, model = null) {
-  const route = resolveRouteTemplate(upstream, routeKey);
+  const definition = findPricingDefinitionForModel(model);
+  const route = resolveRouteTemplate(upstream, routeKey)
+    || (routeKey === "messages" && normalizeLower(definition?.provider) === "anthropic"
+      ? "/anthropic/v1/messages"
+      : "");
   if (!route) {
     throw new Error(`No route configured for ${routeKey}`);
   }

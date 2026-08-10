@@ -62,6 +62,7 @@ export const DEFAULT_MODEL_TEMPLATE = {
   status: "active",
   upstream: "",
   targetModel: "",
+  hostingMode: "",
   capabilities: [],
   pricingRef: "",
   accessTags: [],
@@ -221,6 +222,7 @@ export function buildModelFromPricingTemplate(definition, upstreamName, config) 
     status: "active",
     upstream: upstreamName || "",
     targetModel: String(template.targetModel || definition?.id || modelId),
+    hostingMode: String(template.hostingMode || definition?.defaultHostingMode || ""),
     capabilities: normalizeStringArray(template.capabilities?.length ? template.capabilities : definition?.capabilities),
     pricingRef: String(template.pricingRef || definition?.id || ""),
     routes: cloneJson(template.routes || {})
@@ -275,6 +277,8 @@ export function applyPricingTemplateToModel(config, model, definition) {
   const normalizedRequestPolicy = asPlainObject(normalizedModel.requestPolicy);
   const explicitTargetModel = String(normalizedModel.targetModel || "").trim();
   const explicitPricingRef = String(normalizedModel.pricingRef || "").trim();
+  const hostingModes = normalizeStringArray(definition?.hostingModes).map((mode) => mode.toLowerCase());
+  const explicitHostingMode = String(normalizedModel.hostingMode || "").trim().toLowerCase();
 
   return {
     ...cloneJson(DEFAULT_MODEL_TEMPLATE),
@@ -284,6 +288,7 @@ export function applyPricingTemplateToModel(config, model, definition) {
     status: String(normalizedModel.status || templateModel.status || "active"),
     upstream: String(normalizedModel.upstream || templateModel.upstream || ""),
     targetModel: String(explicitTargetModel || templateModel.targetModel || ""),
+    hostingMode: hostingModes.includes(explicitHostingMode) ? explicitHostingMode : templateModel.hostingMode,
     capabilities: [...templateModel.capabilities],
     pricingRef: String(explicitPricingRef || templateModel.pricingRef || ""),
     accessTags: normalizeStringArray(normalizedModel.accessTags),

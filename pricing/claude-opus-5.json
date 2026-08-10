@@ -1,10 +1,10 @@
 {
-  "id": "claude-opus-4-8",
-  "displayName": "Claude Opus 4.8",
+  "id": "claude-opus-5",
+  "displayName": "Claude Opus 5",
   "provider": "anthropic",
-  "family": "claude-4",
-  "modelVersion": "2026-05-28",
-  "status": "preview",
+  "family": "claude-5",
+  "modelVersion": null,
+  "status": "ga",
   "hostingModes": ["azure", "anthropic"],
   "defaultHostingMode": "azure",
   "interfacesByHostingMode": {
@@ -48,23 +48,23 @@
     "outputPer1kTokens": 0.025
   },
   "proxyTemplate": {
-    "id": "claude-opus-4-8",
-    "displayName": "Claude Opus 4.8",
-    "targetModel": "claude-opus-4-8",
+    "id": "claude-opus-5",
+    "displayName": "Claude Opus 5",
+    "targetModel": "claude-opus-5",
     "capabilities": [
       "reasoning",
       "vision",
       "function-calling"
     ],
-    "pricingRef": "claude-opus-4-8"
+    "pricingRef": "claude-opus-5"
   },
   "sources": {
-    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-claude#available-claude-models",
-    "pricing": "https://claude.com/pricing#api"
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models",
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
-    "Anthropic 公开页对 prompt caching 分别提供 write/read 价格；当前 schema 只有一个 cachedInput 字段，这里按 cache read 价格回填。",
-    "Claude Opus 4.8 于 2026-05-28 发布，定价与 Opus 4.6 相同（$5/$25 per 1M tokens）。",
-    "Claude 在 model-router 中仍需先单独部署到 Foundry 资源。"
+    "Anthropic 分别公布缓存写入与读取价格；当前 schema 只有一个 cachedInput 字段，因此此处记录缓存读取价格。",
+    "Microsoft Foundry 同时提供 Hosted on Azure 与 Hosted on Anthropic infrastructure 两种部署模式；Azure US Data Zone Standard 的 token 价格适用 1.1 倍系数。",
+    "Claude Opus 5 支持 low、medium、high、xhigh、max effort；thinking.type 支持 adaptive，且 high 及以下可设为 disabled。"
   ]
 }

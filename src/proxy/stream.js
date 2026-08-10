@@ -555,6 +555,7 @@ export async function streamShim({
   modelId,
   routeKey,
   backendRouteKey,
+  includeReasoningEncryptedContent = false,
   strictResponsesCompletion = false,
   model,
   policy,
@@ -598,6 +599,7 @@ export async function streamShim({
   let reverseTextItem = null;
   const reverseOutputItems = [];
   const reverseToolItems = new Map();
+  const reverseReasoningItems = new Map();
   let anthropicSourceUsage = null;
   let anthropicSourceStopReason = null;
   const anthropicSourceBlocks = new Map();
@@ -788,6 +790,48 @@ export async function streamShim({
     });
     return reverseTextItem;
   };
+  const ensureReverseReasoningItem = async (blockIndex, sourceBlock = {}) => {
+    const existing = reverseReasoningItems.get(blockIndex);
+    if (existing) return existing;
+    await ensureReverseEnvelope();
+    const item = {
+      kind: "reasoning",
+      id: sourceBlock.id || `rs_${created}_${blockIndex}`,
+      outputIndex: reverseOutputItems.length,
+      summary: "",
+      encryptedContent: sourceBlock.signature || sourceBlock.data || "",
+      summaryPartAdded: false
+    };
+    reverseReasoningItems.set(blockIndex, item);
+    reverseOutputItems.push(item);
+    await writeResponsesEvent({
+      type: "response.output_item.added",
+      output_index: item.outputIndex,
+      item: { id: item.id, type: "reasoning", summary: [] }
+    });
+    return item;
+  };
+  const appendReverseReasoningSummary = async (item, delta) => {
+    if (!delta) return;
+    if (!item.summaryPartAdded) {
+      item.summaryPartAdded = true;
+      await writeResponsesEvent({
+        type: "response.reasoning_summary_part.added",
+        item_id: item.id,
+        output_index: item.outputIndex,
+        summary_index: 0,
+        part: { type: "summary_text", text: "" }
+      });
+    }
+    item.summary += delta;
+    await writeResponsesEvent({
+      type: "response.reasoning_summary_text.delta",
+      item_id: item.id,
+      output_index: item.outputIndex,
+      summary_index: 0,
+      delta
+    });
+  };
   const ensureReverseToolItem = async (toolDelta) => {
     const toolIndex = Number.isInteger(toolDelta?.index) ? toolDelta.index : reverseToolItems.size;
     const existing = reverseToolItems.get(toolIndex);
@@ -827,6 +871,36 @@ export async function streamShim({
     await ensureReverseEnvelope();
     const completedOutput = [];
     for (const item of reverseOutputItems) {
+      if (item.kind === "reasoning") {
+        const summary = item.summary ? [{ type: "summary_text", text: item.summary }] : [];
+        if (item.summaryPartAdded) {
+          await writeResponsesEvent({
+            type: "response.reasoning_summary_text.done",
+            item_id: item.id,
+            output_index: item.outputIndex,
+            summary_index: 0,
+            text: item.summary
+          });
+          await writeResponsesEvent({
+            type: "response.reasoning_summary_part.done",
+            item_id: item.id,
+            output_index: item.outputIndex,
+            summary_index: 0,
+            part: summary[0]
+          });
+        }
+        const outputItem = {
+          id: item.id,
+          type: "reasoning",
+          summary,
+          ...(includeReasoningEncryptedContent && item.encryptedContent
+            ? { encrypted_content: item.encryptedContent }
+            : {})
+        };
+        completedOutput.push(outputItem);
+        await writeResponsesEvent({ type: "response.output_item.done", output_index: item.outputIndex, item: outputItem });
+        continue;
+      }
       if (item.kind === "message") {
         const content = [{ type: "output_text", text: item.text, annotations: [], logprobs: [] }];
         await writeResponsesEvent({
@@ -1174,9 +1248,16 @@ export async function streamShim({
               type: sourceBlock.type,
               id: sourceBlock.id,
               name: sourceBlock.name,
+              reasoningItem: null,
               toolIndex: null
             };
             anthropicSourceBlocks.set(evt?.index, block);
+            if ((sourceBlock.type === "thinking" || sourceBlock.type === "redacted_thinking") && routeKey === "responses") {
+              block.reasoningItem = await ensureReverseReasoningItem(evt?.index, sourceBlock);
+              if (sourceBlock.type === "thinking" && typeof sourceBlock.thinking === "string") {
+                await appendReverseReasoningSummary(block.reasoningItem, sourceBlock.thinking);
+              }
+            }
             if (sourceBlock.type === "tool_use") {
               block.toolIndex = toolCallIndex;
               toolCallIndex += 1;
@@ -1269,7 +1350,15 @@ export async function streamShim({
                   model: resolvedModel,
                   choices: [{ index: 0, delta: { reasoning_content: evt.delta.thinking }, finish_reason: null }]
                 });
+              } else if (routeKey === "responses") {
+                const reasoningItem = sourceBlock?.reasoningItem
+                  || await ensureReverseReasoningItem(evt?.index, sourceBlock || {});
+                await appendReverseReasoningSummary(reasoningItem, evt.delta.thinking);
               }
+            } else if (evt?.delta?.type === "signature_delta" && typeof evt.delta.signature === "string" && routeKey === "responses") {
+              const reasoningItem = sourceBlock?.reasoningItem
+                || await ensureReverseReasoningItem(evt?.index, sourceBlock || {});
+              reasoningItem.encryptedContent += evt.delta.signature;
             } else if (
               evt?.delta?.type === "input_json_delta"
               && typeof evt.delta.partial_json === "string"

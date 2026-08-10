@@ -5,7 +5,7 @@ import test from "node:test";
 import { resolveApiConsumer, filterModelsForConsumer, checkConsumerModelAccess, getGovernanceSnapshot } from "../src/governance.js";
 import { extractProxyRequestControls, sanitizeIncomingHeaders } from "../src/proxy/body.js";
 import { classifyFetchError, fetchOnceWithConnectTimeout, fetchWithRetry, parseJsonWithTimeout } from "../src/proxy/reliability.js";
-import { buildMessagesCountTokensUrl, buildResponsesCompactUrl, buildUpstreamUrl, inferBackendRouteKey } from "../src/proxy/routing.js";
+import { buildMessagesCountTokensUrl, buildResponsesCompactUrl, buildUpstreamUrl, inferBackendRouteKey, resolveEffectiveRouteKey } from "../src/proxy/routing.js";
 import { streamPassthrough, streamShim } from "../src/proxy/stream.js";
 import {
   chatToMessagesRequest,
@@ -112,7 +112,7 @@ async function runResponsesToChatShim(chunks, raw = new FakeReplyRaw(), onConten
   return { result, raw };
 }
 
-async function runProtocolShim(routeKey, backendRouteKey, chunks) {
+async function runProtocolShim(routeKey, backendRouteKey, chunks, options = {}) {
   const raw = new FakeReplyRaw();
   const observed = { usages: [], models: [], content: [] };
   const result = await streamShim({
@@ -121,6 +121,7 @@ async function runProtocolShim(routeKey, backendRouteKey, chunks) {
     modelId: "test-model",
     routeKey,
     backendRouteKey,
+    ...options,
     model: {},
     policy: STREAM_POLICY,
     onFirstChunk() {},
@@ -383,6 +384,21 @@ test("Anthropic Messages routes use the Foundry services host", () => {
   );
 });
 
+test("Claude models select model-specific native protocols without overriding explicit routes", () => {
+  const upstream = { baseUrl: "https://example.openai.azure.com/", routes: {} };
+  const sonnet46 = { id: "claude-sonnet-4-6", targetModel: "claude-sonnet-4-6", pricingRef: "claude-sonnet-4-6" };
+  const opus48 = { id: "claude-opus-4-8", targetModel: "claude-opus-4-8", pricingRef: "claude-opus-4-8", hostingMode: "azure" };
+
+  assert.equal(resolveEffectiveRouteKey("responses", sonnet46, upstream), "messages");
+  assert.equal(resolveEffectiveRouteKey("responses", opus48, upstream), "responses");
+  assert.equal(resolveEffectiveRouteKey("responses", { ...opus48, hostingMode: "anthropic" }, upstream), "messages");
+  assert.equal(resolveEffectiveRouteKey("responses", sonnet46, upstream, { type: "routeKey", value: "responses" }), "responses");
+  assert.equal(
+    buildUpstreamUrl(upstream, "messages", "claude-sonnet-4-6", sonnet46),
+    "https://example.services.ai.azure.com/anthropic/v1/messages"
+  );
+});
+
 test("Anthropic token count routes are explicit or safely derived from Messages", () => {
   assert.equal(
     buildMessagesCountTokensUrl(
@@ -496,6 +512,38 @@ test("Chat and Responses conversion preserves multimodal and structured semantic
   }, "gpt-5.6-luna");
   assert.deepEqual(gpt56Request.reasoning, { effort: "max" });
   assert.equal("reasoning_effort" in gpt56Request, false);
+
+  const claudeRequest = responsesToMessagesRequest({
+    model: "claude-sonnet-4-6",
+    input: "hello",
+    include: ["reasoning.encrypted_content"],
+    reasoning: { effort: "medium" }
+  }, "claude-sonnet-4-6");
+  assert.deepEqual(claudeRequest.output_config, { effort: "medium" });
+  assert.deepEqual(claudeRequest.thinking, { type: "adaptive" });
+  assert.equal("reasoning" in claudeRequest, false);
+  assert.equal("include" in claudeRequest, false);
+
+  const continuedClaudeRequest = responsesToMessagesRequest({
+    model: "claude-sonnet-4-6",
+    input: [
+      {
+        type: "reasoning",
+        id: "rs_1",
+        summary: [{ type: "summary_text", text: "checked the inputs" }],
+        encrypted_content: "opaque-signature"
+      },
+      { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_1", output: "done" }
+    ],
+    reasoning: { effort: "high" }
+  }, "claude-sonnet-4-6");
+  assert.deepEqual(continuedClaudeRequest.messages[0].content[0], {
+    type: "thinking",
+    thinking: "checked the inputs",
+    signature: "opaque-signature"
+  });
+  assert.equal(continuedClaudeRequest.messages[0].content[1].type, "tool_use");
 
   const legacyFunctionChoice = chatToResponsesRequest({
     model: "model",
@@ -843,7 +891,7 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
       phase: "response",
       sourceProtocol: "messages",
       targetProtocol: "responses",
-      payload: { stop_reason: "end_turn", content: [{ type: "redacted_thinking", data: "opaque" }] },
+      payload: { stop_reason: "end_turn", content: [{ type: "redacted_thinking" }] },
       path: "content[0]",
       type: "redacted_thinking"
     },
@@ -955,6 +1003,14 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     messages: [{ role: "user", content: "hello" }]
   }, {
     sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  }), null);
+  assert.equal(getProtocolShimCompatibilityIssue({
+    stop_reason: "end_turn",
+    content: [{ type: "redacted_thinking", data: "opaque" }]
+  }, {
+    phase: "response",
+    sourceProtocol: "messages",
     targetProtocol: "responses"
   }), null);
 });
@@ -1168,6 +1224,20 @@ test("Messages cross-protocol JSON responses preserve tools, stop reasons, and u
     output_tokens: 5,
     total_tokens: 17,
     input_tokens_details: { cached_tokens: 2 }
+  });
+
+  const reasoningResponse = mapMessagesJsonToResponses({
+    ...messagesPayload,
+    content: [
+      { type: "thinking", thinking: "checked", signature: "opaque-signature" },
+      { type: "text", text: "done" }
+    ]
+  }, "fallback", { includeEncryptedContent: true });
+  assert.deepEqual(reasoningResponse.output[0], {
+    id: "rs_msg_1_0",
+    type: "reasoning",
+    summary: [{ type: "summary_text", text: "checked" }],
+    encrypted_content: "opaque-signature"
   });
 
   const chatPayload = {
@@ -1498,6 +1568,34 @@ test("Messages stream converts to Chat and Responses lifecycles", async () => {
   assert.equal(responses.result.ok, true);
   assert.match(responses.raw.output, /"type":"response.output_text.delta"/);
   assert.match(responses.raw.output, /"type":"response.function_call_arguments.delta"/);
+  assert.match(responses.raw.output, /"type":"response.completed"/);
+  assert.equal((responses.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+});
+
+test("Messages thinking stream preserves Responses encrypted reasoning", async () => {
+  const source = encodeEvents([
+    {
+      type: "message_start",
+      message: { id: "msg_reasoning", model: "claude-sonnet-4-6", usage: { input_tokens: 8, output_tokens: 1 } }
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "checked" } },
+    { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "opaque-signature" } },
+    { type: "content_block_stop", index: 0 },
+    { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "done" } },
+    { type: "content_block_stop", index: 1 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } },
+    { type: "message_stop" }
+  ]);
+
+  const responses = await runProtocolShim("responses", "messages", source, {
+    includeReasoningEncryptedContent: true
+  });
+  assert.equal(responses.result.ok, true);
+  assert.match(responses.raw.output, /"type":"response.reasoning_summary_text.delta"/);
+  assert.match(responses.raw.output, /"delta":"checked"/);
+  assert.match(responses.raw.output, /"encrypted_content":"opaque-signature"/);
   assert.match(responses.raw.output, /"type":"response.completed"/);
   assert.equal((responses.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
 });
