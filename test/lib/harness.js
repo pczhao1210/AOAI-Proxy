@@ -52,6 +52,7 @@ function jsonResponse(res, statusCode, body, headers = {}) {
 
 function createMockUpstreamServer() {
   const requests = [];
+  const acceptedApiKeys = new Set([UPSTREAM_API_KEY]);
   const sockets = new Set();
   const server = http.createServer(async (req, res) => {
     const bodyText = await readRequestBody(req);
@@ -74,7 +75,7 @@ function createMockUpstreamServer() {
     const receivedApiKey = pathname.endsWith("/messages") || pathname.endsWith("/messages/count_tokens")
       ? req.headers["x-api-key"]
       : req.headers["api-key"];
-    if (receivedApiKey !== UPSTREAM_API_KEY) {
+    if (!acceptedApiKeys.has(receivedApiKey)) {
       jsonResponse(res, 401, { error: { message: "missing upstream api-key" } });
       return;
     }
@@ -503,6 +504,9 @@ function createMockUpstreamServer() {
     },
     clearRequests() {
       requests.length = 0;
+    },
+    allowApiKey(apiKey) {
+      acceptedApiKeys.add(apiKey);
     }
   };
 }
@@ -921,6 +925,7 @@ export async function createTestContext({
     tempDir,
     upstreamRequests: upstream.requests,
     clearUpstreamRequests: () => upstream.clearRequests(),
+    allowUpstreamApiKey: (apiKey) => upstream.allowApiKey(apiKey),
     request,
     async publicRequest(routePath, options = {}) {
       return request(routePath, {

@@ -31,6 +31,10 @@ export const DEFAULT_UPSTREAM_TEMPLATE = {
   resourceName: "",
   status: "active",
   priority: 100,
+  auth: {
+    mode: "managedIdentity",
+    apiKey: ""
+  },
   capabilities: [],
   requestPolicy: {
     allowedParams: [],

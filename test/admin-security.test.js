@@ -125,13 +125,29 @@ test("admin APIs redact secrets and preserve them on config save", async () => {
       "x-upstream-static": "configured",
       "api-key": "must-not-override-auth"
     };
+    enabledConfig.upstreams[0].auth = {
+      mode: "apiKey",
+      apiKey: "test-per-upstream-key"
+    };
+    enabledConfig.upstreams[1].auth = {
+      mode: "apiKey",
+      apiKey: "test-anthropic-upstream-key"
+    };
     enabledConfig.proxy.forwardHeaders.addRequestIdHeader = false;
+    context.allowUpstreamApiKey("test-per-upstream-key");
+    context.allowUpstreamApiKey("test-anthropic-upstream-key");
     const enabledSave = await context.adminRequest("/admin/api/config", {
       method: "PUT",
       headers: { "x-aoai-admin-csrf": "1" },
       json: enabledConfig
     });
     assert.equal(enabledSave.status, 200, enabledSave.text);
+    assert.equal(enabledSave.json.config.upstreams[0].auth.apiKey, REDACTED_SECRET_VALUE);
+    assert.equal(enabledSave.json.config.upstreams[1].auth.apiKey, REDACTED_SECRET_VALUE);
+    assert.doesNotMatch(enabledSave.text, /test-per-upstream-key|test-anthropic-upstream-key/);
+    const persistedWithUpstreamAuth = await context.readConfigFile();
+    assert.equal(persistedWithUpstreamAuth.upstreams[0].auth.apiKey, "test-per-upstream-key");
+    assert.equal(persistedWithUpstreamAuth.upstreams[1].auth.apiKey, "test-anthropic-upstream-key");
 
     context.clearUpstreamRequests();
     const configuredRoute = await context.publicRequest("/v1/chat/completions", {
@@ -148,8 +164,25 @@ test("admin APIs redact secrets and preserve them on config save", async () => {
     assert.equal(upstreamRequest.body.presence_penalty, 0.3);
     assert.equal(upstreamRequest.body.frequency_penalty, 0.4);
     assert.equal(upstreamRequest.headers["x-upstream-static"], "configured");
-    assert.equal(upstreamRequest.headers["api-key"], "test-upstream-key");
+    assert.equal(upstreamRequest.headers["api-key"], "test-per-upstream-key");
     assert.equal(upstreamRequest.headers["x-request-id"], undefined);
+
+    context.clearUpstreamRequests();
+    const messagesRoute = await context.publicRequest("/v1/messages", {
+      method: "POST",
+      headers: { "anthropic-version": "2023-06-01" },
+      json: {
+        model: "claude-native",
+        max_tokens: 32,
+        messages: [{ role: "user", content: "hello" }]
+      }
+    });
+    assert.equal(messagesRoute.status, 200, messagesRoute.text);
+    const messagesUpstreamRequest = context.getUpstreamRequest();
+    assert.match(messagesUpstreamRequest.url, /\/anthropic\/v1\/messages/);
+    assert.equal(messagesUpstreamRequest.headers["x-api-key"], "test-anthropic-upstream-key");
+    assert.equal(messagesUpstreamRequest.headers["api-key"], undefined);
+    assert.equal(messagesUpstreamRequest.headers.authorization, undefined);
 
     const imageConfig = enabledSave.json.config;
     imageConfig.media.generation.defaultModel = "gpt-image-1.5";
@@ -178,6 +211,37 @@ test("admin APIs redact secrets and preserve them on config save", async () => {
     });
     assert.equal(generatedImage.status, 200, generatedImage.text);
     assert.match(context.getUpstreamRequest().url, /gpt-image-1\.5/);
+
+    const missingUpstreamKeyConfig = structuredClone(imageSave.json.config);
+    missingUpstreamKeyConfig.upstreams[0].auth = { mode: "apiKey", apiKey: "" };
+    const missingUpstreamKeySave = await context.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1" },
+      json: missingUpstreamKeyConfig
+    });
+    assert.equal(missingUpstreamKeySave.status, 400, missingUpstreamKeySave.text);
+    assert.match(missingUpstreamKeySave.json?.error || "", /upstreams\[0\]\.auth\.apiKey is required/);
+
+    const missingManagedIdentityScopeConfig = structuredClone(imageSave.json.config);
+    missingManagedIdentityScopeConfig.auth.scope = "";
+    missingManagedIdentityScopeConfig.upstreams[0].auth = { mode: "managedIdentity", apiKey: "" };
+    const missingManagedIdentityScopeSave = await context.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1" },
+      json: missingManagedIdentityScopeConfig
+    });
+    assert.equal(missingManagedIdentityScopeSave.status, 400, missingManagedIdentityScopeSave.text);
+    assert.match(missingManagedIdentityScopeSave.json?.error || "", /auth\.scope is required.*managedIdentity/);
+
+    const duplicateUpstreamConfig = structuredClone(imageSave.json.config);
+    duplicateUpstreamConfig.upstreams[1].name = duplicateUpstreamConfig.upstreams[0].name;
+    const duplicateUpstreamSave = await context.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1" },
+      json: duplicateUpstreamConfig
+    });
+    assert.equal(duplicateUpstreamSave.status, 400, duplicateUpstreamSave.text);
+    assert.match(duplicateUpstreamSave.json?.error || "", /duplicates upstream name/);
 
     const unsupportedConfig = imageSave.json.config;
     unsupportedConfig.routing.fallbacks.enabled = true;

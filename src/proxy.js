@@ -964,7 +964,10 @@ export async function proxyRequest({
     const usesAnthropicMessages = backendRouteKey === "messages";
     upstreamAuthHeaders = await getUpstreamAuthHeaders(
       usesAnthropicMessages ? "https://ai.azure.com/.default" : config.auth.scope,
-      { apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key" }
+      {
+        auth: upstream.auth,
+        apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key"
+      }
     );
     markTiming(timing, "authReadyAt");
   } catch (error) {

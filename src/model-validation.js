@@ -350,7 +350,10 @@ async function probeConfiguredModel(config, item) {
     ...(usesAnthropicMessages ? { "anthropic-version": "2023-06-01" } : {}),
     ...await getUpstreamAuthHeaders(
       usesAnthropicMessages ? "https://ai.azure.com/.default" : config?.auth?.scope,
-      { apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key" }
+      {
+        auth: upstream.auth,
+        apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key"
+      }
     ),
     "x-request-id": `model-validate-${randomUUID()}`
   };

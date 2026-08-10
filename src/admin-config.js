@@ -42,10 +42,37 @@ function findCurrentItem(currentItems, candidateItem, index, identityKey) {
   return currentItems[index] || null;
 }
 
-function transformSensitiveHeaders(candidateUpstreams, currentUpstreams, transform) {
+function matchCurrentItems(candidateItems, currentItems, identityKey) {
+  const matches = new Array(candidateItems.length).fill(null);
+  const usedCurrentIndexes = new Set();
+
+  for (const [candidateIndex, candidateItem] of candidateItems.entries()) {
+    const identity = typeof candidateItem?.[identityKey] === "string" ? candidateItem[identityKey] : "";
+    if (!identity) continue;
+    const currentIndex = currentItems.findIndex((currentItem, index) => (
+      !usedCurrentIndexes.has(index) && currentItem?.[identityKey] === identity
+    ));
+    if (currentIndex < 0) continue;
+    matches[candidateIndex] = currentItems[currentIndex];
+    usedCurrentIndexes.add(currentIndex);
+  }
+
+  for (let index = 0; index < candidateItems.length; index += 1) {
+    if (matches[index] || !currentItems[index] || usedCurrentIndexes.has(index)) continue;
+    matches[index] = currentItems[index];
+    usedCurrentIndexes.add(index);
+  }
+  return matches;
+}
+
+function transformUpstreamSecrets(candidateUpstreams, currentUpstreams, transform) {
+  const currentMatches = matchCurrentItems(candidateUpstreams, currentUpstreams, "name");
   for (const [index, upstream] of candidateUpstreams.entries()) {
+    const current = currentMatches[index];
+    if (upstream?.auth && typeof upstream.auth === "object" && !Array.isArray(upstream.auth)) {
+      upstream.auth.apiKey = transform(upstream.auth.apiKey, current?.auth?.apiKey);
+    }
     if (!upstream?.headersTemplate || typeof upstream.headersTemplate !== "object") continue;
-    const current = findCurrentItem(currentUpstreams, upstream, index, "name");
     for (const [headerName, headerValue] of Object.entries(upstream.headersTemplate)) {
       if (!SENSITIVE_HEADER_NAME.test(headerName)) continue;
       upstream.headersTemplate[headerName] = transform(headerValue, current?.headersTemplate?.[headerName]);
@@ -61,7 +88,7 @@ export function redactConfigSecrets(config) {
   for (const apiKey of Array.isArray(redacted.apiKeys) ? redacted.apiKeys : []) {
     apiKey.key = redactValue(apiKey.key);
   }
-  transformSensitiveHeaders(
+  transformUpstreamSecrets(
     Array.isArray(redacted.upstreams) ? redacted.upstreams : [],
     [],
     (value) => redactValue(value)
@@ -85,7 +112,7 @@ export function restoreConfigSecrets(candidateConfig, currentConfig) {
     apiKey.key = currentApiKey?.key || "";
   }
 
-  transformSensitiveHeaders(
+  transformUpstreamSecrets(
     Array.isArray(restored.upstreams) ? restored.upstreams : [],
     Array.isArray(current.upstreams) ? current.upstreams : [],
     (value, currentValue) => value === REDACTED_SECRET_VALUE ? (currentValue || "") : value

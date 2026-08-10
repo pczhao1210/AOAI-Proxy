@@ -887,6 +887,10 @@ function applySchemaCompatibility(rawConfig, merged) {
         resourceName: "",
         status: "active",
         priority: 100,
+        auth: {
+          mode: "",
+          apiKey: ""
+        },
         tags: [],
         capabilities: [],
         routes: {
@@ -1577,10 +1581,16 @@ function validateConfig(cfg) {
     }
   }
 
+  const upstreamNames = new Set();
   for (const [idx, upstream] of cfg.upstreams.entries()) {
-    if (!upstream?.name) {
+    if (typeof upstream?.name !== "string" || !upstream.name.trim()) {
       throw new Error(`upstreams[${idx}].name is required`);
     }
+    const upstreamName = upstream.name.trim();
+    if (upstreamNames.has(upstreamName)) {
+      throw new Error(`upstreams[${idx}].name duplicates upstream name "${upstreamName}"`);
+    }
+    upstreamNames.add(upstreamName);
     const hasBaseUrl = typeof upstream?.baseUrl === "string" && upstream.baseUrl.trim();
     const hasResourceName = typeof upstream?.resourceName === "string" && upstream.resourceName.trim();
     if (!hasBaseUrl && !hasResourceName) {
@@ -1599,6 +1609,27 @@ function validateConfig(cfg) {
     }
     if (upstream.resourceName != null && typeof upstream.resourceName !== "string") {
       throw new Error(`upstreams[${idx}].resourceName must be a string`);
+    }
+    if (upstream.auth != null) {
+      if (typeof upstream.auth !== "object" || Array.isArray(upstream.auth)) {
+        throw new Error(`upstreams[${idx}].auth must be an object`);
+      }
+      const upstreamAuthMode = typeof upstream.auth.mode === "string" ? upstream.auth.mode.trim() : "";
+      if (upstream.auth.mode != null && typeof upstream.auth.mode !== "string") {
+        throw new Error(`upstreams[${idx}].auth.mode must be a string`);
+      }
+      if (upstreamAuthMode && !["managedIdentity", "apiKey"].includes(upstreamAuthMode)) {
+        throw new Error(`upstreams[${idx}].auth.mode must be managedIdentity or apiKey`);
+      }
+      if (upstream.auth.apiKey != null && typeof upstream.auth.apiKey !== "string") {
+        throw new Error(`upstreams[${idx}].auth.apiKey must be a string`);
+      }
+      if (upstreamAuthMode === "apiKey" && !upstream.auth.apiKey?.trim()) {
+        throw new Error(`upstreams[${idx}].auth.apiKey is required when auth.mode is apiKey`);
+      }
+      if (upstreamAuthMode === "managedIdentity" && !cfg.auth.scope?.trim()) {
+        throw new Error(`auth.scope is required when upstreams[${idx}].auth.mode is managedIdentity`);
+      }
     }
     if (upstream.capabilities != null && (!Array.isArray(upstream.capabilities) || upstream.capabilities.some((value) => typeof value !== "string"))) {
       throw new Error(`upstreams[${idx}].capabilities must be an array of strings`);

@@ -144,9 +144,10 @@ Guidance:
 2. Edit `config/config.json`:
    - Replace `upstreams[].baseUrl` with your Foundry or Azure OpenAI endpoint
    - Set `models[].targetModel` to the deployment identifier
-  - Choose upstream auth:
-    - `auth.mode = "servicePrincipal"` with `scope`, plus service principal fields or managed identity
-    - `auth.mode = "apiKey"` with `auth.apiKey`
+  - Choose authentication for each upstream in the admin UI or with `upstreams[].auth`:
+    - `mode = "managedIdentity"` uses the existing Azure credential and AAD token flow
+    - `mode = "apiKey"` requires that upstream's `apiKey` and sends `api-key` or `x-api-key` as required by the route
+    - Omitting the upstream mode preserves compatibility by inheriting the global `auth` configuration
    - Replace the default API key and admin credentials
 3. Install dependencies and start:
    - `npm install`
@@ -252,7 +253,12 @@ Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin
 
 Build:
 
-- `./dockerbuild.sh aoai-proxy:latest`
+- amd64 local image: `./start.sh --build`
+- arm64 local image: `DOCKER_PLATFORM=linux/arm64 ./start.sh --build`
+- amd64 build and push to ACR: `./start.sh --build --push`
+- arm64 build and push to ACR: `DOCKER_PLATFORM=linux/arm64 ./start.sh --build --push`
+
+The default amd64 image is `alexmcr.azurecr.io/aoai-proxy:nextgen-latest`. When `DOCKER_PLATFORM=linux/arm64`, the default tag changes to `nextgen-latest-arm64`. `IMAGE_REF`, `IMAGE_TAG`, `ACR_LOGIN_SERVER`, and `IMAGE_REPOSITORY` can override that selection. Pushes use credentials already stored by the local Docker CLI and never run a registry login command.
 
 The helper injects the generated version and UTC build time into the image. Query `GET /version` without authentication to identify a running deployment:
 
@@ -266,10 +272,13 @@ The helper injects the generated version and UTC build time into the image. Quer
 
 The default version uses the UTC build minute in `nextgen-YYYYMMDDHHmm` format. The same values are available as standard OCI image labels.
 
-The Dockerfile tracks the current stable major lines with `NODE_MAJOR=24` and `CADDY_MAJOR=2`, which resolve to `node:24-alpine` and `caddy:2-alpine`. The helper script runs `docker build --pull` so each build fetches the latest available patch/minor image in those major lines. When calling Docker directly, pass the build metadata as well as any intentional major-version overrides:
+The Dockerfile tracks the current stable major lines with `NODE_MAJOR=24` and `CADDY_MAJOR=2`, which resolve to `node:24-alpine` and `caddy:2-alpine`. The helper runs `docker buildx build --pull` so each build fetches the latest available patch/minor image in those major lines. A build without `--push` uses buildx `--load`; a combined build and push uses `--push` directly. Multi-platform output must be pushed because Docker cannot load a multi-platform manifest into the classic local image store.
+
+The selected buildx builder must advertise every requested platform. Cross-building arm64 on an amd64 host normally requires QEMU/binfmt support. When calling buildx directly, pass the platform and build metadata:
 
 ```bash
-docker build --pull \
+docker buildx build --pull --load \
+  --platform linux/amd64 \
   --build-arg NODE_MAJOR=24 \
   --build-arg CADDY_MAJOR=2 \
   --build-arg AOAI_PROXY_VERSION=nextgen-202608100257 \

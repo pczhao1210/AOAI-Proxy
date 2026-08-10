@@ -157,6 +157,7 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
             {filteredUpstreams.map(({ item, index }) => {
               const capabilityCount = Array.isArray(item.capabilities) ? item.capabilities.length : 0;
               const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
+              const authMode = item.auth?.mode || "inherit";
               return (
                 <EntityCard
                   id={`upstream-card-${index}`}
@@ -181,6 +182,30 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                     <Field label={t("field.priority", "Priority")}><input type="number" value={item.priority || 0} onChange={(event) => updateConfig((next) => { next.upstreams[index].priority = Number(event.target.value || 0); })} /></Field>
                   </div>
                   <Field label={t("field.baseUrl", "Base URL")}><input value={item.baseUrl || ""} onChange={(event) => updateConfig((next) => { next.upstreams[index].baseUrl = event.target.value; })} /></Field>
+                  <div className="form-grid compact">
+                    <Field label={t("field.upstreamAuthMode", "Authentication")}>
+                      <select value={authMode} onChange={(event) => updateConfig((next) => {
+                        next.upstreams[index].auth = next.upstreams[index].auth || {};
+                        next.upstreams[index].auth.mode = event.target.value === "inherit" ? "" : event.target.value;
+                        if (event.target.value !== "apiKey") {
+                          next.upstreams[index].auth.apiKey = "";
+                        }
+                      })}>
+                        <option value="inherit">{t("option.inheritAuth", "Inherit Global Authentication")}</option>
+                        <option value="managedIdentity">{t("option.managedIdentity", "Managed Identity")}</option>
+                        <option value="apiKey">{t("option.apiKey", "API Key")}</option>
+                      </select>
+                    </Field>
+                    {authMode === "apiKey" ? (
+                      <Field label={t("field.upstreamApiKey", "Upstream API Key")} hint={t("field.upstreamApiKeyHint", "Stored securely and sent only to this upstream.")}>
+                        <input type="password" autoComplete="new-password" value={item.auth?.apiKey || ""} onChange={(event) => updateConfig((next) => {
+                          next.upstreams[index].auth = next.upstreams[index].auth || {};
+                          next.upstreams[index].auth.mode = "apiKey";
+                          next.upstreams[index].auth.apiKey = event.target.value;
+                        })} />
+                      </Field>
+                    ) : null}
+                  </div>
                   <Field label={t("field.capabilities", "Capabilities")}><input value={formatList(item.capabilities)} readOnly /></Field>
                 </EntityCard>
               );

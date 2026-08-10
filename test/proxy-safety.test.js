@@ -237,6 +237,7 @@ test("admin config payloads redact and preserve stored secrets", () => {
     apiKeys: [{ id: "first", key: "first-key" }, { id: "second", key: "second-key" }],
     upstreams: [{
       name: "upstream",
+      auth: { mode: "apiKey", apiKey: "per-upstream-key" },
       headersTemplate: { Authorization: "Bearer secret", "x-label": "visible" }
     }]
   };
@@ -244,15 +245,34 @@ test("admin config payloads redact and preserve stored secrets", () => {
   const redacted = redactConfigSecrets(current);
   assert.equal(JSON.stringify(redacted).includes("client-secret"), false);
   assert.equal(JSON.stringify(redacted).includes("first-key"), false);
+  assert.equal(JSON.stringify(redacted).includes("per-upstream-key"), false);
   assert.equal(JSON.stringify(redacted).includes("Bearer secret"), false);
   assert.equal(redacted.auth.clientSecret, REDACTED_SECRET_VALUE);
+  assert.equal(redacted.upstreams[0].auth.apiKey, REDACTED_SECRET_VALUE);
 
   redacted.apiKeys.reverse();
   const restored = restoreConfigSecrets(redacted, current);
   assert.equal(restored.auth.clientSecret, "client-secret");
   assert.equal(restored.apiKeys[0].id, "second");
   assert.equal(restored.apiKeys[0].key, "second-key");
+  assert.equal(restored.upstreams[0].auth.apiKey, "per-upstream-key");
   assert.equal(restored.upstreams[0].headersTemplate.Authorization, "Bearer secret");
+});
+
+test("admin config secret restoration never reuses a matched upstream secret", () => {
+  const current = {
+    upstreams: [
+      { name: "first", auth: { mode: "apiKey", apiKey: "first-secret" } },
+      { name: "second", auth: { mode: "apiKey", apiKey: "second-secret" } }
+    ]
+  };
+  const candidate = redactConfigSecrets(current);
+  candidate.upstreams.reverse();
+  candidate.upstreams[1].name = "renamed-first";
+
+  const restored = restoreConfigSecrets(candidate, current);
+  assert.equal(restored.upstreams[0].auth.apiKey, "second-secret");
+  assert.equal(restored.upstreams[1].auth.apiKey, "");
 });
 
 test("forwarded client addresses require explicit trust and use the nearest proxy value", () => {

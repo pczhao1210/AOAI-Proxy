@@ -293,6 +293,10 @@
       "baseUrl": "https://YOUR-RESOURCE-NAME.openai.azure.com/",
       "status": "active",
       "priority": 100,
+      "auth": {
+        "mode": "managedIdentity",
+        "apiKey": ""
+      },
       "capabilities": [],
       "requestPolicy": {
         "allowedParams": [],

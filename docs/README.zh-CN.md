@@ -144,9 +144,10 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 2. 编辑 `config/config.json`：
    - 将 `upstreams[].baseUrl` 替换为真实 Foundry 或 Azure OpenAI 资源域名
    - 将 `models[].targetModel` 设置为 deployment identifier
-  - 选择上游认证方式：
-    - `auth.mode = "servicePrincipal"`，配合 `scope`，并使用服务主体字段或托管身份
-    - `auth.mode = "apiKey"`，并设置 `auth.apiKey`
+  - 在管理界面或 `upstreams[].auth` 中为每个上游选择认证方式：
+    - `mode = "managedIdentity"`：沿用现有 Azure credential 与 AAD token 获取流程
+    - `mode = "apiKey"`：必须填写该上游的 `apiKey`，并按路由要求发送 `api-key` 或 `x-api-key`
+    - 未设置上游认证方式时继续继承全局 `auth` 配置，以兼容旧配置
    - 替换默认 API Key 和管理账号密码
 3. 安装依赖并启动：
    - `npm install`
@@ -238,7 +239,12 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 构建：
 
-- `./dockerbuild.sh aoai-proxy:latest`
+- amd64 本地镜像：`./start.sh --build`
+- arm64 本地镜像：`DOCKER_PLATFORM=linux/arm64 ./start.sh --build`
+- amd64 构建并推送到 ACR：`./start.sh --build --push`
+- arm64 构建并推送到 ACR：`DOCKER_PLATFORM=linux/arm64 ./start.sh --build --push`
+
+amd64 默认镜像为 `alexmcr.azurecr.io/aoai-proxy:nextgen-latest`。设置 `DOCKER_PLATFORM=linux/arm64` 后，默认 tag 自动切换为 `nextgen-latest-arm64`。可通过 `IMAGE_REF`、`IMAGE_TAG`、`ACR_LOGIN_SERVER` 和 `IMAGE_REPOSITORY` 覆盖。推送只使用本机 Docker CLI 已保存的凭据，不会执行 registry login。
 
 构建脚本会把生成的版本号和 UTC 构建时间注入镜像。无需鉴权即可请求 `GET /version`，用于确认运行中的部署版本：
 
@@ -252,10 +258,13 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 默认版本号使用 UTC 构建分钟，格式为 `nextgen-YYYYMMDDHHmm`；相同信息也会写入标准 OCI 镜像标签。
 
-Dockerfile 使用动态大版本基线：`NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，实际解析为 `node:24-alpine` 和 `caddy:2-alpine`。构建脚本会执行 `docker build --pull`，因此每次构建都会拉取这些大版本线内最新可用的 patch/minor 镜像。直接调用 Docker 时，还需传入构建元数据和需要覆盖的大版本参数：
+Dockerfile 使用动态大版本基线：`NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，实际解析为 `node:24-alpine` 和 `caddy:2-alpine`。构建脚本会执行 `docker buildx build --pull`，因此每次构建都会拉取这些大版本线内最新可用的 patch/minor 镜像。不带 `--push` 的构建使用 buildx `--load`；组合构建和推送会直接使用 `--push`。多平台产物必须直接推送，因为经典本地镜像存储不能载入多平台 manifest。
+
+所选 buildx builder 必须声明所有目标平台。在 amd64 主机交叉构建 arm64 通常还需要 QEMU/binfmt。直接调用 buildx 时，还需传入平台、构建元数据和需要覆盖的大版本参数：
 
 ```bash
-docker build --pull \
+docker buildx build --pull --load \
+  --platform linux/amd64 \
   --build-arg NODE_MAJOR=24 \
   --build-arg CADDY_MAJOR=2 \
   --build-arg AOAI_PROXY_VERSION=nextgen-202608100257 \
