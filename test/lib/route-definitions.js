@@ -3,6 +3,21 @@ import { ensure } from "./harness.js";
 
 export const routeTests = [
   {
+    id: "version",
+    description: "public build version metadata",
+    async run(ctx) {
+      const result = await ctx.request("/version");
+
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.headers.get("cache-control"), "no-store");
+      assert.deepEqual(result.json, {
+        service: "aoai-proxy",
+        version: "nextgen-202608100000",
+        buildTime: "2026-08-10T00:00:00Z"
+      });
+    }
+  },
+  {
     id: "anthropic-models",
     description: "Claude Code-compatible model discovery",
     async run(ctx) {
@@ -61,27 +76,54 @@ export const routeTests = [
         json: {
           model: "gpt-5-mini",
           input: [{
-            role: "user",
-            content: "hello",
+            type: "additional_tools",
+            role: "developer",
             tools: [
               {
-                type: "custom",
-                name: "nested_lookup",
-                description: "   ",
-                format: { type: "text" }
+                type: "namespace",
+                name: "functions",
+                description: "",
+                tools: [
+                  {
+                    type: "custom",
+                    name: "nested_lookup",
+                    description: "   ",
+                    format: { type: "text" }
+                  },
+                  {
+                    type: "function",
+                    name: "documented_lookup",
+                    description: "Keep this description",
+                    parameters: { type: "object", properties: {} }
+                  },
+                  {
+                    type: "function",
+                    name: "missing_description",
+                    parameters: { type: "object", properties: {} }
+                  }
+                ]
               },
               {
-                type: "function",
-                name: "documented_lookup",
-                description: "Keep this description",
-                parameters: { type: "object", properties: {} }
-              },
-              {
-                type: "function",
-                name: "missing_description",
+                type: "tool_search",
+                execution: "client",
+                description: "",
                 parameters: { type: "object", properties: {} }
               }
             ]
+          }, {
+            type: "tool_search_output",
+            call_id: "search_1",
+            status: "completed",
+            execution: "client",
+            tools: [{
+              type: "function",
+              name: "deferred_lookup",
+              description: "",
+              parameters: { type: "object", properties: {} }
+            }]
+          }, {
+            role: "user",
+            content: "hello"
           }],
           tools: [
             {
@@ -109,9 +151,12 @@ export const routeTests = [
       assert.equal(upstreamRequest.body?.model, "gpt-5-mini");
       assert.equal(upstreamRequest.body.tools[0].description, "lookup");
       assert.equal("description" in upstreamRequest.body.tools[1], false);
-      assert.equal(upstreamRequest.body.input[0].tools[0].description, "nested_lookup");
-      assert.equal(upstreamRequest.body.input[0].tools[1].description, "Keep this description");
-      assert.equal(upstreamRequest.body.input[0].tools[2].description, "missing_description");
+      assert.equal(upstreamRequest.body.input[0].tools[0].description, "Tools in the functions namespace.");
+      assert.equal(upstreamRequest.body.input[0].tools[0].tools[0].description, "nested_lookup");
+      assert.equal(upstreamRequest.body.input[0].tools[0].tools[1].description, "Keep this description");
+      assert.equal(upstreamRequest.body.input[0].tools[0].tools[2].description, "missing_description");
+      assert.equal(upstreamRequest.body.input[0].tools[1].description, "");
+      assert.equal(upstreamRequest.body.input[1].tools[0].description, "");
     }
   },
   {

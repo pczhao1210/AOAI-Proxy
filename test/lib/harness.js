@@ -596,7 +596,9 @@ export async function createTestContext({ logLevel = "error" } = {}) {
     env: {
       ...process.env,
       CONFIG_PATH: configPath,
-      LOG_LEVEL: logLevel
+      LOG_LEVEL: logLevel,
+      AOAI_PROXY_VERSION: "nextgen-202608100000",
+      AOAI_PROXY_BUILD_TIME: "2026-08-10T00:00:00Z"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

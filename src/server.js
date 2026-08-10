@@ -21,6 +21,7 @@ import { attachRequestContext, getRequestContext } from "./request-context.js";
 import { closeSharedPostgresPools } from "./postgres.js";
 import { redactConfigSecrets, restoreConfigSecrets } from "./admin-config.js";
 import { initializeLogAnalytics } from "./log-analytics-admin.js";
+import { getBuildInfo } from "./build-info.js";
 
 const { LogController } = fastify;
 
@@ -92,7 +93,7 @@ function isAdminRoute(url, adminPath) {
 function shouldSkipSuccessfulAccessLog(url, method, status, adminPath) {
   if (status >= 400) return false;
   const pathOnly = String(url || "").split("?")[0];
-  if (pathOnly === "/healthz" || pathOnly === "/favicon.ico") return true;
+  if (pathOnly === "/healthz" || pathOnly === "/version" || pathOnly === "/favicon.ico") return true;
   return ["GET", "HEAD", "OPTIONS"].includes(String(method || "").toUpperCase())
     && isAdminRoute(url, adminPath);
 }
@@ -361,7 +362,7 @@ app.addHook("preHandler", async (req, reply) => {
   const config = getConfig();
   const rawUrl = req.raw?.url || req.url;
   const pathOnly = (rawUrl || "").split("?")[0];
-  if (pathOnly === "/healthz") {
+  if (pathOnly === "/healthz" || pathOnly === "/version") {
     return;
   }
   if (pathOnly === "/favicon.ico") {
@@ -422,6 +423,11 @@ app.addHook("onResponse", async (req, reply) => {
 });
 
 app.get("/healthz", async () => ({ status: "ok" }));
+
+app.get("/version", async (_req, reply) => {
+  reply.header("Cache-Control", "no-store");
+  return getBuildInfo();
+});
 
 app.get("/v1/models", async (req) => {
   const config = getConfig();

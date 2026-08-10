@@ -239,12 +239,26 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 - `./dockerbuild.sh aoai-proxy:latest`
 
-Dockerfile 使用动态大版本基线：`NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，实际解析为 `node:24-alpine` 和 `caddy:2-alpine`。构建脚本会执行 `docker build --pull`，因此每次构建都会拉取这些大版本线内最新可用的 patch/minor 镜像。只有明确需要切换大版本时才覆盖：
+构建脚本会把生成的版本号和 UTC 构建时间注入镜像。无需鉴权即可请求 `GET /version`，用于确认运行中的部署版本：
+
+```json
+{
+  "service": "aoai-proxy",
+  "version": "nextgen-202608100257",
+  "buildTime": "2026-08-10T02:57:55Z"
+}
+```
+
+默认版本号使用 UTC 构建分钟，格式为 `nextgen-YYYYMMDDHHmm`；相同信息也会写入标准 OCI 镜像标签。
+
+Dockerfile 使用动态大版本基线：`NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，实际解析为 `node:24-alpine` 和 `caddy:2-alpine`。构建脚本会执行 `docker build --pull`，因此每次构建都会拉取这些大版本线内最新可用的 patch/minor 镜像。直接调用 Docker 时，还需传入构建元数据和需要覆盖的大版本参数：
 
 ```bash
 docker build --pull \
   --build-arg NODE_MAJOR=24 \
   --build-arg CADDY_MAJOR=2 \
+  --build-arg AOAI_PROXY_VERSION=nextgen-202608100257 \
+  --build-arg AOAI_PROXY_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -t aoai-proxy:latest .
 ```
 

@@ -2025,6 +2025,14 @@ function normalizeResponsesToolDescriptionList(tools) {
   if (!Array.isArray(tools)) return;
   for (const tool of tools) {
     if (!tool || typeof tool !== "object") continue;
+    if (tool.type === "namespace") {
+      if (tool.description == null || (typeof tool.description === "string" && !tool.description.trim())) {
+        const namespaceName = typeof tool.name === "string" ? tool.name.trim() : "";
+        tool.description = namespaceName ? `Tools in the ${namespaceName} namespace.` : "Tool namespace";
+      }
+      normalizeResponsesToolDescriptionList(tool.tools);
+      continue;
+    }
     if (tool.type !== "function" && tool.type !== "custom") continue;
     if (tool.description == null || (typeof tool.description === "string" && !tool.description.trim())) {
       const toolName = typeof tool.name === "string" ? tool.name.trim() : "";
@@ -2038,7 +2046,9 @@ function normalizeResponsesToolDescriptions(body, backendRouteKey) {
   normalizeResponsesToolDescriptionList(body?.tools);
   if (!Array.isArray(body?.input)) return;
   for (const item of body.input) {
-    normalizeResponsesToolDescriptionList(item?.tools);
+    if (item?.type === "additional_tools") {
+      normalizeResponsesToolDescriptionList(item.tools);
+    }
   }
 }
 

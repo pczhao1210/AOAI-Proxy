@@ -253,12 +253,26 @@ Build:
 
 - `./dockerbuild.sh aoai-proxy:latest`
 
-The Dockerfile tracks the current stable major lines with `NODE_MAJOR=24` and `CADDY_MAJOR=2`, which resolve to `node:24-alpine` and `caddy:2-alpine`. The helper script runs `docker build --pull` so each build fetches the latest available patch/minor image in those major lines. Override them only when you intentionally need a different major line:
+The helper injects the generated version and UTC build time into the image. Query `GET /version` without authentication to identify a running deployment:
+
+```json
+{
+  "service": "aoai-proxy",
+  "version": "nextgen-202608100257",
+  "buildTime": "2026-08-10T02:57:55Z"
+}
+```
+
+The default version uses the UTC build minute in `nextgen-YYYYMMDDHHmm` format. The same values are available as standard OCI image labels.
+
+The Dockerfile tracks the current stable major lines with `NODE_MAJOR=24` and `CADDY_MAJOR=2`, which resolve to `node:24-alpine` and `caddy:2-alpine`. The helper script runs `docker build --pull` so each build fetches the latest available patch/minor image in those major lines. When calling Docker directly, pass the build metadata as well as any intentional major-version overrides:
 
 ```bash
 docker build --pull \
   --build-arg NODE_MAJOR=24 \
   --build-arg CADDY_MAJOR=2 \
+  --build-arg AOAI_PROXY_VERSION=nextgen-202608100257 \
+  --build-arg AOAI_PROXY_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -t aoai-proxy:latest .
 ```
 
