@@ -219,6 +219,30 @@ function normalizeAnthropicUsage(usage) {
   };
 }
 
+function normalizeChatUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const cachedTokens = Number(usage.cache_read_input_tokens ?? usage.cached_tokens ?? 0);
+  const cacheCreationTokens = Number(usage.cache_creation_input_tokens ?? 0);
+  const hasAnthropicBreakdown = usage.cache_read_input_tokens != null
+    || usage.cache_creation_input_tokens != null;
+  const sourcePromptTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+  const promptTokens = hasAnthropicBreakdown
+    ? sourcePromptTokens + cachedTokens + cacheCreationTokens
+    : sourcePromptTokens;
+  const completionTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
+  const promptDetails = usage.prompt_tokens_details
+    ?? usage.input_tokens_details
+    ?? (cachedTokens > 0 ? { cached_tokens: cachedTokens } : null);
+  const completionDetails = usage.completion_tokens_details ?? usage.output_tokens_details;
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: Number(usage.total_tokens ?? usage.total ?? promptTokens + completionTokens),
+    ...(promptDetails ? { prompt_tokens_details: promptDetails } : {}),
+    ...(completionDetails ? { completion_tokens_details: completionDetails } : {})
+  };
+}
+
 function mergeUsageSnapshot(current, update) {
   if (!update || typeof update !== "object") return current;
   const merged = { ...(current || {}) };
@@ -556,13 +580,16 @@ export async function streamShim({
   routeKey,
   backendRouteKey,
   includeReasoningEncryptedContent = false,
+  includeChatStreamUsage = false,
   strictResponsesCompletion = false,
+  rejectLossyResponses = true,
   model,
   policy,
   onFirstChunk,
   onUsage,
   onModel,
-  onContent
+  onContent,
+  onCompatibilityIssue
 }) {
   const reader = upstreamResponse.body?.getReader();
   if (!reader) {
@@ -636,6 +663,17 @@ export async function streamShim({
       model: resolvedModel,
       choices: [{ index: 0, delta: {}, finish_reason: finishReason }]
     });
+    const chatUsage = includeChatStreamUsage ? normalizeChatUsage(pendingUsage) : null;
+    if (chatUsage) {
+      await writeSse(reply.raw, {
+        id: streamId,
+        object: "chat.completion.chunk",
+        created,
+        model: resolvedModel,
+        choices: [],
+        usage: chatUsage
+      });
+    }
     await writeSseDone(reply.raw);
     terminalFrameWritten = true;
   };
@@ -1203,14 +1241,17 @@ export async function streamShim({
           targetProtocol: routeKey
         });
         if (shimEventIssue) {
-          providerError = {
-            type: "protocol_error",
-            code: "unsupported_protocol_shim_stream",
-            message: shimEventIssue.message,
-            param: shimEventIssue.path,
-            azureRequestId: ""
-          };
-          break;
+          if (rejectLossyResponses) {
+            providerError = {
+              type: "protocol_error",
+              code: "unsupported_protocol_shim_stream",
+              message: shimEventIssue.message,
+              param: shimEventIssue.path,
+              azureRequestId: ""
+            };
+            break;
+          }
+          onCompatibilityIssue?.(shimEventIssue);
         }
         if (
           backendRouteKey === "responses"

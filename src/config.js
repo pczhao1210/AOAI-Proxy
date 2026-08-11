@@ -5,6 +5,13 @@ import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from ".
 import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
 import { isSupportedPersistenceMode } from "./persistence-mode.js";
 
+const CURRENT_CONFIG_VERSION = 3;
+const GPT_56_DUAL_PROTOCOL_MODELS = new Set([
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra"
+]);
+
 // Default config values
 const DEFAULTS = {
   server: {
@@ -363,6 +370,10 @@ const DEFAULTS = {
     codex: {
       enabled: true
     },
+    protocolShim: {
+      rejectLossyRequests: true,
+      rejectLossyResponses: true
+    },
     anthropic: {
       betaAllowlistEnabled: true,
       betaAllowlist: [
@@ -577,7 +588,7 @@ function validateRawCompatibilityShape(raw) {
   if (!compatibility || typeof compatibility !== "object" || Array.isArray(compatibility)) {
     throw new Error("compatibility must be an object");
   }
-  for (const clientName of ["claudeCode", "codex", "anthropic"]) {
+  for (const clientName of ["claudeCode", "codex", "protocolShim", "anthropic"]) {
     if (!Object.prototype.hasOwnProperty.call(compatibility, clientName)) continue;
     const clientCompatibility = compatibility[clientName];
     if (
@@ -714,6 +725,19 @@ function normalizeRouteProfileKey(routeKey) {
   return routeKey;
 }
 
+function migrateLegacyGpt56Routes(models, sourceVersion) {
+  if (sourceVersion >= CURRENT_CONFIG_VERSION) return;
+  for (const model of Array.isArray(models) ? models : []) {
+    const modelKeys = [model?.pricingRef, model?.id, model?.targetModel]
+      .map((value) => String(value || "").trim().toLowerCase());
+    if (!modelKeys.some((value) => GPT_56_DUAL_PROTOCOL_MODELS.has(value))) continue;
+    const routes = asPlainObject(model?.routes);
+    if (Object.keys(routes).length === 1 && routes["*"] === "responses") {
+      model.routes = {};
+    }
+  }
+}
+
 function applySchemaCompatibility(rawConfig, merged) {
   const raw = asPlainObject(rawConfig);
   const rawServer = asPlainObject(raw.server);
@@ -721,7 +745,9 @@ function applySchemaCompatibility(rawConfig, merged) {
   const rawProxy = asPlainObject(raw.proxy);
   const rawMedia = asPlainObject(raw.media);
 
-  merged.version = pickInteger(raw.version, merged.version, 2);
+  const sourceVersion = pickInteger(raw.version, 2);
+  migrateLegacyGpt56Routes(merged.models, sourceVersion);
+  merged.version = Math.max(sourceVersion, CURRENT_CONFIG_VERSION);
 
   merged.admin = deepMerge(DEFAULTS.admin, asPlainObject(merged.admin));
   merged.admin.basePath = String(pickDefined(rawAdmin.basePath, rawServer.adminPath, merged.admin.basePath) || DEFAULTS.admin.basePath);
@@ -831,6 +857,10 @@ function applySchemaCompatibility(rawConfig, merged) {
   merged.compatibility.codex = deepMerge(
     DEFAULTS.compatibility.codex,
     asPlainObject(merged.compatibility.codex)
+  );
+  merged.compatibility.protocolShim = deepMerge(
+    DEFAULTS.compatibility.protocolShim,
+    asPlainObject(merged.compatibility.protocolShim)
   );
   merged.compatibility.anthropic = deepMerge(
     DEFAULTS.compatibility.anthropic,
@@ -1276,6 +1306,15 @@ function validateConfig(cfg) {
       }
       if (clientCompatibility?.enabled != null && typeof clientCompatibility.enabled !== "boolean") {
         throw new Error(`compatibility.${clientName}.enabled must be a boolean`);
+      }
+    }
+    const protocolShim = cfg.compatibility.protocolShim;
+    if (protocolShim != null && (typeof protocolShim !== "object" || Array.isArray(protocolShim))) {
+      throw new Error("compatibility.protocolShim must be an object");
+    }
+    for (const field of ["rejectLossyRequests", "rejectLossyResponses"]) {
+      if (protocolShim?.[field] != null && typeof protocolShim[field] !== "boolean") {
+        throw new Error(`compatibility.protocolShim.${field} must be a boolean`);
       }
     }
   }

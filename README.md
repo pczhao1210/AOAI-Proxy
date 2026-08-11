@@ -13,7 +13,7 @@
 - Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or protocol-appropriate `api-key` / `x-api-key` headers, based on `auth.mode`
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
-- Native protocol routes preserve modern Responses items and Anthropic content blocks; cross-protocol shims reject structures they cannot represent without loss
+- Native protocol routes preserve modern Responses items and Anthropic content blocks; cross-protocol shims reject structures they cannot represent without loss by default and expose explicit request/response policy switches
 - Optional DCE-based Log Analytics export for correlated proxy events, usage, and redacted prompt/output content; see the [setup guide](docs/log-analytics-dce.en.md)
 
 ## Deployment Assets
@@ -455,7 +455,7 @@ For `gpt-5` and newer models, plus `o*` reasoning models, the proxy now applies 
 - Providers that reject optional fields can list them in `upstreams[].requestPolicy.blockedParams`; set `dropUnsupportedParams: true` to remove them, or leave it false to reject the request explicitly
 - `web_search_preview` tools are rejected early with a `400` because Azure Foundry does not currently support web search tools
 
-The proxy also keeps `stream_options` for streaming `chat/completions` and `responses` requests, and strips it only for routes where Foundry v1 may reject it.
+The proxy keeps `stream_options` on compatible native routes. When Chat is converted to Responses or Messages, it consumes `stream_options.include_usage` and emits the requested Chat usage chunk before `[DONE]`; unknown stream options follow the protocol-shim loss policy.
 
 ## Protocol Routing
 
@@ -477,11 +477,26 @@ Upstream errors use the proxy's normalized error envelope by default. Set `upstr
 
 Near-passthrough is semantic rather than byte-for-byte. The proxy still maps the model ID, applies request policy and media handling, replaces authentication headers, observes usage, and enforces stream timeouts. Native Responses preserves Responses items and events. Native Messages preserves ordered Anthropic blocks and SSE events, including tool use/results and thinking signatures present in the body.
 
-Cross-protocol conversion covers text, input images, function tools, tool calls/results, token limits, stop reasons, usage, and streaming lifecycle events. Responses `reasoning.encrypted_content` is mapped to Anthropic thinking signatures in both directions, including streaming continuations. Other protocol-specific fields without a safe equivalent are rejected instead of being silently discarded.
+Cross-protocol conversion covers text, input images, function tools, tool calls/results, token limits, stop reasons, usage, and streaming lifecycle events. Responses `reasoning.encrypted_content` is mapped to Anthropic thinking signatures in both directions, including streaming continuations. Other protocol-specific fields without a safe equivalent are rejected by default.
+
+`compatibility.protocolShim.rejectLossyRequests` and `rejectLossyResponses` both default to `true`. Set either switch to `false` only when continuing with a best-effort conversion is preferable to stopping the request. Permissive conversions emit `proxy.protocol_shim_lossy_conversion` with the phase, field path, source/target protocols, and loss reason. The response switch applies to both JSON and SSE responses.
+
+```json
+{
+  "compatibility": {
+    "protocolShim": {
+      "rejectLossyRequests": true,
+      "rejectLossyResponses": true
+    }
+  }
+}
+```
+
+Config normalization upgrades version 2 files to version 3. For GPT-5.6 Luna, Sol, and Terra only, the exact legacy template route `{ "*": "responses" }` is removed during that upgrade so Chat and Responses requests use their native interfaces. Route overrides saved in version 3 remain explicit and are preserved.
 
 For Claude deployments in Microsoft Foundry, configure the upstream route as `messages: "/anthropic/v1/messages"`. The proxy automatically switches an Azure OpenAI resource host to `*.services.ai.azure.com`, injects `anthropic-version: 2023-06-01` when absent, uses `x-api-key` for key authentication, and uses the `https://ai.azure.com/.default` scope for AAD authentication.
 
-Set `models[].hostingMode` to `azure` or `anthropic` when the matched Claude pricing template offers both hosting modes. The proxy selects the mode-specific native interfaces from `interfacesByHostingMode`; an explicit `models[].routes` override still takes precedence. The bundled catalog conservatively enables native Responses only for Azure-hosted Claude Opus 4.8, where that path has been verified. Anthropic-hosted Claude models use Messages, so incoming Responses `reasoning.effort` is converted to `output_config.effort` with `thinking.type="adaptive"`.
+Set `models[].hostingMode` to `azure` or `anthropic` when the matched Claude pricing template offers both hosting modes. This records the deployment infrastructure for region, data-handling, and capability metadata; it is not evidence of Responses support. The currently documented Azure-hosted and Anthropic-hosted Claude deployments both use Messages. Incoming Responses `reasoning.effort` is therefore converted to `output_config.effort` with `thinking.type="adaptive"`. An explicit `models[].routes` override still takes precedence.
 
 ### Claude Code
 
@@ -524,7 +539,7 @@ These settings are request compatibility controls, not protocol selectors. Roll 
 ```json
 {
   "clientCompatibility": { "codex": true },
-  "routes": { "*": "responses" },
+  "routes": {},
   "codex": {
     "contextWindow": 128000,
     "supportedReasoningEfforts": ["low", "medium", "high"]
@@ -532,7 +547,7 @@ These settings are request compatibility controls, not protocol selectors. Roll 
 }
 ```
 
-Configure Codex with a custom provider whose `base_url` ends in `/v1`, `wire_api = "responses"`, and `supports_websockets = false`. Marked Codex models are rejected by config validation if they resolve through Chat or Messages conversion.
+Configure Codex with a custom provider whose `base_url` ends in `/v1`, `wire_api = "responses"`, and `supports_websockets = false`. Marked Codex models are rejected by config validation if their Responses entry resolves through Chat or Messages conversion. Dual-protocol models should leave the wildcard route empty so non-Codex Chat clients retain native Chat Completions.
 
 Streaming input accepts LF or CRLF SSE framing, multiple `data:` fields, and a terminal event without a trailing newline. A stream completes only after the source protocol supplies matching terminal evidence: Chat `[DONE]` or a final `finish_reason` at EOF, Responses `response.completed` or `response.incomplete`, and Anthropic `message_stop`. Responses `response.failed` and provider error events are terminal failures. With Codex compatibility disabled, the legacy Responses output-done EOF fallback remains available. Premature EOF is reported as `UPSTREAM_INCOMPLETE_STREAM` and is never turned into a successful target terminator.
 

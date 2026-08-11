@@ -1053,6 +1053,8 @@ const dictionaries = {
 
 Object.assign(dictionaries["zh-CN"], {
   "option.partial": "Partial（受限预览）",
+  "field.protocolShimRejectLossyRequests": "无法无损转换时拒绝 Shim 请求",
+  "field.protocolShimRejectLossyResponses": "无法无损转换时拒绝 Shim 响应",
   "common.loadingAdmin": "正在加载管理控制台...",
   "hero.title": "AOAI Proxy 管理控制台",
   "hero.subtitle": "面向 AOAI Proxy 的统一管理控制台，聚合配置治理、模型路由、运行监控与诊断操作。",
@@ -1237,7 +1239,7 @@ Object.assign(dictionaries["zh-CN"], {
   "routing.field.pricingTemplateId": "Pricing Template ID",
   "routing.hint.proxyModelId": "客户端调用代理时，在 model 字段里传的就是这个值。",
   "routing.hint.azureDeployment": "这里填写真正发送到 Azure 的 deployment name 或目标模型名。",
-  "routing.hint.hostingMode": "选择 deployment 的实际托管模式，代理会据此选择正确的原生协议。",
+  "routing.hint.hostingMode": "选择 deployment 的实际托管基础设施，用于区域、数据处理和能力元数据。",
   "routing.hint.pricingTemplateId": "只用于匹配 pricing library 与治理计费，不是 Azure deployment name。",
   "routing.hosting.azure": "托管在 Azure",
   "routing.hosting.anthropic": "托管在 Anthropic 基础设施",
@@ -1484,6 +1486,8 @@ Object.assign(dictionaries["zh-CN"], {
 
 Object.assign(dictionaries.en, {
   "option.partial": "Partial",
+  "field.protocolShimRejectLossyRequests": "Reject lossy shim requests",
+  "field.protocolShimRejectLossyResponses": "Reject lossy shim responses",
   "common.loadingAdmin": "Loading admin console...",
   "hero.title": "AOAI Proxy Admin Console",
   "hero.subtitle": "A unified control plane for AOAI Proxy covering configuration governance, model routing, runtime monitoring, and diagnostics.",
@@ -1558,7 +1562,7 @@ Object.assign(dictionaries.en, {
   "routing.field.pricingTemplateId": "Pricing Template ID",
   "routing.hint.proxyModelId": "Clients send this value in the model field when calling the proxy.",
   "routing.hint.azureDeployment": "This is the upstream deployment or target model actually sent to Azure.",
-  "routing.hint.hostingMode": "Select the deployment's actual hosting mode so the proxy can choose the correct native protocol.",
+  "routing.hint.hostingMode": "Select the deployment infrastructure for region, data handling, and capability metadata.",
   "routing.hint.pricingTemplateId": "Used to match pricing library metadata and governance pricing, not the Azure deployment name.",
   "routing.hosting.azure": "Hosted on Azure",
   "routing.hosting.anthropic": "Hosted on Anthropic infrastructure",

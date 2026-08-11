@@ -282,7 +282,7 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                     {hostingModes.length > 1 ? (
                       <Field
                         label={t("routing.field.hostingMode", "Claude Hosting Mode")}
-                        hint={t("routing.hint.hostingMode", "Select the deployment hosting mode so the proxy can choose the correct native protocol.")}
+                        hint={t("routing.hint.hostingMode", "Select the deployment infrastructure for region, data handling, and capability metadata.")}
                       >
                         <select value={item.hostingMode || matchedTemplate?.defaultHostingMode || ""} onChange={(event) => updateConfig((next) => { next.models[index].hostingMode = event.target.value; })}>
                           {hostingModes.map((mode) => (

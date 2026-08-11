@@ -87,6 +87,10 @@ function anthropicCompatibility(config) {
   return config?.compatibility?.anthropic || {};
 }
 
+function protocolShimCompatibility(config) {
+  return config?.compatibility?.protocolShim || {};
+}
+
 function claudeCodeCompatibilityEnabled(config) {
   return config?.compatibility?.claudeCode?.enabled !== false;
 }
@@ -952,7 +956,8 @@ export async function proxyRequest({
       targetProtocol: backendRouteKey
     })
     : null;
-  if (shimRequestIssue) {
+  const shimPolicy = protocolShimCompatibility(config);
+  if (shimRequestIssue && shimPolicy.rejectLossyRequests !== false) {
     log.warn({
       source: "proxy",
       requestId,
@@ -975,6 +980,23 @@ export async function proxyRequest({
       detail: shimRequestIssue
     });
     return;
+  }
+  if (shimRequestIssue) {
+    log.warn({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      sourceProtocol: routeKey,
+      targetProtocol: backendRouteKey,
+      event: "proxy.protocol_shim_lossy_conversion",
+      shimPhase: "request",
+      param: shimRequestIssue.path,
+      unsupportedType: shimRequestIssue.type,
+      failureReason: shimRequestIssue.message
+    }, "protocol shim request continued with lossy conversion");
   }
   const policy = resolveUpstreamPolicy(config, { routeKey: protocolRouteKey, model, upstream, requestOverrides });
   let upstreamAuthHeaders;
@@ -1754,7 +1776,10 @@ export async function proxyRequest({
             modelId,
             routeKey,
             backendRouteKey,
+            includeChatStreamUsage: routeKey === "chat/completions"
+              && body?.stream_options?.include_usage === true,
             strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
+            rejectLossyResponses: shimPolicy.rejectLossyResponses !== false,
             model,
             policy,
             onFirstChunk: () => {
@@ -1763,7 +1788,24 @@ export async function proxyRequest({
             },
             onUsage: recordProxyUsage,
             onModel: noteResolvedUpstreamModel,
-            onContent: streamContentCollector.append
+            onContent: streamContentCollector.append,
+            onCompatibilityIssue: (issue) => {
+              log.warn({
+                source: "proxy",
+                requestId,
+                ...requestNetworkContext,
+                modelId,
+                routeKey,
+                backendRouteKey,
+                sourceProtocol: backendRouteKey,
+                targetProtocol: routeKey,
+                event: "proxy.protocol_shim_lossy_conversion",
+                shimPhase: "stream",
+                param: issue.path,
+                unsupportedType: issue.type,
+                failureReason: issue.message
+              }, "protocol shim stream continued with lossy conversion");
+            }
           });
 
         if (streamResult.ok) {
@@ -2186,7 +2228,7 @@ export async function proxyRequest({
         targetProtocol: routeKey
       })
       : null;
-    if (shimResponseIssue) {
+    if (shimResponseIssue && shimPolicy.rejectLossyResponses !== false) {
       recordProxyError({
         status: 502,
         errorCode: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
@@ -2221,6 +2263,23 @@ export async function proxyRequest({
         source: "provider"
       });
       return;
+    }
+    if (shimResponseIssue) {
+      log.warn({
+        source: "provider",
+        requestId,
+        ...requestNetworkContext,
+        modelId,
+        routeKey,
+        backendRouteKey,
+        sourceProtocol: backendRouteKey,
+        targetProtocol: routeKey,
+        event: "proxy.protocol_shim_lossy_conversion",
+        shimPhase: "response",
+        param: shimResponseIssue.path,
+        unsupportedType: shimResponseIssue.type,
+        failureReason: shimResponseIssue.message
+      }, "protocol shim response continued with lossy conversion");
     }
 
     if (

@@ -13,7 +13,7 @@
 - Proxy -> Azure AI Foundry / Azure OpenAI 根据 `auth.mode` 使用 AAD token 或 `api-key`
 - 静态管理页支持配置编辑、AAD 验证、统计查看和最近日志排查
 - 支持 `models[].routes` 与 `upstreams[].routes` 做模型级和上游级路由映射
-- 原生协议路由透明保留现代 Responses item 与 Anthropic content block；跨协议 shim 会明确拒绝无法无损表示的结构
+- 原生协议路由透明保留现代 Responses item 与 Anthropic content block；跨协议 shim 默认拒绝无法无损表示的结构，并提供独立的请求/响应策略开关
 - 可选通过 DCE 将关联请求、用量和脱敏 Prompt/输出写入 Log Analytics；参见 [接入指南](log-analytics-dce.md)
 
 ## 部署资产
@@ -445,7 +445,7 @@ az managedapp create \
 - 如果某个 provider 会拒绝可选字段，可在 `upstreams[].requestPolicy.blockedParams` 中列出；`dropUnsupportedParams: true` 表示删除，否则会明确返回请求错误
 - 如果请求里使用了 `web_search_preview` 相关 tools，代理会直接返回 `400`，因为 Azure Foundry 当前不支持 web search tools
 
-另外，代理现在会为流式 `chat/completions` 和 `responses` 请求保留 `stream_options`；只在 Foundry v1 可能拒绝的其他路由上移除它。
+代理会在兼容的原生路由上保留 `stream_options`。当 Chat 转换到 Responses 或 Messages 时，代理会消费 `stream_options.include_usage`，并在 `[DONE]` 前生成客户端要求的 Chat usage chunk；未知 stream option 按协议 shim 的有损转换策略处理。
 
 ## 协议路由
 
@@ -467,11 +467,26 @@ az managedapp create \
 
 近似透传指 typed 语义保真，不是原始字节透传。代理仍会映射模型 ID、执行请求策略和图片处理、替换认证 header、采集 usage，并实施流超时。原生 Responses 保留 Responses item 和事件；原生 Messages 保留有序 Anthropic block 与 SSE 事件，包括 body 中的工具调用/结果和 thinking signature。
 
-跨协议转换覆盖文本、输入图片、函数工具、工具调用/结果、token 上限、停止原因、usage 与流式生命周期。Responses `reasoning.encrypted_content` 会与 Anthropic thinking signature 双向映射，包括流式续接。其他缺少安全等价表达的协议专属字段会被明确拒绝，不会静默丢弃。
+跨协议转换覆盖文本、输入图片、函数工具、工具调用/结果、token 上限、停止原因、usage 与流式生命周期。Responses `reasoning.encrypted_content` 会与 Anthropic thinking signature 双向映射，包括流式续接。其他缺少安全等价表达的协议专属字段默认会被明确拒绝。
+
+`compatibility.protocolShim.rejectLossyRequests` 与 `rejectLossyResponses` 默认均为 `true`。只有在尽力转换优先于停止请求时才应关闭相应开关。兼容模式会写入 `proxy.protocol_shim_lossy_conversion` 结构化告警，包含转换阶段、字段路径、源/目标协议和丢失原因；响应开关同时作用于 JSON 与 SSE。
+
+```json
+{
+  "compatibility": {
+    "protocolShim": {
+      "rejectLossyRequests": true,
+      "rejectLossyResponses": true
+    }
+  }
+}
+```
+
+配置归一化会把版本 2 升级为版本 3。仅对于 GPT-5.6 Luna、Sol 和 Terra，升级时会删除旧模板生成的精确路由 `{ "*": "responses" }`，使 Chat 与 Responses 请求恢复使用各自的原生接口；版本 3 中保存的路由覆盖均视为显式配置并予以保留。
 
 Microsoft Foundry 的 Claude deployment 应配置上游路由 `messages: "/anthropic/v1/messages"`。代理会自动把 Azure OpenAI resource host 切换为 `*.services.ai.azure.com`，缺省注入 `anthropic-version: 2023-06-01`，API key 模式使用 `x-api-key`，AAD 模式使用 `https://ai.azure.com/.default` scope。
 
-当匹配的 Claude pricing 模板同时提供两种托管模式时，通过 `models[].hostingMode` 选择 `azure` 或 `anthropic`。代理根据 `interfacesByHostingMode` 选择对应原生协议；显式 `models[].routes` 覆盖仍具有最高优先级。内置目录目前只对已验证的 Azure-hosted Claude Opus 4.8 开启原生 Responses。Anthropic-hosted Claude 使用 Messages，因此客户端 Responses 的 `reasoning.effort` 会转换为 `output_config.effort`，并设置 `thinking.type="adaptive"`。
+当匹配的 Claude pricing 模板同时提供两种托管模式时，通过 `models[].hostingMode` 记录实际的 `azure` 或 `anthropic` 托管基础设施，用于区域、数据处理与能力元数据，不能据此推断 Responses 支持。当前有文档依据的 Azure-hosted 与 Anthropic-hosted Claude deployment 都使用 Messages，因此客户端 Responses 的 `reasoning.effort` 会转换为 `output_config.effort`，并设置 `thinking.type="adaptive"`。显式 `models[].routes` 覆盖仍具有最高优先级。
 
 ### Claude Code
 
@@ -514,7 +529,7 @@ claude
 ```json
 {
   "clientCompatibility": { "codex": true },
-  "routes": { "*": "responses" },
+  "routes": {},
   "codex": {
     "contextWindow": 128000,
     "supportedReasoningEfforts": ["low", "medium", "high"]
@@ -522,7 +537,7 @@ claude
 }
 ```
 
-Codex 自定义 provider 的 `base_url` 应以 `/v1` 结尾，并设置 `wire_api = "responses"`、`supports_websockets = false`。若标记的 Codex 模型解析到 Chat 或 Messages 转换路径，配置校验会拒绝该配置。
+Codex 自定义 provider 的 `base_url` 应以 `/v1` 结尾，并设置 `wire_api = "responses"`、`supports_websockets = false`。若标记模型的 Responses 入口解析到 Chat 或 Messages 转换路径，配置校验会拒绝该配置。双协议模型应保持 wildcard route 为空，使非 Codex Chat 客户端继续使用原生 Chat Completions。
 
 流输入支持 LF/CRLF、多条 `data:` 字段和末尾无换行的终态事件。只有源协议提供匹配的终态证据才视为完整：Chat 使用 `[DONE]` 或 EOF 前的最终 `finish_reason`，Responses 使用 `response.completed` 或 `response.incomplete`，Anthropic 必须有 `message_stop`；Responses `response.failed` 和 provider error 事件属于失败终态。关闭 Codex 兼容后，旧版 Responses output-done EOF 兜底仍可使用。提前 EOF 会返回 `UPSTREAM_INCOMPLETE_STREAM`，不会伪造成目标协议成功终止。
 

@@ -68,7 +68,7 @@
 1. 原生路径是完整能力的首选路径。
 2. 跨协议路径只承诺文本、常见输入图片、普通 function tool、普通工具调用与结果、基础 token 限制、基础终止原因和 usage 的交集。
 3. Responses 的现代 item、服务端状态和内置工具，以及 Messages 的 thinking、document、cache control 等高级语义，不能视为可跨协议等价转换。
-4. 无法无损表达的结构应被明确拒绝，不能偷偷删除后继续请求。
+4. 无法无损表达的结构默认应被明确拒绝。只有运维方显式关闭对应 shim 严格开关时才可尽力转换，并且必须记录结构化丢失告警，不能静默删除。
 5. Claude Code 必须绑定原生 Messages；Codex 必须绑定原生 Responses。转换路径只能作为普通客户端的基础兼容手段，不能作为这两个客户端的生产主路径。
 6. `responses/compact` 和 `messages/count_tokens` 是协议专属能力，不能由其他协议模拟。
 7. 请求控制字段的转换不是完全对称的。尤其是停止序列、采样控制和供应商扩展字段，必须按具体源协议和目标协议逐方向判断。
@@ -80,6 +80,9 @@
 - Messages 的 `stop_sequences` 转 Chat 时可以保留；转 Responses 时当前不会保留，也不会自动报错。需要严格无损语义的调用方应在策略层禁止这一组合。
 - Responses 转 Chat 时，`service_tier`、`verbosity`、`top_k` 等字段当前会作为顶层扩展字段继续传递；这不代表标准 Chat 语义与其等价，最终是否接受由字段策略和上游决定。
 - Responses 严格流终止由全局 Codex 兼容开关控制，默认影响所有 Responses 源流，而不是只根据单个请求是否来自 Codex 决定。
+- `compatibility.protocolShim.rejectLossyRequests` 和 `rejectLossyResponses` 默认均为 `true`；后者同时控制 JSON 与 SSE 响应。关闭开关会允许有损尽力转换，并记录 `proxy.protocol_shim_lossy_conversion`。
+- 配置版本 2 升级到版本 3 时，会删除 GPT-5.6 Luna/Sol/Terra 的精确旧模板 wildcard `{ "*": "responses" }`；版本 3 中显式保存的路由覆盖保持不变。
+- Chat 跨协议流支持代理侧模拟 `stream_options.include_usage`；代理会在 `[DONE]` 前生成 Chat usage chunk，其他未知 stream option 仍按有损策略处理。
 - 跨协议 SSE 当前只解释 `data:` 内容；`event`、`id`、`retry` 等字段只会在原生流的原始 frame 中被保留，不参与 shim 状态机。
 
 ---
@@ -1312,9 +1315,9 @@ Foundry Claude 的 cache control 应只保留：
 | 请求体过大 | `413` | 请求体限制 |
 | 参数被策略禁止 | `400` | `UnsupportedParameter` |
 | 后端协议无法识别 | `400` | `UNSUPPORTED_PROTOCOL_ROUTE` |
-| shim 请求不可无损转换 | `400` | `UnsupportedProtocolShim` |
-| shim JSON 响应不可无损转换 | `502` | `UnsupportedProtocolShimResponse` |
-| shim SSE 事件不可转换 | 已开流时为目标协议错误事件 | `unsupported_protocol_shim_stream` |
+| shim 请求不可无损转换 | 严格模式为 `400`；兼容模式继续并告警 | `UnsupportedProtocolShim` |
+| shim JSON 响应不可无损转换 | 严格模式为 `502`；兼容模式继续并告警 | `UnsupportedProtocolShimResponse` |
+| shim SSE 事件不可转换 | 严格模式在已开流时发送目标协议错误事件；兼容模式继续并告警 | `unsupported_protocol_shim_stream` |
 | token counting 非原生 Messages | `400` | `TokenCountingNotSupported` |
 | compaction 非原生 Responses | `400` | `ResponseCompactionNotSupported` |
 | utility route 未配置 | `501` | 对应 NotSupported |

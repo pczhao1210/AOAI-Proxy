@@ -27,6 +27,7 @@ import { REDACTED_SECRET_VALUE, redactConfigSecrets, restoreConfigSecrets } from
 import { getRequestNetworkContext } from "../src/request-network.js";
 import { buildCorrelationHeaders, resolveRequestContext } from "../src/request-context.js";
 import { getStats, recordUsage } from "../src/stats.js";
+import { getPricingDefinition } from "../src/pricing-library.js";
 
 const STREAM_POLICY = {
   firstByteTimeoutMs: 1000,
@@ -390,13 +391,41 @@ test("Claude models select model-specific native protocols without overriding ex
   const opus48 = { id: "claude-opus-4-8", targetModel: "claude-opus-4-8", pricingRef: "claude-opus-4-8", hostingMode: "azure" };
 
   assert.equal(resolveEffectiveRouteKey("responses", sonnet46, upstream), "messages");
-  assert.equal(resolveEffectiveRouteKey("responses", opus48, upstream), "responses");
+  assert.equal(resolveEffectiveRouteKey("responses", opus48, upstream), "messages");
   assert.equal(resolveEffectiveRouteKey("responses", { ...opus48, hostingMode: "anthropic" }, upstream), "messages");
   assert.equal(resolveEffectiveRouteKey("responses", sonnet46, upstream, { type: "routeKey", value: "responses" }), "responses");
   assert.equal(
     buildUpstreamUrl(upstream, "messages", "claude-sonnet-4-6", sonnet46),
     "https://example.services.ai.azure.com/anthropic/v1/messages"
   );
+});
+
+test("dual-protocol GPT models preserve the requested native protocol", () => {
+  const upstream = { baseUrl: "https://example.openai.azure.com/", routes: {} };
+  const model = { id: "gpt-5.6-luna", targetModel: "gpt-5.6-luna", pricingRef: "gpt-5.6-luna" };
+
+  assert.equal(resolveEffectiveRouteKey("chat/completions", model, upstream), "chat/completions");
+  assert.equal(resolveEffectiveRouteKey("responses", model, upstream), "responses");
+});
+
+test("pricing protocol metadata distinguishes GPT, Claude, and DeepSeek interfaces", () => {
+  for (const modelId of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
+    const definition = getPricingDefinition(modelId);
+    assert.deepEqual(definition?.interfaces, ["chat/completions", "responses"]);
+    assert.deepEqual(definition?.proxyTemplate?.routes, {});
+  }
+
+  for (const modelId of ["claude-opus-4-8", "claude-opus-5"]) {
+    const definition = getPricingDefinition(modelId);
+    assert.deepEqual(definition?.interfaces, ["messages"]);
+    assert.deepEqual(definition?.interfacesByHostingMode?.azure, ["messages"]);
+    assert.deepEqual(definition?.interfacesByHostingMode?.anthropic, ["messages"]);
+  }
+
+  for (const modelId of ["DeepSeek-V4-Pro", "DeepSeek-V4-Flash"]) {
+    const definition = getPricingDefinition(modelId);
+    assert.deepEqual(definition?.interfaces, ["chat/completions"]);
+  }
 });
 
 test("Anthropic token count routes are explicit or safely derived from Messages", () => {
@@ -812,6 +841,13 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     },
     {
       sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { stream_options: { include_usage: true, unknown: true }, messages: [{ role: "user", content: "hello" }] },
+      path: "stream_options.unknown",
+      type: "unknown"
+    },
+    {
+      sourceProtocol: "chat/completions",
       targetProtocol: "messages",
       payload: { parallel_tool_calls: false, messages: [{ role: "user", content: "hello" }] },
       path: "parallel_tool_calls",
@@ -993,6 +1029,7 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     n: 1,
     frequency_penalty: 0,
     modalities: ["text"],
+    stream_options: { include_usage: true },
     messages: [{ role: "user", content: "hello" }]
   }, {
     sourceProtocol: "chat/completions",
@@ -1448,6 +1485,42 @@ test("Responses-to-Chat waits for stable tool identity", async () => {
   assert.doesNotMatch(converted.raw.output, /"id":"fc_1"/);
 });
 
+test("Responses-to-Chat emits a Chat usage chunk when requested", async () => {
+  const source = encodeEvents([
+    { type: "response.output_text.delta", delta: "hello" },
+    {
+      type: "response.completed",
+      response: {
+        usage: {
+          input_tokens: 10,
+          output_tokens: 4,
+          total_tokens: 14,
+          input_tokens_details: { cached_tokens: 3 },
+          output_tokens_details: { reasoning_tokens: 2 }
+        }
+      }
+    }
+  ]);
+  const converted = await runProtocolShim("chat/completions", "responses", source, {
+    includeChatStreamUsage: true
+  });
+  const frames = converted.raw.output
+    .split("\n\n")
+    .filter((frame) => frame.startsWith("data: ") && frame !== "data: [DONE]")
+    .map((frame) => JSON.parse(frame.slice(6)));
+  const usageFrame = frames.find((frame) => Array.isArray(frame.choices) && frame.choices.length === 0);
+
+  assert.equal(converted.result.ok, true);
+  assert.deepEqual(usageFrame?.usage, {
+    prompt_tokens: 10,
+    completion_tokens: 4,
+    total_tokens: 14,
+    prompt_tokens_details: { cached_tokens: 3 },
+    completion_tokens_details: { reasoning_tokens: 2 }
+  });
+  assert.equal((converted.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+});
+
 test("protocol shim aggregates multi-line SSE data fields", async () => {
   const source = Buffer.from(
     'event: response.output_text.delta\r\n'
@@ -1707,6 +1780,20 @@ test("streaming cache usage is projected without double counting", async () => {
     output_tokens: 2,
     total_tokens: 14,
     input_tokens_details: { cached_tokens: 7 }
+  });
+
+  const asChat = await runProtocolShim("chat/completions", "messages", messagesSource, {
+    includeChatStreamUsage: true
+  });
+  const usageFrame = asChat.raw.output
+    .split("\n\n")
+    .map((frame) => frame.startsWith("data: ") && frame.slice(6) !== "[DONE]" ? JSON.parse(frame.slice(6)) : null)
+    .find((event) => Array.isArray(event?.choices) && event.choices.length === 0);
+  assert.deepEqual(usageFrame.usage, {
+    prompt_tokens: 12,
+    completion_tokens: 2,
+    total_tokens: 14,
+    prompt_tokens_details: { cached_tokens: 7 }
   });
 });
 

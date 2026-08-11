@@ -187,7 +187,7 @@ export const routeTests = [
       assert.equal(invalidCodex.status, 400, invalidCodex.text);
       assert.match(invalidCodex.json?.error || "", /marked for Codex.*native responses is required/);
 
-      codexModel.routes = { "*": "responses" };
+      codexModel.routes = {};
       const originalCodexTargetModel = codexModel.targetModel;
       codexModel.targetModel = "model-router";
       const codexModelRouter = await ctx.adminRequest("/admin/api/config", {
@@ -252,7 +252,7 @@ export const routeTests = [
       assert.equal(disabledCodex.status, 200, disabledCodex.text);
 
       config.compatibility.codex.enabled = true;
-      codexModel.routes = { "*": "responses" };
+      codexModel.routes = {};
       const claudeModel = config.models.find((model) => model.id === "claude-native");
       ensure(claudeModel, "Expected Claude Code-marked model");
       const originalClaudeTargetModel = claudeModel.targetModel;
@@ -296,6 +296,64 @@ export const routeTests = [
         json: config
       });
       assert.equal(validConfig.status, 200, validConfig.text);
+    }
+  },
+  {
+    id: "gpt-5.6-route-migration",
+    description: "legacy GPT-5.6 wildcard routes migrate without blocking explicit v3 overrides",
+    async run(ctx) {
+      const legacyConfig = await ctx.readConfigFile();
+      legacyConfig.version = 2;
+      const legacyModel = legacyConfig.models.find((model) => model.id === "gpt-5.6-luna");
+      ensure(legacyModel, "Expected GPT-5.6 model config");
+      legacyModel.routes = { "*": "responses" };
+      const migrated = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: legacyConfig
+      });
+      assert.equal(migrated.status, 200, migrated.text);
+
+      const migratedConfig = await ctx.readConfigFile();
+      const migratedModel = migratedConfig.models.find((model) => model.id === "gpt-5.6-luna");
+      assert.equal(migratedConfig.version, 3);
+      assert.deepEqual(migratedModel?.routes, {});
+
+      ctx.clearUpstreamRequests();
+      const nativeChat = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "use native chat" }]
+        }
+      });
+      assert.equal(nativeChat.status, 200, nativeChat.text);
+      ensure(
+        ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions")),
+        "Expected migrated GPT-5.6 Chat request to stay native"
+      );
+
+      migratedModel.routes = { "*": "responses" };
+      const explicitOverride = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: migratedConfig
+      });
+      assert.equal(explicitOverride.status, 200, explicitOverride.text);
+
+      ctx.clearUpstreamRequests();
+      const convertedChat = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "use explicit responses override" }]
+        }
+      });
+      assert.equal(convertedChat.status, 200, convertedChat.text);
+      ensure(
+        ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses")),
+        "Expected explicit v3 wildcard override to use Responses"
+      );
     }
   },
   {
@@ -1161,10 +1219,12 @@ export const routeTests = [
         }
       });
       assert.equal(opusResult.status, 200, opusResult.text);
-      const opusRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
-      ensure(opusRequest, "Expected Azure-hosted Opus Responses upstream request");
-      assert.deepEqual(opusRequest.body?.include, ["reasoning.encrypted_content"]);
-      assert.deepEqual(opusRequest.body?.reasoning, { effort: "xhigh" });
+      const opusRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/messages"));
+      ensure(opusRequest, "Expected Azure-hosted Opus Messages upstream request");
+      assert.deepEqual(opusRequest.body?.output_config, { effort: "xhigh" });
+      assert.deepEqual(opusRequest.body?.thinking, { type: "adaptive" });
+      assert.equal("include" in opusRequest.body, false);
+      assert.equal("reasoning" in opusRequest.body, false);
     }
   },
   {
@@ -1351,11 +1411,11 @@ export const routeTests = [
     description: "HTTP 200 failed payloads remain provider errors",
     async run(ctx) {
       ctx.clearUpstreamRequests();
-      const result = await ctx.publicRequest("/v1/chat/completions", {
+      const result = await ctx.publicRequest("/v1/responses", {
         method: "POST",
         json: {
           model: "gpt-5.6-luna",
-          messages: [{ role: "user", content: "trigger failed json" }]
+          input: "trigger failed json"
         }
       });
 
@@ -1512,6 +1572,17 @@ export const routeTests = [
       assert.match(interruptedErrorBody.json?.code || "", /^UPSTREAM_/);
       assert.equal(interruptedErrorBody.json?.native_marker, undefined);
 
+      const shimErrorConfig = await ctx.readConfigFile();
+      const shimErrorModel = shimErrorConfig.models.find((model) => model.id === "gpt-5.6-luna");
+      ensure(shimErrorModel, "Expected GPT-5.6 model config");
+      shimErrorModel.routes = { "chat/completions": "responses" };
+      const savedShimErrorConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: shimErrorConfig
+      });
+      assert.equal(savedShimErrorConfig.status, 200, savedShimErrorConfig.text);
+
       const normalizedShimError = await ctx.publicRequest("/v1/chat/completions", {
         method: "POST",
         json: {
@@ -1570,7 +1641,36 @@ export const routeTests = [
   {
     id: "shim-compatibility-guards",
     description: "protocol shims reject lossy modern items while native routes preserve them",
+    logLevel: "warn",
     async run(ctx) {
+      const shimConfig = await ctx.readConfigFile();
+      const gptModel = shimConfig.models.find((model) => model.id === "gpt-5.6-luna");
+      ensure(gptModel, "Expected GPT-5.6 model config");
+      gptModel.routes = { "*": "responses" };
+      shimConfig.compatibility = {
+        ...(shimConfig.compatibility || {}),
+        protocolShim: {
+          rejectLossyRequests: true,
+          rejectLossyResponses: true
+        }
+      };
+      const savedShimConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: shimConfig
+      });
+      assert.equal(savedShimConfig.status, 200, savedShimConfig.text);
+
+      const invalidShimConfig = structuredClone(shimConfig);
+      invalidShimConfig.compatibility.protocolShim.rejectLossyRequests = "false";
+      const invalidShimResult = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: invalidShimConfig
+      });
+      assert.equal(invalidShimResult.status, 400, invalidShimResult.text);
+      assert.match(invalidShimResult.json?.error || "", /rejectLossyRequests must be a boolean/);
+
       ctx.clearUpstreamRequests();
       const rejectedResponses = await ctx.publicRequest("/v1/responses", {
         method: "POST",
@@ -1690,6 +1790,26 @@ export const routeTests = [
       assert.equal(nativeMessagesOutput.status, 200, nativeMessagesOutput.text);
       assert.equal(nativeMessagesOutput.json?.content?.[0]?.type, "redacted_thinking");
 
+      ctx.clearUpstreamRequests();
+      const chatUsageStream = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "include converted usage" }],
+          stream: true,
+          stream_options: { include_usage: true }
+        }
+      });
+      assert.equal(chatUsageStream.status, 200, chatUsageStream.text);
+      assert.match(
+        chatUsageStream.text,
+        /"choices":\[\],"usage":\{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16\}/
+      );
+      assert.equal((chatUsageStream.text.match(/data: \[DONE\]/g) || []).length, 1);
+      const chatUsageUpstream = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(chatUsageUpstream, "Expected include_usage Chat stream to reach Responses");
+      assert.equal("stream_options" in chatUsageUpstream.body, false);
+
       const rejectedResponsesStream = await ctx.publicRequest("/v1/chat/completions", {
         method: "POST",
         json: {
@@ -1738,6 +1858,103 @@ export const routeTests = [
       assert.equal(nativeMessagesStream.status, 200, nativeMessagesStream.text);
       assert.match(nativeMessagesStream.text, /"type":"server_tool_use"/);
       assert.match(nativeMessagesStream.text, /"type":"message_stop"/);
+
+      const requestPermissiveConfig = await ctx.readConfigFile();
+      requestPermissiveConfig.compatibility.protocolShim.rejectLossyRequests = false;
+      const savedRequestPermissiveConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: requestPermissiveConfig
+      });
+      assert.equal(savedRequestPermissiveConfig.status, 200, savedRequestPermissiveConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const lossyRequest = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "chat-only",
+          input: [{
+            type: "custom_tool_call",
+            call_id: "custom_2",
+            name: "shell",
+            input: "pwd"
+          }]
+        }
+      });
+      assert.equal(lossyRequest.status, 200, lossyRequest.text);
+      ensure(
+        ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions")),
+        "Expected lossy request conversion to reach Chat Completions"
+      );
+      const requestWarnings = await ctx.adminRequest(
+        "/admin/api/logs?event=proxy.protocol_shim_lossy_conversion"
+      );
+      assert.equal(requestWarnings.status, 200, requestWarnings.text);
+      const requestWarning = requestWarnings.json.items.find(
+        (item) => item.fields.shimPhase === "request"
+      );
+      ensure(requestWarning, "Expected lossy request warning");
+      assert.equal(requestWarning.event, "proxy.protocol_shim_lossy_conversion");
+      assert.equal(requestWarning.fields.param, "input[0]");
+      assert.equal(requestWarning.sourceProtocol, "responses");
+      assert.equal(requestWarning.targetProtocol, "chat/completions");
+      assert.match(requestWarning.failureReason, /unsupported Responses item type/);
+
+      const responsePermissiveConfig = await ctx.readConfigFile();
+      responsePermissiveConfig.compatibility.protocolShim.rejectLossyResponses = false;
+      const savedResponsePermissiveConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: responsePermissiveConfig
+      });
+      assert.equal(savedResponsePermissiveConfig.status, 200, savedResponsePermissiveConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const lossyResponse = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "trigger modern Responses item" }]
+        }
+      });
+      assert.equal(lossyResponse.status, 200, lossyResponse.text);
+      assert.equal(lossyResponse.json?.object, "chat.completion");
+      const responseWarnings = await ctx.adminRequest(
+        "/admin/api/logs?event=proxy.protocol_shim_lossy_conversion"
+      );
+      assert.equal(responseWarnings.status, 200, responseWarnings.text);
+      const responseWarning = responseWarnings.json.items.find(
+        (item) => item.fields.shimPhase === "response"
+      );
+      ensure(responseWarning, "Expected lossy response warning");
+      assert.equal(responseWarning.fields.param, "output[0]");
+      assert.equal(responseWarning.sourceProtocol, "responses");
+      assert.equal(responseWarning.targetProtocol, "chat/completions");
+      assert.match(responseWarning.failureReason, /unsupported Responses item type/);
+
+      const lossyResponseStream = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "trigger modern Responses stream item" }],
+          stream: true
+        }
+      });
+      assert.equal(lossyResponseStream.status, 200, lossyResponseStream.text);
+      assert.doesNotMatch(lossyResponseStream.text, /unsupported_protocol_shim_stream/);
+      assert.equal((lossyResponseStream.text.match(/data: \[DONE\]/g) || []).length, 1);
+      const streamWarnings = await ctx.adminRequest(
+        "/admin/api/logs?event=proxy.protocol_shim_lossy_conversion"
+      );
+      assert.equal(streamWarnings.status, 200, streamWarnings.text);
+      const streamWarning = streamWarnings.json.items.find(
+        (item) => item.fields.shimPhase === "stream"
+      );
+      ensure(streamWarning, "Expected lossy stream warning");
+      assert.equal(streamWarning.fields.param, "output[0]");
+      assert.equal(streamWarning.sourceProtocol, "responses");
+      assert.equal(streamWarning.targetProtocol, "chat/completions");
+      assert.match(streamWarning.failureReason, /unsupported Responses item type/);
     }
   },
   {
@@ -1890,7 +2107,7 @@ export const routeTests = [
   },
   {
     id: "gpt-5.6-chat-stream",
-    description: "GPT-5.6 Chat stream through Responses upstream",
+    description: "native GPT-5.6 Chat stream",
     async run(ctx) {
       ctx.clearUpstreamRequests();
       const result = await ctx.publicRequest("/v1/chat/completions", {
@@ -1917,17 +2134,18 @@ export const routeTests = [
 
       assert.equal(result.status, 200, result.text);
       assert.match(result.headers.get("content-type") || "", /^text\/event-stream/);
-      assert.match(result.text, /ok from mock responses stream/);
+      assert.match(result.text, /ok from mock chat stream/);
       assert.equal((result.text.match(/data: \[DONE\]/g) || []).length, 1);
 
-      const upstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
-      ensure(upstreamRequest, "Expected GPT-5.6 request to use the Responses upstream");
+      const upstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions"));
+      ensure(upstreamRequest, "Expected GPT-5.6 request to use the Chat Completions upstream");
       assert.equal(upstreamRequest.body?.model, "gpt-5.6-luna");
       assert.equal(upstreamRequest.body?.stream, true);
-      assert.deepEqual(upstreamRequest.body?.reasoning, { effort: "max" });
-      assert.equal(upstreamRequest.body?.tools?.[0]?.name, "lookup");
-      assert.equal("messages" in upstreamRequest.body, false);
-      assert.equal("reasoning_effort" in upstreamRequest.body, false);
+      assert.equal(upstreamRequest.body?.reasoning_effort, "max");
+      assert.equal(upstreamRequest.body?.tools?.[0]?.function?.name, "lookup");
+      assert.deepEqual(upstreamRequest.body?.messages, [{ role: "user", content: "use the lookup tool" }]);
+      assert.equal("input" in upstreamRequest.body, false);
+      assert.equal("reasoning" in upstreamRequest.body, false);
     }
   },
   {

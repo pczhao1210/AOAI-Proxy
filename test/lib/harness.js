@@ -513,7 +513,7 @@ function createMockUpstreamServer() {
 
 function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
   return {
-    version: 2,
+    version: 3,
     server: {
       host: HOST,
       port: proxyPort,
@@ -660,9 +660,7 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
         targetModel: "gpt-5.6-luna",
         pricingRef: "gpt-5.6-luna",
         clientCompatibility: { codex: true },
-        routes: {
-          "*": "responses"
-        }
+        routes: {}
       },
       {
         id: "claude-sonnet-4-6",
@@ -1011,8 +1009,8 @@ export async function createTestContext({
   return ctx;
 }
 
-export async function withTestContext(run) {
-  const ctx = await createTestContext();
+export async function withTestContext(run, options) {
+  const ctx = await createTestContext(options);
   try {
     await run(ctx);
   } finally {

@@ -1071,6 +1071,8 @@ function buildEntry(payload) {
     actualModelName,
     routeKey,
     backendRouteKey,
+    sourceProtocol,
+    targetProtocol,
     stream,
     attempt,
     source,
@@ -1128,6 +1130,8 @@ function buildEntry(payload) {
     actualModelName: typeof actualModelName === "string" ? actualModelName : "",
     routeKey: typeof routeKey === "string" ? routeKey : "",
     backendRouteKey: typeof backendRouteKey === "string" ? backendRouteKey : "",
+    sourceProtocol: typeof sourceProtocol === "string" ? sourceProtocol : "",
+    targetProtocol: typeof targetProtocol === "string" ? targetProtocol : "",
     stream: stream === true,
     attempt: Number.isInteger(attempt) ? attempt : null,
     source: typeof source === "string" ? source : "",
@@ -1166,7 +1170,11 @@ function buildEntry(payload) {
     responseMessageCount: Number.isInteger(responseMessageCount) ? responseMessageCount : 0,
     responseToolCount: Number.isInteger(responseToolCount) ? responseToolCount : 0,
     responseItemCount: Number.isInteger(responseItemCount) ? responseItemCount : 0,
-    fields: sanitizeValue(rest, "", 0, settings)
+    fields: {
+      ...sanitizeValue(rest, "", 0, settings),
+      ...(typeof sourceProtocol === "string" ? { sourceProtocol } : {}),
+      ...(typeof targetProtocol === "string" ? { targetProtocol } : {})
+    }
   };
 }
 

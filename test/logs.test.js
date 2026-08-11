@@ -206,6 +206,8 @@ test("Log Analytics records expose correlation, usage, cost, and content as type
     consumerKeyId: "consumer-1",
     modelId: "router-model",
     actualModelName: "actual-model",
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions",
     stream: true,
     usageAvailable: true,
     promptTokens: 10,
@@ -233,6 +235,10 @@ test("Log Analytics records expose correlation, usage, cost, and content as type
   assert.equal(record.EstimatedCostAmount, 0.01);
   assert.equal(record.UsageEstimated, false);
   assert.equal(record.RequestPreview, "request preview");
+  assert.deepEqual(JSON.parse(record.FieldsJson), {
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  });
   assert.equal(new Set(LOG_ANALYTICS_COLUMNS.map((column) => column.name)).size, LOG_ANALYTICS_COLUMNS.length);
   assert.deepEqual(Object.keys(record).sort(), LOG_ANALYTICS_COLUMNS.map((column) => column.name).sort());
 });

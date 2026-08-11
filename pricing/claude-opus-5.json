@@ -8,11 +8,10 @@
   "hostingModes": ["azure", "anthropic"],
   "defaultHostingMode": "azure",
   "interfacesByHostingMode": {
-    "azure": ["responses", "messages"],
+    "azure": ["messages"],
     "anthropic": ["messages"]
   },
   "interfaces": [
-    "responses",
     "messages"
   ],
   "inputModalities": [
@@ -64,7 +63,7 @@
   },
   "notes": [
     "Anthropic 分别公布缓存写入与读取价格；当前 schema 只有一个 cachedInput 字段，因此此处记录缓存读取价格。",
-    "Microsoft Foundry 同时提供 Hosted on Azure 与 Hosted on Anthropic infrastructure 两种部署模式；Azure US Data Zone Standard 的 token 价格适用 1.1 倍系数。",
+    "Microsoft Foundry 同时提供 Hosted on Azure 与 Hosted on Anthropic infrastructure 两种部署模式；两种模式的推理接口均为 Anthropic Messages。",
     "Claude Opus 5 支持 low、medium、high、xhigh、max effort；thinking.type 支持 adaptive，且 high 及以下可设为 disabled。"
   ]
 }

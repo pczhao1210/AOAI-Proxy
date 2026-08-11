@@ -538,7 +538,6 @@ function validateChatPayload(payload, context) {
       "presence_penalty",
       "seed",
       "stop",
-      "stream_options",
       "top_k",
       "top_logprobs",
       "top_p"
@@ -554,6 +553,34 @@ function validateChatPayload(payload, context) {
           path: field,
           type: field,
           reason: "Chat request control is not represented by the target protocol"
+        });
+      }
+    }
+    if (hasMeaningfulShimValue(payload?.stream_options)) {
+      const streamOptions = payload.stream_options;
+      if (!streamOptions || typeof streamOptions !== "object" || Array.isArray(streamOptions)) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: "stream_options",
+          type: typeof streamOptions,
+          reason: "Chat stream options must be an object"
+        });
+      }
+      const unsupportedOption = Object.keys(streamOptions).find((field) => field !== "include_usage");
+      if (unsupportedOption) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `stream_options.${unsupportedOption}`,
+          type: unsupportedOption,
+          reason: "Chat stream option cannot be represented by the target protocol"
+        });
+      }
+      if (streamOptions.include_usage != null && typeof streamOptions.include_usage !== "boolean") {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: "stream_options.include_usage",
+          type: typeof streamOptions.include_usage,
+          reason: "Chat include_usage must be a boolean"
         });
       }
     }

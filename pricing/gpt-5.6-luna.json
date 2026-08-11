@@ -54,10 +54,7 @@
       "parallel-tool-calling",
       "computer-use"
     ],
-    "pricingRef": "gpt-5.6-luna",
-    "routes": {
-      "*": "responses"
-    }
+    "pricingRef": "gpt-5.6-luna"
   },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",

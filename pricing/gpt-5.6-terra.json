@@ -54,10 +54,7 @@
       "parallel-tool-calling",
       "computer-use"
     ],
-    "pricingRef": "gpt-5.6-terra",
-    "routes": {
-      "*": "responses"
-    }
+    "pricingRef": "gpt-5.6-terra"
   },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",

@@ -107,13 +107,13 @@
     {
       "id": "gpt-codex",
       "targetModel": "<openai-deployment>",
-      "routes": { "*": "responses" }
+         "routes": {}
     }
   ]
 }
 ```
 
-实际配置还必须引用对应 upstream；上例只强调协议选择。若把 Claude 模型路由到 Responses，或把 Codex 模型路由到 Messages/Chat，代理会启用 shim，能力评级随即降为“有限兼容”。
+实际配置还必须引用对应 upstream；上例只强调协议选择。双协议模型应保持 wildcard route 为空，使 Chat 与 Responses 客户端分别走原生入口；只有 Responses-only 模型才需要全局映射到 Responses。若把 Claude 模型路由到 Responses，或把 Codex 的 Responses 入口路由到 Messages/Chat，代理会启用 shim，能力评级随即降为“有限兼容”。
 
 ### 4.2 Claude Code 的 beta/header 是开放集合
 
@@ -281,7 +281,9 @@ P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单�
 
 3. **[已完成] 扩展 Responses item 和 Anthropic content block 覆盖**
    - 原生 HTTP/JSON 与 SSE 路径继续透明保留未知 item、未知事件和 content block，不把客户端能力限制在代理已知集合内。
-   - 跨协议请求在访问上游前校验可表示性；无法无损转换时返回 `400 UnsupportedProtocolShim`。跨协议非流式响应返回 `502 UnsupportedProtocolShimResponse`；流式响应发送目标协议错误帧并按该协议正常结束连接。
+   - 跨协议请求在访问上游前校验可表示性；默认无法无损转换时返回 `400 UnsupportedProtocolShim`。跨协议非流式响应默认返回 `502 UnsupportedProtocolShimResponse`；流式响应发送目标协议错误帧并按该协议正常结束连接。
+   - `compatibility.protocolShim.rejectLossyRequests` 与 `rejectLossyResponses` 可独立关闭严格门禁。兼容模式继续尽力转换，并通过 `proxy.protocol_shim_lossy_conversion` 记录阶段、字段路径、协议方向和丢失原因；默认值均为 `true`。
+   - Chat 转 Responses/Messages 的流式 shim 会消费标准 `stream_options.include_usage`，并在 `[DONE]` 前生成 `choices: []` 的 Chat usage chunk；未知 stream option 仍进入有损门禁。
    - 已明确覆盖 `custom_tool_call/output`、`web_search_call`、`computer_call/output`、`shell/local_shell`、MCP、文件引用、引用/annotations、reasoning、compaction、Anthropic document/file image、server tool、redacted thinking 和 tool error 状态。
    - 同时拒绝会改变控制流但曾被静默删除的会话状态、非默认工具上限、多候选、非文本 modalities、prediction、top-k/metadata 和无法映射的异常终止原因。空 SDK 默认值（如 `include: []`、空状态对象、null reasoning 扩展）不会误触发门禁。
    - shim 仍保留基础文本、URL/base64 图片和普通 function tool 的有限兼容；这不是现代 item 的跨协议等价实现。
