@@ -156,6 +156,8 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 非回环监听会采用 fail-closed：管理认证关闭或仍存在已知占位凭据时拒绝启动。`ALLOW_INSECURE_PUBLIC_ADMIN=true` 仅用于显式兼容，不建议用于正常部署。
 
+所有可配置布尔开关的默认值、功能、管理页入口、生效方式，以及预留或未接线字段，统一收录在 [Feature Flag 与布尔开关目录](feature-flags.zh-CN.md)。
+
 ## 环境变量
 
 ### 通用
