@@ -332,6 +332,16 @@ Use `models[].routes` when the client-facing route and backend-supported route d
 }
 ```
 
+For `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra`, an unconfigured Chat Completions request is automatically routed to Responses when the upstream exposes a Responses route. An explicit model route always takes precedence. To force native Chat behavior, configure:
+
+```json
+"routes": {
+  "chat/completions": "chat/completions"
+}
+```
+
+See [the 2026-08-13 minimum core update audit](docs/minimum-update-2026-08-13.md) for the selected fixes and intentionally excluded nextgen features.
+
 ## curl Examples
 
 List models:

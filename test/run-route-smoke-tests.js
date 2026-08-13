@@ -106,7 +106,22 @@ function createMockUpstream() {
         return;
       }
 
-      if (req.url === "/openai/v1/responses") {
+      if (req.url?.startsWith("/openai/v1/responses")) {
+        if (JSON.stringify(body.input || "").includes("trigger-provider-failure")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "resp-failed-test",
+            object: "response",
+            status: "failed",
+            error: {
+              message: "model failed",
+              code: "model_failed",
+              type: "invalid_request_error",
+              param: "input"
+            }
+          }));
+          return;
+        }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
           id: "resp-test",
@@ -233,6 +248,21 @@ async function main() {
       upstream: "mock",
       targetModel: "test-response",
       routes: { "*": "responses" }
+    }, {
+      id: "test-query-route",
+      upstream: "mock",
+      targetModel: "test-query-route",
+      routes: { "chat/completions": "/openai/v1/responses?api-version=preview" }
+    }, {
+      id: "gpt-5.6-luna",
+      upstream: "mock",
+      targetModel: "gpt-5.6-luna",
+      routes: {}
+    }, {
+      id: "gpt-5.6-luna-native",
+      upstream: "mock",
+      targetModel: "gpt-5.6-luna",
+      routes: { "chat/completions": "chat/completions" }
     }]
   };
 
@@ -320,6 +350,60 @@ async function main() {
       throw new Error(`unexpected responses response: ${JSON.stringify(responses)}`);
     }
 
+    const queryRouteChat = await postJson(`${baseUrl}/v1/chat/completions`, {
+      model: "test-query-route",
+      messages: [{ role: "user", content: "hello" }]
+    });
+    assert.equal(queryRouteChat.choices?.[0]?.message?.content, "ok");
+    assert.equal(requests.at(-1)?.url, "/openai/v1/responses?api-version=preview");
+    assert.equal(requests.at(-1)?.body?.input?.[0]?.content, "hello");
+
+    const gpt56Chat = await postJson(`${baseUrl}/v1/chat/completions`, {
+      model: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hello" }],
+      reasoning_effort: "max",
+      tools: [{
+        type: "function",
+        function: { name: "lookup", description: "", parameters: { type: "object" } }
+      }]
+    });
+    assert.equal(gpt56Chat.choices?.[0]?.message?.content, "ok");
+    assert.equal(requests.at(-1)?.url, "/openai/v1/responses");
+    assert.deepEqual(requests.at(-1)?.body?.reasoning, { effort: "max" });
+    assert.equal(requests.at(-1)?.body?.tools?.[0]?.description, "lookup");
+
+    await postJson(`${baseUrl}/v1/chat/completions`, {
+      model: "gpt-5.6-luna-native",
+      messages: [{ role: "user", content: "hello" }]
+    });
+    assert.equal(requests.at(-1)?.url, "/openai/v1/chat/completions");
+
+    await postJson(`${baseUrl}/v1/chat/completions`, {
+      model: "test-chat",
+      messages: [
+        { role: "tool", tool_call_id: "orphan", content: "orphan" },
+        { role: "user", content: "hello" }
+      ]
+    });
+    assert.deepEqual(requests.at(-1)?.body?.messages, [{ role: "user", content: "hello" }]);
+
+    const providerFailureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${PROXY_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "gpt-5.6-luna",
+        messages: [{ role: "user", content: "trigger-provider-failure" }]
+      })
+    });
+    const providerFailure = await providerFailureResponse.json();
+    assert.equal(providerFailureResponse.status, 502);
+    assert.equal(providerFailure.code, "UPSTREAM_PROVIDER_RESPONSE_ERROR");
+    assert.equal(providerFailure.upstreamCode, "model_failed");
+    assert.equal(providerFailure.message, "model failed");
+
     const streamText = await postStream(`${baseUrl}/v1/chat/completions`, {
       model: "test-chat",
       messages: [{ role: "user", content: "hello" }],
@@ -328,7 +412,7 @@ async function main() {
     assert.match(streamText, /stream-ok/);
     assert.match(streamText, /data: \[DONE\]/);
 
-    if (requests.length !== 3 || requests.some((request) => request.apiKey !== UPSTREAM_API_KEY)) {
+    if (requests.length !== 8 || requests.some((request) => request.apiKey !== UPSTREAM_API_KEY)) {
       throw new Error(`unexpected upstream auth forwarding: ${JSON.stringify(requests)}`);
     }
 

@@ -16,6 +16,10 @@ Use this branch when you need the basic proxy, Azure deployment templates, Caddy
 - ACI persistence guide (English): [aci_persist_vol.en.md](aci_persist_vol.en.md)
 - ACI 持久化指南（中文）: [aci_persist_vol.md](aci_persist_vol.md)
 
+## Update Notes
+
+- 2026-08-13 core routing and bug-fix audit (中文): [minimum-update-2026-08-13.md](minimum-update-2026-08-13.md)
+
 ## Infrastructure Templates
 
 - Bicep template: [../infra/main.bicep](../infra/main.bicep)

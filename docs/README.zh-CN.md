@@ -289,6 +289,16 @@ az managedapp create \
 }
 ```
 
+对于 `gpt-5.6-luna`、`gpt-5.6-sol` 和 `gpt-5.6-terra`，如果模型没有显式配置 Chat 路由，且上游配置了 Responses 路径，代理会自动把 Chat Completions 请求提升到 Responses。显式模型路由始终优先；如需强制原生 Chat，可配置：
+
+```json
+"routes": {
+  "chat/completions": "chat/completions"
+}
+```
+
+本轮筛选与取舍见 [2026-08-13 minimal 核心更新审计](minimum-update-2026-08-13.md)。
+
 ## curl 示例
 
 列出模型：

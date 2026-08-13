@@ -64,6 +64,9 @@ export function classifyFetchError(error) {
   if (code === "UPSTREAM_PROVIDER_STREAM_ERROR") {
     return { code: "UPSTREAM_PROVIDER_STREAM_ERROR", retryable: false, status: 502, detail: message };
   }
+  if (code === "UPSTREAM_INCOMPLETE_STREAM") {
+    return { code: "UPSTREAM_INCOMPLETE_STREAM", retryable: false, status: 502, detail: message };
+  }
   if (code === "CLIENT_DISCONNECTED") {
     return { code: "CLIENT_DISCONNECTED", retryable: false, status: 499, detail: message };
   }
@@ -80,6 +83,32 @@ export function classifyFetchError(error) {
     return { code: "UPSTREAM_REQUEST_TIMEOUT", retryable: true, status: 504, detail: message || "request aborted" };
   }
   return { code: "UPSTREAM_FETCH_FAILED", retryable: true, status: 502, detail: message || "fetch failed" };
+}
+
+export function getProviderPayloadError(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const explicitError = payload.error && typeof payload.error === "object"
+    ? payload.error
+    : null;
+  const failed = payload.status === "failed"
+    || payload.type === "error"
+    || payload.type === "response.failed"
+    || payload.object === "error"
+    || explicitError != null;
+  if (!failed) return null;
+  const source = explicitError || payload;
+  return {
+    message: typeof source.message === "string" && source.message
+      ? source.message
+      : "upstream provider returned a failed response",
+    code: typeof source.code === "string" && source.code
+      ? source.code
+      : "provider_response_failed",
+    type: typeof source.type === "string" && source.type
+      ? source.type
+      : "provider_error",
+    param: source.param ?? null
+  };
 }
 
 function stringifyDetail(detail) {

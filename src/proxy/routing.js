@@ -1,6 +1,15 @@
 const upstreamIndexCache = new WeakMap();
 const modelIndexCache = new WeakMap();
 
+function inferRouteKeyFromPath(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.toLowerCase().split(/[?#]/, 1)[0].replace(/\/+$/, "");
+  if (normalized.endsWith("/responses")) return "responses";
+  if (normalized.endsWith("/chat/completions")) return "chat/completions";
+  if (normalized.endsWith("/images/generations")) return "images/generations";
+  return null;
+}
+
 function getUpstreamIndex(config) {
   const cached = upstreamIndexCache.get(config);
   if (cached) return cached;
@@ -65,15 +74,25 @@ export function resolveModelRoute(model, incomingRouteKey) {
   return { type: "routeKey", value: trimmed };
 }
 
+export function resolveModelCompatibilityRoute(model, upstream, incomingRouteKey) {
+  if (incomingRouteKey !== "chat/completions" || !upstream?.routes?.responses) return null;
+  const candidates = [model?.id, model?.targetModel];
+  const requiresResponses = candidates.some((value) => (
+    /^gpt-5\.6-(?:luna|sol|terra)(?:$|[.-])/i.test(String(value || "").trim())
+  ));
+  return requiresResponses ? { type: "routeKey", value: "responses" } : null;
+}
+
 export function inferBackendRouteKey(routeKey, override) {
   if (override?.type === "routeKey") return override.value;
   if (override?.type === "path") {
-    const p = override.value.toLowerCase();
-    if (p.endsWith("/responses")) return "responses";
-    if (p.endsWith("/chat/completions")) return "chat/completions";
-    if (p.endsWith("/images/generations")) return "images/generations";
+    return inferRouteKeyFromPath(override.value) || routeKey;
   }
   return routeKey;
+}
+
+export function reconcileBackendRouteKey(configuredBackendRouteKey, targetUrl) {
+  return inferRouteKeyFromPath(targetUrl) || configuredBackendRouteKey;
 }
 
 export function isPlaceholderBaseUrl(baseUrl) {

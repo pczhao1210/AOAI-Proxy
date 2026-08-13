@@ -7,8 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "npm run test:safety && npm run test:routes",
+    "test": "npm run test:safety && npm run test:routing-regressions && npm run test:routes",
     "test:routes": "node test/run-route-smoke-tests.js",
+    "test:routing-regressions": "node test/run-routing-regression-tests.js",
     "test:safety": "node test/run-proxy-safety-tests.js"
   },
   "dependencies": {

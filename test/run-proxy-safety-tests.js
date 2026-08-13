@@ -6,7 +6,9 @@ import path from "node:path";
 import { isBlobFallbackError, writePersistedConfigText } from "../src/persistence.js";
 import { hardenBootstrapConfig, hardenBootstrapConfigFile } from "../src/bootstrap-config.js";
 import { applyConfigEnvironmentOverrides, validateConfig } from "../src/config.js";
-import { parseJsonWithTimeout } from "../src/proxy/reliability.js";
+import { getProviderPayloadError, parseJsonWithTimeout } from "../src/proxy/reliability.js";
+import { inferBackendRouteKey, reconcileBackendRouteKey, resolveModelCompatibilityRoute } from "../src/proxy/routing.js";
+import { chatToResponsesRequest, normalizeResponsesToolDescriptions, sanitizeChatToolTranscript } from "../src/proxy/shim.js";
 import { streamPassthrough, streamShim, writeSseError } from "../src/proxy/stream.js";
 
 const policy = {
@@ -235,6 +237,75 @@ async function testPassthroughHonorsBackpressure() {
   assert.equal(raw.output(), "data: first\n\ndata: second\n\n");
 }
 
+async function testPassthroughRejectsPrematureEof() {
+  const response = createChunkedResponse([
+    new TextEncoder().encode(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "partial" })}\n\n`)
+  ]);
+  const result = await streamPassthrough({
+    upstreamResponse: response,
+    reply: { raw: createReplyRaw() },
+    modelId: "test-model",
+    backendRouteKey: "responses",
+    policy,
+    onFirstChunk() {}
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+}
+
+async function testPassthroughAcceptsChatFinishReasonAtEof() {
+  const response = createChunkedResponse([
+    new TextEncoder().encode(`data: ${JSON.stringify({
+      choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }]
+    })}`)
+  ]);
+  const result = await streamPassthrough({
+    upstreamResponse: response,
+    reply: { raw: createReplyRaw() },
+    modelId: "test-model",
+    backendRouteKey: "chat/completions",
+    policy,
+    onFirstChunk() {}
+  });
+  assert.equal(result.ok, true);
+}
+
+async function testShimRejectsPrematureEofAndAcceptsCompletedOutput() {
+  const partialResult = await streamShim({
+    upstreamResponse: createChunkedResponse([
+      new TextEncoder().encode(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "partial" })}\n\n`)
+    ]),
+    reply: { raw: createReplyRaw() },
+    modelId: "test-model",
+    routeKey: "chat/completions",
+    backendRouteKey: "responses",
+    model: { id: "test-model" },
+    policy,
+    onFirstChunk() {}
+  });
+  assert.equal(partialResult.ok, false);
+  assert.equal(partialResult.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+
+  const raw = createReplyRaw();
+  const completedResult = await streamShim({
+    upstreamResponse: createChunkedResponse([
+      new TextEncoder().encode([
+        `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "complete" })}\n\n`,
+        `data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "message", status: "completed" } })}`
+      ].join(""))
+    ]),
+    reply: { raw },
+    modelId: "test-model",
+    routeKey: "chat/completions",
+    backendRouteKey: "responses",
+    model: { id: "test-model" },
+    policy,
+    onFirstChunk() {}
+  });
+  assert.equal(completedResult.ok, true);
+  assert.match(raw.output(), /data: \[DONE\]/);
+}
+
 async function testJsonTimeoutCancelsBody() {
   let cancelReason = "";
   const response = createPendingResponse({
@@ -267,6 +338,103 @@ async function testJsonResponseLimitCancelsBody() {
     (error) => error?.code === "UPSTREAM_RESPONSE_TOO_LARGE"
   );
   assert.equal(cancelReason, "response-too-large");
+}
+
+function testBackendRouteInferenceHandlesQueriesAndFinalUrls() {
+  assert.equal(inferBackendRouteKey("chat/completions", {
+    type: "path",
+    value: "/openai/v1/responses?api-version=preview"
+  }), "responses");
+  assert.equal(
+    reconcileBackendRouteKey("responses", "https://example.openai.azure.com/openai/v1/chat/completions?api-version=preview"),
+    "chat/completions"
+  );
+  assert.equal(
+    reconcileBackendRouteKey("responses", "https://gateway.example.test/custom/inference"),
+    "responses"
+  );
+}
+
+function testGpt56CompatibilityRoutingIsScopedAndOverridable() {
+  const upstream = { routes: { "chat/completions": "/chat/completions", responses: "/responses" } };
+  for (const modelId of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
+    assert.deepEqual(
+      resolveModelCompatibilityRoute({ id: modelId }, upstream, "chat/completions"),
+      { type: "routeKey", value: "responses" }
+    );
+  }
+  assert.equal(resolveModelCompatibilityRoute({ id: "gpt-5.4-mini" }, upstream, "chat/completions"), null);
+  assert.equal(resolveModelCompatibilityRoute({ id: "gpt-5.6-luna" }, { routes: {} }, "chat/completions"), null);
+  assert.equal(resolveModelCompatibilityRoute({ id: "gpt-5.6-luna" }, upstream, "responses"), null);
+}
+
+function testResponsesRequestNormalizationPreservesModernControls() {
+  const request = chatToResponsesRequest({
+    model: "gpt-5.6-luna",
+    messages: [{ role: "user", content: "hello" }],
+    reasoning_effort: "max",
+    tools: [{ type: "function", function: { name: "lookup", description: "", parameters: { type: "object" } } }]
+  }, "gpt-5.6-luna");
+  normalizeResponsesToolDescriptions(request);
+  assert.deepEqual(request.reasoning, { effort: "max" });
+  assert.equal(request.tools[0].description, "lookup");
+
+  const nativeRequest = {
+    tools: [{ type: "namespace", tools: [{ type: "custom", name: "shell" }] }],
+    input: [{ type: "additional_tools", tools: [{ type: "function", name: "search", description: " " }] }]
+  };
+  normalizeResponsesToolDescriptions(nativeRequest);
+  assert.equal(nativeRequest.tools[0].tools[0].description, "shell");
+  assert.equal(nativeRequest.input[0].tools[0].description, "search");
+}
+
+function testMalformedToolTranscriptIsSanitizedByCompleteTurn() {
+  const completeTurn = [
+    { role: "user", content: "lookup" },
+    { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "lookup", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "call_1", content: "done" },
+    { role: "assistant", content: "finished" }
+  ];
+  const unchanged = sanitizeChatToolTranscript(completeTurn);
+  assert.equal(unchanged.changed, false);
+  assert.equal(unchanged.messages, completeTurn);
+
+  const malformed = sanitizeChatToolTranscript([
+    { role: "tool", tool_call_id: "orphan", content: "orphan" },
+    { role: "user", content: "lookup" },
+    { role: "assistant", content: null, tool_calls: [
+      { id: "call_1", type: "function", function: { name: "one", arguments: "{}" } },
+      { id: "call_2", type: "function", function: { name: "two", arguments: "{}" } }
+    ] },
+    { role: "tool", tool_call_id: "call_1", content: "partial" },
+    { role: "user", content: "continue" }
+  ]);
+  assert.equal(malformed.changed, true);
+  assert.deepEqual(malformed.messages, [
+    { role: "user", content: "lookup" },
+    { role: "user", content: "continue" }
+  ]);
+  assert.equal(malformed.droppedToolMessages, 2);
+  assert.equal(malformed.droppedAssistantTurns, 1);
+}
+
+function testProviderFailurePayloadIsNotTreatedAsSuccess() {
+  assert.deepEqual(getProviderPayloadError({
+    status: "failed",
+    error: {
+      message: "model failed",
+      code: "model_failed",
+      type: "invalid_request_error",
+      param: "input"
+    }
+  }), {
+    message: "model failed",
+    code: "model_failed",
+    type: "invalid_request_error",
+    param: "input"
+  });
+  assert.equal(getProviderPayloadError({ status: "completed", error: null, output: [] }), null);
+  assert.equal(getProviderPayloadError({ choices: [{ message: { content: "ok" } }] }), null);
 }
 
 async function testBlobFallbackClassification() {
@@ -395,8 +563,16 @@ const tests = [
   testSseErrorWriteToleratesDestroyedClient,
   testDisconnectCancelsUpstreamReader,
   testPassthroughHonorsBackpressure,
+  testPassthroughRejectsPrematureEof,
+  testPassthroughAcceptsChatFinishReasonAtEof,
+  testShimRejectsPrematureEofAndAcceptsCompletedOutput,
   testJsonTimeoutCancelsBody,
   testJsonResponseLimitCancelsBody,
+  testBackendRouteInferenceHandlesQueriesAndFinalUrls,
+  testGpt56CompatibilityRoutingIsScopedAndOverridable,
+  testResponsesRequestNormalizationPreservesModernControls,
+  testMalformedToolTranscriptIsSanitizedByCompleteTurn,
+  testProviderFailurePayloadIsNotTreatedAsSuccess,
   testBlobFallbackClassification,
   testLocalConfigWriteIsAtomic,
   testBootstrapRotatesSharedCredentials,

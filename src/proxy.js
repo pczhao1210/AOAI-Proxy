@@ -7,7 +7,9 @@ import {
   buildUpstreamUrl,
   buildDirectUpstreamUrl,
   resolveModelRoute,
+  resolveModelCompatibilityRoute,
   inferBackendRouteKey,
+  reconcileBackendRouteKey,
   isPlaceholderBaseUrl
 } from "./proxy/routing.js";
 import {
@@ -19,6 +21,8 @@ import {
 import {
   chatToResponsesRequest,
   responsesToChatRequest,
+  sanitizeChatToolTranscript,
+  normalizeResponsesToolDescriptions,
   mapResponsesJsonToChatCompletion,
   mapChatCompletionJsonToResponses
 } from "./proxy/shim.js";
@@ -28,6 +32,7 @@ import {
   computeBackoffMs,
   classifyHttpStatus,
   classifyFetchError,
+  getProviderPayloadError,
   buildErrorBody,
   fetchOnceWithConnectTimeout,
   fetchWithRetry,
@@ -53,7 +58,7 @@ export async function proxyRequest({
     : req.id;
   const log = req.log;
   const requestNetworkContext = getRequestNetworkContext(config, req);
-  const body = sanitizeRequestBody(req.body || {});
+  let body = sanitizeRequestBody(req.body || {});
   const modelId = body.model || config.models[0]?.id;
   if (!modelId) {
     reply.code(400).send({ error: "model is required" });
@@ -63,6 +68,19 @@ export async function proxyRequest({
   if (!model) {
     reply.code(404).send({ error: `model ${modelId} not found` });
     return;
+  }
+  if (routeKey === "chat/completions" && Array.isArray(body.messages)) {
+    const sanitizedToolTranscript = sanitizeChatToolTranscript(body.messages);
+    if (sanitizedToolTranscript.changed) {
+      body = { ...body, messages: sanitizedToolTranscript.messages };
+      log.info({
+        requestId,
+        modelId,
+        routeKey,
+        droppedToolMessages: sanitizedToolTranscript.droppedToolMessages,
+        droppedAssistantTurns: sanitizedToolTranscript.droppedAssistantTurns
+      }, "sanitized malformed tool transcript");
+    }
   }
   const upstream = findUpstream(config, model.upstream);
   if (!upstream) {
@@ -80,12 +98,14 @@ export async function proxyRequest({
   }
 
   const deployment = model.targetModel || model.id;
-  const override = resolveModelRoute(model, routeKey);
+  const override = resolveModelRoute(model, routeKey)
+    || resolveModelCompatibilityRoute(model, upstream, routeKey);
   const effectiveRouteKey = override?.type === "routeKey" ? override.value : routeKey;
-  const backendRouteKey = inferBackendRouteKey(routeKey, override);
+  let backendRouteKey = inferBackendRouteKey(routeKey, override);
   const targetUrl = override?.type === "path"
     ? buildDirectUpstreamUrl(upstream, override.value, deployment)
     : buildUpstreamUrl(upstream, effectiveRouteKey, deployment);
+  backendRouteKey = reconcileBackendRouteKey(backendRouteKey, targetUrl);
   const policy = resolveUpstreamPolicy(config);
   let upstreamAuthHeaders;
   try {
@@ -121,6 +141,10 @@ export async function proxyRequest({
 
   if (nextBody && typeof nextBody === "object" && "stream_options" in nextBody) {
     delete nextBody.stream_options;
+  }
+
+  if (nextBody && typeof nextBody === "object" && backendRouteKey === "responses") {
+    normalizeResponsesToolDescriptions(nextBody);
   }
 
   if (nextBody && typeof nextBody === "object") {
@@ -211,6 +235,7 @@ export async function proxyRequest({
           upstreamResponse,
           reply,
           modelId: model.id,
+          backendRouteKey,
           policy,
           onFirstChunk: () => {
             if (streamingStarted) return;
@@ -370,6 +395,35 @@ export async function proxyRequest({
       latencyMs: Date.now() - startAt
     }, "non-stream response parse failed");
     reply.code(status).send(errBody);
+    return;
+  }
+
+  const providerPayloadError = getProviderPayloadError(payload);
+  if (providerPayloadError) {
+    recordError(model.id);
+    const classified = {
+      code: "UPSTREAM_PROVIDER_RESPONSE_ERROR",
+      retryable: false,
+      status: 502
+    };
+    log.error({
+      requestId,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      errorCode: providerPayloadError.code,
+      latencyMs: Date.now() - startAt
+    }, "upstream returned a failed provider payload");
+    reply.code(502).send(buildErrorBody({
+      classified,
+      requestId,
+      detail: payload,
+      upstreamStatus: upstreamResponse.status,
+      message: providerPayloadError.message,
+      code: providerPayloadError.code,
+      type: providerPayloadError.type,
+      param: providerPayloadError.param
+    }));
     return;
   }
 

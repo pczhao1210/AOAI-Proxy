@@ -2,6 +2,13 @@ import { recordUsage } from "../stats.js";
 import { markErrorWithCode } from "./reliability.js";
 
 const MAX_SSE_BUFFER_CHARS = 8 * 1024 * 1024;
+const RESPONSES_TERMINAL_OUTPUT_EVENTS = new Set([
+  "response.output_text.done",
+  "response.refusal.done",
+  "response.output_item.done",
+  "response.function_call_arguments.done",
+  "response.reasoning.done"
+]);
 
 function buildProviderStreamError(event) {
   const providerError = event?.error && typeof event.error === "object"
@@ -124,6 +131,7 @@ export async function streamPassthrough({
   upstreamResponse,
   reply,
   modelId,
+  backendRouteKey = "",
   policy,
   onFirstChunk
 }) {
@@ -139,7 +147,32 @@ export async function streamPassthrough({
   const decoder = new TextDecoder();
   let providerBuffer = "";
   let providerError = null;
+  let terminalMarkerSeen = false;
+  let chatFinishReasonSeen = false;
+  let responsesTerminalOutputSeen = false;
   let clientDisconnected = false;
+  const observePayload = (payload) => {
+    if (!payload) return;
+    if (payload === "[DONE]") {
+      terminalMarkerSeen = true;
+      return;
+    }
+    const event = parseSseJson(payload);
+    if (!event) return;
+    if (isProviderErrorEvent(event)) {
+      providerError = buildProviderStreamError(event);
+      return;
+    }
+    if (event.type === "response.completed" || event.type === "response.incomplete") {
+      terminalMarkerSeen = true;
+    }
+    if (RESPONSES_TERMINAL_OUTPUT_EVENTS.has(event.type)) {
+      responsesTerminalOutputSeen = true;
+    }
+    if (Array.isArray(event.choices) && event.choices.some((choice) => choice?.finish_reason)) {
+      chatFinishReasonSeen = true;
+    }
+  };
   const onClientClose = () => {
     if (reply.raw.writableEnded) return;
     clientDisconnected = true;
@@ -186,15 +219,7 @@ export async function streamPassthrough({
         providerBuffer = providerBuffer.slice(idx + 1);
         if (!line.startsWith("data:")) continue;
         const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const event = JSON.parse(payload);
-          if (isProviderErrorEvent(event)) {
-            providerError = buildProviderStreamError(event);
-          }
-        } catch {
-          // ignore parse errors for passthrough events
-        }
+        observePayload(payload);
       }
       if (usageState.buffer.length > MAX_SSE_BUFFER_CHARS || providerBuffer.length > MAX_SSE_BUFFER_CHARS) {
         throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
@@ -215,6 +240,10 @@ export async function streamPassthrough({
   clearTimeout(firstByteTimer);
   clearIdle();
   reply.raw.removeListener?.("close", onClientClose);
+  const trailingPayload = providerBuffer.trim();
+  if (trailingPayload.startsWith("data:")) {
+    observePayload(trailingPayload.slice(5).trim());
+  }
   if (clientDisconnected) {
     return {
       ok: false,
@@ -245,6 +274,20 @@ export async function streamPassthrough({
       providerErrorForwarded: true
     };
   }
+  const knownProtocol = backendRouteKey === "chat/completions" || backendRouteKey === "responses";
+  const hasProtocolTerminal = terminalMarkerSeen
+    || (backendRouteKey === "chat/completions" && chatFinishReasonSeen)
+    || (backendRouteKey === "responses" && responsesTerminalOutputSeen);
+  if (knownProtocol && !hasProtocolTerminal) {
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: markErrorWithCode(
+        new Error(`upstream ${backendRouteKey} stream ended before its completion marker`),
+        "UPSTREAM_INCOMPLETE_STREAM"
+      )
+    };
+  }
   return { ok: true, firstChunkSeen };
 }
 
@@ -269,6 +312,8 @@ export async function streamShim({
   let buffer = "";
   const decoder = new TextDecoder();
   let providerError = null;
+  let sourceTerminalSeen = false;
+  let responsesTerminalOutputSeen = false;
   let terminalFrameWritten = false;
   let clientDisconnected = false;
   const created = Math.floor(Date.now() / 1000);
@@ -317,14 +362,18 @@ export async function streamShim({
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-      if (!firstChunkSeen) {
-        firstChunkSeen = true;
-        clearTimeout(firstByteTimer);
-        onFirstChunk();
+      if (done) {
+        buffer += decoder.decode();
+        if (buffer.trim() && !buffer.endsWith("\n")) buffer += "\n";
+      } else {
+        if (!firstChunkSeen) {
+          firstChunkSeen = true;
+          clearTimeout(firstByteTimer);
+          onFirstChunk();
+        }
+        resetIdle();
+        buffer += decoder.decode(value, { stream: true });
       }
-      resetIdle();
-      buffer += decoder.decode(value, { stream: true });
       if (buffer.length > MAX_SSE_BUFFER_CHARS) {
         throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
       }
@@ -337,6 +386,7 @@ export async function streamShim({
         const payload = line.slice(5).trim();
         if (!payload) continue;
         if (payload === "[DONE]") {
+          sourceTerminalSeen = true;
           if (routeKey === "chat/completions" && backendRouteKey === "responses") {
             await finishChatCompletionStream();
           } else if (!terminalFrameWritten) {
@@ -354,6 +404,9 @@ export async function streamShim({
           }
           if (evt?.usage) recordUsage(model.id, evt.usage);
           const t = evt?.type;
+          if (RESPONSES_TERMINAL_OUTPUT_EVENTS.has(t)) {
+            responsesTerminalOutputSeen = true;
+          }
           if (t === "response.output_text.delta") {
             const delta = evt?.delta ?? "";
             await writeSse(reply.raw, {
@@ -400,10 +453,12 @@ export async function streamShim({
               });
             }
           } else if (t === "response.completed") {
+            sourceTerminalSeen = true;
             const usage = evt?.response?.usage;
             if (usage) recordUsage(model.id, usage);
             await finishChatCompletionStream();
           } else if (t === "response.incomplete") {
+            sourceTerminalSeen = true;
             const usage = evt?.response?.usage;
             if (usage) recordUsage(model.id, usage);
             await finishChatCompletionStream("length");
@@ -425,6 +480,7 @@ export async function streamShim({
           }
         }
       }
+      if (done) break;
     }
   } catch (error) {
     clearTimeout(firstByteTimer);
@@ -467,6 +523,20 @@ export async function streamShim({
       ok: false,
       beforeFirstChunk: !firstChunkSeen,
       error: providerError
+    };
+  }
+  if (!sourceTerminalSeen && backendRouteKey === "responses" && responsesTerminalOutputSeen) {
+    sourceTerminalSeen = true;
+    if (routeKey === "chat/completions") await finishChatCompletionStream();
+  }
+  if (!sourceTerminalSeen) {
+    return {
+      ok: false,
+      beforeFirstChunk: !firstChunkSeen,
+      error: markErrorWithCode(
+        new Error(`upstream ${backendRouteKey} stream ended before its completion marker`),
+        "UPSTREAM_INCOMPLETE_STREAM"
+      )
     };
   }
   return { ok: true, firstChunkSeen };
