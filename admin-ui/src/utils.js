@@ -31,10 +31,25 @@ export const DEFAULT_UPSTREAM_TEMPLATE = {
   resourceName: "",
   status: "active",
   priority: 100,
+  auth: {
+    mode: "managedIdentity",
+    apiKey: ""
+  },
   capabilities: [],
+  requestPolicy: {
+    allowedParams: [],
+    blockedParams: [],
+    dropUnsupportedParams: false
+  },
+  errorPolicy: {
+    nativePassthrough: false
+  },
   routes: {
     "chat/completions": "/openai/v1/chat/completions",
     responses: "/openai/v1/responses",
+    "responses/compact": "/openai/v1/responses/compact",
+    messages: "/anthropic/v1/messages",
+    "messages/count_tokens": "/anthropic/v1/messages/count_tokens",
     "images/generations": "/openai/v1/images/generations",
     "openai-image": "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview",
     "blackforest-image": "/providers/blackforestlabs/v1/{deployment}?api-version=preview"
@@ -47,9 +62,15 @@ export const DEFAULT_MODEL_TEMPLATE = {
   status: "active",
   upstream: "",
   targetModel: "",
+  hostingMode: "",
   capabilities: [],
   pricingRef: "",
   accessTags: [],
+  clientCompatibility: {
+    claudeCode: false,
+    codex: false
+  },
+  codex: {},
   fallbackModels: [],
   defaultParams: {},
   requestPolicy: {
@@ -60,10 +81,11 @@ export const DEFAULT_MODEL_TEMPLATE = {
   routes: {}
 };
 
-const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "stream", "images", "image"]);
+const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "messages", "stream", "images", "image"]);
 export const KNOWN_MODEL_ROUTE_VALUES = [
   "chat/completions",
   "responses",
+  "messages",
   "images/generations",
   "openai-image",
   "blackforest-image"
@@ -82,6 +104,7 @@ export const DEFAULT_LOG_FILTERS = {
 export const TEST_ENDPOINTS = [
   "/v1/chat/completions",
   "/v1/responses",
+  "/v1/messages",
   "/v1/images/generations"
 ];
 
@@ -150,6 +173,9 @@ export function getSuggestedModelRouteValues(source) {
   if (interfaces.includes("responses")) {
     values.push("responses");
   }
+  if (interfaces.includes("messages")) {
+    values.push("messages");
+  }
   if (isImageModel) {
     values.push("images/generations");
     if (provider === "black-forest-labs") {
@@ -196,6 +222,7 @@ export function buildModelFromPricingTemplate(definition, upstreamName, config) 
     status: "active",
     upstream: upstreamName || "",
     targetModel: String(template.targetModel || definition?.id || modelId),
+    hostingMode: String(template.hostingMode || definition?.defaultHostingMode || ""),
     capabilities: normalizeStringArray(template.capabilities?.length ? template.capabilities : definition?.capabilities),
     pricingRef: String(template.pricingRef || definition?.id || ""),
     routes: cloneJson(template.routes || {})
@@ -250,6 +277,8 @@ export function applyPricingTemplateToModel(config, model, definition) {
   const normalizedRequestPolicy = asPlainObject(normalizedModel.requestPolicy);
   const explicitTargetModel = String(normalizedModel.targetModel || "").trim();
   const explicitPricingRef = String(normalizedModel.pricingRef || "").trim();
+  const hostingModes = normalizeStringArray(definition?.hostingModes).map((mode) => mode.toLowerCase());
+  const explicitHostingMode = String(normalizedModel.hostingMode || "").trim().toLowerCase();
 
   return {
     ...cloneJson(DEFAULT_MODEL_TEMPLATE),
@@ -259,6 +288,7 @@ export function applyPricingTemplateToModel(config, model, definition) {
     status: String(normalizedModel.status || templateModel.status || "active"),
     upstream: String(normalizedModel.upstream || templateModel.upstream || ""),
     targetModel: String(explicitTargetModel || templateModel.targetModel || ""),
+    hostingMode: hostingModes.includes(explicitHostingMode) ? explicitHostingMode : templateModel.hostingMode,
     capabilities: [...templateModel.capabilities],
     pricingRef: String(explicitPricingRef || templateModel.pricingRef || ""),
     accessTags: normalizeStringArray(normalizedModel.accessTags),
@@ -353,6 +383,13 @@ export function buildDefaultTestPayload(endpoint, config) {
     return {
       model: defaultModel,
       input: "Return a short diagnostics summary for the AOAI proxy."
+    };
+  }
+  if (endpoint === "/v1/messages") {
+    return {
+      model: defaultModel,
+      messages: [{ role: "user", content: "Return a short diagnostics summary for the AOAI proxy." }],
+      max_tokens: 256
     };
   }
   if (endpoint === "/v1/images/generations") {

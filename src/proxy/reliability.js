@@ -130,8 +130,22 @@ export function resolveUpstreamPolicy(config, options = {}) {
   };
 }
 
-export function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function sleep(ms, signal) {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  if (signal.aborted) {
+    return Promise.reject(markErrorWithCode(new Error("client disconnected"), "CLIENT_DISCONNECTED"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(markErrorWithCode(new Error("client disconnected"), "CLIENT_DISCONNECTED"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export function computeBackoffMs(policy, attempt) {
@@ -155,13 +169,16 @@ export function classifyHttpStatus(status) {
 }
 
 export function classifyFetchError(error) {
-  const code = String(error?.code || "");
-  const message = String(error?.message || "");
+  const code = String(error?.code || error?.cause?.code || "");
+  const message = [error?.message, error?.cause?.message].filter(Boolean).map(String).join(": ");
   if (code === "CLIENT_DISCONNECTED") {
     return { code: "CLIENT_DISCONNECTED", retryable: false, status: 499, detail: message || "client disconnected" };
   }
   if (code === "UPSTREAM_STREAM_EVENT_TOO_LARGE") {
     return { code: "UPSTREAM_STREAM_EVENT_TOO_LARGE", retryable: false, status: 502, detail: message };
+  }
+  if (code === "UPSTREAM_INCOMPLETE_STREAM") {
+    return { code: "UPSTREAM_INCOMPLETE_STREAM", retryable: false, status: 502, detail: message || "upstream stream ended before its completion marker" };
   }
   if (code === "UPSTREAM_RESPONSE_TOO_LARGE") {
     return { code: "UPSTREAM_RESPONSE_TOO_LARGE", retryable: false, status: 502, detail: message };
@@ -291,9 +308,13 @@ export async function fetchOnceWithConnectTimeout({
   connectTimeoutMs,
   timeoutMs = connectTimeoutMs,
   timeoutCode = "UPSTREAM_CONNECT_TIMEOUT",
-  timeoutLabel = "connect"
+  timeoutLabel = "connect",
+  signal
 }) {
   const controller = new AbortController();
+  const abortFromClient = () => controller.abort("client-disconnected");
+  if (signal?.aborted) abortFromClient();
+  else signal?.addEventListener("abort", abortFromClient, { once: true });
   const timer = setTimeout(() => {
     controller.abort(timeoutCode);
   }, timeoutMs);
@@ -305,12 +326,16 @@ export async function fetchOnceWithConnectTimeout({
       signal: controller.signal
     });
   } catch (error) {
+    if (controller.signal.aborted && controller.signal.reason === "client-disconnected") {
+      throw markErrorWithCode(error, "CLIENT_DISCONNECTED", "client disconnected");
+    }
     if (controller.signal.aborted && controller.signal.reason === timeoutCode) {
       throw markErrorWithCode(error, timeoutCode, `${timeoutLabel} timeout after ${timeoutMs}ms`);
     }
     throw error;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", abortFromClient);
   }
 }
 
@@ -320,7 +345,8 @@ export async function fetchWithRetry({
   bodyText,
   policy,
   logMeta,
-  log
+  log,
+  signal
 }) {
   const maxAttempts = Math.max(1, policy.maxRetries + 1);
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -332,24 +358,58 @@ export async function fetchWithRetry({
         connectTimeoutMs: policy.connectTimeoutMs,
         timeoutMs: policy.firstByteTimeoutMs,
         timeoutCode: "UPSTREAM_FIRST_BYTE_TIMEOUT",
-        timeoutLabel: "first byte"
+        timeoutLabel: "first byte",
+        signal
       });
       if (upstreamResponse.ok) {
         return { ok: true, upstreamResponse, attempt };
       }
       const classified = classifyHttpStatus(upstreamResponse.status);
-      const detail = await upstreamResponse.text().catch(() => "");
+      const upstreamContentType = upstreamResponse.headers.get("content-type") || "";
+      const upstreamRetryAfter = upstreamResponse.headers.get("retry-after") || "";
+      let detail = "";
+      try {
+        detail = await readTextWithTimeout(upstreamResponse, policy.requestTimeoutMs, 1024 * 1024, signal);
+      } catch (readError) {
+        const readFailure = classifyFetchError(readError);
+        if (attempt < maxAttempts && readFailure.retryable && policy.classifyNetworkErrorsAsRetryable !== false) {
+          const backoffMs = computeBackoffMs(policy, attempt);
+          log.warn({ ...logMeta, attempt, backoffMs, errorCode: readFailure.code, detail: readFailure.detail }, "upstream retry on HTTP error body read failure");
+          try {
+            await sleep(backoffMs, signal);
+          } catch (abortError) {
+            const aborted = classifyFetchError(abortError);
+            return { ok: false, classified: aborted, detail: aborted.detail, upstreamStatus: aborted.status, attempt };
+          }
+          continue;
+        }
+        return {
+          ok: false,
+          classified: readFailure,
+          upstreamStatus: readFailure.status,
+          detail: readFailure.detail,
+          attempt
+        };
+      }
       const retryableStatus = policy.retryStatuses.has(upstreamResponse.status) || classified.retryable;
       if (attempt < maxAttempts && retryableStatus) {
         const backoffMs = computeBackoffMs(policy, attempt);
         log.warn({ ...logMeta, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "upstream retry on HTTP status");
-        await sleep(backoffMs);
+        try {
+          await sleep(backoffMs, signal);
+        } catch (error) {
+          const aborted = classifyFetchError(error);
+          return { ok: false, classified: aborted, detail: aborted.detail, upstreamStatus: aborted.status, attempt };
+        }
         continue;
       }
       return {
         ok: false,
         classified: { ...classified, retryable: retryableStatus && attempt < maxAttempts },
+        hasUpstreamHttpResponse: true,
         upstreamStatus: upstreamResponse.status,
+        upstreamContentType,
+        upstreamRetryAfter,
         detail,
         attempt
       };
@@ -359,7 +419,12 @@ export async function fetchWithRetry({
       if (attempt < maxAttempts && retryableNetworkError) {
         const backoffMs = computeBackoffMs(policy, attempt);
         log.warn({ ...logMeta, attempt, backoffMs, errorCode: classified.code, detail: classified.detail }, "upstream retry on fetch error");
-        await sleep(backoffMs);
+        try {
+          await sleep(backoffMs, signal);
+        } catch (abortError) {
+          const aborted = classifyFetchError(abortError);
+          return { ok: false, classified: aborted, detail: aborted.detail, upstreamStatus: aborted.status, attempt };
+        }
         continue;
       }
       return {
@@ -380,18 +445,25 @@ export async function fetchWithRetry({
   };
 }
 
-export async function parseJsonWithTimeout(response, timeoutMs, maxBytes = 0) {
+export async function readTextWithTimeout(response, timeoutMs, maxBytes = 0, signal) {
   const reader = response.body?.getReader();
   if (!reader) {
     throw markErrorWithCode(new Error("response body unavailable"), "UPSTREAM_FETCH_FAILED");
   }
   let timedOut = false;
+  let clientDisconnected = false;
   let totalBytes = 0;
   const chunks = [];
   const timerId = setTimeout(() => {
     timedOut = true;
     reader.cancel("request-timeout").catch(() => {});
   }, timeoutMs);
+  const abortFromClient = () => {
+    clientDisconnected = true;
+    reader.cancel("client-disconnected").catch(() => {});
+  };
+  if (signal?.aborted) abortFromClient();
+  else signal?.addEventListener("abort", abortFromClient, { once: true });
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -406,6 +478,63 @@ export async function parseJsonWithTimeout(response, timeoutMs, maxBytes = 0) {
       }
       chunks.push(Buffer.from(value));
     }
+    if (clientDisconnected) {
+      throw markErrorWithCode(new Error("client disconnected"), "CLIENT_DISCONNECTED");
+    }
+    if (timedOut) {
+      throw markErrorWithCode(new Error(`request timeout after ${timeoutMs}ms`), "UPSTREAM_REQUEST_TIMEOUT");
+    }
+    return Buffer.concat(chunks, totalBytes).toString("utf8");
+  } catch (error) {
+    if (clientDisconnected && error?.code !== "CLIENT_DISCONNECTED") {
+      throw markErrorWithCode(error, "CLIENT_DISCONNECTED", "client disconnected");
+    }
+    if (timedOut && error?.code !== "UPSTREAM_REQUEST_TIMEOUT") {
+      throw markErrorWithCode(error, "UPSTREAM_REQUEST_TIMEOUT", `request timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timerId);
+    signal?.removeEventListener("abort", abortFromClient);
+  }
+}
+
+export async function parseJsonWithTimeout(response, timeoutMs, maxBytes = 0, signal) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw markErrorWithCode(new Error("response body unavailable"), "UPSTREAM_FETCH_FAILED");
+  }
+  let timedOut = false;
+  let clientDisconnected = false;
+  let totalBytes = 0;
+  const chunks = [];
+  const timerId = setTimeout(() => {
+    timedOut = true;
+    reader.cancel("request-timeout").catch(() => {});
+  }, timeoutMs);
+  const abortFromClient = () => {
+    clientDisconnected = true;
+    reader.cancel("client-disconnected").catch(() => {});
+  };
+  if (signal?.aborted) abortFromClient();
+  else signal?.addEventListener("abort", abortFromClient, { once: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (maxBytes > 0 && totalBytes > maxBytes) {
+        await reader.cancel("response-too-large").catch(() => {});
+        throw markErrorWithCode(
+          new Error(`Upstream response exceeds ${maxBytes} bytes`),
+          "UPSTREAM_RESPONSE_TOO_LARGE"
+        );
+      }
+      chunks.push(Buffer.from(value));
+    }
+    if (clientDisconnected) {
+      throw markErrorWithCode(new Error("client disconnected"), "CLIENT_DISCONNECTED");
+    }
     if (timedOut) {
       throw markErrorWithCode(
         new Error(`request timeout after ${timeoutMs}ms`),
@@ -414,6 +543,9 @@ export async function parseJsonWithTimeout(response, timeoutMs, maxBytes = 0) {
     }
     return JSON.parse(Buffer.concat(chunks, totalBytes).toString("utf8"));
   } catch (error) {
+    if (clientDisconnected && error?.code !== "CLIENT_DISCONNECTED") {
+      throw markErrorWithCode(error, "CLIENT_DISCONNECTED", "client disconnected");
+    }
     if (timedOut && error?.code !== "UPSTREAM_REQUEST_TIMEOUT") {
       throw markErrorWithCode(
         error,
@@ -424,5 +556,6 @@ export async function parseJsonWithTimeout(response, timeoutMs, maxBytes = 0) {
     throw error;
   } finally {
     clearTimeout(timerId);
+    signal?.removeEventListener("abort", abortFromClient);
   }
 }

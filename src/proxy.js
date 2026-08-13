@@ -1,5 +1,5 @@
 import { getUpstreamAuthHeaders } from "./auth.js";
-import { appendStructuredLog } from "./logs.js";
+import { appendStructuredLog, buildContentLogSnapshot, resolveLogContentMode } from "./logs.js";
 import { recordError, recordRequest, recordUsage } from "./stats.js";
 import { recordRuntimeError, recordRuntimeRequest, recordRuntimeUsage } from "./runtime-store.js";
 import {
@@ -7,10 +7,14 @@ import {
   findModel,
   buildUpstreamUrl,
   buildDirectUpstreamUrl,
+  buildMessagesCountTokensUrl,
+  buildResponsesCompactUrl,
   resolveModelRoute,
   resolveEffectiveRouteKey,
   normalizeBackendRouteKey,
+  isPublicRouteEnabled,
   inferBackendRouteKey,
+  reconcileBackendRouteKey,
   resolveUpstreamBaseUrl,
   hasUsableUpstreamBaseUrl
 } from "./proxy/routing.js";
@@ -24,11 +28,20 @@ import {
 } from "./proxy/body.js";
 import { prepareImageGenerationRequest } from "./proxy/image-adapter.js";
 import {
+  chatToMessagesRequest,
   chatToResponsesRequest,
+  mapChatCompletionJsonToMessages,
   responsesToChatRequest,
+  responsesToMessagesRequest,
   sanitizeChatToolTranscript,
+  mapMessagesJsonToChatCompletion,
+  mapMessagesJsonToResponses,
   mapResponsesJsonToChatCompletion,
-  mapChatCompletionJsonToResponses
+  mapResponsesJsonToMessages,
+  mapChatCompletionJsonToResponses,
+  getProtocolShimCompatibilityIssue,
+  messagesToChatRequest,
+  messagesToResponsesRequest
 } from "./proxy/shim.js";
 import {
   resolveUpstreamPolicy,
@@ -39,7 +52,8 @@ import {
   buildErrorBody,
   fetchOnceWithConnectTimeout,
   fetchWithRetry,
-  parseJsonWithTimeout
+  parseJsonWithTimeout,
+  readTextWithTimeout
 } from "./proxy/reliability.js";
 import {
   setSseResponseHeaders,
@@ -59,8 +73,180 @@ import {
   recordGovernanceUsage
 } from "./governance.js";
 import { getRequestNetworkContext } from "./request-network.js";
+import { buildCorrelationHeaders, getRequestContext } from "./request-context.js";
 
 const DEFAULT_MAX_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
+const TEXT_PROTOCOL_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
+const MESSAGES_COUNT_TOKENS_ROUTE_KEY = "messages/count_tokens";
+const RESPONSES_COMPACT_ROUTE_KEY = "responses/compact";
+const ANTHROPIC_REQUEST_HEADERS = new Set(["anthropic-version", "anthropic-beta"]);
+const CLAUDE_CODE_HEADER_PREFIXES = ["anthropic-", "x-anthropic-", "x-claude-", "x-stainless-"];
+const VALID_ANTHROPIC_CACHE_TTLS = new Set(["5m", "1h"]);
+
+function anthropicCompatibility(config) {
+  return config?.compatibility?.anthropic || {};
+}
+
+function protocolShimCompatibility(config) {
+  return config?.compatibility?.protocolShim || {};
+}
+
+function claudeCodeCompatibilityEnabled(config) {
+  return config?.compatibility?.claudeCode?.enabled !== false;
+}
+
+function isDirectAnthropicUpstream(upstream, targetUrl) {
+  const provider = String(upstream?.provider || "").trim().toLowerCase();
+  if (["anthropic", "anthropic-api"].includes(provider)) return true;
+  try {
+    const hostname = new URL(targetUrl).hostname.toLowerCase();
+    return hostname === "api.anthropic.com" || hostname.endsWith(".anthropic.com");
+  } catch {
+    return false;
+  }
+}
+
+function isSupportedAnthropicCacheLocation(path) {
+  if (path.length === 0) return true;
+  if (path.length === 2 && path[0] === "tools" && Number.isInteger(path[1])) return true;
+  if (path.length === 2 && path[0] === "system" && Number.isInteger(path[1])) return true;
+  return path.length === 4
+    && path[0] === "messages"
+    && Number.isInteger(path[1])
+    && path[2] === "content"
+    && Number.isInteger(path[3]);
+}
+
+function sanitizeAnthropicCacheControls(value, path = []) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => sanitizeAnthropicCacheControls(item, [...path, index]));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  const currentType = typeof value.type === "string" ? value.type : "";
+  if ("cache_control" in value) {
+    const cacheControl = value.cache_control;
+    const ttl = typeof cacheControl?.ttl === "string" ? cacheControl.ttl : "";
+    if (
+      !isSupportedAnthropicCacheLocation(path)
+      || currentType === "thinking"
+      || currentType === "redacted_thinking"
+      || (currentType === "text" && !String(value.text || ""))
+      || !cacheControl
+      || typeof cacheControl !== "object"
+      || Array.isArray(cacheControl)
+      || cacheControl.type !== "ephemeral"
+      || (ttl && !VALID_ANTHROPIC_CACHE_TTLS.has(ttl))
+    ) {
+      delete value.cache_control;
+    } else {
+      value.cache_control = {
+        type: "ephemeral",
+        ...(ttl ? { ttl } : {})
+      };
+    }
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key !== "cache_control") sanitizeAnthropicCacheControls(child, [...path, key]);
+  }
+}
+
+function resolveAnthropicModelValues(config, profileName, modelId, model) {
+  const profiles = anthropicCompatibility(config)[profileName];
+  if (!profiles || typeof profiles !== "object") return null;
+  for (const candidate of [modelId, model?.targetModel, model?.id, model?.pricingRef]) {
+    const modelName = String(candidate || "").trim().toLowerCase();
+    const values = profiles[modelName];
+    if (Array.isArray(values) && values.length > 0) return values;
+  }
+  return null;
+}
+
+function applyAnthropicBodyCompatibility(body, config, modelId, model) {
+  if (!body || typeof body !== "object") return null;
+  const policy = anthropicCompatibility(config);
+  const thinkingType = typeof body.thinking?.type === "string"
+    ? body.thinking.type.trim()
+    : "";
+  if (thinkingType && policy.validateThinkingByModel !== false) {
+    const allowedTypes = resolveAnthropicModelValues(config, "thinkingTypesByModel", modelId, model);
+    if (allowedTypes && !allowedTypes.includes(thinkingType)) {
+      return {
+        param: "thinking.type",
+        message: `thinking.type=${thinkingType} is not supported by ${modelId}; use ${allowedTypes.join(" or ")}`
+      };
+    }
+  }
+  const effort = typeof body.output_config?.effort === "string"
+    ? body.output_config.effort.trim().toLowerCase()
+    : "";
+  if (effort && policy.validateThinkingByModel !== false) {
+    const allowedLevels = resolveAnthropicModelValues(config, "effortLevelsByModel", modelId, model);
+    const normalizedEffort = effort === "xhigh" && allowedLevels?.includes("max") && !allowedLevels.includes("xhigh")
+      ? "max"
+      : effort;
+    if (allowedLevels && !allowedLevels.includes(normalizedEffort)) {
+      return {
+        param: "output_config.effort",
+        message: `output_config.effort=${effort} is not supported by ${modelId}; use ${allowedLevels.join(" or ")}`
+      };
+    }
+    body.output_config.effort = normalizedEffort;
+  }
+  if (policy.normalizeManualThinkingToolChoice !== false && body.thinking?.type === "enabled") {
+    const choiceType = body.tool_choice?.type;
+    if (choiceType === "any" || choiceType === "tool") {
+      body.tool_choice = {
+        ...body.tool_choice,
+        type: "auto"
+      };
+      delete body.tool_choice.name;
+    }
+  }
+  if (policy.sanitizeCacheControl !== false) {
+    sanitizeAnthropicCacheControls(body);
+  }
+  return null;
+}
+
+function sanitizeToolControlsWithoutTools(body) {
+  if (!body || typeof body !== "object") return;
+  const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+  const hasLegacyFunctions = Array.isArray(body.functions) && body.functions.length > 0;
+  if (hasTools || hasLegacyFunctions) return;
+  delete body.tool_choice;
+  delete body.parallel_tool_calls;
+  delete body.function_call;
+}
+
+function applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl } = {}) {
+  const policy = anthropicCompatibility(config);
+  const allowUnknownBetas = claudeCodeCompatibilityEnabled(config)
+    && isDirectAnthropicUpstream(upstream, targetUrl);
+  const allowed = new Set(normalizeStringList(policy.betaAllowlist));
+  const seen = new Set();
+  const accepted = [];
+  const filtered = [];
+  for (const headerName of Object.keys(headers)) {
+    if (headerName.toLowerCase() !== "anthropic-beta") continue;
+    const values = String(headers[headerName] || "").split(",");
+    delete headers[headerName];
+    for (const rawValue of values) {
+      const value = rawValue.trim();
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      if (!allowUnknownBetas && policy.betaAllowlistEnabled !== false && !allowed.has(value)) {
+        filtered.push(value);
+        continue;
+      }
+      accepted.push(value);
+    }
+  }
+  if (accepted.length) headers["anthropic-beta"] = accepted.join(",");
+  return filtered;
+}
 
 function emitInfoLog(payload) {
   const normalizedPayload = {
@@ -110,6 +296,32 @@ function extractFailureDetails(detail) {
   };
 }
 
+function getProviderPayloadError(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const explicitError = payload.error && typeof payload.error === "object"
+    ? payload.error
+    : null;
+  const failed = payload.status === "failed"
+    || payload.type === "error"
+    || payload.type === "response.failed"
+    || payload.object === "error"
+    || explicitError != null;
+  if (!failed) return null;
+  const source = explicitError || payload;
+  return {
+    message: typeof source.message === "string" && source.message
+      ? source.message
+      : "upstream provider returned a failed response",
+    code: typeof source.code === "string" && source.code
+      ? source.code
+      : "provider_response_failed",
+    type: typeof source.type === "string" && source.type
+      ? source.type
+      : "provider_error",
+    param: source.param ?? null
+  };
+}
+
 function markTiming(timing, key) {
   if (!timing.enabled) {
     return;
@@ -142,7 +354,7 @@ function buildTimingFields(timing) {
 }
 
 function emitTimingLog({
-  requestId,
+  requestContext,
   requestNetworkContext,
   modelId,
   routeKey,
@@ -156,7 +368,7 @@ function emitTimingLog({
 }) {
   const timingFields = buildTimingFields(timing);
   emitInfoLog({
-    requestId,
+    ...requestContext,
     ...requestNetworkContext,
     modelId,
     routeKey,
@@ -175,7 +387,6 @@ function emitTimingLog({
 
 function normalizeRouteProfileKey(routeKey) {
   if (routeKey === "chat/completions") return "chatCompletions";
-  if (routeKey === "responses") return "responses";
   if (routeKey === "images/generations") return "imageGenerations";
   return routeKey;
 }
@@ -197,20 +408,25 @@ function isAllowedByAllNonEmptyLists(fieldName, lists) {
   return true;
 }
 
-function applyConfiguredRequestPolicy(body, { config, routeKey, model }) {
+function applyConfiguredRequestPolicy(body, { config, routeKey, model, upstream }) {
   if (!body || typeof body !== "object") return null;
   const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(routeKey)] || {};
   const routeAllowed = new Set(normalizeStringList(routeProfile.allowedRequestFields));
   const modelPolicy = model?.requestPolicy || {};
   const modelAllowed = new Set(normalizeStringList(modelPolicy.allowedParams));
   const modelBlocked = new Set(normalizeStringList(modelPolicy.blockedParams));
-  const dropUnsupported = modelPolicy.dropUnsupportedParams === true || config?.proxy?.guards?.dropUnsupportedOpenAiParams === true;
+  const upstreamPolicy = upstream?.requestPolicy || {};
+  const upstreamAllowed = new Set(normalizeStringList(upstreamPolicy.allowedParams));
+  const upstreamBlocked = new Set(normalizeStringList(upstreamPolicy.blockedParams));
+  const dropUnsupported = modelPolicy.dropUnsupportedParams === true
+    || upstreamPolicy.dropUnsupportedParams === true
+    || config?.proxy?.guards?.dropUnsupportedOpenAiParams === true;
   const rejectedFields = [];
 
   for (const fieldName of Object.keys(body)) {
     if (fieldName === "model") continue;
-    const blocked = modelBlocked.has(fieldName);
-    const allowed = isAllowedByAllNonEmptyLists(fieldName, [routeAllowed, modelAllowed]);
+    const blocked = modelBlocked.has(fieldName) || upstreamBlocked.has(fieldName);
+    const allowed = isAllowedByAllNonEmptyLists(fieldName, [routeAllowed, modelAllowed, upstreamAllowed]);
     if (!blocked && allowed) continue;
     if (dropUnsupported) {
       delete body[fieldName];
@@ -225,6 +441,17 @@ function applyConfiguredRequestPolicy(body, { config, routeKey, model }) {
     fields: rejectedFields,
     message: `Unsupported request field${rejectedFields.length > 1 ? "s" : ""}: ${rejectedFields.join(", ")}`
   };
+}
+
+function sendNativeErrorResponse(reply, { status, payload, contentType, retryAfter, requestId }) {
+  if (requestId) reply.header("x-request-id", requestId);
+  if (typeof contentType === "string" && contentType.trim()) {
+    reply.header("content-type", contentType);
+  }
+  if (typeof retryAfter === "string" && retryAfter.trim()) {
+    reply.header("retry-after", retryAfter);
+  }
+  reply.code(status).send(payload);
 }
 
 function validateImageGenerationPolicy(body, config) {
@@ -247,17 +474,115 @@ function validateImageGenerationPolicy(body, config) {
   return null;
 }
 
+function buildContentSnapshotFields(prefix, snapshot) {
+  return {
+    [`${prefix}Preview`]: snapshot.preview,
+    [`${prefix}BodyJson`]: snapshot.bodyJson,
+    [`${prefix}Bytes`]: snapshot.bytes,
+    [`${prefix}Sha256`]: snapshot.sha256,
+    [`${prefix}Truncated`]: snapshot.truncated,
+    [`${prefix}MessageCount`]: snapshot.messageCount,
+    [`${prefix}ToolCount`]: snapshot.toolCount,
+    [`${prefix}ItemCount`]: snapshot.itemCount
+  };
+}
+
+function estimateLocalTokensFromBytes(value) {
+  const bytes = Number(value);
+  return Number.isFinite(bytes) && bytes > 0 ? Math.max(1, Math.ceil(bytes / 4)) : 0;
+}
+
+function estimateSemanticTextBytes(value) {
+  const visited = new WeakSet();
+  let totalBytes = 0;
+
+  const visit = (current, key = "", parentType = "") => {
+    if (typeof current === "string") {
+      const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const mediaValue = /(?:image|audio|file|blob|bytes|base64|b64)/.test(normalizedKey)
+        || /(?:image|audio|file|screenshot)/.test(parentType);
+      const encodedValue = /^data:[^,]*;base64,/i.test(current)
+        || (
+          current.length >= 256
+          && current.length % 4 === 0
+          && !/\s/.test(current)
+          && /^[A-Za-z0-9+/_-]+={0,2}$/.test(current)
+        );
+      if (!mediaValue && !encodedValue) totalBytes += Buffer.byteLength(current, "utf8");
+      return;
+    }
+    if (!current || typeof current !== "object" || visited.has(current)) return;
+    visited.add(current);
+    const currentType = typeof current.type === "string" ? current.type.toLowerCase() : parentType;
+    for (const [childKey, childValue] of Object.entries(current)) {
+      visit(childValue, childKey, currentType);
+    }
+  };
+
+  visit(value);
+  return totalBytes;
+}
+
+function createStreamContentCollector(maxPayloadBytes) {
+  const configuredLimit = Number(maxPayloadBytes);
+  const limit = Number.isInteger(configuredLimit) && configuredLimit > 0
+    ? Math.min(configuredLimit, 10 * 1024 * 1024)
+    : 102400;
+  let captured = "";
+  let capturedBytes = 0;
+  let observedBytes = 0;
+  let truncated = false;
+  let lastKind = "";
+
+  return {
+    append(value, kind = "text") {
+      if (typeof value !== "string" || !value) return;
+      const separator = kind === "tool" && lastKind !== "tool" ? "\n[tool]\n" : "";
+      const semanticChunk = `${separator}${value}`;
+      const chunkBytes = Buffer.from(semanticChunk, "utf8");
+      observedBytes += chunkBytes.length;
+      lastKind = kind;
+      const remaining = limit - capturedBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      const retained = chunkBytes.length <= remaining ? chunkBytes : chunkBytes.subarray(0, remaining);
+      captured += retained.toString("utf8").replace(/\ufffd$/, "");
+      capturedBytes += retained.length;
+      if (retained.length < chunkBytes.length) truncated = true;
+    },
+    finish() {
+      return {
+        payload: {
+          output: [{ type: "stream_text", text: captured }]
+        },
+        observedBytes,
+        capturedBytes,
+        truncated
+      };
+    }
+  };
+}
+
 export async function proxyRequest({
   config,
   routeKey,
   req,
   reply
 }) {
+  const isMessagesCountTokens = routeKey === MESSAGES_COUNT_TOKENS_ROUTE_KEY;
+  const isResponsesCompact = routeKey === RESPONSES_COMPACT_ROUTE_KEY;
+  const isNativeUtilityRequest = isMessagesCountTokens || isResponsesCompact;
+  const protocolRouteKey = isMessagesCountTokens
+    ? "messages"
+    : isResponsesCompact
+      ? "responses"
+      : routeKey;
   const consumer = req.proxyAccess?.consumer || { keyId: "anonymous", displayName: "anonymous", isAnonymous: true, apiKey: null };
   const startAt = Date.now();
-  const requestId = typeof req.headers["x-request-id"] === "string" && req.headers["x-request-id"]
-    ? req.headers["x-request-id"]
-    : req.id;
+  const requestContext = getRequestContext(req);
+  const { requestId, conversationId, sessionId } = requestContext;
   const requestNetworkContext = getRequestNetworkContext(config, req);
   const timing = {
     enabled: hasEnabledDebugLatencyHeader(req.headers[DEBUG_LATENCY_HEADER_NAME]),
@@ -275,7 +600,7 @@ export async function proxyRequest({
   };
   let isStream = false;
   let governanceLease = null;
-  const log = req.log;
+  const log = req.log.child(requestContext);
   const finishTiming = ({ status = null, outcome = "", errorCode = "", source = "proxy" } = {}) => {
     if (!timing.enabled) {
       return;
@@ -288,7 +613,7 @@ export async function proxyRequest({
     }
     markTiming(timing, "completedAt");
     emitTimingLog({
-      requestId,
+      requestContext,
       requestNetworkContext,
       modelId,
       routeKey,
@@ -318,8 +643,11 @@ export async function proxyRequest({
       type: options.type
     }));
   };
-  let body = sanitizeRequestBody(req.body || {}, {
-    preserveNull: routeKey === "responses",
+  const rawBody = isNativeUtilityRequest && req.body && typeof req.body === "object"
+    ? structuredClone(req.body)
+    : req.body || {};
+  let body = sanitizeRequestBody(rawBody, {
+    preserveNull: protocolRouteKey === "responses",
     sanitizeMeaninglessValues: config?.proxy?.guards?.sanitizeMeaninglessValues !== false
   });
   let requestOverrides = {};
@@ -344,8 +672,8 @@ export async function proxyRequest({
     });
     return;
   }
-  const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(routeKey)] || {};
-  if (routeProfile.enabled === false || (routeKey === "images/generations" && config?.media?.generation?.enabled === false)) {
+  const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(protocolRouteKey)] || {};
+  if (!isPublicRouteEnabled(config, protocolRouteKey)) {
     sendProxyError(404, {
       code: "ROUTE_DISABLED",
       exposedCode: "RouteDisabled",
@@ -394,12 +722,14 @@ export async function proxyRequest({
     return;
   }
 
-  body = {
-    ...(routeProfile.defaultParams && typeof routeProfile.defaultParams === "object" ? routeProfile.defaultParams : {}),
-    ...(model.defaultParams && typeof model.defaultParams === "object" ? model.defaultParams : {}),
-    ...body,
-    model: modelId
-  };
+  body = isNativeUtilityRequest
+    ? { ...body, model: modelId }
+    : {
+      ...(routeProfile.defaultParams && typeof routeProfile.defaultParams === "object" ? routeProfile.defaultParams : {}),
+      ...(model.defaultParams && typeof model.defaultParams === "object" ? model.defaultParams : {}),
+      ...body,
+      model: modelId
+    };
   if (routeKey === "images/generations") {
     const imagePolicyError = validateImageGenerationPolicy(body, config);
     if (imagePolicyError) {
@@ -413,7 +743,7 @@ export async function proxyRequest({
     }
   }
 
-  if (Array.isArray(body.messages)) {
+  if (routeKey === "chat/completions" && Array.isArray(body.messages)) {
     const sanitizedToolTranscript = sanitizeChatToolTranscript(body.messages);
     if (sanitizedToolTranscript.changed) {
       body = {
@@ -473,7 +803,7 @@ export async function proxyRequest({
     return;
   }
 
-  if (!hasUsableUpstreamBaseUrl(upstream, { routeKey, model })) {
+  if (!hasUsableUpstreamBaseUrl(upstream, { routeKey: protocolRouteKey, model })) {
     log.error({
       source: "proxy",
       requestId,
@@ -495,13 +825,34 @@ export async function proxyRequest({
   }
   const deployment = model.targetModel || model.id;
   const usesModelRouter = String(deployment || "").trim().toLowerCase() === "model-router";
-  const override = resolveModelRoute(model, routeKey);
+  const override = resolveModelRoute(model, protocolRouteKey);
   let effectiveRouteKey = usesModelRouter
     ? "chat/completions"
-    : resolveEffectiveRouteKey(routeKey, model, upstream, override);
+    : resolveEffectiveRouteKey(protocolRouteKey, model, upstream, override);
   let backendRouteKey = override
-    ? inferBackendRouteKey(routeKey, override)
+    ? inferBackendRouteKey(protocolRouteKey, override)
     : normalizeBackendRouteKey(effectiveRouteKey);
+  if (TEXT_PROTOCOL_ROUTE_KEYS.has(protocolRouteKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
+    log.error({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      status: 400,
+      event: "proxy.request_rejected",
+      errorCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+      failureReason: `Unsupported text backend protocol: ${backendRouteKey}`
+    }, "request rejected: unsupported text backend protocol");
+    sendProxyError(400, {
+      code: "UNSUPPORTED_PROTOCOL_ROUTE",
+      exposedCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+      message: `Cannot route ${protocolRouteKey} requests to unsupported backend protocol ${backendRouteKey}`,
+      detail: { clientProtocol: protocolRouteKey, backendProtocol: backendRouteKey }
+    });
+    return;
+  }
   if (
     routeKey === "chat/completions"
     && backendRouteKey === "chat/completions"
@@ -526,14 +877,139 @@ export async function proxyRequest({
     }, "promoted chat/completions request with web_search to responses backend");
   }
 
-  const targetUrl = override?.type === "path"
+  const protocolTargetUrl = override?.type === "path"
     ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
     : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
-  const policy = resolveUpstreamPolicy(config, { routeKey, model, upstream, requestOverrides });
+  backendRouteKey = reconcileBackendRouteKey(backendRouteKey, protocolTargetUrl);
+  if (TEXT_PROTOCOL_ROUTE_KEYS.has(protocolRouteKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
+    log.error({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      status: 400,
+      event: "proxy.request_rejected",
+      errorCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+      failureReason: `Unsupported text backend protocol: ${backendRouteKey}`
+    }, "request rejected: unsupported text backend protocol");
+    sendProxyError(400, {
+      code: "UNSUPPORTED_PROTOCOL_ROUTE",
+      exposedCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+      message: `Cannot route ${protocolRouteKey} requests to unsupported backend protocol ${backendRouteKey}`,
+      detail: { clientProtocol: protocolRouteKey, backendProtocol: backendRouteKey }
+    });
+    return;
+  }
+  if (isMessagesCountTokens && backendRouteKey !== "messages") {
+    sendProxyError(400, {
+      code: "TOKEN_COUNTING_REQUIRES_NATIVE_MESSAGES",
+      exposedCode: "TokenCountingNotSupported",
+      message: `Token counting is not supported for model ${modelId}; a native Messages route is required`,
+      detail: { modelId, backendProtocol: backendRouteKey }
+    });
+    return;
+  }
+  if (isResponsesCompact && backendRouteKey !== "responses") {
+    sendProxyError(400, {
+      code: "COMPACTION_REQUIRES_NATIVE_RESPONSES",
+      exposedCode: "ResponseCompactionNotSupported",
+      message: `Response compaction is not supported for model ${modelId}; a native Responses route is required`,
+      detail: { modelId, backendProtocol: backendRouteKey }
+    });
+    return;
+  }
+  let targetUrl;
+  try {
+    if (isMessagesCountTokens) {
+      targetUrl = buildMessagesCountTokensUrl(upstream, protocolTargetUrl, deployment, model);
+    } else if (isResponsesCompact) {
+      targetUrl = buildResponsesCompactUrl(upstream, protocolTargetUrl, deployment, model);
+    } else {
+      targetUrl = protocolTargetUrl;
+    }
+  } catch (error) {
+    const operation = isMessagesCountTokens ? "Token counting" : "Response compaction";
+    sendProxyError(501, {
+      code: isMessagesCountTokens ? "TOKEN_COUNTING_NOT_CONFIGURED" : "COMPACTION_NOT_CONFIGURED",
+      exposedCode: isMessagesCountTokens ? "TokenCountingNotSupported" : "ResponseCompactionNotSupported",
+      message: `${operation} is not configured for model ${modelId}`,
+      detail: error?.message || `No usable ${routeKey} route`
+    });
+    return;
+  }
+  const needsProtocolShim =
+    routeKey !== backendRouteKey
+    && TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey)
+    && TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey);
+  const nativeErrorPassthrough = !needsProtocolShim
+    && protocolRouteKey === backendRouteKey
+    && (
+      upstream?.errorPolicy?.nativePassthrough === true
+      || routeProfile?.nativeErrorPassthrough === true
+    );
+  const shimRequestIssue = needsProtocolShim
+    ? getProtocolShimCompatibilityIssue(body, {
+      phase: "request",
+      sourceProtocol: routeKey,
+      targetProtocol: backendRouteKey
+    })
+    : null;
+  const shimPolicy = protocolShimCompatibility(config);
+  if (shimRequestIssue && shimPolicy.rejectLossyRequests !== false) {
+    log.warn({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      status: 400,
+      event: "proxy.protocol_shim_rejected",
+      errorCode: "UNSUPPORTED_PROTOCOL_SHIM_REQUEST",
+      param: shimRequestIssue.path,
+      unsupportedType: shimRequestIssue.type,
+      failureReason: shimRequestIssue.message
+    }, "protocol shim request rejected");
+    sendProxyError(400, {
+      code: "UNSUPPORTED_PROTOCOL_SHIM_REQUEST",
+      exposedCode: "UnsupportedProtocolShim",
+      message: shimRequestIssue.message,
+      param: shimRequestIssue.path,
+      detail: shimRequestIssue
+    });
+    return;
+  }
+  if (shimRequestIssue) {
+    log.warn({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      backendRouteKey,
+      sourceProtocol: routeKey,
+      targetProtocol: backendRouteKey,
+      event: "proxy.protocol_shim_lossy_conversion",
+      shimPhase: "request",
+      param: shimRequestIssue.path,
+      unsupportedType: shimRequestIssue.type,
+      failureReason: shimRequestIssue.message
+    }, "protocol shim request continued with lossy conversion");
+  }
+  const policy = resolveUpstreamPolicy(config, { routeKey: protocolRouteKey, model, upstream, requestOverrides });
   let upstreamAuthHeaders;
   try {
     markTiming(timing, "authStartAt");
-    upstreamAuthHeaders = await getUpstreamAuthHeaders(config.auth.scope);
+    const usesAnthropicMessages = backendRouteKey === "messages";
+    upstreamAuthHeaders = await getUpstreamAuthHeaders(
+      usesAnthropicMessages ? "https://ai.azure.com/.default" : config.auth.scope,
+      {
+        auth: upstream.auth,
+        apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key"
+      }
+    );
     markTiming(timing, "authReadyAt");
   } catch (error) {
     recordError(model.id, consumer);
@@ -541,6 +1017,8 @@ export async function proxyRequest({
     recordRuntimeError(config, {
       occurredAt: new Date().toISOString(),
       requestId,
+      conversationId,
+      sessionId,
       keyId: consumer?.keyId,
       modelId: model.id,
       routeKey,
@@ -575,18 +1053,21 @@ export async function proxyRequest({
     return;
   }
 
-  isStream = getStreamFlag(body);
-  const needsChatResponsesShim =
-    (routeKey === "chat/completions" && backendRouteKey === "responses")
-    || (routeKey === "responses" && backendRouteKey === "chat/completions");
+  isStream = !isNativeUtilityRequest && getStreamFlag(body);
 
   let nextBody;
-  if (needsChatResponsesShim && routeKey === "chat/completions" && backendRouteKey === "responses") {
+  if (routeKey === "chat/completions" && backendRouteKey === "responses") {
     nextBody = chatToResponsesRequest(body, deployment);
-    if (isStream) nextBody.stream = true;
-  } else if (needsChatResponsesShim && routeKey === "responses" && backendRouteKey === "chat/completions") {
+  } else if (routeKey === "responses" && backendRouteKey === "chat/completions") {
     nextBody = responsesToChatRequest(body, deployment);
-    if (isStream) nextBody.stream = true;
+  } else if (routeKey === "chat/completions" && backendRouteKey === "messages") {
+    nextBody = chatToMessagesRequest(body, deployment);
+  } else if (routeKey === "responses" && backendRouteKey === "messages") {
+    nextBody = responsesToMessagesRequest(body, deployment);
+  } else if (routeKey === "messages" && backendRouteKey === "chat/completions") {
+    nextBody = messagesToChatRequest(body, deployment);
+  } else if (routeKey === "messages" && backendRouteKey === "responses") {
+    nextBody = messagesToResponsesRequest(body, deployment);
   } else {
     nextBody = body.model === deployment
       ? body
@@ -595,6 +1076,7 @@ export async function proxyRequest({
         model: deployment
       };
   }
+  if (isStream && needsProtocolShim) nextBody.stream = true;
 
   nextBody = prepareImageGenerationRequest({
     body: nextBody,
@@ -606,6 +1088,38 @@ export async function proxyRequest({
 
   if (nextBody && typeof nextBody === "object") {
     normalizeReasoningConfig(nextBody, backendRouteKey);
+    normalizeResponsesToolDescriptions(nextBody, backendRouteKey);
+    if (backendRouteKey === "messages") {
+      const anthropicCompatibilityError = applyAnthropicBodyCompatibility(
+        nextBody,
+        config,
+        deployment || modelId,
+        model
+      );
+      if (anthropicCompatibilityError) {
+        log.error({
+          source: "proxy",
+          requestId,
+          ...requestNetworkContext,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          status: 400,
+          event: "proxy.request_rejected",
+          errorCode: "UNSUPPORTED_PARAMETER",
+          param: anthropicCompatibilityError.param,
+          failureReason: anthropicCompatibilityError.message
+        }, anthropicCompatibilityError.message);
+        sendProxyError(400, {
+          code: "UNSUPPORTED_PARAMETER",
+          exposedCode: "UnsupportedParameter",
+          message: anthropicCompatibilityError.message,
+          param: anthropicCompatibilityError.param
+        });
+        return;
+      }
+    }
+    sanitizeToolControlsWithoutTools(nextBody);
     const unsupportedWebSearch = sanitizeWebSearchRequest(nextBody, {
       backendRouteKey,
       upstream,
@@ -660,7 +1174,12 @@ export async function proxyRequest({
       });
       return;
     }
-    const configuredPolicyRejection = applyConfiguredRequestPolicy(nextBody, { config, routeKey, model });
+    const configuredPolicyRejection = applyConfiguredRequestPolicy(nextBody, {
+      config,
+      routeKey: protocolRouteKey,
+      model,
+      upstream
+    });
     if (configuredPolicyRejection) {
       log.error({
         source: "proxy",
@@ -697,7 +1216,7 @@ export async function proxyRequest({
 
   if (nextBody && typeof nextBody === "object") {
     try {
-      nextBody = await maybeCompressImages(nextBody, config, routeKey);
+      nextBody = await maybeCompressImages(nextBody, config, protocolRouteKey);
     } catch (error) {
       log.error({
         source: "proxy",
@@ -724,6 +1243,14 @@ export async function proxyRequest({
       return;
     }
   }
+
+  const contentLogOptions = {
+    mode: resolveLogContentMode(config),
+    maxPayloadBytes: config?.observability?.logs?.maxPayloadLogBytes
+  };
+  const requestContentSnapshot = buildContentLogSnapshot(nextBody, { ...contentLogOptions, kind: "requestBody" });
+  const requestLogFields = buildContentSnapshotFields("request", requestContentSnapshot);
+  const streamContentCollector = createStreamContentCollector(contentLogOptions.maxPayloadBytes);
 
   markTiming(timing, "requestPreparedAt");
   markTiming(timing, "governanceStartAt");
@@ -761,6 +1288,16 @@ export async function proxyRequest({
   }
   governanceLease = governanceResult.lease;
 
+  const upstreamAbortController = new AbortController();
+  const abortUpstream = () => {
+    if (!upstreamAbortController.signal.aborted && !reply.raw.writableEnded) {
+      upstreamAbortController.abort("client-disconnected");
+    }
+  };
+  req.raw?.once?.("aborted", abortUpstream);
+  reply.raw?.once?.("close", abortUpstream);
+  if (req.raw?.aborted || reply.raw?.destroyed) abortUpstream();
+
   const recordProxyError = ({ status = null, errorCode = "", failureReason = "", source = "proxy" } = {}) => {
     recordError(model.id, {
       keyId: consumer?.keyId,
@@ -770,6 +1307,8 @@ export async function proxyRequest({
     recordRuntimeError(config, {
       occurredAt: new Date().toISOString(),
       requestId,
+      conversationId,
+      sessionId,
       keyId: consumer?.keyId,
       modelId: model.id,
       actualModelName: resolvedUpstreamModel,
@@ -782,13 +1321,21 @@ export async function proxyRequest({
     });
   };
   let resolvedUpstreamModel = "";
+  let usageRecorded = false;
+  let usageSource = "none";
+  let usageEstimated = false;
+  let usageEstimationReason = "";
   const noteResolvedUpstreamModel = (value) => {
     if (typeof value === "string" && value.trim()) {
       resolvedUpstreamModel = value.trim();
     }
   };
-  const recordProxyUsage = (usage, actualModelName = "") => {
-    if (!usage) return;
+  const recordProxyUsage = (usage, actualModelName = "", metadata = {}) => {
+    if (!usage || usageRecorded) return;
+    usageRecorded = true;
+    usageSource = metadata.source || "upstream";
+    usageEstimated = metadata.estimated === true;
+    usageEstimationReason = metadata.reason || "";
     noteResolvedUpstreamModel(actualModelName);
     const cost = recordGovernanceUsage(config, consumer, model, usage, Date.now(), actualModelName || resolvedUpstreamModel, {
       requestId,
@@ -803,6 +1350,8 @@ export async function proxyRequest({
     recordRuntimeUsage(config, {
       occurredAt: new Date().toISOString(),
       requestId,
+      conversationId,
+      sessionId,
       keyId: consumer?.keyId,
       modelId: model.id,
       actualModelName: cost?.actualModelName || actualModelName || resolvedUpstreamModel,
@@ -816,7 +1365,100 @@ export async function proxyRequest({
       modelRouterCostAmount: cost?.modelRouterCostAmount,
       actualModelCostAmount: cost?.actualModelCostAmount,
       currency: cost?.currency,
-      source: "proxy"
+      source: "proxy",
+      usageSource,
+      usageEstimated,
+      usageEstimationReason
+    });
+    emitInfoLog({
+      ...requestContext,
+      modelId,
+      actualModelName: cost?.actualModelName || actualModelName || resolvedUpstreamModel,
+      event: "proxy.usage_recorded",
+      routeKey,
+      backendRouteKey,
+      consumerKeyId: consumer?.keyId || "anonymous",
+      usageAvailable: true,
+      usageSource,
+      usageEstimated,
+      usageEstimationReason,
+      promptTokens: cost?.promptTokens,
+      completionTokens: cost?.completionTokens,
+      totalTokens: cost?.totalTokens,
+      cachedTokens: cost?.cachedTokens,
+      estimatedCostAmount: cost?.amount,
+      modelRouterCostAmount: cost?.modelRouterCostAmount,
+      actualModelCostAmount: cost?.actualModelCostAmount,
+      currency: cost?.currency,
+      message: usageEstimated ? "proxy usage estimated locally" : "proxy usage recorded"
+    });
+  };
+  const recordEstimatedUsageIfMissing = (completionBytes, reason) => {
+    if (usageRecorded || !TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey)) return false;
+    const semanticPromptBytes = estimateSemanticTextBytes(nextBody);
+    const promptTokens = estimateLocalTokensFromBytes(semanticPromptBytes || requestContentSnapshot.bytes);
+    const completionTokens = estimateLocalTokensFromBytes(completionBytes);
+    recordProxyUsage({
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens
+    }, resolvedUpstreamModel, {
+      source: "local_estimate",
+      estimated: true,
+      reason
+    });
+    return true;
+  };
+  const finalizeStreamObservation = (reason) => {
+    const collectedResponse = streamContentCollector.finish();
+    const responseContentSnapshot = buildContentLogSnapshot(
+      collectedResponse.payload,
+      { ...contentLogOptions, kind: "responseBody" }
+    );
+    const responseLogFields = buildContentSnapshotFields("response", responseContentSnapshot);
+    recordEstimatedUsageIfMissing(collectedResponse.observedBytes, reason);
+    return { collectedResponse, responseLogFields };
+  };
+  const deferPostResponse = (operation) => {
+    setImmediate(() => {
+      try {
+        operation();
+      } catch (error) {
+        log.error({
+          source: "proxy",
+          ...requestContext,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          event: "proxy.post_response_logging_failed",
+          errorCode: error?.code || "POST_RESPONSE_LOGGING_FAILED",
+          failureReason: error?.message || "post-response logging failed"
+        }, "post-response logging failed");
+      }
+    });
+  };
+  const emitRequestCompleted = ({ responsePayload, status, attempt }) => {
+    const responseContentSnapshot = buildContentLogSnapshot(responsePayload, { ...contentLogOptions, kind: "responseBody" });
+    const responseLogFields = buildContentSnapshotFields("response", responseContentSnapshot);
+    recordEstimatedUsageIfMissing(responseContentSnapshot.bytes, "upstream_usage_missing");
+    emitInfoLog({
+      ...requestContext,
+      ...requestLogFields,
+      ...responseLogFields,
+      modelId,
+      actualModelName: resolvedUpstreamModel,
+      event: "proxy.request_completed",
+      routeKey,
+      backendRouteKey,
+      stream: false,
+      attempt,
+      status,
+      usageAvailable: usageRecorded,
+      usageSource,
+      usageEstimated,
+      usageEstimationReason,
+      latencyMs: Date.now() - startAt,
+      message: "proxy request completed"
     });
   };
 
@@ -825,6 +1467,8 @@ export async function proxyRequest({
     recordRuntimeRequest(config, {
       occurredAt: new Date().toISOString(),
       requestId,
+      conversationId,
+      sessionId,
       keyId: consumer?.keyId,
       modelId: model.id,
       routeKey,
@@ -833,7 +1477,8 @@ export async function proxyRequest({
       targetUrl
     });
     emitInfoLog({
-      requestId,
+      ...requestContext,
+      ...requestLogFields,
       modelId,
       event: "proxy.request_started",
       routeKey,
@@ -845,12 +1490,43 @@ export async function proxyRequest({
     });
 
     const headers = {
-      ...sanitizeIncomingHeaders(req.headers, config),
+      ...sanitizeIncomingHeaders(req.headers, config, {
+        allowPrefixes: backendRouteKey === "messages" && claudeCodeCompatibilityEnabled(config)
+          ? CLAUDE_CODE_HEADER_PREFIXES
+          : []
+      }),
       ...sanitizeConfiguredUpstreamHeaders(upstream.headersTemplate),
       "content-type": "application/json",
+      ...(backendRouteKey === "messages"
+        ? { "anthropic-version": String(req.headers["anthropic-version"] || "2023-06-01").trim() || "2023-06-01" }
+        : {}),
       ...upstreamAuthHeaders,
-      ...(config?.proxy?.forwardHeaders?.addRequestIdHeader === false ? {} : { "x-request-id": requestId })
+      ...(config?.proxy?.forwardHeaders?.addRequestIdHeader === false ? {} : buildCorrelationHeaders(requestContext))
     };
+    if (backendRouteKey !== "messages") {
+      for (const headerName of Object.keys(headers)) {
+        if (ANTHROPIC_REQUEST_HEADERS.has(headerName.toLowerCase())) {
+          delete headers[headerName];
+        }
+      }
+    } else {
+      const filteredBetas = applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl });
+      if (filteredBetas.length > 0) {
+        emitInfoLog({
+          ...requestContext,
+          ...requestLogFields,
+          modelId,
+          event: "proxy.anthropic_betas_filtered",
+          routeKey,
+          backendRouteKey,
+          upstreamName: `upstream:${upstream.name || "unknown"}`,
+          upstreamProvider: `provider:${upstream.provider || "unknown"}`,
+          filteredBetas: JSON.stringify(filteredBetas),
+          filteredBetaCount: filteredBetas.length,
+          message: "unsupported Anthropic beta values filtered for upstream"
+        });
+      }
+    }
     const bodyText = JSON.stringify(nextBody);
     const maxRequestBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxRequestBodyBytes);
     if (maxRequestBodyBytes > 0 && Buffer.byteLength(bodyText) > maxRequestBodyBytes) {
@@ -902,16 +1578,30 @@ export async function proxyRequest({
             connectTimeoutMs: policy.connectTimeoutMs,
             timeoutMs: policy.firstByteTimeoutMs,
             timeoutCode: "UPSTREAM_FIRST_BYTE_TIMEOUT",
-            timeoutLabel: "first byte"
+            timeoutLabel: "first byte",
+            signal: upstreamAbortController.signal
           });
           markTiming(timing, "upstreamHeadersAt");
         } catch (error) {
           const classified = classifyFetchError(error);
+          if (classified.code === "CLIENT_DISCONNECTED") {
+            finishTiming({ status: 499, outcome: "client_disconnected", errorCode: classified.code, source: "client" });
+            return;
+          }
           const retryableNetworkError = classified.retryable && policy.classifyNetworkErrorsAsRetryable !== false;
           if (attempt < maxAttempts && retryableNetworkError) {
             const backoffMs = computeBackoffMs(policy, attempt);
             log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream fetch retry");
-            await sleep(backoffMs);
+            try {
+              await sleep(backoffMs, upstreamAbortController.signal);
+            } catch (abortError) {
+              const aborted = classifyFetchError(abortError);
+              if (aborted.code === "CLIENT_DISCONNECTED") {
+                finishTiming({ status: 499, outcome: "client_disconnected", errorCode: aborted.code, source: "client" });
+                return;
+              }
+              throw abortError;
+            }
             continue;
           }
           recordProxyError({
@@ -928,6 +1618,8 @@ export async function proxyRequest({
             modelId,
             routeKey,
             backendRouteKey,
+            includeReasoningEncryptedContent: Array.isArray(body.include)
+              && body.include.includes("reasoning.encrypted_content"),
             attempt,
             status: classified.status || 502,
             event: "proxy.stream_fetch_failed",
@@ -946,13 +1638,54 @@ export async function proxyRequest({
         }
 
         if (!upstreamResponse.ok) {
-          const detail = await upstreamResponse.text().catch(() => "");
+          let detail = "";
+          let nativeErrorBodyAvailable = true;
+          try {
+            detail = await readTextWithTimeout(
+              upstreamResponse,
+              policy.requestTimeoutMs,
+              1024 * 1024,
+              upstreamAbortController.signal
+            );
+          } catch (readError) {
+            nativeErrorBodyAvailable = false;
+            const readFailure = classifyFetchError(readError);
+            if (readFailure.code === "CLIENT_DISCONNECTED") {
+              finishTiming({ status: 499, outcome: "client_disconnected", errorCode: readFailure.code, source: "client" });
+              return;
+            }
+            if (attempt < maxAttempts && readFailure.retryable && policy.classifyNetworkErrorsAsRetryable !== false) {
+              const backoffMs = computeBackoffMs(policy, attempt);
+              log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: readFailure.code }, "stream retry on HTTP error body read failure");
+              try {
+                await sleep(backoffMs, upstreamAbortController.signal);
+              } catch (abortError) {
+                const aborted = classifyFetchError(abortError);
+                if (aborted.code === "CLIENT_DISCONNECTED") {
+                  finishTiming({ status: 499, outcome: "client_disconnected", errorCode: aborted.code, source: "client" });
+                  return;
+                }
+                throw abortError;
+              }
+              continue;
+            }
+            detail = readFailure.detail;
+          }
           const classified = classifyHttpStatus(upstreamResponse.status);
           const retryableStatus = policy.retryStatuses.has(upstreamResponse.status) || classified.retryable;
           if (attempt < maxAttempts && retryableStatus) {
             const backoffMs = computeBackoffMs(policy, attempt);
             log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "stream upstream retry on status");
-            await sleep(backoffMs);
+            try {
+              await sleep(backoffMs, upstreamAbortController.signal);
+            } catch (abortError) {
+              const aborted = classifyFetchError(abortError);
+              if (aborted.code === "CLIENT_DISCONNECTED") {
+                finishTiming({ status: 499, outcome: "client_disconnected", errorCode: aborted.code, source: "client" });
+                return;
+              }
+              throw abortError;
+            }
             continue;
           }
           recordProxyError({
@@ -961,6 +1694,36 @@ export async function proxyRequest({
             failureReason: detail,
             source: "upstream"
           });
+          if (nativeErrorPassthrough && nativeErrorBodyAvailable) {
+            log.error({
+              source: "upstream",
+              requestId,
+              ...requestNetworkContext,
+              modelId,
+              routeKey,
+              backendRouteKey,
+              attempt,
+              status: upstreamResponse.status,
+              event: "proxy.native_error_passthrough",
+              errorCode: classified.code,
+              latencyMs: Date.now() - startAt,
+              ...extractFailureDetails(detail)
+            }, "native upstream error passed through");
+            sendNativeErrorResponse(reply, {
+              status: upstreamResponse.status,
+              payload: detail,
+              contentType: upstreamResponse.headers.get("content-type") || "",
+              retryAfter: upstreamResponse.headers.get("retry-after") || "",
+              requestId
+            });
+            finishTiming({
+              status: upstreamResponse.status,
+              outcome: "native_upstream_error_passthrough",
+              errorCode: classified.code,
+              source: "upstream"
+            });
+            return;
+          }
           const errBody = buildErrorBody({
             classified: { ...classified, retryable: retryableStatus && attempt < maxAttempts },
             requestId,
@@ -991,17 +1754,21 @@ export async function proxyRequest({
           return;
         }
 
-        const streamResult = !needsChatResponsesShim
+        const streamResult = !needsProtocolShim
           ? await streamPassthrough({
             upstreamResponse,
             reply,
+            backendRouteKey,
+            strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
+            forwardProviderErrors: nativeErrorPassthrough,
             policy,
             onFirstChunk: () => {
               markTiming(timing, "firstChunkAt");
               startStreamingResponse();
             },
             onUsage: recordProxyUsage,
-            onModel: noteResolvedUpstreamModel
+            onModel: noteResolvedUpstreamModel,
+            onContent: streamContentCollector.append
           })
           : await streamShim({
             upstreamResponse,
@@ -1009,6 +1776,10 @@ export async function proxyRequest({
             modelId,
             routeKey,
             backendRouteKey,
+            includeChatStreamUsage: routeKey === "chat/completions"
+              && body?.stream_options?.include_usage === true,
+            strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
+            rejectLossyResponses: shimPolicy.rejectLossyResponses !== false,
             model,
             policy,
             onFirstChunk: () => {
@@ -1016,7 +1787,25 @@ export async function proxyRequest({
               startStreamingResponse();
             },
             onUsage: recordProxyUsage,
-            onModel: noteResolvedUpstreamModel
+            onModel: noteResolvedUpstreamModel,
+            onContent: streamContentCollector.append,
+            onCompatibilityIssue: (issue) => {
+              log.warn({
+                source: "proxy",
+                requestId,
+                ...requestNetworkContext,
+                modelId,
+                routeKey,
+                backendRouteKey,
+                sourceProtocol: backendRouteKey,
+                targetProtocol: routeKey,
+                event: "proxy.protocol_shim_lossy_conversion",
+                shimPhase: "stream",
+                param: issue.path,
+                unsupportedType: issue.type,
+                failureReason: issue.message
+              }, "protocol shim stream continued with lossy conversion");
+            }
           });
 
         if (streamResult.ok) {
@@ -1049,6 +1838,7 @@ export async function proxyRequest({
               failureReason: classified.detail
             }, "stream ended before any data was sent");
             reply.code(classified.status).send(errBody);
+            deferPostResponse(() => finalizeStreamObservation("empty_stream_before_usage"));
             finishTiming({
               status: classified.status,
               outcome: "upstream_empty_stream",
@@ -1058,15 +1848,30 @@ export async function proxyRequest({
             return;
           }
           reply.raw.end();
-          emitInfoLog({
-            requestId,
-            modelId,
-            event: "proxy.stream_completed",
-            routeKey,
-            backendRouteKey,
-            attempt,
-            latencyMs: Date.now() - startAt,
-            message: "stream request completed"
+          deferPostResponse(() => {
+            const { collectedResponse, responseLogFields } = finalizeStreamObservation("stream_usage_missing");
+            emitInfoLog({
+              ...requestContext,
+              ...requestLogFields,
+              ...responseLogFields,
+              responseBytes: collectedResponse.observedBytes,
+              responseSha256: responseLogFields.responseSha256,
+              responseTruncated: collectedResponse.truncated || responseLogFields.responseTruncated,
+              modelId,
+              actualModelName: resolvedUpstreamModel,
+              event: "proxy.stream_completed",
+              routeKey,
+              backendRouteKey,
+              stream: true,
+              attempt,
+              status: 200,
+              usageAvailable: usageRecorded,
+              usageSource,
+              usageEstimated,
+              usageEstimationReason,
+              latencyMs: Date.now() - startAt,
+              message: "stream request completed"
+            });
           });
           finishTiming({
             status: 200,
@@ -1078,13 +1883,25 @@ export async function proxyRequest({
 
         const classified = classifyFetchError(streamResult.error);
         if (streamResult.clientDisconnected || classified.code === "CLIENT_DISCONNECTED") {
+          const { collectedResponse, responseLogFields } = finalizeStreamObservation("client_disconnected_before_usage");
           emitInfoLog({
-            requestId,
+            ...requestContext,
+            ...requestLogFields,
+            ...responseLogFields,
+            responseBytes: collectedResponse.observedBytes,
+            responseTruncated: collectedResponse.truncated || responseLogFields.responseTruncated,
             modelId,
+            actualModelName: resolvedUpstreamModel,
             event: "proxy.stream_client_disconnected",
             routeKey,
             backendRouteKey,
+            stream: true,
             attempt,
+            status: 499,
+            usageAvailable: usageRecorded,
+            usageSource,
+            usageEstimated,
+            usageEstimationReason,
             latencyMs: Date.now() - startAt,
             message: "client disconnected during stream"
           });
@@ -1103,7 +1920,16 @@ export async function proxyRequest({
         if (canRetry) {
           const backoffMs = computeBackoffMs(policy, attempt);
           log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream retry before first chunk");
-          await sleep(backoffMs);
+          try {
+            await sleep(backoffMs, upstreamAbortController.signal);
+          } catch (abortError) {
+            const aborted = classifyFetchError(abortError);
+            if (aborted.code === "CLIENT_DISCONNECTED") {
+              finishTiming({ status: 499, outcome: "client_disconnected", errorCode: aborted.code, source: "client" });
+              return;
+            }
+            throw abortError;
+          }
           continue;
         }
 
@@ -1126,11 +1952,14 @@ export async function proxyRequest({
         if (!streamingStarted) {
           reply.code(classified.status || 502).send(errBody);
         } else if (!streamResult.providerErrorForwarded) {
-          await writeSseError(reply.raw, errBody);
+          await writeSseError(reply.raw, errBody, routeKey);
           reply.raw.end();
         } else {
           reply.raw.end();
         }
+        deferPostResponse(() => finalizeStreamObservation(
+          providerError ? "provider_error_before_usage" : "stream_interrupted_before_usage"
+        ));
         log.error({
           source: providerError ? "provider" : "upstream",
           requestId,
@@ -1164,6 +1993,7 @@ export async function proxyRequest({
         code: "STREAM_INTERRUPTED",
         message: "stream retry budget exhausted"
       });
+      deferPostResponse(() => finalizeStreamObservation("stream_retry_exhausted_before_usage"));
       finishTiming({
         status: 502,
         outcome: "stream_retry_exhausted",
@@ -1180,10 +2010,15 @@ export async function proxyRequest({
       bodyText,
       policy,
       logMeta: { source: "upstream", requestId, modelId, routeKey, backendRouteKey },
-      log
+      log,
+      signal: upstreamAbortController.signal
     });
     timing.upstreamAttempts = fetchResult.attempt || timing.upstreamAttempts;
     if (!fetchResult.ok) {
+      if (fetchResult.classified.code === "CLIENT_DISCONNECTED") {
+        finishTiming({ status: 499, outcome: "client_disconnected", errorCode: fetchResult.classified.code, source: "client" });
+        return;
+      }
       recordProxyError({
         status: fetchResult.upstreamStatus || fetchResult.classified.status || 502,
         errorCode: fetchResult.classified.code,
@@ -1191,6 +2026,36 @@ export async function proxyRequest({
         source: "upstream"
       });
       const status = fetchResult.upstreamStatus || fetchResult.classified.status || 502;
+      if (nativeErrorPassthrough && fetchResult.hasUpstreamHttpResponse) {
+        log.error({
+          source: "upstream",
+          requestId,
+          ...requestNetworkContext,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          attempt: fetchResult.attempt,
+          status,
+          event: "proxy.native_error_passthrough",
+          errorCode: fetchResult.classified.code,
+          latencyMs: Date.now() - startAt,
+          ...extractFailureDetails(fetchResult.detail)
+        }, "native upstream error passed through");
+        sendNativeErrorResponse(reply, {
+          status,
+          payload: fetchResult.detail,
+          contentType: fetchResult.upstreamContentType,
+          retryAfter: fetchResult.upstreamRetryAfter,
+          requestId
+        });
+        finishTiming({
+          status,
+          outcome: "native_upstream_error_passthrough",
+          errorCode: fetchResult.classified.code,
+          source: "upstream"
+        });
+        return;
+      }
       const errBody = buildErrorBody({
         classified: fetchResult.classified,
         requestId,
@@ -1249,10 +2114,30 @@ export async function proxyRequest({
       return;
     }
     let payload = null;
+    let rawPayloadText = null;
     try {
-      payload = await parseJsonWithTimeout(upstreamResponse, policy.requestTimeoutMs, maxResponseBodyBytes);
+      if (nativeErrorPassthrough) {
+        rawPayloadText = await readTextWithTimeout(
+          upstreamResponse,
+          policy.requestTimeoutMs,
+          maxResponseBodyBytes,
+          upstreamAbortController.signal
+        );
+        payload = JSON.parse(rawPayloadText);
+      } else {
+        payload = await parseJsonWithTimeout(
+          upstreamResponse,
+          policy.requestTimeoutMs,
+          maxResponseBodyBytes,
+          upstreamAbortController.signal
+        );
+      }
     } catch (error) {
       const classified = classifyFetchError(error);
+      if (classified.code === "CLIENT_DISCONNECTED") {
+        finishTiming({ status: 499, outcome: "client_disconnected", errorCode: classified.code, source: "client" });
+        return;
+      }
       recordProxyError({
         status: classified.status || 504,
         errorCode: classified.code,
@@ -1283,12 +2168,185 @@ export async function proxyRequest({
       return;
     }
 
-    if (needsChatResponsesShim) {
+    const providerPayloadError = getProviderPayloadError(payload);
+    if (providerPayloadError) {
+      recordProxyError({
+        status: 502,
+        errorCode: providerPayloadError.code,
+        failureReason: providerPayloadError.message,
+        source: "provider"
+      });
+      if (nativeErrorPassthrough) {
+        log.error({
+          source: "provider",
+          requestId,
+          ...requestNetworkContext,
+          modelId,
+          routeKey,
+          backendRouteKey,
+          status: upstreamResponse.status,
+          event: "proxy.native_error_passthrough",
+          errorCode: providerPayloadError.code,
+          failureReason: providerPayloadError.message
+        }, "native provider failure payload passed through");
+        sendNativeErrorResponse(reply, {
+          status: upstreamResponse.status,
+          payload: rawPayloadText ?? JSON.stringify(payload),
+          contentType: upstreamResponse.headers.get("content-type") || "application/json",
+          retryAfter: upstreamResponse.headers.get("retry-after") || "",
+          requestId
+        });
+        finishTiming({
+          status: upstreamResponse.status,
+          outcome: "native_provider_error_passthrough",
+          errorCode: providerPayloadError.code,
+          source: "provider"
+        });
+        return;
+      }
+      sendProxyError(502, {
+        code: "UPSTREAM_PROVIDER_RESPONSE_ERROR",
+        exposedCode: providerPayloadError.code,
+        type: providerPayloadError.type,
+        param: providerPayloadError.param,
+        message: providerPayloadError.message,
+        detail: payload
+      });
+      finishTiming({
+        status: 502,
+        outcome: "provider_response_failed",
+        errorCode: providerPayloadError.code,
+        source: "provider"
+      });
+      return;
+    }
+
+    const shimResponseIssue = needsProtocolShim
+      ? getProtocolShimCompatibilityIssue(payload, {
+        phase: "response",
+        sourceProtocol: backendRouteKey,
+        targetProtocol: routeKey
+      })
+      : null;
+    if (shimResponseIssue && shimPolicy.rejectLossyResponses !== false) {
+      recordProxyError({
+        status: 502,
+        errorCode: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
+        failureReason: shimResponseIssue.message,
+        source: "provider"
+      });
+      log.error({
+        source: "provider",
+        requestId,
+        ...requestNetworkContext,
+        modelId,
+        routeKey,
+        backendRouteKey,
+        status: 502,
+        event: "proxy.protocol_shim_response_rejected",
+        errorCode: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
+        param: shimResponseIssue.path,
+        unsupportedType: shimResponseIssue.type,
+        failureReason: shimResponseIssue.message
+      }, "protocol shim response rejected");
+      sendProxyError(502, {
+        code: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
+        exposedCode: "UnsupportedProtocolShimResponse",
+        message: shimResponseIssue.message,
+        param: shimResponseIssue.path,
+        detail: shimResponseIssue
+      });
+      finishTiming({
+        status: 502,
+        outcome: "protocol_shim_response_rejected",
+        errorCode: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
+        source: "provider"
+      });
+      return;
+    }
+    if (shimResponseIssue) {
+      log.warn({
+        source: "provider",
+        requestId,
+        ...requestNetworkContext,
+        modelId,
+        routeKey,
+        backendRouteKey,
+        sourceProtocol: backendRouteKey,
+        targetProtocol: routeKey,
+        event: "proxy.protocol_shim_lossy_conversion",
+        shimPhase: "response",
+        param: shimResponseIssue.path,
+        unsupportedType: shimResponseIssue.type,
+        failureReason: shimResponseIssue.message
+      }, "protocol shim response continued with lossy conversion");
+    }
+
+    if (
+      isMessagesCountTokens
+      && (!Number.isInteger(payload?.input_tokens) || payload.input_tokens < 0)
+    ) {
+      recordProxyError({
+        status: 502,
+        errorCode: "INVALID_TOKEN_COUNT_RESPONSE",
+        failureReason: "upstream token count response must contain a non-negative integer input_tokens",
+        source: "provider"
+      });
+      sendProxyError(502, {
+        code: "INVALID_TOKEN_COUNT_RESPONSE",
+        exposedCode: "InvalidTokenCountResponse",
+        message: "Upstream token count response is invalid",
+        detail: payload
+      });
+      finishTiming({
+        status: 502,
+        outcome: "provider_response_invalid",
+        errorCode: "INVALID_TOKEN_COUNT_RESPONSE",
+        source: "provider"
+      });
+      return;
+    }
+
+    if (
+      isResponsesCompact
+      && (
+        payload?.object !== "response.compaction"
+        || !Array.isArray(payload.output)
+        || !payload.usage
+        || typeof payload.usage !== "object"
+        || Array.isArray(payload.usage)
+      )
+    ) {
+      recordProxyError({
+        status: 502,
+        errorCode: "INVALID_COMPACTION_RESPONSE",
+        failureReason: "upstream compaction response must contain object=response.compaction, output, and usage",
+        source: "provider"
+      });
+      sendProxyError(502, {
+        code: "INVALID_COMPACTION_RESPONSE",
+        exposedCode: "InvalidCompactionResponse",
+        message: "Upstream compaction response is invalid",
+        detail: payload
+      });
+      finishTiming({
+        status: 502,
+        outcome: "provider_response_invalid",
+        errorCode: "INVALID_COMPACTION_RESPONSE",
+        source: "provider"
+      });
+      return;
+    }
+
+    if (needsProtocolShim) {
       if (routeKey === "chat/completions" && backendRouteKey === "responses") {
         const mapped = mapResponsesJsonToChatCompletion(payload, modelId);
-        noteResolvedUpstreamModel(payload?.model || mapped?.model);
-        if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
         reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
         finishTiming({
           status: 200,
           outcome: "success",
@@ -1298,9 +2356,12 @@ export async function proxyRequest({
       }
       if (routeKey === "responses" && backendRouteKey === "chat/completions") {
         const mapped = mapChatCompletionJsonToResponses(payload, modelId);
-        noteResolvedUpstreamModel(payload?.model || mapped?.model);
-        if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
         reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
         finishTiming({
           status: 200,
           outcome: "success",
@@ -1308,30 +2369,71 @@ export async function proxyRequest({
         });
         return;
       }
+      if (routeKey === "chat/completions" && backendRouteKey === "messages") {
+        const mapped = mapMessagesJsonToChatCompletion(payload, modelId);
+        reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
+        finishTiming({ status: 200, outcome: "success", source: "proxy" });
+        return;
+      }
+      if (routeKey === "responses" && backendRouteKey === "messages") {
+        const mapped = mapMessagesJsonToResponses(payload, modelId, {
+          includeEncryptedContent: Array.isArray(body.include)
+            && body.include.includes("reasoning.encrypted_content")
+        });
+        reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
+        finishTiming({ status: 200, outcome: "success", source: "proxy" });
+        return;
+      }
+      if (routeKey === "messages" && backendRouteKey === "chat/completions") {
+        const mapped = mapChatCompletionJsonToMessages(payload, modelId);
+        reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
+        finishTiming({ status: 200, outcome: "success", source: "proxy" });
+        return;
+      }
+      if (routeKey === "messages" && backendRouteKey === "responses") {
+        const mapped = mapResponsesJsonToMessages(payload, modelId);
+        reply.code(200).send(mapped);
+        deferPostResponse(() => {
+          noteResolvedUpstreamModel(payload?.model || mapped?.model);
+          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
+        });
+        finishTiming({ status: 200, outcome: "success", source: "proxy" });
+        return;
+      }
     }
 
-    noteResolvedUpstreamModel(payload?.model);
-    if (payload?.usage) {
-      recordProxyUsage(payload.usage, payload?.model);
-    }
-    emitInfoLog({
-      requestId,
-      modelId,
-      event: "proxy.request_completed",
-      routeKey,
-      backendRouteKey,
-      attempt: fetchResult.attempt,
-      status: upstreamResponse.status,
-      latencyMs: Date.now() - startAt,
-      message: "proxy request completed"
-    });
     reply.code(upstreamResponse.status).send(payload);
+    deferPostResponse(() => {
+      noteResolvedUpstreamModel(payload?.model);
+      if (payload?.usage) {
+        recordProxyUsage(payload.usage, payload?.model || (isResponsesCompact ? deployment : ""));
+      }
+      emitRequestCompleted({ responsePayload: payload, status: upstreamResponse.status, attempt: fetchResult.attempt });
+    });
     finishTiming({
       status: upstreamResponse.status,
       outcome: "success",
       source: "proxy"
     });
   } finally {
+    req.raw?.removeListener?.("aborted", abortUpstream);
+    reply.raw?.removeListener?.("close", abortUpstream);
     governanceLease?.release();
     finishTiming({
       status: reply.statusCode || null,
@@ -1385,6 +2487,37 @@ function normalizeReasoningConfig(body, backendRouteKey) {
     }
     delete body.reasoning;
     delete body.thinking;
+  }
+}
+
+function normalizeResponsesToolDescriptionList(tools) {
+  if (!Array.isArray(tools)) return;
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") continue;
+    if (tool.type === "namespace") {
+      if (tool.description == null || (typeof tool.description === "string" && !tool.description.trim())) {
+        const namespaceName = typeof tool.name === "string" ? tool.name.trim() : "";
+        tool.description = namespaceName ? `Tools in the ${namespaceName} namespace.` : "Tool namespace";
+      }
+      normalizeResponsesToolDescriptionList(tool.tools);
+      continue;
+    }
+    if (tool.type !== "function" && tool.type !== "custom") continue;
+    if (tool.description == null || (typeof tool.description === "string" && !tool.description.trim())) {
+      const toolName = typeof tool.name === "string" ? tool.name.trim() : "";
+      tool.description = toolName || "Tool";
+    }
+  }
+}
+
+function normalizeResponsesToolDescriptions(body, backendRouteKey) {
+  if (backendRouteKey !== "responses") return;
+  normalizeResponsesToolDescriptionList(body?.tools);
+  if (!Array.isArray(body?.input)) return;
+  for (const item of body.input) {
+    if (item?.type === "additional_tools") {
+      normalizeResponsesToolDescriptionList(item.tools);
+    }
   }
 }
 
@@ -1527,10 +2660,10 @@ function sanitizeModernModelRequest(body, { backendRouteKey, modelId, model }) {
     return null;
   }
 
+  if (body.service_tier == null && body.serviceTier != null) {
+    body.service_tier = body.serviceTier;
+  }
   delete body.serviceTier;
-  delete body.service_tier;
-  delete body.verbosity;
-  delete body.top_k;
 
   if (backendRouteKey === "chat/completions") {
     if (typeof body.max_completion_tokens !== "number" && typeof body.max_tokens === "number") {

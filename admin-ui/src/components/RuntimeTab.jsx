@@ -246,7 +246,12 @@ export default function RuntimeTab({
           <StatCard
             label={t("runtime.logSink", "Log Sink")}
             value={t(`status.${logSinkState}`, logSinkState)}
-            note={`queue ${loggingRuntime.queueLength ?? 0} / failures ${loggingRuntime.flushFailures ?? 0}`}
+            note={t("runtime.logSinkNote", "Queue {count} / {bytes} B · Drops {drops} · Failures {failures}", {
+              count: loggingRuntime.queueLength ?? 0,
+              bytes: loggingRuntime.queueBytes ?? 0,
+              drops: loggingRuntime.droppedEntries ?? 0,
+              failures: loggingRuntime.flushFailures ?? 0
+            })}
           />
           <StatCard
             label={t("runtime.observedKeys", "Observed Keys")}

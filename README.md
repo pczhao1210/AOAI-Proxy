@@ -12,11 +12,13 @@
 
 ## Overview
 
-- OpenAI-compatible proxy for `chat/completions`, `responses`, `images/generations`, and `models`
+- OpenAI- and Anthropic-compatible proxy for `chat/completions`, `responses`, `responses/compact`, `messages`, `messages/count_tokens`, `images/generations`, and `models`
 - Client -> Proxy uses API key auth via `Authorization: Bearer` or `x-api-key`
-- Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or `api-key`, based on `auth.mode`
+- Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or protocol-appropriate `api-key` / `x-api-key` headers, based on `auth.mode`
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
+- Native protocol routes preserve modern Responses items and Anthropic content blocks; cross-protocol shims reject structures they cannot represent without loss by default and expose explicit request/response policy switches
+- Optional DCE-based Log Analytics export for correlated proxy events, usage, and redacted prompt/output content; see the [setup guide](docs/log-analytics-dce.en.md)
 
 ## Deployment Assets
 
@@ -146,9 +148,10 @@ Guidance:
 2. Edit `config/config.json`:
    - Replace `upstreams[].baseUrl` with your Foundry or Azure OpenAI endpoint
    - Set `models[].targetModel` to the deployment identifier
-  - Choose upstream auth:
-    - `auth.mode = "servicePrincipal"` with `scope`, plus service principal fields or managed identity
-    - `auth.mode = "apiKey"` with `auth.apiKey`
+  - Choose authentication for each upstream in the admin UI or with `upstreams[].auth`:
+    - `mode = "managedIdentity"` uses the existing Azure credential and AAD token flow
+    - `mode = "apiKey"` requires that upstream's `apiKey` and sends `api-key` or `x-api-key` as required by the route
+    - Omitting the upstream mode preserves compatibility by inheriting the global `auth` configuration
    - Replace the default API key and admin credentials
 3. Install dependencies and start:
    - `npm install`
@@ -254,14 +257,36 @@ Controlled by `server.adminAuth`. When enabled, it protects `/admin` and `/admin
 
 Build:
 
-- `./dockerbuild.sh aoai-proxy:latest`
+- amd64 local image: `./start.sh --build`
+- arm64 local image: `DOCKER_PLATFORM=linux/arm64 ./start.sh --build`
+- amd64 build and push to ACR: `./start.sh --build --push`
+- arm64 build and push to ACR: `DOCKER_PLATFORM=linux/arm64 ./start.sh --build --push`
 
-The Dockerfile tracks the current stable major lines with `NODE_MAJOR=24` and `CADDY_MAJOR=2`, which resolve to `node:24-alpine` and `caddy:2-alpine`. The helper script runs `docker build --pull` so each build fetches the latest available patch/minor image in those major lines. Override them only when you intentionally need a different major line:
+The default amd64 image is `alexmcr.azurecr.io/aoai-proxy:nextgen-latest`. When `DOCKER_PLATFORM=linux/arm64`, the default tag changes to `nextgen-latest-arm64`. `IMAGE_REF`, `IMAGE_TAG`, `ACR_LOGIN_SERVER`, and `IMAGE_REPOSITORY` can override that selection. Pushes use credentials already stored by the local Docker CLI and never run a registry login command.
+
+The helper injects the generated version and UTC build time into the image. Query `GET /version` without authentication to identify a running deployment:
+
+```json
+{
+  "service": "aoai-proxy",
+  "version": "nextgen-202608100257",
+  "buildTime": "2026-08-10T02:57:55Z"
+}
+```
+
+The default version uses the UTC build minute in `nextgen-YYYYMMDDHHmm` format. The same values are available as standard OCI image labels.
+
+The Dockerfile tracks the current stable major lines with `NODE_MAJOR=24` and `CADDY_MAJOR=2`, which resolve to `node:24-alpine` and `caddy:2-alpine`. The helper runs `docker buildx build --pull` so each build fetches the latest available patch/minor image in those major lines. A build without `--push` uses buildx `--load`; a combined build and push uses `--push` directly. Multi-platform output must be pushed because Docker cannot load a multi-platform manifest into the classic local image store.
+
+The selected buildx builder must advertise every requested platform. Cross-building arm64 on an amd64 host normally requires QEMU/binfmt support. When calling buildx directly, pass the platform and build metadata:
 
 ```bash
-docker build --pull \
+docker buildx build --pull --load \
+  --platform linux/amd64 \
   --build-arg NODE_MAJOR=24 \
   --build-arg CADDY_MAJOR=2 \
+  --build-arg AOAI_PROXY_VERSION=nextgen-202608100257 \
+  --build-arg AOAI_PROXY_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -t aoai-proxy:latest .
 ```
 
@@ -430,10 +455,109 @@ For `gpt-5` and newer models, plus `o*` reasoning models, the proxy now applies 
 - `max_tokens` is upgraded to `max_completion_tokens` for `chat/completions`
 - `top_logprobs` implies `logprobs: true` when the client omits it
 - `reasoning_effort` and `reasoning.effort` accept `low`, `medium`, and `high`; `xhigh` is downgraded to `high`
-- `service_tier`, `verbosity`, and `top_k` are stripped for modern models because they are common sources of `unknown_parameter` errors against Foundry
+- `serviceTier` is normalized to `service_tier`; `service_tier`, `verbosity`, and `top_k` are preserved by default instead of being guessed from the model name
+- Providers that reject optional fields can list them in `upstreams[].requestPolicy.blockedParams`; set `dropUnsupportedParams: true` to remove them, or leave it false to reject the request explicitly
 - `web_search_preview` tools are rejected early with a `400` because Azure Foundry does not currently support web search tools
 
-The proxy also keeps `stream_options` for streaming `chat/completions` and `responses` requests, and strips it only for routes where Foundry v1 may reject it.
+The proxy keeps `stream_options` on compatible native routes. When Chat is converted to Responses or Messages, it consumes `stream_options.include_usage` and emits the requested Chat usage chunk before `[DONE]`; unknown stream options follow the protocol-shim loss policy.
+
+## Protocol Routing
+
+The proxy exposes three text-generation protocols:
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/messages`
+
+The selected model route determines the upstream protocol. Matching protocol pairs use near-passthrough; mismatched pairs use explicit request, JSON response, and SSE conversion.
+
+Upstream errors use the proxy's normalized error envelope by default. Set `upstreams[].errorPolicy.nativePassthrough` or a route profile's `nativeErrorPassthrough` to `true` only when a native protocol client needs provider-specific error bodies. This opt-in is limited to native routes and preserves safe response metadata such as `Content-Type`, `Retry-After`, and the proxy request ID; protocol shims and network failures remain normalized.
+
+| Client protocol | Chat backend | Responses backend | Messages backend |
+| --- | --- | --- | --- |
+| Chat Completions | near-passthrough | convert | convert |
+| Responses | convert | near-passthrough | convert |
+| Anthropic Messages | convert | convert | near-passthrough |
+
+Near-passthrough is semantic rather than byte-for-byte. The proxy still maps the model ID, applies request policy and media handling, replaces authentication headers, observes usage, and enforces stream timeouts. Native Responses preserves Responses items and events. Native Messages preserves ordered Anthropic blocks and SSE events, including tool use/results and thinking signatures present in the body.
+
+Cross-protocol conversion covers text, input images, function tools, tool calls/results, token limits, stop reasons, usage, and streaming lifecycle events. Responses `reasoning.encrypted_content` is mapped to Anthropic thinking signatures in both directions, including streaming continuations. Other protocol-specific fields without a safe equivalent are rejected by default.
+
+`compatibility.protocolShim.rejectLossyRequests` and `rejectLossyResponses` both default to `true`. Set either switch to `false` only when continuing with a best-effort conversion is preferable to stopping the request. Permissive conversions emit `proxy.protocol_shim_lossy_conversion` with the phase, field path, source/target protocols, and loss reason. The response switch applies to both JSON and SSE responses.
+
+```json
+{
+  "compatibility": {
+    "protocolShim": {
+      "rejectLossyRequests": true,
+      "rejectLossyResponses": true
+    }
+  }
+}
+```
+
+Config normalization upgrades version 2 files to version 3. For GPT-5.6 Luna, Sol, and Terra only, the exact legacy template route `{ "*": "responses" }` is removed during that upgrade so Chat and Responses requests use their native interfaces. Route overrides saved in version 3 remain explicit and are preserved.
+
+For Claude deployments in Microsoft Foundry, configure the upstream route as `messages: "/anthropic/v1/messages"`. The proxy automatically switches an Azure OpenAI resource host to `*.services.ai.azure.com`, injects `anthropic-version: 2023-06-01` when absent, uses `x-api-key` for key authentication, and uses the `https://ai.azure.com/.default` scope for AAD authentication.
+
+Set `models[].hostingMode` to `azure` or `anthropic` when the matched Claude pricing template offers both hosting modes. This records the deployment infrastructure for region, data-handling, and capability metadata; it is not evidence of Responses support. The currently documented Azure-hosted and Anthropic-hosted Claude deployments both use Messages. Incoming Responses `reasoning.effort` is therefore converted to `output_config.effort` with `thinking.type="adaptive"`. An explicit `models[].routes` override still takes precedence.
+
+### Claude Code
+
+The model endpoint negotiates Anthropic's model-list shape when the request contains `Anthropic-Version`, uses `format=anthropic` / `format=messages`, or has a Claude/Anthropic user agent. When Claude Code compatibility is enabled, a Claude Code User-Agent or `format=claude-code` returns only models explicitly marked for Claude Code that resolve to native Messages; generic Anthropic SDK discovery retains the broader accessible model list. Claude Code gateway model discovery can therefore be enabled:
+
+```bash
+export ANTHROPIC_BASE_URL="https://proxy.example.com"
+export ANTHROPIC_AUTH_TOKEN="your-proxy-api-key"
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+claude
+```
+
+`compatibility.claudeCode.enabled` defaults to `true`. On Messages routes it safely forwards Claude/Anthropic and Stainless metadata header prefixes while continuing to block client credentials. Direct Anthropic upstreams preserve unknown `anthropic-beta` values in order for forward compatibility. Azure/Foundry upstreams continue to use the reviewed allowlist below; filtered values are recorded under the structured log event `proxy.anthropic_betas_filtered`.
+
+Mark each production Claude Code model explicitly and keep it on native Messages. Config load/save fails when a marked model resolves to another backend protocol while compatibility is enabled:
+
+```json
+{
+  "clientCompatibility": { "claudeCode": true },
+  "routes": { "*": "messages" }
+}
+```
+
+Model IDs must be unique. This prevents discovery metadata and runtime routing from resolving the same public ID to different model entries.
+
+The proxy enables three Foundry-specific Anthropic compatibility policies by default under `compatibility.anthropic`:
+
+- `betaAllowlistEnabled`: forwards only reviewed beta tokens. Defaults include fine-grained tool streaming, interleaved thinking, and context management.
+- `normalizeManualThinkingToolChoice`: changes forced `any` / named-tool choice to `auto` only for manual `thinking.type="enabled"`; adaptive thinking is unchanged.
+- `sanitizeCacheControl`: retains valid ephemeral cache controls and the Foundry-supported `5m` / `1h` TTL values while removing unsupported fields or placements.
+- `validateThinkingByModel`: validates `thinking.type` for Claude models whose capabilities are explicitly documented. Resolution checks the deployment name first, then the model ID and `pricingRef`; add a deployment-specific entry under `thinkingTypesByModel` to override the standard model profile. Fully unknown models remain pass-through.
+- `effortLevelsByModel`: lists each Claude model's supported effort levels. Unsupported levels fail before the upstream call; `xhigh` is normalized to `max` only when the model supports `max` but not `xhigh`, matching the provider's documented equivalence.
+
+These settings are request compatibility controls, not protocol selectors. Roll a model back from native Messages by changing its route override rather than disabling all compatibility policies.
+
+### Codex
+
+`compatibility.codex.enabled` also defaults to `true`. A `/v1/models` request from a Codex User-Agent, or one using `format=codex`, receives Codex's `{ "models": [...] }` catalog rather than the standard OpenAI list. The catalog includes only models marked for Codex that resolve natively to Responses:
+
+```json
+{
+  "clientCompatibility": { "codex": true },
+  "routes": {},
+  "codex": {
+    "contextWindow": 128000,
+    "supportedReasoningEfforts": ["low", "medium", "high"]
+  }
+}
+```
+
+Configure Codex with a custom provider whose `base_url` ends in `/v1`, `wire_api = "responses"`, and `supports_websockets = false`. Marked Codex models are rejected by config validation if their Responses entry resolves through Chat or Messages conversion. Dual-protocol models should leave the wildcard route empty so non-Codex Chat clients retain native Chat Completions.
+
+Streaming input accepts LF or CRLF SSE framing, multiple `data:` fields, and a terminal event without a trailing newline. A stream completes only after the source protocol supplies matching terminal evidence: Chat `[DONE]` or a final `finish_reason` at EOF, Responses `response.completed` or `response.incomplete`, and Anthropic `message_stop`. Responses `response.failed` and provider error events are terminal failures. With Codex compatibility disabled, the legacy Responses output-done EOF fallback remains available. Premature EOF is reported as `UPSTREAM_INCOMPLETE_STREAM` and is never turned into a successful target terminator.
+
+Parallel tool calls retain their indexes and stable call IDs across protocol conversion. Consecutive Responses function calls become one Chat assistant tool-call turn, argument deltas are buffered until the tool identity is known, and tool controls are omitted when no valid tools remain. HTTP 200 payloads that carry a provider-level failed status remain failures rather than empty successful completions.
+
+Client cancellation propagates through upstream header waits, retry backoff, streaming reads, and non-stream response-body reads. Non-success error bodies are bounded and cancellation-aware, so a disconnected client does not leave an upstream request or retry loop running.
 
 ## Model Route Overrides
 
@@ -454,6 +578,26 @@ Use `models[].routes` when the client-facing route and backend-supported route d
 }
 ```
 
+Route a Claude deployment to its native Messages backend:
+
+```json
+{
+  "models": [
+    {
+      "id": "claude-sonnet-4-6",
+      "upstream": "foundry",
+      "targetModel": "claude-sonnet-4-6",
+      "clientCompatibility": {
+        "claudeCode": true
+      },
+      "routes": {
+        "*": "messages"
+      }
+    }
+  ]
+}
+```
+
 ## curl Examples
 
 List models:
@@ -463,3 +607,7 @@ List models:
 Chat request:
 
 - `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer CHANGEME' -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`
+
+Anthropic Messages request:
+
+- `curl -sS http://127.0.0.1:3000/v1/messages -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' -H 'x-api-key: CHANGEME' -d '{"model":"claude-sonnet-4-6","max_tokens":256,"messages":[{"role":"user","content":"ping"}]}' | jq .`

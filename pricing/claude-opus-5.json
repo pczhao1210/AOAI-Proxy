@@ -1,0 +1,69 @@
+{
+  "id": "claude-opus-5",
+  "displayName": "Claude Opus 5",
+  "provider": "anthropic",
+  "family": "claude-5",
+  "modelVersion": null,
+  "status": "ga",
+  "hostingModes": ["azure", "anthropic"],
+  "defaultHostingMode": "azure",
+  "interfacesByHostingMode": {
+    "azure": ["messages"],
+    "anthropic": ["messages"]
+  },
+  "interfaces": [
+    "messages"
+  ],
+  "inputModalities": [
+    "text",
+    "image",
+    "code"
+  ],
+  "outputModalities": [
+    "text",
+    "code"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "anthropic-official",
+    "status": "published",
+    "inputPer1mTokens": 5,
+    "cachedInputPer1mTokens": 0.5,
+    "outputPer1mTokens": 25,
+    "inputPer1kTokens": 0.005,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.025
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.005,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.025
+  },
+  "proxyTemplate": {
+    "id": "claude-opus-5",
+    "displayName": "Claude Opus 5",
+    "targetModel": "claude-opus-5",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling"
+    ],
+    "pricingRef": "claude-opus-5"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models",
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  "notes": [
+    "Anthropic 分别公布缓存写入与读取价格；当前 schema 只有一个 cachedInput 字段，因此此处记录缓存读取价格。",
+    "Microsoft Foundry 同时提供 Hosted on Azure 与 Hosted on Anthropic infrastructure 两种部署模式；两种模式的推理接口均为 Anthropic Messages。",
+    "Claude Opus 5 支持 low、medium、high、xhigh、max effort；thinking.type 支持 adaptive，且 high 及以下可设为 disabled。"
+  ]
+}

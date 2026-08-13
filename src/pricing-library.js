@@ -11,10 +11,11 @@ const DEFAULT_GITHUB_OWNER = "pczhao1210";
 const DEFAULT_GITHUB_REPO = "AOAI-Proxy";
 const DEFAULT_GITHUB_PATH = "pricing";
 const PRICING_SYNC_METADATA_FILE = ".pricing-sync-meta";
-const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "stream", "images", "image"]);
+const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "messages", "stream", "images", "image"]);
 const DEFAULT_UPSTREAM_ROUTES = {
   "chat/completions": "/openai/v1/chat/completions",
   responses: "/openai/v1/responses",
+  messages: "/anthropic/v1/messages",
   "images/generations": "/openai/v1/images/generations"
 };
 
@@ -151,6 +152,11 @@ function rememberLookup(lookup, key, definition) {
 
 function normalizePricingDefinition(rawDefinition) {
   const definition = asPlainObject(rawDefinition);
+  const interfacesByHostingMode = Object.fromEntries(
+    Object.entries(asPlainObject(definition.interfacesByHostingMode))
+      .map(([mode, interfaces]) => [String(mode).trim().toLowerCase(), normalizeStringArray(interfaces)])
+      .filter(([mode, interfaces]) => mode && interfaces.length > 0)
+  );
   const proxyTemplate = definition.proxyTemplate && typeof definition.proxyTemplate === "object"
     ? {
       ...asPlainObject(definition.proxyTemplate),
@@ -167,6 +173,9 @@ function normalizePricingDefinition(rawDefinition) {
     modelVersion: definition.modelVersion ?? null,
     status: String(definition.status || "unknown"),
     interfaces: normalizeStringArray(definition.interfaces),
+    hostingModes: normalizeStringArray(definition.hostingModes).map((mode) => mode.toLowerCase()),
+    defaultHostingMode: String(definition.defaultHostingMode || "").trim().toLowerCase(),
+    interfacesByHostingMode,
     inputModalities: normalizeStringArray(definition.inputModalities),
     outputModalities: normalizeStringArray(definition.outputModalities),
     capabilities: normalizeStringArray(definition.capabilities),
@@ -195,6 +204,34 @@ function parsePricingDefinition(text, fileName) {
   return definition;
 }
 
+function readPricingDefinitionsFromDir(dirPath) {
+  if (!fs.existsSync(dirPath)) return [];
+  return listPricingFileNames(dirPath).map((fileName) => {
+    const filePath = path.join(dirPath, fileName);
+    return parsePricingDefinition(fs.readFileSync(filePath, "utf8"), fileName);
+  });
+}
+
+function enrichWithBundledProtocolMetadata(definitions, activeSource) {
+  if (activeSource === "bundled") return definitions;
+  const bundledById = new Map(
+    readPricingDefinitionsFromDir(getBundledPricingDir())
+      .map((definition) => [definition.id.toLowerCase(), definition])
+  );
+  return definitions.map((definition) => {
+    const bundled = bundledById.get(definition.id.toLowerCase());
+    if (!bundled) return definition;
+    return {
+      ...definition,
+      hostingModes: definition.hostingModes.length ? definition.hostingModes : bundled.hostingModes,
+      defaultHostingMode: definition.defaultHostingMode || bundled.defaultHostingMode,
+      interfacesByHostingMode: Object.keys(definition.interfacesByHostingMode).length
+        ? definition.interfacesByHostingMode
+        : bundled.interfacesByHostingMode
+    };
+  });
+}
+
 function resetPricingCaches() {
   pricingDefinitionsCache = null;
   pricingLookupCache = null;
@@ -221,12 +258,10 @@ function loadPricingDefinitions() {
     return pricingDefinitionsCache;
   }
 
-  const entries = listPricingFileNames(activeLocation.dir)
-    .map((fileName) => {
-      const filePath = path.join(activeLocation.dir, fileName);
-      const text = fs.readFileSync(filePath, "utf8");
-      return parsePricingDefinition(text, fileName);
-    })
+  const entries = enrichWithBundledProtocolMetadata(
+    readPricingDefinitionsFromDir(activeLocation.dir),
+    activeLocation.source
+  )
     .sort((left, right) => left.displayName.localeCompare(right.displayName));
 
   pricingDefinitionsCache = entries;

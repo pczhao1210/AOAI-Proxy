@@ -15,7 +15,10 @@ async function readJson(response) {
       || text?.slice(0, 500)
       || response.statusText
       || "Request failed";
-    throw new Error(message);
+    const error = new Error(message);
+    error.payload = json;
+    error.status = response.status;
+    throw error;
   }
   return json;
 }
@@ -83,6 +86,14 @@ export async function fetchDatabaseConfig() {
 
 export async function testDatabaseConnection(payload = {}) {
   return readJson(await adminFetch("/database/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }));
+}
+
+export async function initializeLogAnalytics(payload = {}) {
+  return readJson(await adminFetch("/log-analytics/initialize", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)

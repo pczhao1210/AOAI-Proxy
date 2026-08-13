@@ -8,8 +8,14 @@ This directory contains the project documentation and deployment guides.
 - 中文概览: [README.zh-CN.md](README.zh-CN.md)
 - Git 协作指南（中文）: [../GIT_WORKFLOW.zh-CN.md](../GIT_WORKFLOW.zh-CN.md)
 
+## Configuration Reference
+
+- Feature Flag 与布尔开关目录（中文）: [feature-flags.zh-CN.md](feature-flags.zh-CN.md)
+
 ## Deployment Guides
 
+- Log Analytics through DCE (English): [log-analytics-dce.en.md](log-analytics-dce.en.md)
+- 通过 DCE 写入 Log Analytics（中文）: [log-analytics-dce.md](log-analytics-dce.md)
 - Database-first Azure deployment: [../README.md#azure-deployment](../README.md#azure-deployment)
 - Azure deployment overview: [../README.md#azure-deployment](../README.md#azure-deployment)
 - Azure Managed Application package: [../infra/azure_deployment_with_UI/README.md](../infra/azure_deployment_with_UI/README.md)

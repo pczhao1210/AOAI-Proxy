@@ -12,7 +12,9 @@ import {
   resolveModelRoute,
   resolveEffectiveRouteKey,
   normalizeBackendRouteKey,
-  inferBackendRouteKey
+  isPublicRouteEnabled,
+  inferBackendRouteKey,
+  reconcileBackendRouteKey
 } from "./proxy/routing.js";
 import { classifyFetchError, resolveUpstreamPolicy } from "./proxy/reliability.js";
 
@@ -36,21 +38,30 @@ function isDisabledStatus(status) {
 
 function inferValidationRouteKey(model, definition) {
   const interfaces = normalizeStringArray(definition?.interfaces);
-  if (interfaces.includes("images/generations")) {
-    return "images/generations";
-  }
-  const override = resolveModelRoute(model, "chat/completions");
-  return override ? inferBackendRouteKey("chat/completions", override) : "chat/completions";
+  const routeKey = interfaces.includes("images/generations")
+    ? "images/generations"
+    : interfaces.includes("messages")
+      ? "messages"
+      : interfaces.includes("responses") && !interfaces.includes("chat/completions")
+        ? "responses"
+        : "chat/completions";
+  return routeKey;
 }
 
 function buildValidationTarget(model, upstream, routeKey) {
   const deployment = normalizeString(model?.targetModel) || normalizeString(model?.id);
+  const usesModelRouter = deployment.toLowerCase() === "model-router";
   const override = resolveModelRoute(model, routeKey);
-  const effectiveRouteKey = resolveEffectiveRouteKey(routeKey, model, upstream, override);
-  const backendRouteKey = override ? inferBackendRouteKey(routeKey, override) : normalizeBackendRouteKey(effectiveRouteKey);
+  const effectiveRouteKey = usesModelRouter
+    ? "chat/completions"
+    : resolveEffectiveRouteKey(routeKey, model, upstream, override);
+  const configuredBackendRouteKey = override
+    ? inferBackendRouteKey(routeKey, override)
+    : normalizeBackendRouteKey(effectiveRouteKey);
   const targetUrl = override?.type === "path"
     ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
     : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
+  const backendRouteKey = reconcileBackendRouteKey(configuredBackendRouteKey, targetUrl);
 
   return {
     deployment,
@@ -67,6 +78,17 @@ function buildValidationPayload(target) {
       model: target.deployment,
       input: "health-check"
     }
+    : target.backendRouteKey === "messages"
+      ? {
+        model: target.deployment,
+        messages: [
+          {
+            role: "user",
+            content: "health-check"
+          }
+        ],
+        max_tokens: 1
+      }
     : target.backendRouteKey === "images/generations"
       ? {
         model: target.deployment,
@@ -128,6 +150,41 @@ function buildStaticIssue(model, message) {
   };
 }
 
+const CLIENT_COMPATIBILITY_PROTOCOLS = {
+  claudeCode: { label: "Claude Code", routeKey: "messages" },
+  codex: { label: "Codex", routeKey: "responses" }
+};
+
+function getClientCompatibilityIssues(config, model, upstream) {
+  const issues = [];
+  for (const [clientName, protocol] of Object.entries(CLIENT_COMPATIBILITY_PROTOCOLS)) {
+    if (config?.compatibility?.[clientName]?.enabled === false) continue;
+    if (model?.clientCompatibility?.[clientName] !== true) continue;
+    if (!isPublicRouteEnabled(config, protocol.routeKey)) {
+      issues.push(buildStaticIssue(
+        model,
+        `model "${model.id}" is marked for ${protocol.label} but public route ${protocol.routeKey} is disabled`
+      ));
+      continue;
+    }
+    try {
+      const target = buildValidationTarget(model, upstream, protocol.routeKey);
+      if (target.backendRouteKey !== protocol.routeKey) {
+        issues.push(buildStaticIssue(
+          model,
+          `model "${model.id}" is marked for ${protocol.label} but ${protocol.routeKey} resolves to ${target.backendRouteKey}; native ${protocol.routeKey} is required`
+        ));
+      }
+    } catch (error) {
+      issues.push(buildStaticIssue(
+        model,
+        `model "${model.id}" is marked for ${protocol.label} but has no usable native ${protocol.routeKey} route: ${error?.message || "route resolution failed"}`
+      ));
+    }
+  }
+  return issues;
+}
+
 export function getConfiguredModelBindingIssues(config) {
   const issues = [];
   for (const model of Array.isArray(config?.models) ? config.models : []) {
@@ -141,6 +198,8 @@ export function getConfiguredModelBindingIssues(config) {
     if (isDisabledStatus(upstream?.status)) {
       issues.push(buildStaticIssue(model, `model \"${model.id}\" is bound to disabled upstream \"${upstream.name}\"`));
     }
+
+    issues.push(...getClientCompatibilityIssues(config, model, upstream));
 
     const definition = findPricingDefinitionForModel(model);
     const definitionProvider = normalizeProvider(definition?.provider);
@@ -285,9 +344,17 @@ async function probeConfiguredModel(config, item) {
     }
   });
 
+  const usesAnthropicMessages = target.backendRouteKey === "messages";
   const headers = {
     "content-type": "application/json",
-    ...await getUpstreamAuthHeaders(config?.auth?.scope),
+    ...(usesAnthropicMessages ? { "anthropic-version": "2023-06-01" } : {}),
+    ...await getUpstreamAuthHeaders(
+      usesAnthropicMessages ? "https://ai.azure.com/.default" : config?.auth?.scope,
+      {
+        auth: upstream.auth,
+        apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key"
+      }
+    ),
     "x-request-id": `model-validate-${randomUUID()}`
   };
 

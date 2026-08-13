@@ -33,6 +33,9 @@ test("environment-managed config values remain memory-only across saves", async 
     assert.equal(effectiveConfig.server.adminAuth.password, "environment-admin-secret");
     assert.equal(effectiveConfig.apiKeys[0].key, "environment-proxy-secret");
     assert.equal(effectiveConfig.server.caddy.domain, "environment.example.com");
+    assert.equal(effectiveConfig.observability.logAnalytics.tableName, "AOAIProxyLogs_CL");
+    assert.equal(effectiveConfig.observability.logAnalytics.streamName, "Custom-AOAIProxyLogs");
+    assert.equal(effectiveConfig.observability.logAnalytics.dataCollectionRuleName, "aoai-proxy-logs");
 
     effectiveConfig.server.gracefulShutdownMs = 12345;
     await saveConfig(effectiveConfig);

@@ -1,9 +1,16 @@
 import { getLogRuntimeInfo } from "./logs.js";
 import { getConfiguredModelBindingIssues } from "./model-validation.js";
 import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
-import { resolveNativeModelCapabilities } from "./pricing-library.js";
+import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from "./pricing-library.js";
 import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
 import { isSupportedPersistenceMode } from "./persistence-mode.js";
+
+const CURRENT_CONFIG_VERSION = 3;
+const GPT_56_DUAL_PROTOCOL_MODELS = new Set([
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra"
+]);
 
 // Default config values
 const DEFAULTS = {
@@ -126,8 +133,8 @@ const DEFAULTS = {
     },
     forwardHeaders: {
       mode: "denylist",
-      allow: ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-correlation-id", "anthropic-beta", "openai-organization"],
-      deny: ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
+      allow: ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id", "anthropic-version", "anthropic-beta", "openai-organization"],
+      deny: ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "cookie", "set-cookie", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
       addRequestIdHeader: true
     },
     guards: {
@@ -142,16 +149,25 @@ const DEFAULTS = {
     routeProfiles: {
       chatCompletions: {
         enabled: true,
+        nativeErrorPassthrough: false,
         defaultParams: {},
         allowedRequestFields: []
       },
       responses: {
         enabled: true,
+        nativeErrorPassthrough: false,
+        defaultParams: {},
+        allowedRequestFields: []
+      },
+      messages: {
+        enabled: true,
+        nativeErrorPassthrough: false,
         defaultParams: {},
         allowedRequestFields: []
       },
       imageGenerations: {
         enabled: true,
+        nativeErrorPassthrough: false,
         defaultParams: {},
         allowedRequestFields: [],
         polling: {
@@ -222,6 +238,7 @@ const DEFAULTS = {
       level: "info",
       sinks: ["memory", "console"],
       bufferSize: 100,
+      maxBufferBytes: 16777216,
       redactSecrets: true,
       redactApiKeyInfo: true,
       messageContentMode: "summary",
@@ -233,18 +250,27 @@ const DEFAULTS = {
     },
     logAnalytics: {
       enabled: false,
+      workspaceResourceId: "",
+      dataCollectionEndpointResourceId: "",
+      dataCollectionRuleName: "aoai-proxy-logs",
+      dataCollectionRuleResourceId: "",
       workspaceId: "",
       endpoint: "",
       dcrImmutableId: "",
-      streamName: "",
+      streamName: "Custom-AOAIProxyLogs",
       audience: "",
       credentialRef: "",
-      tableName: "AOAIProxyLogs",
+      tableName: "AOAIProxyLogs_CL",
       flushIntervalMs: 10000,
       batchSize: 100,
       samplingRatio: 1,
       maxConcurrency: 1,
       maxQueueSize: 5000,
+      maxQueueBytes: 67108864,
+      uploadTimeoutMs: 30000,
+      maxUploadRetries: 3,
+      retryBaseDelayMs: 1000,
+      retryMaxDelayMs: 30000,
       contentMode: "summary",
       fieldPolicies: {}
     },
@@ -337,7 +363,49 @@ const DEFAULTS = {
     mapImageCompressionToMediaInputCompression: true,
     mapServerUpstreamToProxyDefaults: true,
     warnOnDeprecatedFields: true,
-    failOnDeprecatedFieldsAfterVersion: 3
+    failOnDeprecatedFieldsAfterVersion: 3,
+    claudeCode: {
+      enabled: true
+    },
+    codex: {
+      enabled: true
+    },
+    protocolShim: {
+      rejectLossyRequests: true,
+      rejectLossyResponses: true
+    },
+    anthropic: {
+      betaAllowlistEnabled: true,
+      betaAllowlist: [
+        "fine-grained-tool-streaming-2025-05-14",
+        "interleaved-thinking-2025-05-14",
+        "context-management-2025-06-27"
+      ],
+      normalizeManualThinkingToolChoice: true,
+      sanitizeCacheControl: true,
+      validateThinkingByModel: true,
+      thinkingTypesByModel: {
+        "claude-mythos-5": ["adaptive"],
+        "claude-fable-5": ["adaptive"],
+        "claude-mythos-preview": ["adaptive", "enabled"],
+        "claude-opus-5": ["adaptive", "disabled"],
+        "claude-opus-4-8": ["adaptive", "disabled"],
+        "claude-opus-4-7": ["adaptive", "disabled"],
+        "claude-opus-4-6": ["adaptive", "enabled", "disabled"],
+        "claude-sonnet-5": ["adaptive", "disabled"],
+        "claude-sonnet-4-6": ["adaptive", "enabled", "disabled"]
+      },
+      effortLevelsByModel: {
+        "claude-mythos-5": ["low", "medium", "high", "xhigh"],
+        "claude-fable-5": ["low", "medium", "high", "xhigh"],
+        "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-6": ["low", "medium", "high", "max"],
+        "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-sonnet-4-6": ["low", "medium", "high", "max"]
+      }
+    }
   },
   apiKeys: [],
   upstreams: [],
@@ -510,6 +578,100 @@ function asPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function validateRawCompatibilityShape(raw) {
+  if (
+    !raw
+    || typeof raw !== "object"
+    || !Object.prototype.hasOwnProperty.call(raw, "compatibility")
+  ) return;
+  const compatibility = raw?.compatibility;
+  if (!compatibility || typeof compatibility !== "object" || Array.isArray(compatibility)) {
+    throw new Error("compatibility must be an object");
+  }
+  for (const clientName of ["claudeCode", "codex", "protocolShim", "anthropic"]) {
+    if (!Object.prototype.hasOwnProperty.call(compatibility, clientName)) continue;
+    const clientCompatibility = compatibility[clientName];
+    if (
+      !clientCompatibility
+      || typeof clientCompatibility !== "object"
+      || Array.isArray(clientCompatibility)
+    ) {
+      throw new Error(`compatibility.${clientName} must be an object`);
+    }
+  }
+}
+
+function validateRawStringArray(value, path) {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${path} must be an array of strings`);
+  }
+}
+
+function validateRawRequestPolicy(value, path) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${path} must be an object`);
+  }
+  for (const field of ["allowedParams", "blockedParams"]) {
+    if (Object.prototype.hasOwnProperty.call(value, field)) {
+      validateRawStringArray(value[field], `${path}.${field}`);
+    }
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "dropUnsupportedParams")
+    && typeof value.dropUnsupportedParams !== "boolean"
+  ) {
+    throw new Error(`${path}.dropUnsupportedParams must be a boolean`);
+  }
+}
+
+function validateRawPolicyShape(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  for (const [collectionName, items] of [["models", raw.models], ["upstreams", raw.upstreams]]) {
+    if (!Array.isArray(items)) continue;
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      if (Object.prototype.hasOwnProperty.call(item, "requestPolicy")) {
+        validateRawRequestPolicy(item.requestPolicy, `${collectionName}[${index}].requestPolicy`);
+      }
+      if (collectionName === "upstreams" && Object.prototype.hasOwnProperty.call(item, "errorPolicy")) {
+        const errorPolicy = item.errorPolicy;
+        if (!errorPolicy || typeof errorPolicy !== "object" || Array.isArray(errorPolicy)) {
+          throw new Error(`upstreams[${index}].errorPolicy must be an object`);
+        }
+        if (
+          Object.prototype.hasOwnProperty.call(errorPolicy, "nativePassthrough")
+          && typeof errorPolicy.nativePassthrough !== "boolean"
+        ) {
+          throw new Error(`upstreams[${index}].errorPolicy.nativePassthrough must be a boolean`);
+        }
+      }
+    }
+  }
+
+  const routeProfiles = raw?.routing?.routeProfiles;
+  if (!routeProfiles || typeof routeProfiles !== "object" || Array.isArray(routeProfiles)) return;
+  for (const routeKey of ["chatCompletions", "responses", "messages", "imageGenerations"]) {
+    if (!Object.prototype.hasOwnProperty.call(routeProfiles, routeKey)) continue;
+    const routeProfile = routeProfiles[routeKey];
+    if (!routeProfile || typeof routeProfile !== "object" || Array.isArray(routeProfile)) {
+      throw new Error(`routing.routeProfiles.${routeKey} must be an object`);
+    }
+    if (Object.prototype.hasOwnProperty.call(routeProfile, "allowedRequestFields")) {
+      validateRawStringArray(
+        routeProfile.allowedRequestFields,
+        `routing.routeProfiles.${routeKey}.allowedRequestFields`
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(routeProfile, "nativeErrorPassthrough")
+      && typeof routeProfile.nativeErrorPassthrough !== "boolean"
+    ) {
+      throw new Error(`routing.routeProfiles.${routeKey}.nativeErrorPassthrough must be a boolean`);
+    }
+  }
+}
+
 function normalizeStringArray(value) {
   return Array.isArray(value)
     ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
@@ -563,6 +725,19 @@ function normalizeRouteProfileKey(routeKey) {
   return routeKey;
 }
 
+function migrateLegacyGpt56Routes(models, sourceVersion) {
+  if (sourceVersion >= CURRENT_CONFIG_VERSION) return;
+  for (const model of Array.isArray(models) ? models : []) {
+    const modelKeys = [model?.pricingRef, model?.id, model?.targetModel]
+      .map((value) => String(value || "").trim().toLowerCase());
+    if (!modelKeys.some((value) => GPT_56_DUAL_PROTOCOL_MODELS.has(value))) continue;
+    const routes = asPlainObject(model?.routes);
+    if (Object.keys(routes).length === 1 && routes["*"] === "responses") {
+      model.routes = {};
+    }
+  }
+}
+
 function applySchemaCompatibility(rawConfig, merged) {
   const raw = asPlainObject(rawConfig);
   const rawServer = asPlainObject(raw.server);
@@ -570,7 +745,9 @@ function applySchemaCompatibility(rawConfig, merged) {
   const rawProxy = asPlainObject(raw.proxy);
   const rawMedia = asPlainObject(raw.media);
 
-  merged.version = pickInteger(raw.version, merged.version, 2);
+  const sourceVersion = pickInteger(raw.version, 2);
+  migrateLegacyGpt56Routes(merged.models, sourceVersion);
+  merged.version = Math.max(sourceVersion, CURRENT_CONFIG_VERSION);
 
   merged.admin = deepMerge(DEFAULTS.admin, asPlainObject(merged.admin));
   merged.admin.basePath = String(pickDefined(rawAdmin.basePath, rawServer.adminPath, merged.admin.basePath) || DEFAULTS.admin.basePath);
@@ -663,7 +840,7 @@ function applySchemaCompatibility(rawConfig, merged) {
 
   merged.routing = deepMerge(DEFAULTS.routing, asPlainObject(merged.routing));
   merged.routing.routeProfiles = deepMerge(DEFAULTS.routing.routeProfiles, asPlainObject(merged.routing.routeProfiles));
-  for (const routeKey of ["chatCompletions", "responses", "imageGenerations"]) {
+  for (const routeKey of ["chatCompletions", "responses", "messages", "imageGenerations"]) {
     merged.routing.routeProfiles[routeKey] = deepMerge(DEFAULTS.routing.routeProfiles[routeKey], asPlainObject(merged.routing.routeProfiles[routeKey]));
     merged.routing.routeProfiles[routeKey].allowedRequestFields = normalizeStringArray(merged.routing.routeProfiles[routeKey].allowedRequestFields);
   }
@@ -673,6 +850,43 @@ function applySchemaCompatibility(rawConfig, merged) {
   merged.access = deepMerge(DEFAULTS.access, asPlainObject(merged.access));
   merged.access.defaults.keyHeaderNames = normalizeStringArray(merged.access.defaults.keyHeaderNames);
   merged.compatibility = deepMerge(DEFAULTS.compatibility, asPlainObject(merged.compatibility));
+  merged.compatibility.claudeCode = deepMerge(
+    DEFAULTS.compatibility.claudeCode,
+    asPlainObject(merged.compatibility.claudeCode)
+  );
+  merged.compatibility.codex = deepMerge(
+    DEFAULTS.compatibility.codex,
+    asPlainObject(merged.compatibility.codex)
+  );
+  merged.compatibility.protocolShim = deepMerge(
+    DEFAULTS.compatibility.protocolShim,
+    asPlainObject(merged.compatibility.protocolShim)
+  );
+  merged.compatibility.anthropic = deepMerge(
+    DEFAULTS.compatibility.anthropic,
+    asPlainObject(merged.compatibility.anthropic)
+  );
+  merged.compatibility.anthropic.betaAllowlist = normalizeStringArray(
+    merged.compatibility.anthropic.betaAllowlist
+  );
+  const thinkingTypesByModel = asPlainObject(merged.compatibility.anthropic.thinkingTypesByModel);
+  merged.compatibility.anthropic.thinkingTypesByModel = Object.fromEntries(
+    Object.entries(thinkingTypesByModel)
+      .map(([modelName, types]) => [
+        String(modelName).trim().toLowerCase(),
+        normalizeStringArray(types).map((type) => type.toLowerCase())
+      ])
+      .filter(([modelName, types]) => modelName && types.length > 0)
+  );
+  const effortLevelsByModel = asPlainObject(merged.compatibility.anthropic.effortLevelsByModel);
+  merged.compatibility.anthropic.effortLevelsByModel = Object.fromEntries(
+    Object.entries(effortLevelsByModel)
+      .map(([modelName, levels]) => [
+        String(modelName).trim().toLowerCase(),
+        normalizeStringArray(levels).map((level) => level.toLowerCase())
+      ])
+      .filter(([modelName, levels]) => modelName && levels.length > 0)
+  );
 
   merged.models = Array.isArray(merged.models)
     ? merged.models.map((model) => {
@@ -692,10 +906,17 @@ function applySchemaCompatibility(rawConfig, merged) {
         pricing: {},
         fallbackModels: [],
         pricingRef: "",
+        hostingMode: "",
         accessTags: [],
-        deprecatedAliasOf: ""
+        deprecatedAliasOf: "",
+        clientCompatibility: {
+          claudeCode: false,
+          codex: false
+        },
+        codex: {}
       }, model || {});
       next.capabilities = normalizeStringArray(next.capabilities);
+      next.hostingMode = String(next.hostingMode || "").trim().toLowerCase();
       next.fallbackModels = normalizeStringArray(next.fallbackModels);
       next.accessTags = normalizeStringArray(next.accessTags);
       next.requestPolicy.allowedParams = normalizeStringArray(next.requestPolicy.allowedParams);
@@ -717,17 +938,30 @@ function applySchemaCompatibility(rawConfig, merged) {
         resourceName: "",
         status: "active",
         priority: 100,
+        auth: {
+          mode: "",
+          apiKey: ""
+        },
         tags: [],
         capabilities: [],
         routes: {
           "chat/completions": "/openai/v1/chat/completions",
           responses: "/openai/v1/responses",
+          messages: "/anthropic/v1/messages",
           "images/generations": "/openai/v1/images/generations",
           "openai-image": "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview",
           "blackforest-image": "/providers/blackforestlabs/v1/{deployment}?api-version=preview"
         },
         timeoutProfile: {},
         retryProfile: {},
+        requestPolicy: {
+          allowedParams: [],
+          blockedParams: [],
+          dropUnsupportedParams: false
+        },
+        errorPolicy: {
+          nativePassthrough: false
+        },
         headersTemplate: {},
         healthCheck: {
           enabled: false,
@@ -738,6 +972,8 @@ function applySchemaCompatibility(rawConfig, merged) {
       }, upstream || {});
       next.tags = normalizeStringArray(next.tags);
       next.capabilities = collectCapabilitiesForUpstream(merged.models, next.name);
+      next.requestPolicy.allowedParams = normalizeStringArray(next.requestPolicy.allowedParams);
+      next.requestPolicy.blockedParams = normalizeStringArray(next.requestPolicy.blockedParams);
       return next;
     })
     : [];
@@ -772,6 +1008,8 @@ function applySchemaCompatibility(rawConfig, merged) {
 }
 
 function normalizeConfig(raw, options = {}) {
+  validateRawCompatibilityShape(raw);
+  validateRawPolicyShape(raw);
   const merged = deepMerge(DEFAULTS, raw || {});
   merged.apiKeys = Array.isArray(merged.apiKeys) ? merged.apiKeys : [];
   merged.upstreams = Array.isArray(merged.upstreams) ? merged.upstreams : [];
@@ -1057,6 +1295,29 @@ function validateConfig(cfg) {
       throw new Error("proxy.retries.retryBeforeFirstChunkOnly must remain true because streamed requests cannot be safely replayed after output starts");
     }
   }
+  if (cfg.compatibility != null) {
+    if (typeof cfg.compatibility !== "object" || Array.isArray(cfg.compatibility)) {
+      throw new Error("compatibility must be an object");
+    }
+    for (const clientName of ["claudeCode", "codex"]) {
+      const clientCompatibility = cfg.compatibility[clientName];
+      if (clientCompatibility != null && (typeof clientCompatibility !== "object" || Array.isArray(clientCompatibility))) {
+        throw new Error(`compatibility.${clientName} must be an object`);
+      }
+      if (clientCompatibility?.enabled != null && typeof clientCompatibility.enabled !== "boolean") {
+        throw new Error(`compatibility.${clientName}.enabled must be a boolean`);
+      }
+    }
+    const protocolShim = cfg.compatibility.protocolShim;
+    if (protocolShim != null && (typeof protocolShim !== "object" || Array.isArray(protocolShim))) {
+      throw new Error("compatibility.protocolShim must be an object");
+    }
+    for (const field of ["rejectLossyRequests", "rejectLossyResponses"]) {
+      if (protocolShim?.[field] != null && typeof protocolShim[field] !== "boolean") {
+        throw new Error(`compatibility.protocolShim.${field} must be a boolean`);
+      }
+    }
+  }
   if (cfg.persistence != null) {
     if (typeof cfg.persistence !== "object") {
       throw new Error("persistence must be an object");
@@ -1119,15 +1380,25 @@ function validateConfig(cfg) {
       if (logAnalytics.enabled != null && typeof logAnalytics.enabled !== "boolean") {
         throw new Error("observability.logAnalytics.enabled must be a boolean");
       }
-      for (const key of ["workspaceId", "endpoint", "dcrImmutableId", "streamName", "audience", "credentialRef", "tableName"]) {
+      for (const key of ["workspaceResourceId", "dataCollectionEndpointResourceId", "dataCollectionRuleName", "dataCollectionRuleResourceId", "workspaceId", "endpoint", "dcrImmutableId", "streamName", "audience", "credentialRef", "tableName"]) {
         if (logAnalytics[key] != null && typeof logAnalytics[key] !== "string") {
           throw new Error(`observability.logAnalytics.${key} must be a string`);
         }
       }
-      for (const key of ["flushIntervalMs", "batchSize", "maxConcurrency", "maxQueueSize"]) {
+      for (const key of ["flushIntervalMs", "batchSize", "maxConcurrency", "maxQueueSize", "maxQueueBytes", "uploadTimeoutMs", "retryBaseDelayMs", "retryMaxDelayMs"]) {
         if (logAnalytics[key] != null && (!Number.isInteger(logAnalytics[key]) || logAnalytics[key] <= 0)) {
           throw new Error(`observability.logAnalytics.${key} must be a positive integer`);
         }
+      }
+      if (logAnalytics.maxUploadRetries != null && (!Number.isInteger(logAnalytics.maxUploadRetries) || logAnalytics.maxUploadRetries < 0)) {
+        throw new Error("observability.logAnalytics.maxUploadRetries must be a non-negative integer");
+      }
+      if (
+        Number.isInteger(logAnalytics.retryBaseDelayMs)
+        && Number.isInteger(logAnalytics.retryMaxDelayMs)
+        && logAnalytics.retryMaxDelayMs < logAnalytics.retryBaseDelayMs
+      ) {
+        throw new Error("observability.logAnalytics.retryMaxDelayMs must be greater than or equal to retryBaseDelayMs");
       }
       if (logAnalytics.samplingRatio != null && (typeof logAnalytics.samplingRatio !== "number" || logAnalytics.samplingRatio < 0 || logAnalytics.samplingRatio > 1)) {
         throw new Error("observability.logAnalytics.samplingRatio must be between 0 and 1");
@@ -1143,6 +1414,9 @@ function validateConfig(cfg) {
       }
       if (logs.bufferSize != null && (!Number.isInteger(logs.bufferSize) || logs.bufferSize <= 0)) {
         throw new Error("observability.logs.bufferSize must be a positive integer");
+      }
+      if (logs.maxBufferBytes != null && (!Number.isInteger(logs.maxBufferBytes) || logs.maxBufferBytes <= 0)) {
+        throw new Error("observability.logs.maxBufferBytes must be a positive integer");
       }
     }
     if (cfg.observability.runtimeStore != null) {
@@ -1212,18 +1486,71 @@ function validateConfig(cfg) {
     throw new Error("models must be a non-empty array");
   }
 
+  for (const routeKey of ["chatCompletions", "responses", "messages", "imageGenerations"]) {
+    const routeProfile = cfg?.routing?.routeProfiles?.[routeKey];
+    if (routeProfile?.nativeErrorPassthrough != null && typeof routeProfile.nativeErrorPassthrough !== "boolean") {
+      throw new Error(`routing.routeProfiles.${routeKey}.nativeErrorPassthrough must be a boolean`);
+    }
+  }
+
+  const modelIds = new Set();
   for (const [idx, model] of cfg.models.entries()) {
     if (!model?.id || typeof model.id !== "string") {
       throw new Error(`models[${idx}].id is required`);
     }
+    const modelId = model.id.trim();
+    if (!modelId) {
+      throw new Error(`models[${idx}].id is required`);
+    }
+    if (modelIds.has(modelId)) {
+      throw new Error(`models[${idx}].id duplicates model ID "${modelId}"`);
+    }
+    modelIds.add(modelId);
     if (!model?.upstream || typeof model.upstream !== "string") {
       throw new Error(`models[${idx}].upstream is required`);
     }
     if (model.targetModel != null && typeof model.targetModel !== "string") {
       throw new Error(`models[${idx}].targetModel must be a string`);
     }
+    if (model.hostingMode != null && !["", "azure", "anthropic"].includes(String(model.hostingMode).trim().toLowerCase())) {
+      throw new Error(`models[${idx}].hostingMode must be azure or anthropic`);
+    }
+    const hostingMode = String(model.hostingMode || "").trim().toLowerCase();
+    const pricingDefinition = findPricingDefinitionForModel(model);
+    const supportedHostingModes = Array.isArray(pricingDefinition?.hostingModes)
+      ? pricingDefinition.hostingModes
+      : [];
+    if (hostingMode && supportedHostingModes.length > 0 && !supportedHostingModes.includes(hostingMode)) {
+      throw new Error(`models[${idx}].hostingMode=${hostingMode} is not supported by ${pricingDefinition.id}; use ${supportedHostingModes.join(" or ")}`);
+    }
     if (model.capabilities != null && (!Array.isArray(model.capabilities) || model.capabilities.some((value) => typeof value !== "string"))) {
       throw new Error(`models[${idx}].capabilities must be an array of strings`);
+    }
+    if (model.clientCompatibility != null) {
+      if (typeof model.clientCompatibility !== "object" || Array.isArray(model.clientCompatibility)) {
+        throw new Error(`models[${idx}].clientCompatibility must be an object`);
+      }
+      for (const clientName of ["claudeCode", "codex"]) {
+        if (model.clientCompatibility[clientName] != null && typeof model.clientCompatibility[clientName] !== "boolean") {
+          throw new Error(`models[${idx}].clientCompatibility.${clientName} must be a boolean`);
+        }
+      }
+    }
+    if (model.codex != null && (typeof model.codex !== "object" || Array.isArray(model.codex))) {
+      throw new Error(`models[${idx}].codex must be an object`);
+    }
+    if (model.requestPolicy != null) {
+      if (typeof model.requestPolicy !== "object" || Array.isArray(model.requestPolicy)) {
+        throw new Error(`models[${idx}].requestPolicy must be an object`);
+      }
+      for (const field of ["allowedParams", "blockedParams"]) {
+        if (model.requestPolicy[field] != null && (!Array.isArray(model.requestPolicy[field]) || model.requestPolicy[field].some((value) => typeof value !== "string"))) {
+          throw new Error(`models[${idx}].requestPolicy.${field} must be an array of strings`);
+        }
+      }
+      if (model.requestPolicy.dropUnsupportedParams != null && typeof model.requestPolicy.dropUnsupportedParams !== "boolean") {
+        throw new Error(`models[${idx}].requestPolicy.dropUnsupportedParams must be a boolean`);
+      }
     }
     if (Array.isArray(model.fallbackModels) && model.fallbackModels.length > 0) {
       throw new Error(`models[${idx}].fallbackModels is not supported by this proxy version`);
@@ -1325,10 +1652,16 @@ function validateConfig(cfg) {
     }
   }
 
+  const upstreamNames = new Set();
   for (const [idx, upstream] of cfg.upstreams.entries()) {
-    if (!upstream?.name) {
+    if (typeof upstream?.name !== "string" || !upstream.name.trim()) {
       throw new Error(`upstreams[${idx}].name is required`);
     }
+    const upstreamName = upstream.name.trim();
+    if (upstreamNames.has(upstreamName)) {
+      throw new Error(`upstreams[${idx}].name duplicates upstream name "${upstreamName}"`);
+    }
+    upstreamNames.add(upstreamName);
     const hasBaseUrl = typeof upstream?.baseUrl === "string" && upstream.baseUrl.trim();
     const hasResourceName = typeof upstream?.resourceName === "string" && upstream.resourceName.trim();
     if (!hasBaseUrl && !hasResourceName) {
@@ -1348,8 +1681,50 @@ function validateConfig(cfg) {
     if (upstream.resourceName != null && typeof upstream.resourceName !== "string") {
       throw new Error(`upstreams[${idx}].resourceName must be a string`);
     }
+    if (upstream.auth != null) {
+      if (typeof upstream.auth !== "object" || Array.isArray(upstream.auth)) {
+        throw new Error(`upstreams[${idx}].auth must be an object`);
+      }
+      const upstreamAuthMode = typeof upstream.auth.mode === "string" ? upstream.auth.mode.trim() : "";
+      if (upstream.auth.mode != null && typeof upstream.auth.mode !== "string") {
+        throw new Error(`upstreams[${idx}].auth.mode must be a string`);
+      }
+      if (upstreamAuthMode && !["managedIdentity", "apiKey"].includes(upstreamAuthMode)) {
+        throw new Error(`upstreams[${idx}].auth.mode must be managedIdentity or apiKey`);
+      }
+      if (upstream.auth.apiKey != null && typeof upstream.auth.apiKey !== "string") {
+        throw new Error(`upstreams[${idx}].auth.apiKey must be a string`);
+      }
+      if (upstreamAuthMode === "apiKey" && !upstream.auth.apiKey?.trim()) {
+        throw new Error(`upstreams[${idx}].auth.apiKey is required when auth.mode is apiKey`);
+      }
+      if (upstreamAuthMode === "managedIdentity" && !cfg.auth.scope?.trim()) {
+        throw new Error(`auth.scope is required when upstreams[${idx}].auth.mode is managedIdentity`);
+      }
+    }
     if (upstream.capabilities != null && (!Array.isArray(upstream.capabilities) || upstream.capabilities.some((value) => typeof value !== "string"))) {
       throw new Error(`upstreams[${idx}].capabilities must be an array of strings`);
+    }
+    if (upstream.requestPolicy != null) {
+      if (typeof upstream.requestPolicy !== "object" || Array.isArray(upstream.requestPolicy)) {
+        throw new Error(`upstreams[${idx}].requestPolicy must be an object`);
+      }
+      for (const field of ["allowedParams", "blockedParams"]) {
+        if (upstream.requestPolicy[field] != null && (!Array.isArray(upstream.requestPolicy[field]) || upstream.requestPolicy[field].some((value) => typeof value !== "string"))) {
+          throw new Error(`upstreams[${idx}].requestPolicy.${field} must be an array of strings`);
+        }
+      }
+      if (upstream.requestPolicy.dropUnsupportedParams != null && typeof upstream.requestPolicy.dropUnsupportedParams !== "boolean") {
+        throw new Error(`upstreams[${idx}].requestPolicy.dropUnsupportedParams must be a boolean`);
+      }
+    }
+    if (upstream.errorPolicy != null) {
+      if (typeof upstream.errorPolicy !== "object" || Array.isArray(upstream.errorPolicy)) {
+        throw new Error(`upstreams[${idx}].errorPolicy must be an object`);
+      }
+      if (upstream.errorPolicy.nativePassthrough != null && typeof upstream.errorPolicy.nativePassthrough !== "boolean") {
+        throw new Error(`upstreams[${idx}].errorPolicy.nativePassthrough must be a boolean`);
+      }
     }
     if (upstream.routes && typeof upstream.routes !== "object") {
       throw new Error(`upstreams[${idx}].routes must be an object`);

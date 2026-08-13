@@ -17,8 +17,22 @@ import { validateConfiguredModels } from "./model-validation.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
+import { attachRequestContext, getRequestContext } from "./request-context.js";
 import { closeSharedPostgresPools } from "./postgres.js";
 import { redactConfigSecrets, restoreConfigSecrets } from "./admin-config.js";
+import { initializeLogAnalytics } from "./log-analytics-admin.js";
+import { getBuildInfo } from "./build-info.js";
+import {
+  buildDirectUpstreamUrl,
+  buildUpstreamUrl,
+  findUpstream,
+  inferBackendRouteKey,
+  isPublicRouteEnabled,
+  normalizeBackendRouteKey,
+  reconcileBackendRouteKey,
+  resolveEffectiveRouteKey,
+  resolveModelRoute
+} from "./proxy/routing.js";
 
 const { LogController } = fastify;
 
@@ -31,6 +45,7 @@ const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30000;
 
 let shutdownPromise = null;
+let logAnalyticsInitializationPromise = null;
 
 const app = fastify({
   logger: {
@@ -89,7 +104,7 @@ function isAdminRoute(url, adminPath) {
 function shouldSkipSuccessfulAccessLog(url, method, status, adminPath) {
   if (status >= 400) return false;
   const pathOnly = String(url || "").split("?")[0];
-  if (pathOnly === "/healthz" || pathOnly === "/favicon.ico") return true;
+  if (pathOnly === "/healthz" || pathOnly === "/version" || pathOnly === "/favicon.ico") return true;
   return ["GET", "HEAD", "OPTIONS"].includes(String(method || "").toUpperCase())
     && isAdminRoute(url, adminPath);
 }
@@ -195,6 +210,186 @@ function buildModelList(config, consumer) {
   };
 }
 
+function modelUsesNativeProtocol(config, model, routeKey) {
+  if (!isPublicRouteEnabled(config, routeKey)) return false;
+  const upstream = findUpstream(config, model?.upstream);
+  if (!upstream || String(model?.targetModel || model?.id || "").trim().toLowerCase() === "model-router") {
+    return false;
+  }
+  const override = resolveModelRoute(model, routeKey);
+  const effectiveRouteKey = resolveEffectiveRouteKey(routeKey, model, upstream, override);
+  const backendRouteKey = override
+    ? inferBackendRouteKey(routeKey, override)
+    : normalizeBackendRouteKey(effectiveRouteKey);
+  if (backendRouteKey !== routeKey) return false;
+  const deployment = String(model?.targetModel || model?.id || "").trim();
+  try {
+    const targetUrl = override?.type === "path"
+      ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
+      : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
+    return reconcileBackendRouteKey(backendRouteKey, targetUrl) === routeKey;
+  } catch {
+    return false;
+  }
+}
+
+function buildAnthropicModelList(config, consumer, { claudeCodeOnly = false } = {}) {
+  const createdAt = new Date().toISOString();
+  const data = filterModelsForConsumer(config.models, consumer)
+    .filter((model) => (
+      !claudeCodeOnly
+      || (model?.clientCompatibility?.claudeCode === true && modelUsesNativeProtocol(config, model, "messages"))
+    ))
+    .map((model) => ({
+      type: "model",
+      id: model.id,
+      display_name: model.displayName || model.id,
+      created_at: createdAt
+    }));
+  return {
+    data,
+    has_more: false,
+    ...(data.length ? { first_id: data[0].id, last_id: data.at(-1).id } : {})
+  };
+}
+
+const CODEX_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const CODEX_REASONING_DESCRIPTIONS = {
+  none: "No reasoning",
+  minimal: "Minimal reasoning",
+  low: "Fast responses with lighter reasoning",
+  medium: "Balanced speed and reasoning depth",
+  high: "Greater reasoning depth for complex problems",
+  xhigh: "Extra high reasoning depth for complex problems",
+  max: "Maximum reasoning depth for the hardest problems"
+};
+
+function normalizeCapabilitySet(model) {
+  return new Set(
+    (Array.isArray(model?.capabilities) ? model.capabilities : [])
+      .filter((value) => typeof value === "string")
+      .map((value) => value.trim().toLowerCase().replaceAll("_", "-"))
+      .filter(Boolean)
+  );
+}
+
+function modelUsesNativeResponses(config, model) {
+  if (model?.clientCompatibility?.codex !== true) {
+    return false;
+  }
+  const capabilities = normalizeCapabilitySet(model);
+  const modelId = String(model?.id || "").trim().toLowerCase();
+  if (
+    capabilities.has("image-generation")
+    || capabilities.has("image-editing")
+    || modelId.startsWith("gpt-image-")
+    || modelId.startsWith("flux-")
+  ) {
+    return false;
+  }
+  return modelUsesNativeProtocol(config, model, "responses");
+}
+
+function getCodexReasoningEfforts(model, capabilities) {
+  const configured = Array.isArray(model?.codex?.supportedReasoningEfforts)
+    ? model.codex.supportedReasoningEfforts
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter((value) => CODEX_REASONING_EFFORTS.has(value))
+    : [];
+  if (configured.length) return [...new Set(configured)];
+  const modelId = String(model?.id || "").trim().toLowerCase();
+  const supportsReasoning = capabilities.has("reasoning") || /^gpt-(?:[5-9]|\d{2,})(?:$|[.-])/.test(modelId) || /^o\d(?:$|[.-])/.test(modelId);
+  if (!supportsReasoning) return [];
+  return /^gpt-5\.6(?:$|[.-])/.test(modelId)
+    ? ["low", "medium", "high", "xhigh", "max"]
+    : ["low", "medium", "high"];
+}
+
+function buildCodexModelInfo(model, index) {
+  const capabilities = normalizeCapabilitySet(model);
+  const reasoningEfforts = getCodexReasoningEfforts(model, capabilities);
+  const configuredDefaultEffort = String(model?.codex?.defaultReasoningEffort || "").trim().toLowerCase();
+  const defaultReasoningEffort = reasoningEfforts.includes(configuredDefaultEffort)
+    ? configuredDefaultEffort
+    : (reasoningEfforts.includes("medium") ? "medium" : reasoningEfforts[0] || "medium");
+  const configuredContextWindow = Number(model?.codex?.contextWindow ?? model?.contextWindow);
+  const contextWindow = Number.isInteger(configuredContextWindow) && configuredContextWindow > 0
+    ? configuredContextWindow
+    : 128000;
+  const supportsVision = capabilities.has("vision");
+  const supportsWebSearch = capabilities.has("web-search");
+  const codeOptimized = capabilities.has("code-optimized");
+
+  return {
+    slug: model.id,
+    display_name: model.displayName || model.id,
+    description: model?.codex?.description || `${model.displayName || model.id} via AOAI Proxy`,
+    default_reasoning_level: defaultReasoningEffort,
+    supported_reasoning_levels: reasoningEfforts.map((effort) => ({
+      effort,
+      description: CODEX_REASONING_DESCRIPTIONS[effort]
+    })),
+    shell_type: "shell_command",
+    visibility: "list",
+    supported_in_api: true,
+    priority: Number.isInteger(model?.codex?.priority) ? model.codex.priority : index,
+    additional_speed_tiers: [],
+    service_tiers: [],
+    availability_nux: null,
+    include_skills_usage_instructions: false,
+    include_plugin_usage_instructions: false,
+    include_apps_usage_instructions: false,
+    default_reasoning_summary: "none",
+    support_verbosity: false,
+    default_verbosity: null,
+    apply_patch_tool_type: codeOptimized ? "freeform" : null,
+    web_search_tool_type: supportsVision && supportsWebSearch ? "text_and_image" : "text",
+    truncation_policy: { mode: "tokens", limit: 10000 },
+    supports_parallel_tool_calls: capabilities.has("parallel-tool-calling"),
+    supports_image_detail_original: supportsVision,
+    context_window: contextWindow,
+    max_context_window: contextWindow,
+    effective_context_window_percent: 95,
+    experimental_supported_tools: [],
+    input_modalities: supportsVision ? ["text", "image"] : ["text"],
+    supports_search_tool: supportsWebSearch,
+    use_responses_lite: false
+  };
+}
+
+function buildCodexModelList(config, consumer) {
+  return {
+    models: filterModelsForConsumer(config.models, consumer)
+      .filter((model) => modelUsesNativeResponses(config, model))
+      .map(buildCodexModelInfo)
+  };
+}
+
+function wantsCodexModelList(req, config) {
+  if (config?.compatibility?.codex?.enabled === false) return false;
+  const format = String(req.query?.format || "").trim().toLowerCase();
+  if (["codex", "codex_cli", "codex-cli"].includes(format)) return true;
+  return String(req.headers["user-agent"] || "").toLowerCase().includes("codex");
+}
+
+function wantsClaudeCodeModelList(req, config) {
+  if (config?.compatibility?.claudeCode?.enabled === false) return false;
+  const format = String(req.query?.format || "").trim().toLowerCase();
+  if (["claude-code", "claude_code", "claude-cli"].includes(format)) return true;
+  const userAgent = String(req.headers["user-agent"] || "").toLowerCase();
+  return userAgent.includes("claude-code")
+    || userAgent.includes("claude_cli")
+    || userAgent.includes("claude-cli");
+}
+
+function wantsAnthropicModelList(req) {
+  const format = String(req.query?.format || "").trim().toLowerCase();
+  if (["anthropic", "messages", "anthropic_messages"].includes(format)) return true;
+  if (String(req.headers["anthropic-version"] || "").trim()) return true;
+  const userAgent = String(req.headers["user-agent"] || "").toLowerCase();
+  return userAgent.includes("claude") || userAgent.includes("anthropic");
+}
+
 function attachAuth(config) {
   initAuth(config);
 }
@@ -287,7 +482,7 @@ function shutdown(reason, exitCode) {
     const httpResults = await Promise.allSettled([app.close()]);
     const resourceResults = await Promise.allSettled([
       drainRuntimeState(),
-      flushLogAnalyticsSink()
+      flushLogAnalyticsSink({ force: true })
     ]);
     const results = [...httpResults, ...resourceResults];
     clearTimeout(forceExitTimer);
@@ -327,11 +522,15 @@ function logAdminApiError(event, error, fields = {}) {
   }, failureReason);
 }
 
+app.addHook("onRequest", async (req) => {
+  attachRequestContext(req);
+});
+
 app.addHook("preHandler", async (req, reply) => {
   const config = getConfig();
   const rawUrl = req.raw?.url || req.url;
   const pathOnly = (rawUrl || "").split("?")[0];
-  if (pathOnly === "/healthz") {
+  if (pathOnly === "/healthz" || pathOnly === "/version") {
     return;
   }
   if (pathOnly === "/favicon.ico") {
@@ -377,7 +576,7 @@ app.addHook("onResponse", async (req, reply) => {
     source: isAdminRoute(rawUrl, config.server.adminPath) ? "http.admin" : "http",
     event: "http.request_completed",
     message: status >= 400 ? "request completed with error" : "request completed",
-    requestId: req.id,
+    ...getRequestContext(req),
     method: req.method,
     url: rawUrl,
     status,
@@ -393,9 +592,22 @@ app.addHook("onResponse", async (req, reply) => {
 
 app.get("/healthz", async () => ({ status: "ok" }));
 
+app.get("/version", async (_req, reply) => {
+  reply.header("Cache-Control", "no-store");
+  return getBuildInfo();
+});
+
 app.get("/v1/models", async (req) => {
   const config = getConfig();
-  return buildModelList(config, req.proxyAccess?.consumer);
+  if (wantsCodexModelList(req, config)) {
+    return buildCodexModelList(config, req.proxyAccess?.consumer);
+  }
+  if (wantsClaudeCodeModelList(req, config)) {
+    return buildAnthropicModelList(config, req.proxyAccess?.consumer, { claudeCodeOnly: true });
+  }
+  return wantsAnthropicModelList(req)
+    ? buildAnthropicModelList(config, req.proxyAccess?.consumer)
+    : buildModelList(config, req.proxyAccess?.consumer);
 });
 
 app.post("/v1/chat/completions", async (req, reply) => {
@@ -406,6 +618,21 @@ app.post("/v1/chat/completions", async (req, reply) => {
 app.post("/v1/responses", async (req, reply) => {
   const config = getConfig();
   await proxyRequest({ config, routeKey: "responses", req, reply });
+});
+
+app.post("/v1/responses/compact", async (req, reply) => {
+  const config = getConfig();
+  await proxyRequest({ config, routeKey: "responses/compact", req, reply });
+});
+
+app.post("/v1/messages", async (req, reply) => {
+  const config = getConfig();
+  await proxyRequest({ config, routeKey: "messages", req, reply });
+});
+
+app.post("/v1/messages/count_tokens", async (req, reply) => {
+  const config = getConfig();
+  await proxyRequest({ config, routeKey: "messages/count_tokens", req, reply });
 });
 
 app.post("/v1/images/generations", async (req, reply) => {
@@ -536,6 +763,49 @@ app.post("/admin/api/database/test", async (req, reply) => {
       status: 400
     });
     reply.code(400).send({ ok: false, error: error.message || "Database connection test failed" });
+  }
+});
+
+app.post("/admin/api/log-analytics/initialize", async (req, reply) => {
+  if (logAnalyticsInitializationPromise) {
+    return reply.code(409).send({
+      ok: false,
+      status: "busy",
+      error: { code: "LOG_ANALYTICS_INITIALIZATION_BUSY", message: "Log Analytics initialization is already running" }
+    });
+  }
+
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  logAnalyticsInitializationPromise = initializeLogAnalytics({
+    workspaceResourceId: body.workspaceResourceId,
+    dataCollectionEndpointResourceId: body.dataCollectionEndpointResourceId,
+    dataCollectionRuleName: body.dataCollectionRuleName,
+    tableName: body.tableName,
+    streamName: body.streamName,
+    audience: body.audience,
+    credentialRef: body.credentialRef
+  });
+  try {
+    const result = await logAnalyticsInitializationPromise;
+    appendStructuredLog(result.ok ? "info" : "warn", {
+      source: "admin",
+      event: result.ok ? "admin.log_analytics_initialized" : "admin.log_analytics_initialization_failed",
+      message: result.ok ? "Log Analytics initialized and tested" : "Log Analytics initialization did not complete",
+      ...getRequestContext(req),
+      status: result.ok ? 200 : result.error?.statusCode || 400,
+      initializationStatus: result.status,
+      probeRequestId: result.probe?.requestId || "",
+      errorCode: result.error?.code || "",
+      failureReason: result.error?.message || ""
+    });
+    if (result.ok || result.status === "needs_ingestion_permission" || result.status === "probe_failed") {
+      return reply.send(result);
+    }
+    const requestedStatus = Number(result.error?.statusCode) || 500;
+    const status = [400, 401, 403, 404, 409, 429].includes(requestedStatus) ? requestedStatus : 502;
+    return reply.code(status).send(result);
+  } finally {
+    logAnalyticsInitializationPromise = null;
   }
 });
 

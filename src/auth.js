@@ -39,14 +39,23 @@ function getActiveAuth() {
   return currentAuth || normalizeAuth(null);
 }
 
+function normalizeUpstreamAuth(auth) {
+  const mode = typeof auth?.mode === "string" ? auth.mode.trim() : "";
+  if (!mode) return null;
+  return {
+    mode,
+    apiKey: typeof auth?.apiKey === "string" ? auth.apiKey : ""
+  };
+}
+
 function isApiKeyMode(auth = getActiveAuth()) {
   return auth.mode === "apiKey";
 }
 
-function requireApiKey(auth = getActiveAuth()) {
+function requireApiKey(auth = getActiveAuth(), path = "auth.apiKey") {
   const apiKey = String(auth.apiKey || "").trim();
   if (!apiKey) {
-    throw new Error("auth.apiKey is required when auth.mode is apiKey");
+    throw new Error(`${path} is required when auth.mode is apiKey`);
   }
   return apiKey;
 }
@@ -60,9 +69,6 @@ function resolveScope(scopeOverride, auth = getActiveAuth()) {
 }
 
 function createCredential(auth) {
-  if (isApiKeyMode(auth)) {
-    return null;
-  }
   if (auth.mode === "servicePrincipal" && auth.tenantId && auth.clientId && auth.clientSecret) {
     return new ClientSecretCredential(auth.tenantId, auth.clientId, auth.clientSecret);
   }
@@ -197,9 +203,6 @@ export function initAuth(config) {
 }
 
 export async function getBearerToken(scope) {
-  if (isApiKeyMode()) {
-    throw new Error("Bearer token is not used when auth.mode is apiKey");
-  }
   if (!credential) {
     throw new Error("Credential not initialized");
   }
@@ -223,11 +226,24 @@ export async function warmBearerToken(scope) {
   return token.token;
 }
 
-export async function getUpstreamAuthHeaders(scope) {
+export async function getUpstreamAuthHeaders(scope, options = {}) {
+  const upstreamAuth = normalizeUpstreamAuth(options.auth);
+  const apiKeyHeader = options.apiKeyHeader === "x-api-key" ? "x-api-key" : "api-key";
+  if (upstreamAuth?.mode === "apiKey") {
+    return {
+      [apiKeyHeader]: requireApiKey(upstreamAuth, "upstream.auth.apiKey")
+    };
+  }
+  if (upstreamAuth?.mode === "managedIdentity") {
+    return {
+      authorization: `Bearer ${await getBearerToken(scope)}`
+    };
+  }
+
   const auth = getActiveAuth();
   if (isApiKeyMode(auth)) {
     return {
-      "api-key": requireApiKey(auth)
+      [apiKeyHeader]: requireApiKey(auth)
     };
   }
   return {

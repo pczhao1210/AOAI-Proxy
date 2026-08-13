@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "server": {
     "host": "0.0.0.0",
     "port": 3000,
@@ -79,8 +79,8 @@
     },
     "forwardHeaders": {
       "mode": "allowlist",
-      "allow": ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-correlation-id"],
-      "deny": ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
+      "allow": ["accept", "accept-encoding", "accept-language", "user-agent", "traceparent", "tracestate", "baggage", "x-request-id", "x-conversation-id", "x-session-id", "x-correlation-id", "anthropic-version", "anthropic-beta"],
+      "deny": ["authorization", "x-api-key", "api-key", "ocp-apim-subscription-key", "cookie", "set-cookie", "content-length", "host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer"],
       "addRequestIdHeader": true
     },
     "guards": {
@@ -95,16 +95,25 @@
     "routeProfiles": {
       "chatCompletions": {
         "enabled": true,
+        "nativeErrorPassthrough": false,
         "defaultParams": {},
         "allowedRequestFields": []
       },
       "responses": {
         "enabled": true,
+        "nativeErrorPassthrough": false,
+        "defaultParams": {},
+        "allowedRequestFields": []
+      },
+      "messages": {
+        "enabled": true,
+        "nativeErrorPassthrough": false,
         "defaultParams": {},
         "allowedRequestFields": []
       },
       "imageGenerations": {
         "enabled": true,
+        "nativeErrorPassthrough": false,
         "defaultParams": {},
         "allowedRequestFields": []
       }
@@ -140,22 +149,33 @@
     "logs": {
       "level": "info",
       "bufferSize": 100,
+      "maxBufferBytes": 16777216,
+      "messageContentMode": "summary",
       "maxPayloadLogBytes": 102400
     },
     "logAnalytics": {
       "enabled": false,
+      "workspaceResourceId": "",
+      "dataCollectionEndpointResourceId": "",
+      "dataCollectionRuleName": "aoai-proxy-logs",
+      "dataCollectionRuleResourceId": "",
       "workspaceId": "",
       "endpoint": "",
       "dcrImmutableId": "",
       "streamName": "Custom-AOAIProxyLogs",
       "audience": "",
       "credentialRef": "",
-      "tableName": "AOAIProxyLogs",
+      "tableName": "AOAIProxyLogs_CL",
       "flushIntervalMs": 10000,
       "batchSize": 100,
       "samplingRatio": 1,
       "maxConcurrency": 1,
       "maxQueueSize": 5000,
+      "maxQueueBytes": 67108864,
+      "uploadTimeoutMs": 30000,
+      "maxUploadRetries": 3,
+      "retryBaseDelayMs": 1000,
+      "retryMaxDelayMs": 30000,
       "contentMode": "summary",
       "fieldPolicies": {}
     },
@@ -229,6 +249,50 @@
       }
     }
   },
+  "compatibility": {
+    "claudeCode": {
+      "enabled": true
+    },
+    "codex": {
+      "enabled": true
+    },
+    "protocolShim": {
+      "rejectLossyRequests": true,
+      "rejectLossyResponses": true
+    },
+    "anthropic": {
+      "betaAllowlistEnabled": true,
+      "betaAllowlist": [
+        "fine-grained-tool-streaming-2025-05-14",
+        "interleaved-thinking-2025-05-14",
+        "context-management-2025-06-27"
+      ],
+      "normalizeManualThinkingToolChoice": true,
+      "sanitizeCacheControl": true,
+      "validateThinkingByModel": true,
+      "thinkingTypesByModel": {
+        "claude-mythos-5": ["adaptive"],
+        "claude-fable-5": ["adaptive"],
+        "claude-mythos-preview": ["adaptive", "enabled"],
+        "claude-opus-5": ["adaptive", "disabled"],
+        "claude-opus-4-8": ["adaptive", "disabled"],
+        "claude-opus-4-7": ["adaptive", "disabled"],
+        "claude-opus-4-6": ["adaptive", "enabled", "disabled"],
+        "claude-sonnet-5": ["adaptive", "disabled"],
+        "claude-sonnet-4-6": ["adaptive", "enabled", "disabled"]
+      },
+      "effortLevelsByModel": {
+        "claude-mythos-5": ["low", "medium", "high", "xhigh"],
+        "claude-fable-5": ["low", "medium", "high", "xhigh"],
+        "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-6": ["low", "medium", "high", "max"],
+        "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-sonnet-4-6": ["low", "medium", "high", "max"]
+      }
+    }
+  },
   "apiKeys": [
     {
       "id": "default",
@@ -243,10 +307,25 @@
       "baseUrl": "https://YOUR-RESOURCE-NAME.openai.azure.com/",
       "status": "active",
       "priority": 100,
+      "auth": {
+        "mode": "managedIdentity",
+        "apiKey": ""
+      },
       "capabilities": [],
+      "requestPolicy": {
+        "allowedParams": [],
+        "blockedParams": [],
+        "dropUnsupportedParams": false
+      },
+      "errorPolicy": {
+        "nativePassthrough": false
+      },
       "routes": {
         "chat/completions": "/openai/v1/chat/completions",
         "responses": "/openai/v1/responses",
+        "responses/compact": "/openai/v1/responses/compact",
+        "messages": "/anthropic/v1/messages",
+        "messages/count_tokens": "/anthropic/v1/messages/count_tokens",
         "images/generations": "/openai/v1/images/generations"
       }
     }
@@ -284,6 +363,9 @@
       "targetModel": "gpt-5.2-codex",
       "capabilities": ["reasoning", "vision", "code-optimized", "function-calling", "structured-outputs", "parallel-tool-calling"],
       "pricingRef": "gpt-5.2-codex",
+      "clientCompatibility": {
+        "codex": true
+      },
       "defaultParams": {},
       "routes": {
         "*": "responses"

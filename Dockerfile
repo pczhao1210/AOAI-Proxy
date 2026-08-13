@@ -12,7 +12,14 @@ RUN npm ci --omit=dev
 
 FROM node:${NODE_MAJOR}-alpine AS runtime
 WORKDIR /app
+ARG AOAI_PROXY_VERSION=unknown
+ARG AOAI_PROXY_BUILD_TIME=unknown
 ENV NODE_ENV=production
+ENV AOAI_PROXY_VERSION=${AOAI_PROXY_VERSION} \
+	AOAI_PROXY_BUILD_TIME=${AOAI_PROXY_BUILD_TIME}
+LABEL org.opencontainers.image.title="AOAI Proxy" \
+	org.opencontainers.image.version=${AOAI_PROXY_VERSION} \
+	org.opencontainers.image.created=${AOAI_PROXY_BUILD_TIME}
 
 # App code
 COPY --from=deps /app/node_modules ./node_modules

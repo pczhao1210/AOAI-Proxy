@@ -8,11 +8,13 @@
 
 ## 概述
 
-- OpenAI 兼容端点：`/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/models`
+- OpenAI 与 Anthropic 兼容端点：`/v1/chat/completions`、`/v1/responses`、`/v1/responses/compact`、`/v1/messages`、`/v1/messages/count_tokens`、`/v1/images/generations`、`/v1/models`
 - Client -> Proxy 使用 API Key 鉴权
 - Proxy -> Azure AI Foundry / Azure OpenAI 根据 `auth.mode` 使用 AAD token 或 `api-key`
 - 静态管理页支持配置编辑、AAD 验证、统计查看和最近日志排查
 - 支持 `models[].routes` 与 `upstreams[].routes` 做模型级和上游级路由映射
+- 原生协议路由透明保留现代 Responses item 与 Anthropic content block；跨协议 shim 默认拒绝无法无损表示的结构，并提供独立的请求/响应策略开关
+- 可选通过 DCE 将关联请求、用量和脱敏 Prompt/输出写入 Log Analytics；参见 [接入指南](log-analytics-dce.md)
 
 ## 部署资产
 
@@ -142,9 +144,10 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 2. 编辑 `config/config.json`：
    - 将 `upstreams[].baseUrl` 替换为真实 Foundry 或 Azure OpenAI 资源域名
    - 将 `models[].targetModel` 设置为 deployment identifier
-  - 选择上游认证方式：
-    - `auth.mode = "servicePrincipal"`，配合 `scope`，并使用服务主体字段或托管身份
-    - `auth.mode = "apiKey"`，并设置 `auth.apiKey`
+  - 在管理界面或 `upstreams[].auth` 中为每个上游选择认证方式：
+    - `mode = "managedIdentity"`：沿用现有 Azure credential 与 AAD token 获取流程
+    - `mode = "apiKey"`：必须填写该上游的 `apiKey`，并按路由要求发送 `api-key` 或 `x-api-key`
+    - 未设置上游认证方式时继续继承全局 `auth` 配置，以兼容旧配置
    - 替换默认 API Key 和管理账号密码
 3. 安装依赖并启动：
    - `npm install`
@@ -152,6 +155,8 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
    - `npm run start`
 
 非回环监听会采用 fail-closed：管理认证关闭或仍存在已知占位凭据时拒绝启动。`ALLOW_INSECURE_PUBLIC_ADMIN=true` 仅用于显式兼容，不建议用于正常部署。
+
+所有可配置布尔开关的默认值、功能、管理页入口、生效方式，以及预留或未接线字段，统一收录在 [Feature Flag 与布尔开关目录](feature-flags.zh-CN.md)。
 
 ## 环境变量
 
@@ -236,14 +241,36 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 构建：
 
-- `./dockerbuild.sh aoai-proxy:latest`
+- amd64 本地镜像：`./start.sh --build`
+- arm64 本地镜像：`DOCKER_PLATFORM=linux/arm64 ./start.sh --build`
+- amd64 构建并推送到 ACR：`./start.sh --build --push`
+- arm64 构建并推送到 ACR：`DOCKER_PLATFORM=linux/arm64 ./start.sh --build --push`
 
-Dockerfile 使用动态大版本基线：`NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，实际解析为 `node:24-alpine` 和 `caddy:2-alpine`。构建脚本会执行 `docker build --pull`，因此每次构建都会拉取这些大版本线内最新可用的 patch/minor 镜像。只有明确需要切换大版本时才覆盖：
+amd64 默认镜像为 `alexmcr.azurecr.io/aoai-proxy:nextgen-latest`。设置 `DOCKER_PLATFORM=linux/arm64` 后，默认 tag 自动切换为 `nextgen-latest-arm64`。可通过 `IMAGE_REF`、`IMAGE_TAG`、`ACR_LOGIN_SERVER` 和 `IMAGE_REPOSITORY` 覆盖。推送只使用本机 Docker CLI 已保存的凭据，不会执行 registry login。
+
+构建脚本会把生成的版本号和 UTC 构建时间注入镜像。无需鉴权即可请求 `GET /version`，用于确认运行中的部署版本：
+
+```json
+{
+  "service": "aoai-proxy",
+  "version": "nextgen-202608100257",
+  "buildTime": "2026-08-10T02:57:55Z"
+}
+```
+
+默认版本号使用 UTC 构建分钟，格式为 `nextgen-YYYYMMDDHHmm`；相同信息也会写入标准 OCI 镜像标签。
+
+Dockerfile 使用动态大版本基线：`NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，实际解析为 `node:24-alpine` 和 `caddy:2-alpine`。构建脚本会执行 `docker buildx build --pull`，因此每次构建都会拉取这些大版本线内最新可用的 patch/minor 镜像。不带 `--push` 的构建使用 buildx `--load`；组合构建和推送会直接使用 `--push`。多平台产物必须直接推送，因为经典本地镜像存储不能载入多平台 manifest。
+
+所选 buildx builder 必须声明所有目标平台。在 amd64 主机交叉构建 arm64 通常还需要 QEMU/binfmt。直接调用 buildx 时，还需传入平台、构建元数据和需要覆盖的大版本参数：
 
 ```bash
-docker build --pull \
+docker buildx build --pull --load \
+  --platform linux/amd64 \
   --build-arg NODE_MAJOR=24 \
   --build-arg CADDY_MAJOR=2 \
+  --build-arg AOAI_PROXY_VERSION=nextgen-202608100257 \
+  --build-arg AOAI_PROXY_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -t aoai-proxy:latest .
 ```
 
@@ -416,10 +443,109 @@ az managedapp create \
 - 在 `chat/completions` 上把 `max_tokens` 自动升级为 `max_completion_tokens`
 - 当客户端只传 `top_logprobs` 而未传 `logprobs` 时，自动补 `logprobs: true`
 - `reasoning_effort` 和 `reasoning.effort` 只接受 `low`、`medium`、`high`；如果传入常见的 `xhigh`，会自动降级为 `high`
-- 对现代模型会提前移除 `service_tier`、`verbosity`、`top_k`，减少 Foundry 返回 `unknown_parameter` 的概率
+- `serviceTier` 会规范化为 `service_tier`；`service_tier`、`verbosity`、`top_k` 默认保留，不再根据模型名猜测是否支持
+- 如果某个 provider 会拒绝可选字段，可在 `upstreams[].requestPolicy.blockedParams` 中列出；`dropUnsupportedParams: true` 表示删除，否则会明确返回请求错误
 - 如果请求里使用了 `web_search_preview` 相关 tools，代理会直接返回 `400`，因为 Azure Foundry 当前不支持 web search tools
 
-另外，代理现在会为流式 `chat/completions` 和 `responses` 请求保留 `stream_options`；只在 Foundry v1 可能拒绝的其他路由上移除它。
+代理会在兼容的原生路由上保留 `stream_options`。当 Chat 转换到 Responses 或 Messages 时，代理会消费 `stream_options.include_usage`，并在 `[DONE]` 前生成客户端要求的 Chat usage chunk；未知 stream option 按协议 shim 的有损转换策略处理。
+
+## 协议路由
+
+代理提供三种文本生成协议：
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/messages`
+
+模型路由决定上游协议。同协议组合使用近似透传，不同协议组合执行显式的请求、JSON 响应和 SSE 转换。
+
+上游错误默认使用代理统一错误结构。只有原生协议客户端确实依赖 provider 错误体时，才应将 `upstreams[].errorPolicy.nativePassthrough` 或 route profile 的 `nativeErrorPassthrough` 设为 `true`。该选项仅作用于原生路由，并保留安全的 `Content-Type`、`Retry-After` 和代理 request ID；协议 shim 与网络错误仍保持统一包装。
+
+| 客户端协议 | Chat 上游 | Responses 上游 | Messages 上游 |
+| --- | --- | --- | --- |
+| Chat Completions | 近似透传 | 转换 | 转换 |
+| Responses | 转换 | 近似透传 | 转换 |
+| Anthropic Messages | 转换 | 转换 | 近似透传 |
+
+近似透传指 typed 语义保真，不是原始字节透传。代理仍会映射模型 ID、执行请求策略和图片处理、替换认证 header、采集 usage，并实施流超时。原生 Responses 保留 Responses item 和事件；原生 Messages 保留有序 Anthropic block 与 SSE 事件，包括 body 中的工具调用/结果和 thinking signature。
+
+跨协议转换覆盖文本、输入图片、函数工具、工具调用/结果、token 上限、停止原因、usage 与流式生命周期。Responses `reasoning.encrypted_content` 会与 Anthropic thinking signature 双向映射，包括流式续接。其他缺少安全等价表达的协议专属字段默认会被明确拒绝。
+
+`compatibility.protocolShim.rejectLossyRequests` 与 `rejectLossyResponses` 默认均为 `true`。只有在尽力转换优先于停止请求时才应关闭相应开关。兼容模式会写入 `proxy.protocol_shim_lossy_conversion` 结构化告警，包含转换阶段、字段路径、源/目标协议和丢失原因；响应开关同时作用于 JSON 与 SSE。
+
+```json
+{
+  "compatibility": {
+    "protocolShim": {
+      "rejectLossyRequests": true,
+      "rejectLossyResponses": true
+    }
+  }
+}
+```
+
+配置归一化会把版本 2 升级为版本 3。仅对于 GPT-5.6 Luna、Sol 和 Terra，升级时会删除旧模板生成的精确路由 `{ "*": "responses" }`，使 Chat 与 Responses 请求恢复使用各自的原生接口；版本 3 中保存的路由覆盖均视为显式配置并予以保留。
+
+Microsoft Foundry 的 Claude deployment 应配置上游路由 `messages: "/anthropic/v1/messages"`。代理会自动把 Azure OpenAI resource host 切换为 `*.services.ai.azure.com`，缺省注入 `anthropic-version: 2023-06-01`，API key 模式使用 `x-api-key`，AAD 模式使用 `https://ai.azure.com/.default` scope。
+
+当匹配的 Claude pricing 模板同时提供两种托管模式时，通过 `models[].hostingMode` 记录实际的 `azure` 或 `anthropic` 托管基础设施，用于区域、数据处理与能力元数据，不能据此推断 Responses 支持。当前有文档依据的 Azure-hosted 与 Anthropic-hosted Claude deployment 都使用 Messages，因此客户端 Responses 的 `reasoning.effort` 会转换为 `output_config.effort`，并设置 `thinking.type="adaptive"`。显式 `models[].routes` 覆盖仍具有最高优先级。
+
+### Claude Code
+
+当请求包含 `Anthropic-Version`、使用 `format=anthropic/messages`，或 User-Agent 含 Claude/Anthropic 时，模型端点会返回 Anthropic Models 格式。Claude Code 兼容开启时，Claude Code User-Agent 或 `format=claude-code` 只返回显式标记且原生解析到 Messages 的模型；普通 Anthropic SDK 发现仍保留更广的可访问模型列表。因此可以开启 Claude Code 的网关模型发现：
+
+```bash
+export ANTHROPIC_BASE_URL="https://proxy.example.com"
+export ANTHROPIC_AUTH_TOKEN="your-proxy-api-key"
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+claude
+```
+
+`compatibility.claudeCode.enabled` 默认开启。在 Messages 路由上，它会安全转发 Claude/Anthropic 与 Stainless 元数据 header 前缀，同时继续阻断客户端凭据。直接 Anthropic 上游会按原顺序保留未知 `anthropic-beta`，以适应后续 Claude Code 版本；Azure/Foundry 上游继续使用下方已审查 allowlist，并通过结构化日志事件 `proxy.anthropic_betas_filtered` 记录被过滤值。
+
+用于 Claude Code 的生产模型必须显式标记并保持原生 Messages 路由。兼容开关开启时，若标记模型解析到其他后端协议，配置加载或保存会失败：
+
+```json
+{
+  "clientCompatibility": { "claudeCode": true },
+  "routes": { "*": "messages" }
+}
+```
+
+模型 ID 必须唯一，避免模型发现元数据与运行时路由把同一个公开 ID 解析到不同配置项。
+
+代理默认开启 `compatibility.anthropic` 下的三项 Foundry 专属兼容策略：
+
+- `betaAllowlistEnabled`：只转发已审查的 beta token；默认包含细粒度工具流、交错 thinking 与上下文管理。
+- `normalizeManualThinkingToolChoice`：仅当 `thinking.type="enabled"` 为手动模式时，把强制 `any` / 指定工具改为 `auto`；adaptive thinking 不受影响。
+- `sanitizeCacheControl`：保留合法 ephemeral cache control 以及 Foundry 支持的 `5m` / `1h` TTL，移除不支持的字段和位置。
+- `validateThinkingByModel`：对微软文档已明确列出的 Claude 模型校验 `thinking.type`。解析顺序为 deployment 名、模型 ID、`pricingRef`；可在 `thinkingTypesByModel` 中添加 deployment 专属项覆盖标准模型 profile。完全未知的模型仍继续透传。
+- `effortLevelsByModel`：列出各 Claude 模型支持的 effort level。不支持的 level 会在调用上游前返回错误；仅当模型支持 `max` 而不支持 `xhigh` 时，才按 provider 文档中的等价关系把 `xhigh` 规范化为 `max`。
+
+这些设置只控制请求兼容性，不选择 wire protocol。需要回滚原生 Messages 时，应修改模型 route override，而不是关闭全部兼容策略。
+
+### Codex
+
+`compatibility.codex.enabled` 也默认开启。来自 Codex User-Agent，或带 `format=codex` 的 `/v1/models` 请求会收到 Codex 专用 `{ "models": [...] }` 目录，而不是标准 OpenAI 列表。目录只包含已标记且原生解析到 Responses 的模型：
+
+```json
+{
+  "clientCompatibility": { "codex": true },
+  "routes": {},
+  "codex": {
+    "contextWindow": 128000,
+    "supportedReasoningEfforts": ["low", "medium", "high"]
+  }
+}
+```
+
+Codex 自定义 provider 的 `base_url` 应以 `/v1` 结尾，并设置 `wire_api = "responses"`、`supports_websockets = false`。若标记模型的 Responses 入口解析到 Chat 或 Messages 转换路径，配置校验会拒绝该配置。双协议模型应保持 wildcard route 为空，使非 Codex Chat 客户端继续使用原生 Chat Completions。
+
+流输入支持 LF/CRLF、多条 `data:` 字段和末尾无换行的终态事件。只有源协议提供匹配的终态证据才视为完整：Chat 使用 `[DONE]` 或 EOF 前的最终 `finish_reason`，Responses 使用 `response.completed` 或 `response.incomplete`，Anthropic 必须有 `message_stop`；Responses `response.failed` 和 provider error 事件属于失败终态。关闭 Codex 兼容后，旧版 Responses output-done EOF 兜底仍可使用。提前 EOF 会返回 `UPSTREAM_INCOMPLETE_STREAM`，不会伪造成目标协议成功终止。
+
+并行工具调用在跨协议转换时保留 index 和稳定 call ID。连续 Responses function call 会合并成一个 Chat assistant 工具调用轮次；参数 delta 会等工具 identity 确定后再输出；当最终没有有效工具时会移除工具控制字段。HTTP 200 中携带 provider failed 状态的 payload 仍按失败处理，不会包装成空的成功响应。
+
+客户端取消会贯穿上游响应头等待、重试退避、流读取和非流 body 读取。非成功 error body 有大小与时间限制并可被取消，客户端断开后不会继续占用上游请求或重试循环。
 
 ## 模型级路由覆盖
 
@@ -440,6 +566,26 @@ az managedapp create \
 }
 ```
 
+把 Claude deployment 路由到原生 Messages 上游：
+
+```json
+{
+  "models": [
+    {
+      "id": "claude-sonnet-4-6",
+      "upstream": "foundry",
+      "targetModel": "claude-sonnet-4-6",
+      "clientCompatibility": {
+        "claudeCode": true
+      },
+      "routes": {
+        "*": "messages"
+      }
+    }
+  ]
+}
+```
+
 ## curl 示例
 
 列出模型：
@@ -449,3 +595,7 @@ az managedapp create \
 调用 chat：
 
 - `curl -sS http://127.0.0.1:3000/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer CHANGEME' -d '{"model":"gpt-5-mini","messages":[{"role":"user","content":"ping"}]}' | jq .`
+
+Anthropic Messages 请求：
+
+- `curl -sS http://127.0.0.1:3000/v1/messages -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' -H 'x-api-key: CHANGEME' -d '{"model":"claude-sonnet-4-6","max_tokens":256,"messages":[{"role":"user","content":"ping"}]}' | jq .`

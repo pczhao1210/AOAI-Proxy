@@ -447,9 +447,11 @@ function buildEventRow(eventType, fields = {}) {
     modelRouterCostAmount: resolveFloat(fields.modelRouterCostAmount, 0, 0),
     actualModelCostAmount: resolveFloat(fields.actualModelCostAmount, 0, 0),
     currency: String(fields.currency || "USD").trim() || "USD",
-    payload: fields.payload && typeof fields.payload === "object" && !Array.isArray(fields.payload)
-      ? fields.payload
-      : {}
+    payload: {
+      ...(fields.payload && typeof fields.payload === "object" && !Array.isArray(fields.payload) ? fields.payload : {}),
+      ...(fields.conversationId ? { conversationId: String(fields.conversationId) } : {}),
+      ...(fields.sessionId ? { sessionId: String(fields.sessionId) } : {})
+    }
   };
 }
 
@@ -1080,7 +1082,10 @@ export function recordRuntimeUsage(config, fields = {}) {
   enqueueRuntimeEvent(settings, buildEventRow("usage", {
     ...fields,
     payload: {
-      source: fields.source || ""
+      source: fields.source || "",
+      usageSource: fields.usageSource || "",
+      usageEstimated: fields.usageEstimated === true,
+      usageEstimationReason: fields.usageEstimationReason || ""
     }
   }));
 }

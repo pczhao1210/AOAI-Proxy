@@ -4,7 +4,13 @@
   "provider": "anthropic",
   "family": "claude-4",
   "modelVersion": "2026-05-28",
-  "status": "preview",
+  "status": "ga",
+  "hostingModes": ["azure", "anthropic"],
+  "defaultHostingMode": "azure",
+  "interfacesByHostingMode": {
+    "azure": ["messages"],
+    "anthropic": ["messages"]
+  },
   "interfaces": [
     "messages"
   ],

@@ -13,10 +13,20 @@ Included scripts:
 - `test/routes/openai-image.js`
 - `test/routes/blackforest-image.js`
 
-Run all four:
+Run the full route batch:
 
 ```bash
 npm run test:routes
+```
+
+The route batch also covers client-specific model discovery, native Messages token counting, native Responses compaction, strict protocol-shim compatibility guards, SSE terminal events, and route-validation gates. Focused contracts can be run by ID:
+
+```bash
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("message-count-tokens")'
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("response-compact")'
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("shim-compatibility-guards")'
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("request-parameter-policy")'
+node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("native-error-passthrough")'
 ```
 
 Run one script directly:
@@ -27,6 +37,24 @@ node test/routes/blackforest-image.js
 ```
 
 Each script starts a disposable proxy process with a temporary config and a local mock upstream, then asserts the route and model call both succeed.
+
+Claude Code CLI contract test:
+
+```bash
+npm run test:cli:claude-code
+```
+
+This test runs the pinned Claude Code `2.1.226` package through `npx`, using an isolated config directory. It verifies native Messages streaming, new beta and SDK metadata forwarding, model mapping, and upstream credential isolation. Set `CLAUDE_CODE_EXPECTED_VERSION` to test another explicitly supported version.
+
+Codex CLI contract test:
+
+```bash
+npm run test:cli:codex
+```
+
+This test requires Codex `0.147.0` on `PATH` and uses a temporary workspace-local `CODEX_HOME`. It uses command-backed test auth to make `codex debug models` refresh and parse the remote catalog, then uses the production-style `env_key` provider for `codex exec`. It verifies the Responses item lifecycle, terminal event, agent message, and upstream credential isolation. Set `CODEX_EXPECTED_VERSION` to test another explicitly supported version.
+
+On POSIX systems, both CLI scripts terminate the full process group on timeout so package-manager or CLI descendants cannot keep CI pipes open. Windows currently terminates only the direct child process; run these pinned smoke tests in Linux CI when descendant cleanup is required.
 
 Real model scripts:
 

@@ -9,7 +9,7 @@ export async function runRouteTestById(id) {
 
   await withTestContext(async (ctx) => {
     await routeTest.run(ctx);
-  });
+  }, { logLevel: routeTest.logLevel });
 
   process.stdout.write(`PASS ${routeTest.id} ${routeTest.description}\n`);
 }

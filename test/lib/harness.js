@@ -40,17 +40,19 @@ async function readRequestBody(req) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function jsonResponse(res, statusCode, body) {
+function jsonResponse(res, statusCode, body, headers = {}) {
   const payload = JSON.stringify(body);
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(payload)
+    "content-length": Buffer.byteLength(payload),
+    ...headers
   });
   res.end(payload);
 }
 
 function createMockUpstreamServer() {
   const requests = [];
+  const acceptedApiKeys = new Set([UPSTREAM_API_KEY]);
   const sockets = new Set();
   const server = http.createServer(async (req, res) => {
     const bodyText = await readRequestBody(req);
@@ -68,15 +70,59 @@ function createMockUpstreamServer() {
       body
     });
 
-    if (req.headers["api-key"] !== UPSTREAM_API_KEY) {
+    const url = new URL(req.url || "/", `http://${HOST}`);
+    const pathname = url.pathname;
+    const receivedApiKey = pathname.endsWith("/messages") || pathname.endsWith("/messages/count_tokens")
+      ? req.headers["x-api-key"]
+      : req.headers["api-key"];
+    if (!acceptedApiKeys.has(receivedApiKey)) {
       jsonResponse(res, 401, { error: { message: "missing upstream api-key" } });
       return;
     }
 
-    const url = new URL(req.url || "/", `http://${HOST}`);
-    const pathname = url.pathname;
+    if (JSON.stringify(body).includes("trigger native HTTP error")) {
+      jsonResponse(res, 429, {
+        type: "error",
+        error: {
+          type: "rate_limit_error",
+          code: "native_rate_limit",
+          message: "native upstream rate limit"
+        },
+        native_marker: "preserved"
+      }, { "retry-after": "2" });
+      return;
+    }
+    if (JSON.stringify(body).includes("trigger interrupted native HTTP error")) {
+      res.writeHead(429, {
+        "content-type": "application/json; charset=utf-8",
+        "retry-after": "2"
+      });
+      res.write('{"error":', () => res.destroy(new Error("mock error body interrupted")));
+      return;
+    }
 
     if (req.method === "POST" && pathname.endsWith("/chat/completions")) {
+      if (body?.stream === true) {
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache"
+        });
+        res.write(`data: ${JSON.stringify({
+          id: "chatcmpl-stream-test",
+          object: "chat.completion.chunk",
+          model: body?.model || "gpt-5-mini",
+          choices: [{ index: 0, delta: { content: "ok from mock chat stream" }, finish_reason: null }]
+        })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          id: "chatcmpl-stream-test",
+          object: "chat.completion.chunk",
+          model: body?.model || "gpt-5-mini",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 }
+        })}\n\n`);
+        res.end("data: [DONE]\n\n");
+        return;
+      }
       jsonResponse(res, 200, {
         id: "chatcmpl-test",
         object: "chat.completion",
@@ -101,25 +147,195 @@ function createMockUpstreamServer() {
       return;
     }
 
+    if (req.method === "POST" && pathname.endsWith("/responses/compact")) {
+      if (body?.instructions === "trigger invalid compaction") {
+        jsonResponse(res, 200, { object: "response", output: [] });
+        return;
+      }
+      jsonResponse(res, 200, {
+        id: "cmp-test",
+        object: "response.compaction",
+        created_at: Math.floor(Date.now() / 1000),
+        output: [
+          {
+            id: "msg-compact-test",
+            type: "message",
+            status: "completed",
+            role: "user",
+            content: [{ type: "input_text", text: "compact this conversation" }]
+          },
+          {
+            id: "cmp-item-test",
+            type: "compaction",
+            encrypted_content: "encrypted-compaction-state"
+          }
+        ],
+        usage: {
+          input_tokens: 21,
+          input_tokens_details: { cached_tokens: 3 },
+          output_tokens: 8,
+          output_tokens_details: { reasoning_tokens: 2 },
+          total_tokens: 29
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && pathname.endsWith("/responses")) {
+      const omitUsage = typeof body?.input === "string" && body.input.startsWith("local usage fallback");
+      const disconnectBeforeUsage = body?.input === "disconnect usage fallback";
+      const upstreamDisconnectBeforeUsage = body?.input === "upstream disconnect usage fallback";
+      const providerErrorAfterDelta = JSON.stringify(body).includes("trigger provider error");
+      const failedJsonResponse = JSON.stringify(body).includes("trigger failed json");
+      const modernItemResponse = JSON.stringify(body).includes("trigger modern Responses item");
+      const modernItemStream = JSON.stringify(body).includes("trigger modern Responses stream item");
+      const nativeProviderStreamError = JSON.stringify(body).includes("trigger native stream error");
       if (body?.stream === true) {
+        const outputText = "ok from mock responses stream";
+        const outputItem = {
+          id: "msg-stream-test",
+          type: "message",
+          status: "completed",
+          role: "assistant",
+          content: [{ type: "output_text", text: outputText, annotations: [], logprobs: [] }]
+        };
         const response = {
           id: "resp-stream-test",
           object: "response",
           created_at: Math.floor(Date.now() / 1000),
           model: body?.model || "gpt-5.6-luna",
           status: "completed",
-          output: [],
-          usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16 }
+          output: [outputItem],
+          ...(omitUsage || disconnectBeforeUsage || upstreamDisconnectBeforeUsage ? {} : { usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16 } })
         };
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache"
         });
+        if (nativeProviderStreamError) {
+          res.end(`data: ${JSON.stringify({
+            type: "error",
+            error: {
+              type: "server_error",
+              code: "native_stream_failure",
+              message: "native upstream stream failed"
+            },
+            native_marker: "preserved"
+          })}\n\n`);
+          return;
+        }
         res.write(`data: ${JSON.stringify({ type: "response.created", response: { ...response, status: "in_progress" } })}\n\n`);
-        res.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok from mock responses stream" })}\n\n`);
-        res.write(`data: ${JSON.stringify({ type: "response.output_text.done", text: "ok from mock responses stream" })}\n\n`);
+        if (modernItemStream) {
+          const modernItem = {
+            id: "computer-stream-test",
+            type: "computer_call",
+            call_id: "computer-call-stream-test",
+            status: "completed",
+            pending_safety_checks: [],
+            action: { type: "screenshot" }
+          };
+          const modernResponse = { ...response, output: [modernItem] };
+          res.write(`data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { ...modernItem, status: "in_progress" } })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: modernItem })}\n\n`);
+          res.end(`data: ${JSON.stringify({ type: "response.completed", response: modernResponse })}\n\n`);
+          return;
+        }
+        res.write(`data: ${JSON.stringify({
+          type: "response.output_item.added",
+          output_index: 0,
+          item: { ...outputItem, status: "in_progress", content: [] }
+        })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          type: "response.content_part.added",
+          item_id: outputItem.id,
+          output_index: 0,
+          content_index: 0,
+          part: { type: "output_text", text: "", annotations: [], logprobs: [] }
+        })}\n\n`);
+        const deltaFrame = `data: ${JSON.stringify({
+          type: "response.output_text.delta",
+          item_id: outputItem.id,
+          output_index: 0,
+          content_index: 0,
+          delta: outputText,
+          logprobs: []
+        })}\n\n`;
+        if (upstreamDisconnectBeforeUsage) {
+          res.write(deltaFrame, () => res.destroy(new Error("mock upstream disconnected")));
+          return;
+        }
+        res.write(deltaFrame);
+        if (providerErrorAfterDelta) {
+          res.end(`data: ${JSON.stringify({
+            type: "error",
+            error: { type: "provider_error", code: "provider_failed", message: "mock provider failed" }
+          })}\n\n`);
+          return;
+        }
+        if (disconnectBeforeUsage) {
+          const timer = setTimeout(() => res.end(), 5000);
+          res.once("close", () => clearTimeout(timer));
+          return;
+        }
+        res.write(`data: ${JSON.stringify({
+          type: "response.output_text.done",
+          item_id: outputItem.id,
+          output_index: 0,
+          content_index: 0,
+          text: outputText,
+          logprobs: []
+        })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          type: "response.content_part.done",
+          item_id: outputItem.id,
+          output_index: 0,
+          content_index: 0,
+          part: outputItem.content[0]
+        })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: outputItem })}\n\n`);
         res.end(`data: ${JSON.stringify({ type: "response.completed", response })}\n\n`);
+        return;
+      }
+      if (failedJsonResponse) {
+        const failedBody = `{
+  "id": "resp-failed-test",
+  "object": "response",
+  "model": ${JSON.stringify(body?.model || "gpt-5.6-luna")},
+  "status": "failed",
+  "error": {"type":"model_error","code":"model_failed","message":"mock JSON response failed"},
+  "output": []
+}`;
+        res.writeHead(200, {
+          "content-type": "application/json; charset=utf-8",
+          "content-length": Buffer.byteLength(failedBody),
+          "retry-after": "3"
+        });
+        res.end(failedBody);
+        return;
+      }
+      if (modernItemResponse) {
+        jsonResponse(res, 200, {
+          id: "resp-modern-test",
+          object: "response",
+          model: body?.model || "gpt-5.6-luna",
+          status: "completed",
+          output: [
+            {
+              id: "ws-modern-test",
+              type: "web_search_call",
+              status: "completed",
+              action: { type: "search", query: "latest protocol" }
+            },
+            {
+              id: "msg-modern-test",
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [{ type: "output_text", text: "modern response", annotations: [], logprobs: [] }]
+            }
+          ],
+          usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16 }
+        });
         return;
       }
       jsonResponse(res, 200, {
@@ -141,10 +357,103 @@ function createMockUpstreamServer() {
             ]
           }
         ],
+        ...(omitUsage ? {} : {
+          usage: {
+            input_tokens: 10,
+            output_tokens: 6,
+            total_tokens: 16
+          }
+        })
+      });
+      return;
+    }
+
+    if (req.method === "POST" && pathname.endsWith("/messages/count_tokens")) {
+      jsonResponse(res, 200, body?.system === "trigger invalid token count"
+        ? { input_tokens: "42" }
+        : { input_tokens: 42 });
+      return;
+    }
+
+    if (req.method === "POST" && pathname.endsWith("/messages")) {
+      const modernContentResponse = JSON.stringify(body).includes("trigger modern Messages block");
+      const modernContentStream = JSON.stringify(body).includes("trigger modern Messages stream block");
+      if (body?.stream === true) {
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache"
+        });
+        res.write(`event: message_start\ndata: ${JSON.stringify({
+          type: "message_start",
+          message: {
+            id: "msg-stream-test",
+            type: "message",
+            role: "assistant",
+            model: body?.model || "claude-sonnet-4-20250514",
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 12, output_tokens: 1, cache_read_input_tokens: 3 }
+          }
+        })}\n\n`);
+        if (modernContentStream) {
+          res.write(`event: content_block_start\ndata: ${JSON.stringify({
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "server_tool_use", id: "srvtool-stream-test", name: "web_search", input: {} }
+          })}\n\n`);
+          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+          res.write(`event: message_delta\ndata: ${JSON.stringify({
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { output_tokens: 5 }
+          })}\n\n`);
+          res.end(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+          return;
+        }
+        res.write(`event: content_block_start\ndata: ${JSON.stringify({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" }
+        })}\n\n`);
+        res.write(`event: content_block_delta\ndata: ${JSON.stringify({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "ok from mock messages stream" }
+        })}\n\n`);
+        res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+        res.write(`event: message_delta\ndata: ${JSON.stringify({
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 5 }
+        })}\n\n`);
+        res.end(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+        return;
+      }
+      if (modernContentResponse) {
+        jsonResponse(res, 200, {
+          id: "msg-modern-test",
+          type: "message",
+          role: "assistant",
+          model: body?.model || "claude-native-deployment",
+          content: [{ type: "redacted_thinking", data: "opaque-thinking-state" }],
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 12, output_tokens: 5 }
+        });
+        return;
+      }
+      jsonResponse(res, 200, {
+        id: "msg-test",
+        type: "message",
+        role: "assistant",
+        model: body?.model || "claude-sonnet-4-20250514",
+        content: [{ type: "text", text: "ok from mock messages" }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
         usage: {
-          input_tokens: 10,
-          output_tokens: 6,
-          total_tokens: 16
+          input_tokens: 12,
+          output_tokens: 5
         }
       });
       return;
@@ -195,13 +504,16 @@ function createMockUpstreamServer() {
     },
     clearRequests() {
       requests.length = 0;
+    },
+    allowApiKey(apiKey) {
+      acceptedApiKeys.add(apiKey);
     }
   };
 }
 
 function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
   return {
-    version: 2,
+    version: 3,
     server: {
       host: HOST,
       port: proxyPort,
@@ -315,7 +627,18 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
         routes: {
           "chat/completions": "/openai/v1/chat/completions",
           responses: "/openai/v1/responses",
+          messages: "/openai/v1/messages",
+          messagez: "/custom/messages",
           "images/generations": "/openai/v1/images/generations"
+        }
+      },
+      {
+        name: "mock-anthropic",
+        provider: "anthropic",
+        baseUrl: `http://${HOST}:${upstreamPort}/`,
+        status: "active",
+        routes: {
+          messages: "/anthropic/v1/messages"
         }
       }
     ],
@@ -336,8 +659,95 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
         upstream: "mock-foundry",
         targetModel: "gpt-5.6-luna",
         pricingRef: "gpt-5.6-luna",
+        clientCompatibility: { codex: true },
+        routes: {}
+      },
+      {
+        id: "claude-sonnet-4-6",
+        displayName: "Claude Sonnet 4.6",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "claude-sonnet-4-20250514",
+        pricingRef: "claude-sonnet-4-6",
         routes: {
-          "*": "responses"
+          "*": "messages"
+        }
+      },
+      {
+        id: "claude-opus-4-8",
+        displayName: "Claude Opus 4.8",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "claude-opus-4-8",
+        pricingRef: "claude-opus-4-8",
+        hostingMode: "azure",
+        routes: {}
+      },
+      {
+        id: "claude-native",
+        displayName: "Claude Native",
+        status: "active",
+        upstream: "mock-anthropic",
+        targetModel: "claude-native-deployment",
+        pricingRef: "claude-sonnet-4-6",
+        clientCompatibility: { claudeCode: true },
+        routes: {
+          "*": "messages"
+        }
+      },
+      {
+        id: "claude-sonnet-5",
+        displayName: "Claude Sonnet 5",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "claude-sonnet-5",
+        pricingRef: "claude-sonnet-5",
+        routes: {
+          "*": "messages"
+        }
+      },
+      {
+        id: "claude-sonnet-5-alias",
+        displayName: "Claude Sonnet 5 Custom Deployment",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "team-sonnet-deployment",
+        pricingRef: "claude-sonnet-5",
+        routes: {
+          "*": "messages"
+        }
+      },
+      {
+        id: "chat-only",
+        displayName: "Chat Only",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "chat-only-deployment",
+        pricingRef: "gpt-4o-mini",
+        routes: {
+          "*": "chat/completions"
+        }
+      },
+      {
+        id: "invalid-protocol-route",
+        displayName: "Invalid Protocol Route",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "invalid-protocol-route",
+        pricingRef: "gpt-4o-mini",
+        routes: {
+          "*": "messagez"
+        }
+      },
+      {
+        id: "invalid-protocol-path",
+        displayName: "Invalid Protocol Path",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "invalid-protocol-path",
+        pricingRef: "gpt-4o-mini",
+        routes: {
+          "*": "/openai/v1/responsez"
         }
       },
       {
@@ -403,43 +813,78 @@ async function stopChildProcess(childProcess) {
   }
 }
 
+async function closeMockUpstream(upstream) {
+  if (!upstream) return;
+  upstream.closeConnections();
+  if (!upstream.server.listening) return;
+  await new Promise((resolve, reject) => {
+    upstream.server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 export function ensure(condition, message) {
   assert.ok(condition, message);
 }
 
-export async function createTestContext({ logLevel = "error" } = {}) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-proxy-route-test-"));
-  const proxyPort = await getFreePort();
-  const upstreamPort = await getFreePort();
-  const configPath = path.join(tempDir, "config.json");
-  const proxyBaseUrl = `http://${HOST}:${proxyPort}`;
+export async function createTestContext({
+  logLevel = "error",
+  proxyArgs = ["src/server.js"],
+  startupTimeoutMs = DEFAULT_TIMEOUT_MS,
+  tempPrefix = "aoai-proxy-route-test-"
+} = {}) {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), tempPrefix));
+  let upstream;
+  let childProcess;
+  let setup;
+  try {
+    const proxyPort = await getFreePort();
+    const upstreamPort = await getFreePort();
+    const configPath = path.join(tempDir, "config.json");
+    const proxyBaseUrl = `http://${HOST}:${proxyPort}`;
 
-  const upstream = createMockUpstreamServer();
-  upstream.server.listen(upstreamPort, HOST);
-  await once(upstream.server, "listening");
+    upstream = createMockUpstreamServer();
+    upstream.server.listen(upstreamPort, HOST);
+    await once(upstream.server, "listening");
 
-  const config = buildTestConfig({ proxyPort, upstreamPort, configPath });
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    const config = buildTestConfig({ proxyPort, upstreamPort, configPath });
+    await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
-  const output = { stdout: [], stderr: [] };
-  const childProcess = spawn(process.execPath, ["src/server.js"], {
-    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.."),
-    env: {
-      ...process.env,
-      CONFIG_PATH: configPath,
-      LOG_LEVEL: logLevel
-    },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+    const output = { stdout: [], stderr: [] };
+    childProcess = spawn(process.execPath, proxyArgs, {
+      cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.."),
+      env: {
+        ...process.env,
+        CONFIG_PATH: configPath,
+        LOG_LEVEL: logLevel,
+        AOAI_PROXY_VERSION: "nextgen-202608100000",
+        AOAI_PROXY_BUILD_TIME: "2026-08-10T00:00:00Z"
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
 
-  childProcess.stdout.on("data", (chunk) => {
-    output.stdout.push(String(chunk));
-  });
-  childProcess.stderr.on("data", (chunk) => {
-    output.stderr.push(String(chunk));
-  });
+    childProcess.stdout.on("data", (chunk) => {
+      output.stdout.push(String(chunk));
+    });
+    childProcess.stderr.on("data", (chunk) => {
+      output.stderr.push(String(chunk));
+    });
 
-  await waitForServerReady(proxyBaseUrl, DEFAULT_TIMEOUT_MS, childProcess, output);
+    await waitForServerReady(proxyBaseUrl, startupTimeoutMs, childProcess, output);
+    setup = { configPath, proxyBaseUrl, output };
+  } catch (error) {
+    await stopChildProcess(childProcess).catch(() => {});
+    await closeMockUpstream(upstream).catch(() => {});
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+
+  const { configPath, proxyBaseUrl, output } = setup;
 
   const clientAuthHeaders = {
     authorization: `Bearer ${CLIENT_API_KEY}`
@@ -488,6 +933,7 @@ export async function createTestContext({ logLevel = "error" } = {}) {
     tempDir,
     upstreamRequests: upstream.requests,
     clearUpstreamRequests: () => upstream.clearRequests(),
+    allowUpstreamApiKey: (apiKey) => upstream.allowApiKey(apiKey),
     request,
     async publicRequest(routePath, options = {}) {
       return request(routePath, {
@@ -548,26 +994,23 @@ export async function createTestContext({ logLevel = "error" } = {}) {
       return upstream.requests.find(predicate) || null;
     },
     async cleanup() {
-      await stopChildProcess(childProcess);
-      upstream.closeConnections();
-      await new Promise((resolve, reject) => {
-        upstream.server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      });
-      await fs.rm(tempDir, { recursive: true, force: true });
+      try {
+        await stopChildProcess(childProcess);
+      } finally {
+        try {
+          await closeMockUpstream(upstream);
+        } finally {
+          await fs.rm(tempDir, { recursive: true, force: true });
+        }
+      }
     }
   };
 
   return ctx;
 }
 
-export async function withTestContext(run) {
-  const ctx = await createTestContext();
+export async function withTestContext(run, options) {
+  const ctx = await createTestContext(options);
   try {
     await run(ctx);
   } finally {
