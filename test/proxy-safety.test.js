@@ -28,6 +28,7 @@ import { getRequestNetworkContext } from "../src/request-network.js";
 import { buildCorrelationHeaders, resolveRequestContext } from "../src/request-context.js";
 import { getStats, recordUsage } from "../src/stats.js";
 import { getPricingDefinition } from "../src/pricing-library.js";
+import { buildModelFromPricingTemplate } from "../admin-ui/src/utils.js";
 
 const STREAM_POLICY = {
   firstByteTimeoutMs: 1000,
@@ -412,7 +413,11 @@ test("pricing protocol metadata distinguishes GPT, Claude, and DeepSeek interfac
   for (const modelId of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
     const definition = getPricingDefinition(modelId);
     assert.deepEqual(definition?.interfaces, ["chat/completions", "responses"]);
-    assert.deepEqual(definition?.proxyTemplate?.routes, {});
+    assert.deepEqual(definition?.proxyTemplate?.routes, { "chat/completions": "responses" });
+    assert.deepEqual(
+      buildModelFromPricingTemplate(definition, "foundry", { models: [] }).routes,
+      { "chat/completions": "responses" }
+    );
   }
 
   for (const modelId of ["claude-opus-4-8", "claude-opus-5"]) {
