@@ -9,6 +9,13 @@ param containerGroupName string = 'aoai-proxy'
 @description('Container image to deploy.')
 param image string
 
+@allowed([
+  'minimum'
+  'nextgen'
+])
+@description('Runtime scope profile. Both profiles use the same image; minimum disables peripheral management and observability capabilities.')
+param distributionProfile string = 'nextgen'
+
 @minLength(3)
 @description('Public DNS label used by Caddy for the HTTPS endpoint.')
 param dnsNameLabel string
@@ -146,7 +153,8 @@ param acrPassword string = ''
 
 var cognitiveServicesOpenAiUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
 var azureFileShareContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb')
-var normalizedPersistenceMode = toLower(replace(replace(persistenceMode, ' ', ''), '_', ''))
+var effectivePersistenceMode = distributionProfile == 'minimum' ? 'azureFile' : persistenceMode
+var normalizedPersistenceMode = toLower(replace(replace(effectivePersistenceMode, ' ', ''), '_', ''))
 var enableAzureFile = contains(normalizedPersistenceMode, 'azurefile')
 var enableDatabase = contains(normalizedPersistenceMode, 'database')
 var useStorage = enableAzureFile
@@ -183,8 +191,12 @@ var effectiveAzureFileStorageAccountKey = enableAzureFile
   : ''
 var baseEnvironmentVariables = [
   {
+    name: 'AOAI_PROXY_PROFILE'
+    value: distributionProfile
+  }
+  {
     name: 'PERSISTENCE_MODE'
-    value: persistenceMode
+    value: effectivePersistenceMode
   }
   {
     name: 'AOAI_PROXY_ADMIN_AUTH_ENABLED'
@@ -428,7 +440,8 @@ module cognitiveRoleAssignment 'modules/cognitive-role-assignment.bicep' = {
 
 output containerGroupId string = containerGroup.id
 output principalId string = containerGroup.identity.principalId
-output persistenceModeOutput string = persistenceMode
+output distributionProfileOutput string = distributionProfile
+output persistenceModeOutput string = effectivePersistenceMode
 output storageAccountModeOutput string = useStorage ? storageAccountMode : ''
 output storageAccountNameOutput string = useStorage ? effectiveStorageAccountName : ''
 output fileShareModeOutput string = enableAzureFile ? (createFileShare ? 'new' : 'existing') : ''

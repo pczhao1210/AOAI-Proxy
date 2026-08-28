@@ -24,23 +24,42 @@
     "parallel-tool-calling",
     "computer-use"
   ],
+  "defaultInterface": "responses",
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "default": "medium",
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "default": "medium",
+        "validation": "passthrough"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "openai-official",
     "status": "published",
-    "inputPer1mTokens": 2.5,
-    "cachedInputPer1mTokens": 0.25,
-    "outputPer1mTokens": 15,
-    "inputPer1kTokens": 0.0025,
-    "cachedInputPer1kTokens": 0.00025,
-    "outputPer1kTokens": 0.015
+    "inputPer1mTokens": 2,
+    "cachedInputPer1mTokens": 0.2,
+    "outputPer1mTokens": 12,
+    "inputPer1kTokens": 0.002,
+    "cachedInputPer1kTokens": 0.0002,
+    "outputPer1kTokens": 0.012
   },
   "pricingCatalogEntry": {
     "currency": "USD",
-    "inputPer1kTokens": 0.0025,
-    "cachedInputPer1kTokens": 0.00025,
-    "outputPer1kTokens": 0.015
+    "inputPer1kTokens": 0.002,
+    "cachedInputPer1kTokens": 0.0002,
+    "outputPer1kTokens": 0.012
   },
   "proxyTemplate": {
     "id": "gpt-5.6-terra",
@@ -61,6 +80,7 @@
   },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+    "reasoning": "https://developers.openai.com/api/docs/guides/reasoning",
     "pricing": "https://developers.openai.com/api/docs/pricing"
   }
 }

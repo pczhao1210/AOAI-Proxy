@@ -3,7 +3,7 @@
   "displayName": "GPT OSS 120B",
   "provider": "azure-openai",
   "family": "gpt-oss",
-  "modelVersion": null,
+  "modelVersion": "1",
   "status": "preview",
   "interfaces": [
     "chat/completions"
@@ -20,6 +20,13 @@
     "function-calling",
     "structured-outputs"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "configurable": false
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -50,5 +57,9 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-oss",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+  },
+  "notes": [
+    "Azure documents model version 1 and exposes gpt-oss-120b through Chat Completions, but does not list it in the Azure reasoning_effort support matrix.",
+    "OpenAI documents low, medium, and high reasoning effort for gpt-oss as a system-message instruction; the proxy therefore does not synthesize a request-level reasoning_effort field."
+  ]
 }

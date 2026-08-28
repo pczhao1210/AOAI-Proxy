@@ -18,6 +18,7 @@ function formatBool(value, t) {
 
 export default function WorkspaceTab({
   config,
+  capabilities,
   updateField,
   pricingCatalogText,
   updatePricingCatalog,
@@ -51,7 +52,10 @@ export default function WorkspaceTab({
   const logAnalyticsResultText = logAnalyticsInitializationResult
     ? JSON.stringify(logAnalyticsInitializationResult, null, 2)
     : "";
-  const budgetsEnabled = getValueByPath(config, "access.budgets.enabled") === true;
+  const budgetsAvailable = capabilities?.budgets !== false;
+  const databaseAdminAvailable = capabilities?.databaseAdmin !== false;
+  const logAnalyticsAvailable = capabilities?.logAnalytics !== false;
+  const budgetsEnabled = budgetsAvailable && getValueByPath(config, "access.budgets.enabled") === true;
   const persistenceMode = getValueByPath(config, "persistence.configStore.mode") || "file";
   const fileSettingsVisible = persistenceMode !== "database";
   const databaseSettingsVisible = persistenceMode.includes("database")
@@ -80,6 +84,12 @@ export default function WorkspaceTab({
         <div className="stack-lg">
           <AccordionSection id="workspace-core" title={t("workspace.core.title", "Core And Governance Defaults")} desc={t("workspace.core.desc", "Host, admin path, proxy timeouts, API key defaults, and budget defaults.")} defaultOpen group="workspace-sections">
             <div className="form-grid">
+              <Field label={t("field.distributionProfile", "Distribution Profile")}>
+                <select value={getValueByPath(config, "distribution.profile") || "nextgen"} onChange={(event) => updateField("distribution.profile", event.target.value)}>
+                  <option value="nextgen">nextgen</option>
+                  <option value="minimum">minimum</option>
+                </select>
+              </Field>
               <Field label={t("field.serverHost", "Server Host")}>
                 <input value={getValueByPath(config, "server.host") || ""} onChange={(event) => updateField("server.host", event.target.value)} />
               </Field>
@@ -134,7 +144,7 @@ export default function WorkspaceTab({
               <label><input type="checkbox" checked={getValueByPath(config, "server.trustProxy") === true} onChange={(event) => updateField("server.trustProxy", event.target.checked)} /> {t("field.trustProxy", "Trust Proxy Headers")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "admin.auth.enabled") === true} onChange={(event) => updateField("admin.auth.enabled", event.target.checked)} /> {t("field.enableAdminAuth", "Enable Admin Basic Auth")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "access.defaults.requireApiKey") !== false} onChange={(event) => updateField("access.defaults.requireApiKey", event.target.checked)} /> {t("field.requireApiKey", "Require API Key")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "access.budgets.enabled") === true} onChange={(event) => updateField("access.budgets.enabled", event.target.checked)} /> {t("field.enableBudget", "Enable Budgets")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "access.budgets.enabled") === true} disabled={!budgetsAvailable} onChange={(event) => updateField("access.budgets.enabled", event.target.checked)} /> {t("field.enableBudget", "Enable Budgets")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "admin.features.enableLegacyJsonEditor") !== false} onChange={(event) => updateField("admin.features.enableLegacyJsonEditor", event.target.checked)} /> {t("field.enableAdvancedJson", "Enable Advanced JSON Editor")}</label>
             </div>
             <Field label={t("field.pricingCatalog", "Pricing Catalog")} hint={t("field.pricingCatalogHint", "JSON object. Without pricing data, only tokens are counted and amount remains zero.")}>
@@ -203,7 +213,7 @@ export default function WorkspaceTab({
               <label><input type="checkbox" checked={getValueByPath(config, "persistence.compatibilityExport.exportLegacyConfigOnChange") !== false} onChange={(event) => updateField("persistence.compatibilityExport.exportLegacyConfigOnChange", event.target.checked)} /> {t("field.compatibilityExportLegacy", "Export legacy config on change")}</label>
             </div>
 
-            {databaseSettingsVisible ? <div className="database-probe-panel">
+            {databaseSettingsVisible && databaseAdminAvailable ? <div className="database-probe-panel">
               <div className="database-probe-header">
                 <div className="code-block-head">{t("workspace.databaseProbe.title", "Database Connection Test")}</div>
                 <p className="muted database-probe-desc">{t("workspace.databaseProbe.desc", "Load the current connection string from environment-backed runtime settings, edit it temporarily, and verify connectivity without saving secrets into config.json.")}</p>
@@ -347,9 +357,9 @@ export default function WorkspaceTab({
               <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeHeaders") === true} onChange={(event) => updateField("observability.logs.includeHeaders", event.target.checked)} /> {t("field.includeHeaders", "Include Headers")}</label>
               <label title={t("field.redactSecretsEnforced", "Sensitive values are always redacted and this protection cannot be disabled.")}><input type="checkbox" checked disabled /> {t("field.redactSecrets", "Redact Secrets")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.redactApiKeyInfo") !== false} onChange={(event) => updateField("observability.logs.redactApiKeyInfo", event.target.checked)} /> {t("field.redactApiKeyInfo", "Redact API Key Info")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "observability.logAnalytics.enabled") === true} onChange={(event) => updateField("observability.logAnalytics.enabled", event.target.checked)} /> {t("field.logAnalyticsEnabled", "Enable Log Analytics Sink")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "observability.logAnalytics.enabled") === true} disabled={!logAnalyticsAvailable} onChange={(event) => updateField("observability.logAnalytics.enabled", event.target.checked)} /> {t("field.logAnalyticsEnabled", "Enable Log Analytics Sink")}</label>
             </div>
-            <div className="database-probe-panel log-analytics-init-panel">
+            {logAnalyticsAvailable ? <div className="database-probe-panel log-analytics-init-panel">
               <div className="database-probe-header">
                 <strong>{t("workspace.logAnalyticsInit.title", "Log Analytics Initialization")}</strong>
                 <p className="muted database-probe-desc">{t("workspace.logAnalyticsInit.desc", "Validate the existing workspace and public DCE, reconcile the custom table and Direct DCR, then upload a probe record.")}</p>
@@ -388,7 +398,7 @@ export default function WorkspaceTab({
                   </details>
                 </div>
               ) : null}
-            </div>
+            </div> : null}
           </AccordionSection>
 
           <AccordionSection id="workspace-media" title={t("workspace.media.title", "Media Policy")} desc={t("workspace.media.desc", "Control input compression, remote images, inline images, and image generation defaults.") } group="workspace-sections">
@@ -488,8 +498,8 @@ export default function WorkspaceTab({
               <label><input type="checkbox" checked={getValueByPath(config, "routing.routeProfiles.messages.enabled") !== false} onChange={(event) => updateField("routing.routeProfiles.messages.enabled", event.target.checked)} /> {t("field.routeMessagesEnabled", "Enable messages")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.claudeCode.enabled") !== false} onChange={(event) => updateField("compatibility.claudeCode.enabled", event.target.checked)} /> {t("field.claudeCodeCompatibilityEnabled", "Enable Claude Code compatibility")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.codex.enabled") !== false} onChange={(event) => updateField("compatibility.codex.enabled", event.target.checked)} /> {t("field.codexCompatibilityEnabled", "Enable Codex compatibility")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.protocolShim.rejectLossyRequests") !== false} onChange={(event) => updateField("compatibility.protocolShim.rejectLossyRequests", event.target.checked)} /> {t("field.protocolShimRejectLossyRequests", "Reject lossy shim requests")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.protocolShim.rejectLossyResponses") !== false} onChange={(event) => updateField("compatibility.protocolShim.rejectLossyResponses", event.target.checked)} /> {t("field.protocolShimRejectLossyResponses", "Reject lossy shim responses")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.protocolShim.rejectLossyRequests") === true} onChange={(event) => updateField("compatibility.protocolShim.rejectLossyRequests", event.target.checked)} /> {t("field.protocolShimRejectLossyRequests", "Reject lossy shim requests")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.protocolShim.rejectLossyResponses") === true} onChange={(event) => updateField("compatibility.protocolShim.rejectLossyResponses", event.target.checked)} /> {t("field.protocolShimRejectLossyResponses", "Reject lossy shim responses")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.betaAllowlistEnabled") !== false} onChange={(event) => updateField("compatibility.anthropic.betaAllowlistEnabled", event.target.checked)} /> {t("field.anthropicBetaAllowlistEnabled", "Filter Anthropic beta headers")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.normalizeManualThinkingToolChoice") !== false} onChange={(event) => updateField("compatibility.anthropic.normalizeManualThinkingToolChoice", event.target.checked)} /> {t("field.anthropicThinkingToolChoice", "Normalize manual thinking tool choice")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.sanitizeCacheControl") !== false} onChange={(event) => updateField("compatibility.anthropic.sanitizeCacheControl", event.target.checked)} /> {t("field.anthropicCacheControl", "Sanitize Anthropic cache controls")}</label>

@@ -3,7 +3,7 @@
   "displayName": "GPT Chat Latest",
   "provider": "azure-openai",
   "family": "gpt-chat-latest",
-  "modelVersion": "2026-05-05",
+  "modelVersion": "2026-08-06",
   "status": "preview",
   "interfaces": [
     "chat/completions",
@@ -23,6 +23,18 @@
     "structured-outputs",
     "parallel-tool-calling"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "configurable": false
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "configurable": false
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -59,7 +71,7 @@
     "pricing": "https://developers.openai.com/api/docs/pricing"
   },
   "notes": [
-    "Azure 文档将 gpt-chat-latest 标为 GPT-chat-latest 2026-05-05 Preview，并说明 OpenAI API 中也称为 chat-latest。",
+    "Azure 文档将 gpt-chat-latest 标为 GPT-chat-latest 2026-08-06 Preview，并说明该模型使用固定的非零 reasoning effort，不接受 reasoning_effort 参数。",
     "OpenAI pricing 将 chat-latest 列为 ChatGPT 专用 latest Instant 模型，价格为输入 5 USD/1M、缓存输入 0.50 USD/1M、输出 30 USD/1M。"
   ]
 }

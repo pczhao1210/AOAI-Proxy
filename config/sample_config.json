@@ -1,5 +1,8 @@
 {
   "version": 3,
+  "distribution": {
+    "profile": "nextgen"
+  },
   "server": {
     "host": "0.0.0.0",
     "port": 3000,
@@ -257,8 +260,8 @@
       "enabled": true
     },
     "protocolShim": {
-      "rejectLossyRequests": true,
-      "rejectLossyResponses": true
+      "rejectLossyRequests": false,
+      "rejectLossyResponses": false
     },
     "anthropic": {
       "betaAllowlistEnabled": true,

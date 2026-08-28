@@ -8,6 +8,13 @@ function asPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+const PROXY_ROUTABLE_INTERFACES = new Set([
+  "chat/completions",
+  "responses",
+  "messages",
+  "images/generations"
+]);
+
 function normalizePricingDefinition(rawDefinition) {
   const definition = asPlainObject(rawDefinition);
   const interfacesByHostingMode = Object.fromEntries(
@@ -22,13 +29,14 @@ function normalizePricingDefinition(rawDefinition) {
       routes: asPlainObject(definition.proxyTemplate.routes)
     }
     : null;
+  const interfaces = normalizeStringArray(definition.interfaces);
 
   return {
     id: String(definition.id || ""),
     displayName: String(definition.displayName || definition.id || ""),
     provider: String(definition.provider || "azure-openai"),
     family: String(definition.family || ""),
-    interfaces: normalizeStringArray(definition.interfaces),
+    interfaces,
     hostingModes: normalizeStringArray(definition.hostingModes).map((mode) => mode.toLowerCase()),
     defaultHostingMode: String(definition.defaultHostingMode || "").trim().toLowerCase(),
     interfacesByHostingMode,
@@ -37,7 +45,11 @@ function normalizePricingDefinition(rawDefinition) {
       ? asPlainObject(definition.pricingCatalogEntry)
       : null,
     proxyTemplate,
-    supportsProxyTemplate: !!(proxyTemplate?.id && proxyTemplate?.targetModel),
+    supportsProxyTemplate: !!(
+      proxyTemplate?.id
+      && proxyTemplate?.targetModel
+      && interfaces.some((protocol) => PROXY_ROUTABLE_INTERFACES.has(protocol))
+    ),
     upstreamTemplate: {
       provider: String(definition.provider || "azure-openai"),
       capabilities: normalizeStringArray(definition.capabilities),

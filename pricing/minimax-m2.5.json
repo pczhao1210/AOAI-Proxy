@@ -17,6 +17,13 @@
   "capabilities": [
     "reasoning"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "configurable": false
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -45,6 +52,7 @@
     "pricingRef": "MiniMax-M2.5"
   },
   "sources": {
+    "capabilities": "https://platform.minimax.io/docs/api-reference/text-post",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [

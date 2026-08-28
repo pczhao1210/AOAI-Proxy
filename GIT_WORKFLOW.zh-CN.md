@@ -14,6 +14,13 @@
 2. 本地分支名不要带 `origin/` 前缀；`origin/*` 只能代表远端跟踪分支，不应该作为你自己的本地开发分支名。
 3. 切分支前先处理未提交改动；否则 Git 可能保留当前工作区文件，导致你误以为切换后的内容不完整。
 
+## 当前主线与 Profile 策略
+
+- `aoai-nextgen` 是唯一长期代码基线。
+- 原 `minimum` 范围由同一代码基线上的 `distribution.profile=minimum` 或 `AOAI_PROXY_PROFILE=minimum` 表达，不再通过长期分支删减源码。
+- `minimum` 与 `nextgen` 共用协议、路由、测试、镜像以及支持远程更新的 Model Catalog；minimum 只关闭外围管理、数据库 runtime store、预算和 Log Analytics。
+- 旧 minimum 分支只用于历史审计。验证 Profile 后应先为旧 tip 建归档 tag，再冻结或删除远端分支；不要把旧分支硬合并回主线。
+
 ## 推荐命令
 
 下面这组命令是日常最稳妥的做法。

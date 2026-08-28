@@ -69,6 +69,28 @@
             }
           },
           {
+            "name": "distributionProfile",
+            "type": "Microsoft.Common.OptionsGroup",
+            "label": "Runtime profile",
+            "defaultValue": "nextgen",
+            "toolTip": "Both profiles use the same image. Minimum retains all proxy protocols and uses Azure Files without provisioning PostgreSQL.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Nextgen",
+                  "description": "Enable the complete management, persistence, budget, and observability surface.",
+                  "value": "nextgen"
+                },
+                {
+                  "label": "Minimum",
+                  "description": "Keep the complete proxy protocol surface while disabling peripheral management and observability capabilities.",
+                  "value": "minimum"
+                }
+              ],
+              "required": true
+            }
+          },
+          {
             "name": "cpu",
             "type": "Microsoft.Common.DropDown",
             "label": "CPU cores",
@@ -539,10 +561,11 @@
       "location": "[location()]",
       "containerGroupName": "[basics('containerGroupName')]",
       "image": "[steps('runtime').image]",
+      "distributionProfile": "[steps('runtime').distributionProfile]",
       "dnsNameLabel": "[basics('dnsNameLabel')]",
       "cpu": "[steps('runtime').cpu]",
       "memoryInGb": "[steps('runtime').memoryInGb]",
-      "persistenceMode": "[steps('runtime').persistenceMode]",
+      "persistenceMode": "[if(equals(steps('runtime').distributionProfile, 'minimum'), 'azureFile', steps('runtime').persistenceMode)]",
       "caddyEmail": "[steps('security').caddyEmail]",
       "adminUsername": "[steps('security').adminUsername]",
       "adminPassword": "[steps('security').adminPassword]",

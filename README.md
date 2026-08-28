@@ -28,6 +28,16 @@ The Deploy to Azure button targets the ARM JSON template because the portal butt
 The standard raw-template Deploy to Azure button does not automatically use `createUiDefinition.json`; that file is intended for portal packaging flows that support a custom create experience.
 The deployment templates now distinguish between `new` and `existing` storage/database resources so policy-restricted environments can reuse pre-provisioned Azure Files or PostgreSQL resources instead of forcing resource creation.
 
+## Distribution Profiles
+
+`nextgen` and `minimum` are runtime scope profiles on the same source and container image, selected with `distribution.profile` or `AOAI_PROXY_PROFILE`. The default is `nextgen`.
+
+- Both profiles keep Chat Completions, Responses, Messages, the complete $3 \times 3$ native/conversion matrix, protocol-native utility endpoints, images, routing, authentication, SSE, retries, and cancellation.
+- Both profiles include the bundled Model Catalog, in-memory lookup, and remote atomic catalog updates, so model facts can be maintained without rebuilding the image.
+- `minimum` disables budgets, the PostgreSQL runtime event store, Log Analytics ingestion/initialization, and database diagnostic APIs. Model Catalog and basic in-memory administration remain available.
+- Profile limits apply only to the runtime clone. Persisted nextgen settings are retained, so switching back from `minimum` restores them.
+- `/admin/api/runtime` exposes the effective profile and capability manifest. `/version` exposes the profile in `X-AOAI-Proxy-Profile` without changing its JSON contract.
+
 ## Persistence Modes
 
 This repo now supports deployment-time persistence selection, and the Azure deployment templates default to `database+azureFile`.
@@ -166,6 +176,7 @@ Non-loopback listeners fail closed when admin authentication is disabled or know
 - `SHUTDOWN_TIMEOUT_MS`: optional graceful-shutdown deadline override; otherwise `server.gracefulShutdownMs` is used
 - `ADMIN_LOG_BUFFER_SIZE`: in-memory admin log ring buffer size, default and hard maximum `100`
 - `PRICING_DIR`: optional pricing library directory override. By default the app reads from `/app/data/pricing` when synced files exist, otherwise it falls back to the bundled `pricing/` directory inside the image.
+- `AOAI_PROXY_PROFILE`: runtime scope profile, either `nextgen` (default) or `minimum`
 - `AOAI_PROXY_ADMIN_USERNAME`: admin Basic Auth username, defaulting to the configured username
 - `AOAI_PROXY_ADMIN_PASSWORD`: admin Basic Auth password; setting it also enables admin authentication unless explicitly disabled
 - `AOAI_PROXY_API_KEY`: replaces the configured default client API key
@@ -184,7 +195,15 @@ Non-loopback listeners fail closed when admin authentication is disabled or know
 
 The admin Operations page can override owner, repo, path, and ref per sync request. Successful syncs persist the selected GitHub source into pricing sync metadata so the same source shows up on the next load.
 
-When you trigger `Sync From GitHub` from `/admin`, the proxy downloads pricing JSON files into the persistent pricing directory first. In Azure Files-style deployments, this means updated prices survive container replacement without rebuilding the image.
+When you trigger `Sync From GitHub` from `/admin`, the proxy downloads pricing JSON files into a staging directory, normalizes every definition, and compiles a candidate Model Catalog before changing active state. It then swaps the persistent directory, in-memory pricing indexes, and immutable runtime snapshot as one generation. A failed parse or compile leaves the previous directory and snapshot active. In Azure Files-style deployments, successful updates survive container replacement without rebuilding the image.
+
+### Model Catalog Schema
+
+Each `pricing/*.json` file is also a Model Catalog definition. Besides pricing, it can declare `aliases`, `defaultInterface`, and `protocolProfiles`. Text protocol profiles may define a reasoning parameter path, supported levels, default, aliases, validation mode, and Messages thinking types. An `images/generations` profile may define request transport matching, model removal, quality aliases, dropped parameters, and size expansion into width/height fields.
+
+Catalog definitions are compiled when config is loaded or saved and after a successful remote update. Requests resolve one immutable descriptor by public model ID and reuse it for routing, provider/interface selection, normalization, discovery, image adaptation, and governance pricing. Exact catalog facts take precedence over protocol defaults; administrator model/compatibility overrides remain highest priority.
+
+Catalog levels are compatibility metadata, not a global upstream capability gate. Profiles default to `validation: "passthrough"`, so an unlisted future field or level is forwarded to the real upstream unless an explicit administrator policy rejects it. Uncataloged models use protocol-level defaults and configured capabilities.
 
 ### Optional Upstream Pool Overrides
 
@@ -351,7 +370,7 @@ az deployment group create \
 The templates provision:
 
 - A container group with system-assigned managed identity
-- Azure Database for PostgreSQL Flexible Server and a database child resource when `persistenceMode=database` or `persistenceMode=database+azureFile`
+- Azure Database for PostgreSQL Flexible Server and a database child resource when `distributionProfile=nextgen` and `persistenceMode=database` or `persistenceMode=database+azureFile`
 - An optional PostgreSQL `0.0.0.0` Azure-services firewall rule only when `allowAzureServicesToDatabase=true`
 - A new storage account only when `persistenceMode=azureFile` or `persistenceMode=database+azureFile`
 - Azure Files share when `persistenceMode=azureFile` or `persistenceMode=database+azureFile`
@@ -359,6 +378,8 @@ The templates provision:
 - Secure admin password and client API-key injection; the checked-in parameter files intentionally omit these values
 - Caddy automatic HTTPS configuration with only port `443` exposed publicly; Node port `3000` remains internal for health probes
 - RBAC assignment for `Cognitive Services OpenAI User` on the target Azure OpenAI resource
+
+`distributionProfile=minimum` forces the effective deployment persistence mode to `azureFile`, so the same image is deployed without PostgreSQL resources. `distributionProfile=nextgen` preserves the selected `persistenceMode`.
 
 The target Azure OpenAI / Foundry resource can live in a different resource group within the same subscription. Set `cognitiveServicesAccountResourceGroup` when it differs from the deployment resource group.
 If `storageAccountName` is empty, the template auto-generates a valid name for storage-backed modes.
@@ -446,14 +467,14 @@ If active health checks are enabled and `/healthz` is API-key protected, add a h
 
 ### Modern Model Compatibility
 
-For `gpt-5` and newer models, plus `o*` reasoning models, the proxy now applies a small set of request normalizations before forwarding to Foundry:
+For models with the compiled `reasoning` capability, plus requests that explicitly carry protocol reasoning fields, the proxy applies a small set of request normalizations before forwarding to Foundry:
 
-- `max_tokens` is upgraded to `max_completion_tokens` for `chat/completions`
+- `max_tokens` is upgraded to `max_completion_tokens` for reasoning `chat/completions` requests
 - `top_logprobs` implies `logprobs: true` when the client omits it
-- `reasoning_effort` and `reasoning.effort` accept `low`, `medium`, and `high`; `xhigh` is downgraded to `high`
+- `reasoning_effort` and `reasoning.effort` are normalized to lowercase; model-specific aliases such as `xhigh` to `max` come from the Model Catalog
 - `serviceTier` is normalized to `service_tier`; `service_tier`, `verbosity`, and `top_k` are preserved by default instead of being guessed from the model name
 - Providers that reject optional fields can list them in `upstreams[].requestPolicy.blockedParams`; set `dropUnsupportedParams: true` to remove them, or leave it false to reject the request explicitly
-- `web_search_preview` tools are rejected early with a `400` because Azure Foundry does not currently support web search tools
+- `web_search_preview` tool spellings are normalized to `web_search`; the upstream decides support unless an explicit request policy blocks the field
 
 The proxy keeps `stream_options` on compatible native routes. When Chat is converted to Responses or Messages, it consumes `stream_options.include_usage` and emits the requested Chat usage chunk before `[DONE]`; unknown stream options follow the protocol-shim loss policy.
 
@@ -479,14 +500,14 @@ Near-passthrough is semantic rather than byte-for-byte. The proxy still maps the
 
 Cross-protocol conversion covers text, input images, function tools, tool calls/results, token limits, stop reasons, usage, and streaming lifecycle events. Responses `reasoning.encrypted_content` is mapped to Anthropic thinking signatures in both directions, including streaming continuations. Other protocol-specific fields without a safe equivalent are rejected by default.
 
-`compatibility.protocolShim.rejectLossyRequests` and `rejectLossyResponses` both default to `true`. Set either switch to `false` only when continuing with a best-effort conversion is preferable to stopping the request. Permissive conversions emit `proxy.protocol_shim_lossy_conversion` with the phase, field path, source/target protocols, and loss reason. The response switch applies to both JSON and SSE responses.
+`compatibility.protocolShim.rejectLossyRequests` and `rejectLossyResponses` both default to `false`. Best-effort conversions emit `proxy.protocol_shim_lossy_conversion` with the phase, field path, source/target protocols, and loss reason. Enable either strict switch only when rejecting a non-lossless conversion is preferable to continuing. The response switch applies to both JSON and SSE responses.
 
 ```json
 {
   "compatibility": {
     "protocolShim": {
-      "rejectLossyRequests": true,
-      "rejectLossyResponses": true
+      "rejectLossyRequests": false,
+      "rejectLossyResponses": false
     }
   }
 }

@@ -1,9 +1,5 @@
+import { getDescriptorProtocolProfile } from "../model-catalog.js";
 import { findPricingDefinitionForModel } from "../pricing-library.js";
-
-const GPT_IMAGE_QUALITY_MAP = {
-  standard: "medium",
-  hd: "high"
-};
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -43,62 +39,41 @@ export function isBlackForestLabsProviderPath(targetUrl) {
   }
 }
 
-function isGptImageModel(definition, model) {
-  const candidates = [
-    definition?.id,
-    model?.pricingRef,
-    model?.targetModel,
-    model?.id
-  ];
-  return candidates.some((value) => normalizeLower(value).startsWith("gpt-image-"));
+function matchesRequestTransport(transport, targetUrl) {
+  if (!transport || transport === "any") return true;
+  if (transport === "azure-deployment") return isDeploymentImageApi(targetUrl);
+  if (transport === "blackforest-provider") return isBlackForestLabsProviderPath(targetUrl);
+  return false;
 }
 
-function adaptDeploymentImageRequest(body, definition, model) {
+function applyImageRequestProfile(body, requestProfile, targetUrl) {
   const nextBody = body && typeof body === "object" ? { ...body } : {};
-  delete nextBody.model;
-
-  if (isGptImageModel(definition, model)) {
-    const normalizedQuality = normalizeLower(nextBody.quality);
-    if (normalizedQuality && GPT_IMAGE_QUALITY_MAP[normalizedQuality]) {
-      nextBody.quality = GPT_IMAGE_QUALITY_MAP[normalizedQuality];
-    }
-    delete nextBody.style;
-    delete nextBody.response_format;
+  if (!requestProfile || !matchesRequestTransport(requestProfile.transport, targetUrl)) {
+    return nextBody;
   }
-
-  return nextBody;
-}
-
-function adaptBflImageRequest(body) {
-  const nextBody = body && typeof body === "object" ? { ...body } : {};
-  const parsedSize = parseSize(nextBody.size);
+  if (requestProfile.removeModel === true) delete nextBody.model;
+  const normalizedQuality = normalizeLower(nextBody.quality);
+  const mappedQuality = requestProfile.qualityAliases?.[normalizedQuality];
+  if (mappedQuality) nextBody.quality = mappedQuality;
+  const sizeExpansion = requestProfile.sizeExpansion;
+  const parsedSize = sizeExpansion ? parseSize(nextBody[sizeExpansion.source]) : null;
   if (parsedSize) {
-    nextBody.width = parsedSize.width;
-    nextBody.height = parsedSize.height;
+    nextBody[sizeExpansion.width] = parsedSize.width;
+    nextBody[sizeExpansion.height] = parsedSize.height;
   }
-  delete nextBody.size;
-  delete nextBody.background;
-  delete nextBody.input_fidelity;
-  delete nextBody.moderation;
-  delete nextBody.output_compression;
-  delete nextBody.partial_images;
-  delete nextBody.response_format;
-  delete nextBody.stream;
-  delete nextBody.style;
-  delete nextBody.user;
+  for (const parameter of requestProfile.dropParameters || []) {
+    delete nextBody[parameter];
+  }
   return nextBody;
 }
 
-export function prepareImageGenerationRequest({ body, model, routeKey, backendRouteKey, targetUrl }) {
+export function prepareImageGenerationRequest({ body, model, descriptor, routeKey, backendRouteKey, targetUrl }) {
   if (routeKey !== "images/generations" || backendRouteKey !== "images/generations") {
     return body;
   }
-  const definition = findPricingDefinitionForModel(model);
-  if (isBlackForestLabsProviderPath(targetUrl)) {
-    return adaptBflImageRequest(body);
-  }
-  if (isDeploymentImageApi(targetUrl)) {
-    return adaptDeploymentImageRequest(body, definition, model);
-  }
-  return body;
+  const definition = descriptor?.definition || findPricingDefinitionForModel(model);
+  const requestProfile = descriptor
+    ? getDescriptorProtocolProfile(descriptor, "images/generations")?.request
+    : definition?.protocolProfiles?.["images/generations"]?.request;
+  return applyImageRequestProfile(body, requestProfile, targetUrl);
 }

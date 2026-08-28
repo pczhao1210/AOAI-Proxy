@@ -3,7 +3,7 @@
   "displayName": "GPT Realtime 2",
   "provider": "openai",
   "family": "gpt-realtime",
-  "modelVersion": null,
+  "modelVersion": "2026-05-07",
   "status": "ga",
   "interfaces": [
     "realtime"
@@ -25,6 +25,20 @@
     "vision",
     "function-calling"
   ],
+  "protocolProfiles": {
+    "realtime": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -59,6 +73,7 @@
     "pricing": "https://developers.openai.com/api/docs/pricing"
   },
   "notes": [
-    "OpenAI 官方价格按文本、音频、图像 token 分通道计费；当前 AOAI Proxy 治理计费只支持标准 token 单价，因此 pricingCatalogEntry 保持为空，避免多模态请求被误算。"
+    "OpenAI 官方价格按文本、音频、图像 token 分通道计费；当前 AOAI Proxy 治理计费只支持标准 token 单价，因此 pricingCatalogEntry 保持为空，避免多模态请求被误算。",
+    "Azure Foundry 的 gpt-realtime-2 模型版本为 2026-05-07；Realtime API 使用 reasoning.effort，并支持 minimal、low、medium、high、xhigh。"
   ]
 }

@@ -1,4 +1,5 @@
 import { appendStructuredLog } from "./logs.js";
+import { resolveModelDescriptor } from "./model-catalog.js";
 import { findPricingDefinitionForModel } from "./pricing-library.js";
 import { hydrateGovernanceRuntime, recordRuntimeBlocked, recordRuntimeWarning } from "./runtime-store.js";
 
@@ -313,7 +314,7 @@ function resolvePricingModel(config, model, actualModelName) {
   };
 }
 
-function resolvePricing(config, model) {
+function resolvePricing(config, model, descriptor = null) {
   const defaultCurrency = config?.access?.budgets?.defaultCurrency || "USD";
   const directPricing = normalizePricingEntry(model?.pricing, defaultCurrency);
   if (directPricing) {
@@ -327,10 +328,13 @@ function resolvePricing(config, model) {
       return { pricing: resolved, source: `access.pricingCatalog.${pricingRef}` };
     }
   }
-  const libraryDefinition = findPricingDefinitionForModel(model);
+  const libraryDefinition = descriptor?.definition || findPricingDefinitionForModel(model);
   if (libraryDefinition) {
+    const libraryPricing = Object.prototype.hasOwnProperty.call(libraryDefinition, "pricingCatalogEntry")
+      ? libraryDefinition.pricingCatalogEntry
+      : libraryDefinition.pricing;
     const resolved = normalizePricingEntry(
-      libraryDefinition.pricingCatalogEntry || libraryDefinition.pricing,
+      libraryPricing,
       defaultCurrency
     );
     if (resolved) {
@@ -344,7 +348,7 @@ function isModelRouterRequest(model) {
   return matchesPricingCandidate(model, "model-router");
 }
 
-function estimateUsageCost(config, model, usage, actualModelName) {
+function estimateUsageCost(config, model, usage, actualModelName, descriptor = null) {
   const totals = getUsageTotals(usage);
   const defaultCurrency = config?.access?.budgets?.defaultCurrency || "USD";
   const modelRouterRequest = isModelRouterRequest(model);
@@ -356,7 +360,10 @@ function estimateUsageCost(config, model, usage, actualModelName) {
   let actualModelCostCurrency = defaultCurrency;
   let actualSource = "";
   if (!modelRouterRequest || actualModelResolved) {
-    const { pricing, source } = resolvePricing(config, pricingModelResolution.model);
+    const pricingDescriptor = pricingModelResolution.model === model
+      ? descriptor
+      : resolveModelDescriptor(pricingModelResolution.model?.id);
+    const { pricing, source } = resolvePricing(config, pricingModelResolution.model, pricingDescriptor);
     if (pricing) {
       const billablePromptTokens = Math.max(0, totals.promptTokens - totals.cachedTokens);
       actualModelCostAmount =
@@ -375,7 +382,7 @@ function estimateUsageCost(config, model, usage, actualModelName) {
     const { pricing, source } = resolvePricing(config, {
       ...model,
       pricingRef: typeof model?.pricingRef === "string" && model.pricingRef.trim() ? model.pricingRef : "model-router"
-    });
+    }, descriptor);
     if (pricing) {
       modelRouterCostAmount = (totals.promptTokens / 1000) * pricing.inputPer1kTokens;
       modelRouterCostCurrency = pricing.currency || defaultCurrency;
@@ -653,7 +660,7 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
   resetRateWindowIfNeeded(runtime, rateLimitSettings, now);
   resetBudgetWindowIfNeeded(runtime, budgetSettings, now);
 
-  const usageCost = estimateUsageCost(config, model, usage, actualModelName);
+  const usageCost = estimateUsageCost(config, model, usage, actualModelName, metadata.modelDescriptor);
   runtime.lastSeenAt = toIsoString(now);
   runtime.rateWindow.promptTokens += usageCost.promptTokens;
   runtime.rateWindow.completionTokens += usageCost.completionTokens;

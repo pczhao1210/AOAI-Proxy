@@ -28,6 +28,21 @@
     "vision",
     "function-calling"
   ],
+  "protocolProfiles": {
+    "messages": {
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": ["adaptive", "disabled"],
+        "default": "adaptive",
+        "validation": "passthrough"
+      },
+      "reasoning": {
+        "parameter": "output_config.effort",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "validation": "passthrough"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",

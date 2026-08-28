@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getUpstreamAuthHeaders } from "./auth.js";
-import { findPricingDefinitionForModel } from "./pricing-library.js";
+import { resolveModelDescriptor } from "./model-catalog.js";
 import {
   prepareImageGenerationRequest,
   isBlackForestLabsProviderPath
@@ -36,10 +36,13 @@ function isDisabledStatus(status) {
   return normalizeString(status).toLowerCase() === "disabled";
 }
 
-function inferValidationRouteKey(model, definition) {
+function inferValidationRouteKey(model, definition, descriptor = null) {
   const interfaces = normalizeStringArray(definition?.interfaces);
+  const defaultInterface = normalizeString(descriptor?.defaultInterface || definition?.defaultInterface).toLowerCase();
   const routeKey = interfaces.includes("images/generations")
     ? "images/generations"
+    : interfaces.includes(defaultInterface)
+      ? defaultInterface
     : interfaces.includes("messages")
       ? "messages"
       : interfaces.includes("responses") && !interfaces.includes("chat/completions")
@@ -48,19 +51,19 @@ function inferValidationRouteKey(model, definition) {
   return routeKey;
 }
 
-function buildValidationTarget(model, upstream, routeKey) {
+function buildValidationTarget(model, upstream, routeKey, descriptor = null) {
   const deployment = normalizeString(model?.targetModel) || normalizeString(model?.id);
   const usesModelRouter = deployment.toLowerCase() === "model-router";
   const override = resolveModelRoute(model, routeKey);
   const effectiveRouteKey = usesModelRouter
     ? "chat/completions"
-    : resolveEffectiveRouteKey(routeKey, model, upstream, override);
+    : resolveEffectiveRouteKey(routeKey, model, upstream, override, descriptor);
   const configuredBackendRouteKey = override
     ? inferBackendRouteKey(routeKey, override)
     : normalizeBackendRouteKey(effectiveRouteKey);
   const targetUrl = override?.type === "path"
-    ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
-    : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
+    ? buildDirectUpstreamUrl(upstream, override.value, deployment, model, descriptor)
+    : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model, descriptor);
   const backendRouteKey = reconcileBackendRouteKey(configuredBackendRouteKey, targetUrl);
 
   return {
@@ -68,6 +71,7 @@ function buildValidationTarget(model, upstream, routeKey) {
     routeKey,
     backendRouteKey,
     targetUrl,
+    descriptor,
     overrideType: override?.type || "routeKey"
   };
 }
@@ -112,6 +116,7 @@ function buildValidationPayload(target) {
       targetModel: target.deployment,
       pricingRef: target.pricingRef || target.deployment
     },
+    descriptor: target.descriptor,
     routeKey: target.routeKey,
     backendRouteKey: target.backendRouteKey,
     targetUrl: target.targetUrl
@@ -155,7 +160,7 @@ const CLIENT_COMPATIBILITY_PROTOCOLS = {
   codex: { label: "Codex", routeKey: "responses" }
 };
 
-function getClientCompatibilityIssues(config, model, upstream) {
+function getClientCompatibilityIssues(config, model, upstream, descriptor) {
   const issues = [];
   for (const [clientName, protocol] of Object.entries(CLIENT_COMPATIBILITY_PROTOCOLS)) {
     if (config?.compatibility?.[clientName]?.enabled === false) continue;
@@ -168,7 +173,7 @@ function getClientCompatibilityIssues(config, model, upstream) {
       continue;
     }
     try {
-      const target = buildValidationTarget(model, upstream, protocol.routeKey);
+      const target = buildValidationTarget(model, upstream, protocol.routeKey, descriptor);
       if (target.backendRouteKey !== protocol.routeKey) {
         issues.push(buildStaticIssue(
           model,
@@ -185,7 +190,7 @@ function getClientCompatibilityIssues(config, model, upstream) {
   return issues;
 }
 
-export function getConfiguredModelBindingIssues(config) {
+export function getConfiguredModelBindingIssues(config, snapshot) {
   const issues = [];
   for (const model of Array.isArray(config?.models) ? config.models : []) {
     if (!model?.id || isDisabledStatus(model?.status)) continue;
@@ -199,12 +204,13 @@ export function getConfiguredModelBindingIssues(config) {
       issues.push(buildStaticIssue(model, `model \"${model.id}\" is bound to disabled upstream \"${upstream.name}\"`));
     }
 
-    issues.push(...getClientCompatibilityIssues(config, model, upstream));
+    const descriptor = resolveModelDescriptor(model.id, snapshot);
+    issues.push(...getClientCompatibilityIssues(config, model, upstream, descriptor));
 
-    const definition = findPricingDefinitionForModel(model);
+    const definition = descriptor?.definition;
     const definitionProvider = normalizeProvider(definition?.provider);
     try {
-      const target = buildValidationTarget(model, upstream, inferValidationRouteKey(model, definition));
+      const target = buildValidationTarget(model, upstream, inferValidationRouteKey(model, definition, descriptor), descriptor);
       if (
         definitionProvider === "black-forest-labs"
         && !isBlackForestLabsProviderPath(target.targetUrl)
@@ -222,7 +228,8 @@ export function getConfiguredModelBindingIssues(config) {
 }
 
 function buildStaticResultItem(config, model) {
-  const definition = findPricingDefinitionForModel(model);
+  const descriptor = resolveModelDescriptor(model?.id);
+  const definition = descriptor?.definition;
   const upstream = findUpstream(config, model.upstream);
   const base = {
     modelId: normalizeString(model?.id),
@@ -263,7 +270,7 @@ function buildStaticResultItem(config, model) {
   }
 
   try {
-    const target = buildValidationTarget(model, upstream, inferValidationRouteKey(model, definition));
+    const target = buildValidationTarget(model, upstream, inferValidationRouteKey(model, definition, descriptor), descriptor);
     base.routeKey = target.routeKey;
     base.backendRouteKey = target.backendRouteKey;
     base.targetUrl = target.targetUrl;
@@ -331,7 +338,13 @@ async function probeConfiguredModel(config, item) {
     return;
   }
 
-  const target = buildValidationTarget(model, upstream, item.routeKey || inferValidationRouteKey(model, findPricingDefinitionForModel(model)));
+  const descriptor = resolveModelDescriptor(model.id);
+  const target = buildValidationTarget(
+    model,
+    upstream,
+    item.routeKey || inferValidationRouteKey(model, descriptor?.definition, descriptor),
+    descriptor
+  );
   const payload = buildValidationPayload(target);
   const policy = resolveUpstreamPolicy(config, {
     routeKey: target.routeKey,

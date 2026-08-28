@@ -1,3 +1,5 @@
+import { getDefaultProtocolProfile, getDescriptorProtocolProfile } from "../model-catalog.js";
+
 const SHIM_PROTOCOLS = new Set(["chat/completions", "responses", "messages"]);
 const TEXT_CONTENT_TYPES = new Set(["text", "input_text", "output_text"]);
 const IMAGE_CONTENT_TYPES = new Set(["image", "image_url", "input_image"]);
@@ -17,6 +19,97 @@ const SUPPORTED_CHAT_FINAL_FINISH_REASONS = new Set(["stop", "length", "tool_cal
 const SUPPORTED_CHAT_STREAM_FINISH_REASONS = new Set([null, undefined, ...SUPPORTED_CHAT_FINAL_FINISH_REASONS]);
 const SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS = new Set(["end_turn", "max_tokens", "stop_sequence", "tool_use"]);
 const SUPPORTED_ANTHROPIC_STREAM_STOP_REASONS = new Set([null, undefined, ...SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS]);
+
+function getValueAtPath(value, path) {
+  const segments = String(path || "").split(".").filter(Boolean);
+  let current = value;
+  for (const segment of segments) {
+    if (!current || typeof current !== "object") return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+function setValueAtPath(value, path, nextValue) {
+  const segments = String(path || "").split(".").filter(Boolean);
+  if (!segments.length) return;
+  let current = value;
+  for (const segment of segments.slice(0, -1)) {
+    if (!current[segment] || typeof current[segment] !== "object" || Array.isArray(current[segment])) {
+      current[segment] = {};
+    }
+    current = current[segment];
+  }
+  current[segments.at(-1)] = nextValue;
+}
+
+function deleteValueAtPath(value, path) {
+  const segments = String(path || "").split(".").filter(Boolean);
+  if (!segments.length) return;
+  const parents = [];
+  let current = value;
+  for (const segment of segments.slice(0, -1)) {
+    if (!current || typeof current !== "object") return;
+    parents.push([current, segment]);
+    current = current[segment];
+  }
+  if (!current || typeof current !== "object") return;
+  delete current[segments.at(-1)];
+  for (const [parent, segment] of parents.reverse()) {
+    const child = parent[segment];
+    if (child && typeof child === "object" && !Array.isArray(child) && Object.keys(child).length === 0) {
+      delete parent[segment];
+    } else {
+      break;
+    }
+  }
+}
+
+function resolveReasoningProfile(descriptor, protocol) {
+  const fallback = getDefaultProtocolProfile(protocol)?.reasoning || {};
+  const configured = getDescriptorProtocolProfile(descriptor, protocol)?.reasoning;
+  const profile = configured && typeof configured === "object" ? configured : fallback;
+  const configurable = profile.configurable !== false;
+  return {
+    ...profile,
+    configurable,
+    parameter: configurable ? profile.parameter || "" : "",
+    aliases: { ...(profile.aliases || {}) }
+  };
+}
+
+function normalizeReasoningValue(value, profile) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  const normalized = value.trim().toLowerCase();
+  return profile.aliases?.[normalized] || normalized;
+}
+
+function transferReasoning(out, body, sourceProtocol, targetProtocol, descriptor) {
+  const sourceProfile = resolveReasoningProfile(descriptor, sourceProtocol);
+  const targetProfile = resolveReasoningProfile(descriptor, targetProtocol);
+  const sourceValue = normalizeReasoningValue(
+    getValueAtPath(body, sourceProfile.parameter),
+    sourceProfile
+  );
+  if (!sourceValue || !targetProfile.parameter) return "";
+  const targetValue = normalizeReasoningValue(sourceValue, targetProfile);
+  setValueAtPath(out, targetProfile.parameter, targetValue);
+  if (sourceProfile.parameter !== targetProfile.parameter) {
+    deleteValueAtPath(out, sourceProfile.parameter);
+  }
+  return targetValue;
+}
+
+function ensureMessagesThinking(out, descriptor) {
+  const fallback = getDefaultProtocolProfile("messages")?.thinking || {};
+  const configured = getDescriptorProtocolProfile(descriptor, "messages")?.thinking;
+  const profile = configured && typeof configured === "object" ? configured : fallback;
+  const parameter = profile.parameter || "";
+  const defaultType = profile.default || "";
+  if (parameter && defaultType && getValueAtPath(out, parameter) == null) {
+    setValueAtPath(out, parameter, defaultType);
+  }
+}
 
 function createShimCompatibilityIssue({ phase, sourceProtocol, targetProtocol, path, type, reason }) {
   return {
@@ -274,7 +367,7 @@ function validateResponsesPayload(payload, context) {
       continue;
     }
     if (itemType === "function_call") continue;
-    if (context.phase === "request" && context.targetProtocol === "messages" && itemType === "reasoning") {
+    if (context.targetProtocol === "messages" && itemType === "reasoning") {
       const summary = Array.isArray(item.summary) ? item.summary : [];
       const validSummary = summary.every((part) => part?.type === "summary_text" && typeof part.text === "string");
       if (typeof item.encrypted_content === "string" && validSummary) continue;
@@ -359,6 +452,23 @@ function validateAnthropicContent(content, context, path) {
       if (issue) return issue;
       continue;
     }
+    if (
+      context.phase === "request"
+      && context.targetProtocol === "responses"
+      && blockType === "thinking"
+      && typeof block.thinking === "string"
+      && (block.signature == null || typeof block.signature === "string")
+    ) {
+      continue;
+    }
+    if (
+      context.phase === "request"
+      && context.targetProtocol === "responses"
+      && blockType === "redacted_thinking"
+      && typeof block.data === "string"
+    ) {
+      continue;
+    }
     if (context.phase === "response" && blockType === "thinking") {
       if (context.targetProtocol === "chat/completions" && !block?.signature) continue;
       if (context.targetProtocol === "responses" && typeof block.thinking === "string") continue;
@@ -383,18 +493,32 @@ function validateAnthropicContent(content, context, path) {
 
 function validateMessagesPayload(payload, context) {
   if (context.phase === "request") {
-    for (const field of ["thinking", "output_config"]) {
-      if (payload?.[field] != null) {
+    if (payload?.thinking != null) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "thinking",
+        type: "thinking",
+        reason: "Anthropic thinking mode cannot be preserved"
+      });
+    }
+    if (payload?.output_config != null) {
+      const outputConfigKeys = payload.output_config && typeof payload.output_config === "object"
+        ? Object.keys(payload.output_config).filter((key) => payload.output_config[key] != null)
+        : [];
+      const mapsToResponsesEffort = context.targetProtocol === "responses"
+        && outputConfigKeys.every((key) => key === "effort")
+        && (payload.output_config.effort == null || typeof payload.output_config.effort === "string");
+      if (!mapsToResponsesEffort) {
         return createShimCompatibilityIssue({
           ...context,
-          path: field,
-          type: field,
-          reason: "Anthropic reasoning or output configuration cannot be preserved"
+          path: "output_config",
+          type: "output_config",
+          reason: "Anthropic output configuration cannot be preserved"
         });
       }
     }
     for (const field of ["top_k", "metadata", "service_tier", "serviceTier", "verbosity"]) {
-      if (hasMeaningfulShimValue(payload?.[field])) {
+      if (context.targetProtocol !== "responses" && hasMeaningfulShimValue(payload?.[field])) {
         return createShimCompatibilityIssue({
           ...context,
           path: field,
@@ -430,7 +554,7 @@ function validateMessagesPayload(payload, context) {
         });
       }
     }
-    if (payload?.tool_choice?.disable_parallel_tool_use === true) {
+    if (context.targetProtocol !== "responses" && payload?.tool_choice?.disable_parallel_tool_use === true) {
       return createShimCompatibilityIssue({
         ...context,
         path: "tool_choice.disable_parallel_tool_use",
@@ -1493,6 +1617,94 @@ function anthropicImageToChatPart(source) {
   return null;
 }
 
+function anthropicImageToResponsesPart(source) {
+  const chatPart = anthropicImageToChatPart(source);
+  const imageUrl = chatPart?.image_url?.url;
+  return imageUrl ? { type: "input_image", image_url: imageUrl } : null;
+}
+
+function anthropicContentToResponsesContent(content, role) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return normalizeMessageContentToText(content);
+
+  const parts = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    if (block.type === "text" && typeof block.text === "string") {
+      parts.push({ type: role === "assistant" ? "output_text" : "input_text", text: block.text });
+      continue;
+    }
+    if (block.type === "image") {
+      const imagePart = anthropicImageToResponsesPart(block.source);
+      if (imagePart) parts.push(imagePart);
+    }
+  }
+  if (!parts.length) return "";
+  if (parts.every((part) => part.type === "input_text" || part.type === "output_text")) {
+    return parts.map((part) => part.text).join("");
+  }
+  return parts;
+}
+
+function buildResponsesInputFromAnthropic(messages) {
+  const input = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
+    const blocks = Array.isArray(message.content) ? message.content : null;
+    if (!blocks) {
+      const content = anthropicContentToResponsesContent(message.content, message.role);
+      if (content !== "") input.push({ type: "message", role: message.role, content });
+      continue;
+    }
+
+    let messageBlocks = [];
+    const flushMessageBlocks = () => {
+      const content = anthropicContentToResponsesContent(messageBlocks, message.role);
+      if (content !== "") input.push({ type: "message", role: message.role, content });
+      messageBlocks = [];
+    };
+
+    for (const block of blocks) {
+      if (block?.type === "text" || block?.type === "image") {
+        messageBlocks.push(block);
+        continue;
+      }
+      flushMessageBlocks();
+      if (block?.type === "tool_use" && block.name) {
+        input.push({
+          type: "function_call",
+          call_id: block.id,
+          name: block.name,
+          arguments: JSON.stringify(block.input ?? {})
+        });
+        continue;
+      }
+      if (block?.type === "tool_result" && block.tool_use_id) {
+        input.push({
+          type: "function_call_output",
+          call_id: block.tool_use_id,
+          output: anthropicToolResultToText(block.content),
+          ...(block.is_error === true ? { is_error: true } : {})
+        });
+        continue;
+      }
+      if (block?.type === "thinking" || block?.type === "redacted_thinking") {
+        const summaryText = block.type === "thinking" && typeof block.thinking === "string"
+          ? block.thinking
+          : "";
+        const encryptedContent = block.type === "thinking" ? block.signature : block.data;
+        input.push({
+          type: "reasoning",
+          summary: summaryText ? [{ type: "summary_text", text: summaryText }] : [],
+          ...(typeof encryptedContent === "string" ? { encrypted_content: encryptedContent } : {})
+        });
+      }
+    }
+    flushMessageBlocks();
+  }
+  return input;
+}
+
 function anthropicContentToChatContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return normalizeMessageContentToText(content);
@@ -1597,6 +1809,19 @@ function normalizeAnthropicToolsForChat(tools) {
   return normalized.length ? normalized : undefined;
 }
 
+function normalizeAnthropicToolsForResponses(tools) {
+  if (!Array.isArray(tools)) return undefined;
+  const normalized = tools
+    .filter((tool) => tool && typeof tool === "object" && tool.name)
+    .map((tool) => ({
+      type: "function",
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.input_schema ?? { type: "object", properties: {} }
+    }));
+  return normalized.length ? normalized : undefined;
+}
+
 function normalizeAnthropicToolChoiceForChat(toolChoice) {
   if (!toolChoice) return undefined;
   if (typeof toolChoice === "string") return toolChoice;
@@ -1605,6 +1830,18 @@ function normalizeAnthropicToolChoiceForChat(toolChoice) {
   if (toolChoice.type === "none") return "none";
   if (toolChoice.type === "tool" && toolChoice.name) {
     return { type: "function", function: { name: toolChoice.name } };
+  }
+  return undefined;
+}
+
+function normalizeAnthropicToolChoiceForResponses(toolChoice) {
+  if (!toolChoice) return undefined;
+  if (typeof toolChoice === "string") return toolChoice;
+  if (toolChoice.type === "auto") return "auto";
+  if (toolChoice.type === "any") return "required";
+  if (toolChoice.type === "none") return "none";
+  if (toolChoice.type === "tool" && toolChoice.name) {
+    return { type: "function", name: toolChoice.name };
   }
   return undefined;
 }
@@ -1720,12 +1957,85 @@ function buildAnthropicMessagesFromChat(messages) {
   return { messages: output, system: systemParts.join("\n\n") };
 }
 
+function buildAnthropicMessagesFromResponses(input) {
+  const messages = [];
+  const systemParts = [];
+  const items = Array.isArray(input) ? input : [input];
+  for (const item of items) {
+    if (typeof item === "string") {
+      appendAnthropicMessage(messages, "user", [{ type: "text", text: item }]);
+      continue;
+    }
+    if (!item || typeof item !== "object") continue;
+    if (item.type === "reasoning") {
+      const thinking = (Array.isArray(item.summary) ? item.summary : [])
+        .filter((part) => part?.type === "summary_text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("");
+      appendAnthropicMessage(messages, "assistant", [{
+        type: "thinking",
+        thinking,
+        ...(typeof item.encrypted_content === "string" ? { signature: item.encrypted_content } : {})
+      }]);
+      continue;
+    }
+    if (item.type === "function_call" && item.name) {
+      appendAnthropicMessage(messages, "assistant", [{
+        type: "tool_use",
+        id: item.call_id || item.id,
+        name: item.name,
+        input: parseToolArguments(item.arguments)
+      }]);
+      continue;
+    }
+    if (item.type === "function_call_output" && item.call_id) {
+      appendAnthropicMessage(messages, "user", [{
+        type: "tool_result",
+        tool_use_id: item.call_id,
+        content: coerceToText(item.output),
+        ...(item.is_error === true ? { is_error: true } : {})
+      }]);
+      continue;
+    }
+    if (item.type === "message" || item.role) {
+      const role = item.role || "user";
+      const blocks = chatContentToAnthropicBlocks(item.content);
+      if (role === "system" || role === "developer") {
+        const text = blocks
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("");
+        if (text) systemParts.push(text);
+      } else if (role === "user" || role === "assistant") {
+        appendAnthropicMessage(messages, role, blocks);
+      }
+    }
+  }
+  return { messages, system: systemParts.join("\n\n") };
+}
+
 function normalizeChatToolsForAnthropic(tools) {
   if (!Array.isArray(tools)) return undefined;
   const normalized = [];
   for (const tool of tools) {
     const fn = tool?.type === "function" ? (tool.function || tool) : null;
     if (!fn?.name) continue;
+    normalized.push({
+      name: fn.name,
+      description: fn.description,
+      input_schema: fn.parameters ?? { type: "object", properties: {} }
+    });
+  }
+  return normalized.length ? normalized : undefined;
+}
+
+function normalizeResponsesToolsForAnthropic(tools) {
+  if (!Array.isArray(tools)) return undefined;
+  const normalized = [];
+  for (const tool of tools) {
+    if (tool?.type !== "function") continue;
+    const fn = tool.function && typeof tool.function === "object" ? tool.function : tool;
+    if (!fn.name) continue;
     normalized.push({
       name: fn.name,
       description: fn.description,
@@ -1747,7 +2057,19 @@ function normalizeChatToolChoiceForAnthropic(toolChoice) {
   return undefined;
 }
 
-export function messagesToChatRequest(body, deployment) {
+function normalizeResponsesToolChoiceForAnthropic(toolChoice) {
+  if (!toolChoice) return undefined;
+  if (toolChoice === "auto") return { type: "auto" };
+  if (toolChoice === "required") return { type: "any" };
+  if (toolChoice === "none") return { type: "none" };
+  if (typeof toolChoice === "object" && toolChoice.type === "function") {
+    const name = toolChoice.function?.name || toolChoice.name;
+    return name ? { type: "tool", name } : undefined;
+  }
+  return undefined;
+}
+
+export function messagesToChatRequest(body, deployment, descriptor) {
   const out = { ...body, model: deployment };
   out.messages = buildChatMessagesFromAnthropic(body);
 
@@ -1760,6 +2082,7 @@ export function messagesToChatRequest(body, deployment) {
   else delete out.tool_choice;
 
   if (body?.stop_sequences != null) out.stop = body.stop_sequences;
+  transferReasoning(out, body, "messages", "chat/completions", descriptor);
   delete out.system;
   delete out.stop_sequences;
   delete out.thinking;
@@ -1769,7 +2092,7 @@ export function messagesToChatRequest(body, deployment) {
   return out;
 }
 
-export function chatToMessagesRequest(body, deployment) {
+export function chatToMessagesRequest(body, deployment, descriptor) {
   const converted = buildAnthropicMessagesFromChat(body?.messages);
   const out = { ...body, model: deployment, messages: converted.messages };
   const existingSystem = anthropicSystemToText(body?.system);
@@ -1787,6 +2110,9 @@ export function chatToMessagesRequest(body, deployment) {
 
   out.max_tokens = body?.max_tokens ?? body?.max_completion_tokens ?? body?.max_output_tokens ?? 4096;
   if (body?.stop != null) out.stop_sequences = body.stop;
+  if (transferReasoning(out, body, "chat/completions", "messages", descriptor)) {
+    ensureMessagesThinking(out, descriptor);
+  }
 
   delete out.max_completion_tokens;
   delete out.max_output_tokens;
@@ -1811,27 +2137,90 @@ export function chatToMessagesRequest(body, deployment) {
   return out;
 }
 
-export function messagesToResponsesRequest(body, deployment) {
-  return chatToResponsesRequest(messagesToChatRequest(body, deployment), deployment);
-}
+export function messagesToResponsesRequest(body, deployment, descriptor) {
+  const out = { ...body, model: deployment };
+  const instructions = anthropicSystemToText(body?.system);
+  if (instructions) out.instructions = instructions;
+  else delete out.instructions;
+  out.input = buildResponsesInputFromAnthropic(body?.messages);
 
-export function responsesToMessagesRequest(body, deployment) {
-  const out = chatToMessagesRequest(responsesToChatRequest(body, deployment), deployment);
-  const effort = typeof body?.reasoning?.effort === "string"
-    ? body.reasoning.effort.trim().toLowerCase()
-    : "";
-  if (effort) {
-    out.output_config = {
-      ...(out.output_config && typeof out.output_config === "object" ? out.output_config : {}),
-      effort
-    };
-    if (!out.thinking) out.thinking = { type: "adaptive" };
+  const tools = normalizeAnthropicToolsForResponses(body?.tools);
+  if (tools) out.tools = tools;
+  else delete out.tools;
+
+  const toolChoice = normalizeAnthropicToolChoiceForResponses(body?.tool_choice);
+  if (toolChoice !== undefined) out.tool_choice = toolChoice;
+  else delete out.tool_choice;
+  if (body?.tool_choice?.disable_parallel_tool_use === true) {
+    out.parallel_tool_calls = false;
   }
-  delete out.include;
+
+  if (typeof body?.max_tokens === "number") out.max_output_tokens = body.max_tokens;
+  if (body?.stop_sequences != null) out.stop = body.stop_sequences;
+  transferReasoning(out, body, "messages", "responses", descriptor);
+
+  delete out.messages;
+  delete out.system;
+  delete out.max_tokens;
+  delete out.stop_sequences;
+  delete out.thinking;
+  delete out.output_config;
   return out;
 }
 
-export function chatToResponsesRequest(body, deployment) {
+export function responsesToMessagesRequest(body, deployment, descriptor) {
+  const converted = buildAnthropicMessagesFromResponses(body?.input);
+  const out = { ...body, model: deployment, messages: converted.messages };
+  const instructions = coerceToText(body?.instructions);
+  const system = [instructions, converted.system].filter(Boolean).join("\n\n");
+  if (system) out.system = system;
+  else delete out.system;
+
+  const tools = normalizeResponsesToolsForAnthropic(body?.tools);
+  if (tools) out.tools = tools;
+  else delete out.tools;
+
+  const toolChoice = normalizeResponsesToolChoiceForAnthropic(body?.tool_choice);
+  if (toolChoice !== undefined) out.tool_choice = toolChoice;
+  else delete out.tool_choice;
+  if (body?.parallel_tool_calls === false && out.tool_choice && typeof out.tool_choice === "object") {
+    out.tool_choice.disable_parallel_tool_use = true;
+  }
+
+  out.max_tokens = body?.max_output_tokens ?? body?.max_tokens ?? 4096;
+  if (body?.stop != null) out.stop_sequences = body.stop;
+  const effort = transferReasoning(out, body, "responses", "messages", descriptor);
+  if (effort) ensureMessagesThinking(out, descriptor);
+  if (
+    Array.isArray(body?.include)
+    && body.include.includes("reasoning.encrypted_content")
+  ) {
+    ensureMessagesThinking(out, descriptor);
+  }
+
+  delete out.input;
+  delete out.instructions;
+  delete out.max_output_tokens;
+  delete out.stop;
+  delete out.text;
+  delete out.reasoning;
+  delete out.include;
+  delete out.parallel_tool_calls;
+  delete out.stream_options;
+  delete out.background;
+  delete out.context_management;
+  delete out.conversation;
+  delete out.max_tool_calls;
+  delete out.previous_response_id;
+  delete out.prompt;
+  delete out.prompt_cache_key;
+  delete out.prompt_cache_retention;
+  delete out.store;
+  delete out.truncation;
+  return out;
+}
+
+export function chatToResponsesRequest(body, deployment, descriptor) {
   const messages = body?.messages;
   const text = extractLastUserTextFromMessages(messages);
   const instructionText = extractInstructionTextFromMessages(messages);
@@ -1882,16 +2271,7 @@ export function chatToResponsesRequest(body, deployment) {
   delete out.max_tokens;
   delete out.max_completion_tokens;
 
-  if (typeof out.reasoning_effort === "string") {
-    const effort = out.reasoning_effort.toLowerCase();
-    const allowedEfforts = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
-    if (allowedEfforts.has(effort)) {
-      out.reasoning = {
-        ...(out.reasoning && typeof out.reasoning === "object" ? out.reasoning : {}),
-        effort
-      };
-    }
-  }
+  transferReasoning(out, body, "chat/completions", "responses", descriptor);
   delete out.reasoning_effort;
 
   const normalizedFormat = normalizeResponseFormatForResponses(out.response_format);
@@ -1921,7 +2301,7 @@ export function chatToResponsesRequest(body, deployment) {
   return out;
 }
 
-export function responsesToChatRequest(body, deployment) {
+export function responsesToChatRequest(body, deployment, descriptor) {
   const messages = buildChatMessagesFromResponsesInput(body?.input, body?.instructions);
   const out = {
     ...body,
@@ -1952,9 +2332,7 @@ export function responsesToChatRequest(body, deployment) {
     out.max_completion_tokens = out.max_output_tokens;
   }
 
-  if (out.reasoning_effort == null && typeof out.reasoning?.effort === "string") {
-    out.reasoning_effort = out.reasoning.effort;
-  }
+  transferReasoning(out, body, "responses", "chat/completions", descriptor);
 
   delete out.input;
   delete out.instructions;
@@ -2194,25 +2572,156 @@ export function mapChatCompletionJsonToMessages(payload, modelId) {
 }
 
 export function mapMessagesJsonToResponses(payload, modelId, { includeEncryptedContent = false } = {}) {
-  const response = mapChatCompletionJsonToResponses(mapMessagesJsonToChatCompletion(payload, modelId), modelId);
-  const reasoningItems = [];
-  for (const [index, block] of (Array.isArray(payload?.content) ? payload.content : []).entries()) {
-    if (block?.type !== "thinking" && block?.type !== "redacted_thinking") continue;
-    const summaryText = block.type === "thinking" && typeof block.thinking === "string" ? block.thinking : "";
-    const encryptedContent = block.type === "thinking" ? block.signature : block.data;
-    reasoningItems.push({
-      id: `rs_${payload?.id || "message"}_${index}`,
-      type: "reasoning",
-      summary: summaryText ? [{ type: "summary_text", text: summaryText }] : [],
-      ...(includeEncryptedContent && typeof encryptedContent === "string"
-        ? { encrypted_content: encryptedContent }
-        : {})
+  const responseId = payload?.id || `resp_${Math.floor(Date.now() / 1000)}`;
+  const output = [];
+  let messageContent = [];
+  let messageItemIndex = 0;
+  const flushMessage = () => {
+    if (!messageContent.length) return;
+    output.push({
+      id: messageItemIndex === 0 ? `msg_${responseId}` : `msg_${responseId}_${messageItemIndex}`,
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: messageContent
     });
+    messageItemIndex += 1;
+    messageContent = [];
+  };
+
+  for (const [index, block] of (Array.isArray(payload?.content) ? payload.content : []).entries()) {
+    if (block?.type === "text" && typeof block.text === "string") {
+      messageContent.push({
+        type: "output_text",
+        text: block.text,
+        annotations: Array.isArray(block.citations) ? block.citations : [],
+        logprobs: []
+      });
+      continue;
+    }
+    flushMessage();
+    if (block?.type === "tool_use" && block.name) {
+      output.push({
+        id: block.id,
+        type: "function_call",
+        status: "completed",
+        call_id: block.id,
+        name: block.name,
+        arguments: JSON.stringify(block.input ?? {})
+      });
+      continue;
+    }
+    if (block?.type === "thinking" || block?.type === "redacted_thinking") {
+      const summaryText = block.type === "thinking" && typeof block.thinking === "string" ? block.thinking : "";
+      const encryptedContent = block.type === "thinking" ? block.signature : block.data;
+      output.push({
+        id: `rs_${payload?.id || "message"}_${index}`,
+        type: "reasoning",
+        summary: summaryText ? [{ type: "summary_text", text: summaryText }] : [],
+        ...(includeEncryptedContent && typeof encryptedContent === "string"
+          ? { encrypted_content: encryptedContent }
+          : {})
+      });
+    }
   }
-  if (reasoningItems.length) response.output = [...reasoningItems, ...response.output];
-  return response;
+  flushMessage();
+
+  const inputTokens = payload?.usage
+    ? (payload.usage.input_tokens ?? 0)
+      + (payload.usage.cache_read_input_tokens ?? payload.usage.cached_tokens ?? 0)
+      + (payload.usage.cache_creation_input_tokens ?? 0)
+    : 0;
+  const outputTokens = payload?.usage?.output_tokens ?? 0;
+  const cachedTokens = payload?.usage?.cache_read_input_tokens ?? payload?.usage?.cached_tokens;
+  const incomplete = payload?.stop_reason === "max_tokens";
+  return {
+    id: responseId,
+    object: "response",
+    created_at: payload?.created_at || Math.floor(Date.now() / 1000),
+    status: incomplete ? "incomplete" : "completed",
+    error: null,
+    incomplete_details: incomplete ? { reason: "max_output_tokens" } : null,
+    instructions: null,
+    model: payload?.model || modelId,
+    output,
+    output_text: output
+      .filter((item) => item.type === "message")
+      .flatMap((item) => item.content)
+      .map((part) => part.text)
+      .join(""),
+    parallel_tool_calls: true,
+    usage: payload?.usage ? {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      total_tokens: payload.usage.total_tokens ?? inputTokens + outputTokens,
+      ...(cachedTokens != null ? { input_tokens_details: { cached_tokens: cachedTokens } } : {})
+    } : undefined
+  };
 }
 
 export function mapResponsesJsonToMessages(payload, modelId) {
-  return mapChatCompletionJsonToMessages(mapResponsesJsonToChatCompletion(payload, modelId), modelId);
+  const content = [];
+  let hasToolUse = false;
+  for (const item of Array.isArray(payload?.output) ? payload.output : []) {
+    if (item?.type === "message") {
+      for (const part of Array.isArray(item.content) ? item.content : []) {
+        if ((part?.type === "output_text" || part?.type === "text") && typeof part.text === "string") {
+          content.push({
+            type: "text",
+            text: part.text,
+            ...(Array.isArray(part.annotations) && part.annotations.length ? { citations: part.annotations } : {})
+          });
+        }
+      }
+      continue;
+    }
+    if (item?.type === "function_call" && item.name) {
+      hasToolUse = true;
+      content.push({
+        type: "tool_use",
+        id: item.call_id || item.id,
+        name: item.name,
+        input: parseToolArguments(item.arguments)
+      });
+      continue;
+    }
+    if (item?.type === "reasoning") {
+      const thinking = (Array.isArray(item.summary) ? item.summary : [])
+        .filter((part) => part?.type === "summary_text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("");
+      if (thinking) {
+        content.push({
+          type: "thinking",
+          thinking,
+          ...(typeof item.encrypted_content === "string" ? { signature: item.encrypted_content } : {})
+        });
+      } else if (typeof item.encrypted_content === "string") {
+        content.push({ type: "redacted_thinking", data: item.encrypted_content });
+      }
+    }
+  }
+
+  const inputTokens = payload?.usage?.input_tokens ?? payload?.usage?.prompt_tokens ?? 0;
+  const outputTokens = payload?.usage?.output_tokens ?? payload?.usage?.completion_tokens ?? 0;
+  const cachedTokens = payload?.usage?.input_tokens_details?.cached_tokens ?? payload?.usage?.cached_tokens;
+  const incompleteReason = payload?.incomplete_details?.reason;
+  return {
+    id: payload?.id || `msg_${Math.floor(Date.now() / 1000)}`,
+    type: "message",
+    role: "assistant",
+    model: payload?.model || modelId,
+    content,
+    stop_reason: payload?.status === "incomplete" && incompleteReason === "max_output_tokens"
+      ? "max_tokens"
+      : hasToolUse
+        ? "tool_use"
+        : "end_turn",
+    stop_sequence: payload?.stop_sequence ?? null,
+    usage: payload?.usage ? {
+      input_tokens: Math.max(0, inputTokens - (cachedTokens ?? 0)),
+      output_tokens: outputTokens,
+      ...(cachedTokens != null ? { cache_read_input_tokens: cachedTokens } : {})
+    } : undefined
+  };
 }

@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { getConfig, getPersistedConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo } from "./config.js";
+import { getConfig, getPersistedConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo, isDistributionFeatureEnabled } from "./config.js";
 import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
@@ -14,6 +14,7 @@ import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus,
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, setLogConfig } from "./logs.js";
 import { validateConfiguredModels } from "./model-validation.js";
+import { createModelCatalogSyncTransaction, getDescriptorProtocolProfile, resolveModelDescriptor } from "./model-catalog.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
@@ -216,8 +217,9 @@ function modelUsesNativeProtocol(config, model, routeKey) {
   if (!upstream || String(model?.targetModel || model?.id || "").trim().toLowerCase() === "model-router") {
     return false;
   }
+  const descriptor = resolveModelDescriptor(model?.id);
   const override = resolveModelRoute(model, routeKey);
-  const effectiveRouteKey = resolveEffectiveRouteKey(routeKey, model, upstream, override);
+  const effectiveRouteKey = resolveEffectiveRouteKey(routeKey, model, upstream, override, descriptor);
   const backendRouteKey = override
     ? inferBackendRouteKey(routeKey, override)
     : normalizeBackendRouteKey(effectiveRouteKey);
@@ -225,8 +227,8 @@ function modelUsesNativeProtocol(config, model, routeKey) {
   const deployment = String(model?.targetModel || model?.id || "").trim();
   try {
     const targetUrl = override?.type === "path"
-      ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
-      : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
+      ? buildDirectUpstreamUrl(upstream, override.value, deployment, model, descriptor)
+      : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model, descriptor);
     return reconcileBackendRouteKey(backendRouteKey, targetUrl) === routeKey;
   } catch {
     return false;
@@ -253,7 +255,6 @@ function buildAnthropicModelList(config, consumer, { claudeCodeOnly = false } = 
   };
 }
 
-const CODEX_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const CODEX_REASONING_DESCRIPTIONS = {
   none: "No reasoning",
   minimal: "Minimal reasoning",
@@ -278,40 +279,45 @@ function modelUsesNativeResponses(config, model) {
     return false;
   }
   const capabilities = normalizeCapabilitySet(model);
-  const modelId = String(model?.id || "").trim().toLowerCase();
   if (
     capabilities.has("image-generation")
     || capabilities.has("image-editing")
-    || modelId.startsWith("gpt-image-")
-    || modelId.startsWith("flux-")
   ) {
     return false;
   }
   return modelUsesNativeProtocol(config, model, "responses");
 }
 
-function getCodexReasoningEfforts(model, capabilities) {
-  const configured = Array.isArray(model?.codex?.supportedReasoningEfforts)
-    ? model.codex.supportedReasoningEfforts
-      .map((value) => String(value || "").trim().toLowerCase())
-      .filter((value) => CODEX_REASONING_EFFORTS.has(value))
+function normalizeReasoningLevels(values) {
+  return Array.isArray(values)
+    ? [...new Set(values.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean))]
     : [];
-  if (configured.length) return [...new Set(configured)];
-  const modelId = String(model?.id || "").trim().toLowerCase();
-  const supportsReasoning = capabilities.has("reasoning") || /^gpt-(?:[5-9]|\d{2,})(?:$|[.-])/.test(modelId) || /^o\d(?:$|[.-])/.test(modelId);
-  if (!supportsReasoning) return [];
-  return /^gpt-5\.6(?:$|[.-])/.test(modelId)
-    ? ["low", "medium", "high", "xhigh", "max"]
-    : ["low", "medium", "high"];
+}
+
+function getCodexReasoningProfile(model, capabilities) {
+  const configured = Array.isArray(model?.codex?.supportedReasoningEfforts)
+    ? normalizeReasoningLevels(model.codex.supportedReasoningEfforts)
+    : [];
+  const descriptor = resolveModelDescriptor(model?.id);
+  const catalogReasoning = getDescriptorProtocolProfile(descriptor, "responses")?.reasoning;
+  const catalogLevels = normalizeReasoningLevels(catalogReasoning?.levels);
+  const levels = configured.length
+    ? configured
+    : catalogLevels.length
+      ? catalogLevels
+      : capabilities.has("reasoning")
+        ? ["low", "medium", "high"]
+        : [];
+  const configuredDefault = String(model?.codex?.defaultReasoningEffort || "").trim().toLowerCase();
+  const catalogDefault = String(catalogReasoning?.default || "").trim().toLowerCase();
+  const defaultLevel = [configuredDefault, catalogDefault, "medium", levels[0]]
+    .find((value) => value && levels.includes(value)) || "medium";
+  return { levels, defaultLevel };
 }
 
 function buildCodexModelInfo(model, index) {
   const capabilities = normalizeCapabilitySet(model);
-  const reasoningEfforts = getCodexReasoningEfforts(model, capabilities);
-  const configuredDefaultEffort = String(model?.codex?.defaultReasoningEffort || "").trim().toLowerCase();
-  const defaultReasoningEffort = reasoningEfforts.includes(configuredDefaultEffort)
-    ? configuredDefaultEffort
-    : (reasoningEfforts.includes("medium") ? "medium" : reasoningEfforts[0] || "medium");
+  const reasoningProfile = getCodexReasoningProfile(model, capabilities);
   const configuredContextWindow = Number(model?.codex?.contextWindow ?? model?.contextWindow);
   const contextWindow = Number.isInteger(configuredContextWindow) && configuredContextWindow > 0
     ? configuredContextWindow
@@ -324,10 +330,10 @@ function buildCodexModelInfo(model, index) {
     slug: model.id,
     display_name: model.displayName || model.id,
     description: model?.codex?.description || `${model.displayName || model.id} via AOAI Proxy`,
-    default_reasoning_level: defaultReasoningEffort,
-    supported_reasoning_levels: reasoningEfforts.map((effort) => ({
+    default_reasoning_level: reasoningProfile.defaultLevel,
+    supported_reasoning_levels: reasoningProfile.levels.map((effort) => ({
       effort,
-      description: CODEX_REASONING_DESCRIPTIONS[effort]
+      description: CODEX_REASONING_DESCRIPTIONS[effort] || `${effort} reasoning`
     })),
     shell_type: "shell_command",
     visibility: "list",
@@ -594,8 +600,20 @@ app.get("/healthz", async () => ({ status: "ok" }));
 
 app.get("/version", async (_req, reply) => {
   reply.header("Cache-Control", "no-store");
+  reply.header("X-AOAI-Proxy-Profile", getConfig().distribution.profile);
   return getBuildInfo();
 });
+
+function rejectDisabledDistributionFeature(reply, feature) {
+  const config = getConfig();
+  if (isDistributionFeatureEnabled(config, feature)) return null;
+  return reply.code(404).send({
+    error: "DistributionFeatureDisabled",
+    code: "DISTRIBUTION_FEATURE_DISABLED",
+    feature,
+    profile: config.distribution.profile
+  });
+}
 
 app.get("/v1/models", async (req) => {
   const config = getConfig();
@@ -745,12 +763,16 @@ app.post("/admin/api/runtime/sync", async (req, reply) => {
   }
 });
 
-app.get("/admin/api/database/config", async () => {
+app.get("/admin/api/database/config", async (_req, reply) => {
+  const rejection = rejectDisabledDistributionFeature(reply, "databaseAdmin");
+  if (rejection) return rejection;
   const config = getConfig();
   return { ok: true, config: getDatabaseConnectionDefaults(config) };
 });
 
 app.post("/admin/api/database/test", async (req, reply) => {
+  const rejection = rejectDisabledDistributionFeature(reply, "databaseAdmin");
+  if (rejection) return rejection;
   const config = getConfig();
   const body = req.body && typeof req.body === "object" ? req.body : {};
   try {
@@ -767,6 +789,8 @@ app.post("/admin/api/database/test", async (req, reply) => {
 });
 
 app.post("/admin/api/log-analytics/initialize", async (req, reply) => {
+  const rejection = rejectDisabledDistributionFeature(reply, "logAnalytics");
+  if (rejection) return rejection;
   if (logAnalyticsInitializationPromise) {
     return reply.code(409).send({
       ok: false,
@@ -843,7 +867,10 @@ app.post("/admin/api/pricing-library/sync", async (req, reply) => {
       path: typeof body.path === "string" ? body.path : undefined,
       ref: typeof body.ref === "string" ? body.ref : undefined
     };
-    const result = await syncPricingDefinitionsFromGitHub(overrides);
+    const result = await syncPricingDefinitionsFromGitHub(
+      overrides,
+      createModelCatalogSyncTransaction(getConfig)
+    );
     app.log.info({
       source: "admin",
       event: "admin.pricing_library_synced",

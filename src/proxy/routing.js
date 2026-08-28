@@ -54,26 +54,16 @@ export function findModel(config, modelId) {
   return getModelIndex(config).get(modelId) || null;
 }
 
-function isGptImageModel(model, definition = findPricingDefinitionForModel(model)) {
-  const candidates = [
-    definition?.id,
-    model?.pricingRef,
-    model?.targetModel,
-    model?.id
-  ];
-  return candidates.some((value) => normalizeLower(value).startsWith("gpt-image-"));
+function resolveModelDefinition(model, descriptor) {
+  return descriptor?.definition || findPricingDefinitionForModel(model);
 }
 
-function isBlackForestLabsImageModel(model, definition = findPricingDefinitionForModel(model)) {
-  return normalizeLower(definition?.provider) === "black-forest-labs";
-}
-
-function resolveRouteDeploymentSegment(routeKey, deployment, model = null) {
+function resolveRouteDeploymentSegment(routeKey, deployment, model = null, descriptor = null) {
   if (routeKey !== "blackforest-image") {
     return deployment;
   }
 
-  const definition = findPricingDefinitionForModel(model);
+  const definition = resolveModelDefinition(model, descriptor);
   const providerSlug = normalizeString(definition?.id)
     || normalizeString(model?.pricingRef)
     || normalizeString(model?.id)
@@ -96,11 +86,11 @@ export function isPublicRouteEnabled(config, routeKey) {
   return routeKey !== "images/generations" || config?.media?.generation?.enabled !== false;
 }
 
-export function resolveEffectiveRouteKey(routeKey, model, upstream, override = null) {
+export function resolveEffectiveRouteKey(routeKey, model, upstream, override = null, descriptor = null) {
   const requestedRouteKey = override?.type === "routeKey" ? override.value : routeKey;
   if (requestedRouteKey !== "images/generations") {
     if (override || !TEXT_ROUTE_KEYS.has(requestedRouteKey)) return requestedRouteKey;
-    const definition = findPricingDefinitionForModel(model);
+    const definition = resolveModelDefinition(model, descriptor);
     const hostingMode = normalizeLower(model?.hostingMode);
     const configuredInterfaces = hostingMode && Array.isArray(definition?.interfacesByHostingMode?.[hostingMode])
       ? definition.interfacesByHostingMode[hostingMode]
@@ -109,17 +99,31 @@ export function resolveEffectiveRouteKey(routeKey, model, upstream, override = n
       ? configuredInterfaces.filter((item) => TEXT_ROUTE_KEYS.has(item))
       : [];
     if (interfaces.includes(requestedRouteKey)) return requestedRouteKey;
+    const defaultInterface = normalizeLower(descriptor?.defaultInterface || definition?.defaultInterface);
+    if (interfaces.includes(defaultInterface)) return defaultInterface;
     if (interfaces.length === 1) return interfaces[0];
     if (interfaces.includes("responses")) return "responses";
     if (interfaces.includes("messages")) return "messages";
     return requestedRouteKey;
   }
 
-  const definition = findPricingDefinitionForModel(model);
-  if (isBlackForestLabsImageModel(model, definition)) {
+  const definition = resolveModelDefinition(model, descriptor);
+  const requestTransport = normalizeLower(
+    descriptor?.protocolProfiles?.["images/generations"]?.request?.transport
+      || definition?.protocolProfiles?.["images/generations"]?.request?.transport
+  );
+  const catalogRoute = normalizeLower(
+    definition?.proxyTemplate?.routes?.["images/generations"]
+      || definition?.proxyTemplate?.routes?.["*"]
+  );
+  if (
+    requestTransport === "blackforest-provider"
+    || catalogRoute === "blackforest-image"
+    || normalizeLower(descriptor?.provider || definition?.provider) === "black-forest-labs"
+  ) {
     return "blackforest-image";
   }
-  if (isGptImageModel(model, definition)) {
+  if (requestTransport === "azure-deployment" || catalogRoute === "openai-image") {
     return "openai-image";
   }
   return requestedRouteKey;
@@ -147,7 +151,7 @@ function rewriteAzureSiblingBaseUrl(baseUrl, useServicesHost) {
   }
 }
 
-function shouldUseFoundryServicesHost({ upstream, routeKey = "", routePath = "", model = null }) {
+function shouldUseFoundryServicesHost({ upstream, routeKey = "", routePath = "", model = null, descriptor = null }) {
   const explicitHostType = normalizeLower(upstream?.hostType);
   if (explicitHostType === "services") return true;
   if (explicitHostType === "openai") return false;
@@ -160,7 +164,7 @@ function shouldUseFoundryServicesHost({ upstream, routeKey = "", routePath = "",
     return true;
   }
 
-  const definition = findPricingDefinitionForModel(model);
+  const definition = resolveModelDefinition(model, descriptor);
   const definitionProvider = normalizeLower(definition?.provider);
   return definitionProvider === "black-forest-labs";
 }
@@ -171,7 +175,8 @@ export function resolveUpstreamBaseUrl(upstream, options = {}) {
     upstream,
     routeKey: options.routeKey,
     routePath: options.routePath,
-    model: options.model
+    model: options.model,
+    descriptor: options.descriptor
   });
   if (baseUrl && !isPlaceholderBaseUrl(baseUrl)) {
     return rewriteAzureSiblingBaseUrl(baseUrl, useServicesHost);
@@ -214,8 +219,8 @@ function resolveRouteTemplate(upstream, routeKey) {
   return route;
 }
 
-export function buildUpstreamUrl(upstream, routeKey, deployment, model = null) {
-  const definition = findPricingDefinitionForModel(model);
+export function buildUpstreamUrl(upstream, routeKey, deployment, model = null, descriptor = null) {
+  const definition = resolveModelDefinition(model, descriptor);
   const route = resolveRouteTemplate(upstream, routeKey)
     || (routeKey === "messages" && normalizeLower(definition?.provider) === "anthropic"
       ? "/anthropic/v1/messages"
@@ -223,27 +228,27 @@ export function buildUpstreamUrl(upstream, routeKey, deployment, model = null) {
   if (!route) {
     throw new Error(`No route configured for ${routeKey}`);
   }
-  const routeDeployment = resolveRouteDeploymentSegment(routeKey, deployment, model);
+  const routeDeployment = resolveRouteDeploymentSegment(routeKey, deployment, model, descriptor);
   const renderedRoute = typeof route === "string" && routeDeployment
     ? route.replaceAll("{deployment}", encodeURIComponent(routeDeployment))
     : route;
-  return new URL(renderedRoute, resolveUpstreamBaseUrl(upstream, { routeKey, routePath: renderedRoute, model })).toString();
+  return new URL(renderedRoute, resolveUpstreamBaseUrl(upstream, { routeKey, routePath: renderedRoute, model, descriptor })).toString();
 }
 
-export function buildDirectUpstreamUrl(upstream, routePath, deployment, model = null) {
+export function buildDirectUpstreamUrl(upstream, routePath, deployment, model = null, descriptor = null) {
   if (!routePath || typeof routePath !== "string") {
     throw new Error("routePath must be a string");
   }
   const renderedRoute = deployment
     ? routePath.replaceAll("{deployment}", encodeURIComponent(deployment))
     : routePath;
-  return new URL(renderedRoute, resolveUpstreamBaseUrl(upstream, { routePath: renderedRoute, model })).toString();
+  return new URL(renderedRoute, resolveUpstreamBaseUrl(upstream, { routePath: renderedRoute, model, descriptor })).toString();
 }
 
-export function buildMessagesCountTokensUrl(upstream, messagesUrl, deployment, model = null) {
+export function buildMessagesCountTokensUrl(upstream, messagesUrl, deployment, model = null, descriptor = null) {
   const configuredRoute = resolveRouteTemplate(upstream, "messages/count_tokens");
   if (configuredRoute) {
-    const configuredUrl = buildUpstreamUrl(upstream, "messages/count_tokens", deployment, model);
+    const configuredUrl = buildUpstreamUrl(upstream, "messages/count_tokens", deployment, model, descriptor);
     const parsedConfiguredUrl = new URL(configuredUrl);
     if (!parsedConfiguredUrl.pathname.replace(/\/+$/, "").endsWith("/messages/count_tokens")) {
       throw new Error("messages/count_tokens route must end with /messages/count_tokens");
@@ -260,10 +265,10 @@ export function buildMessagesCountTokensUrl(upstream, messagesUrl, deployment, m
   return parsedMessagesUrl.toString();
 }
 
-export function buildResponsesCompactUrl(upstream, responsesUrl, deployment, model = null) {
+export function buildResponsesCompactUrl(upstream, responsesUrl, deployment, model = null, descriptor = null) {
   const configuredRoute = resolveRouteTemplate(upstream, "responses/compact");
   if (configuredRoute) {
-    const configuredUrl = buildUpstreamUrl(upstream, "responses/compact", deployment, model);
+    const configuredUrl = buildUpstreamUrl(upstream, "responses/compact", deployment, model, descriptor);
     const parsedConfiguredUrl = new URL(configuredUrl);
     if (!parsedConfiguredUrl.pathname.replace(/\/+$/, "").endsWith("/responses/compact")) {
       throw new Error("responses/compact route must end with /responses/compact");

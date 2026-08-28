@@ -15,8 +15,25 @@
     "text"
   ],
   "capabilities": [
-    "reasoning"
+    "reasoning",
+    "function-calling",
+    "json-output"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort"
+      },
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": [
+          "enabled",
+          "disabled"
+        ],
+        "default": "enabled"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -40,14 +57,18 @@
     "displayName": "GLM 5.2",
     "targetModel": "GLM-5.2",
     "capabilities": [
-      "reasoning"
+      "reasoning",
+      "function-calling",
+      "json-output"
     ],
     "pricingRef": "GLM-5.2"
   },
   "sources": {
+    "capabilities": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
-    "Azure Retail Prices API 的 Foundry Models 计量 FW GLM 5.2 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00015、0.00154、0.00484 USD 每 1K tokens，自 2026-07-01 生效。"
+    "Azure Retail Prices API 的 Foundry Models 计量 FW GLM 5.2 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00015、0.00154、0.00484 USD 每 1K tokens，自 2026-07-01 生效。",
+    "智谱官方文档声明 GLM-5.2 支持思考模式、Function Calling、结构化输出和 reasoning_effort；thinking 默认开启，可通过 thinking.type 在 enabled 与 disabled 间切换。"
   ]
 }

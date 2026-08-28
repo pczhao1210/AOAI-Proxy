@@ -20,6 +20,19 @@
     "image-generation",
     "image-editing"
   ],
+  "protocolProfiles": {
+    "images/generations": {
+      "request": {
+        "transport": "blackforest-provider",
+        "dropParameters": ["size", "background", "input_fidelity", "moderation", "output_compression", "partial_images", "response_format", "stream", "style", "user"],
+        "sizeExpansion": {
+          "source": "size",
+          "width": "width",
+          "height": "height"
+        }
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "megapixels",

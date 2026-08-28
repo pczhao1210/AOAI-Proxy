@@ -28,6 +28,16 @@
 补充：标准的原始模板 Deploy to Azure 流程不会自动使用 `createUiDefinition.json`。如果需要 Portal 中更友好的资源选择界面，需要使用 Azure Managed Application 打包与发布流程。
 补充：当前部署模板已经区分 `new` 和 `existing` 资源路径，在受 Azure Policy 限制的环境里可以复用预先创建好的 Azure Files 或 PostgreSQL 资源，而不是强制新建。
 
+## Distribution Profile
+
+`nextgen` 和 `minimum` 是同一套源码、同一个容器镜像上的运行范围 Profile，通过 `distribution.profile` 或 `AOAI_PROXY_PROFILE` 选择，默认值为 `nextgen`。
+
+- 两个 Profile 都保留 Chat Completions、Responses、Messages、完整 $3 \times 3$ 直通/转换矩阵、协议原生辅助端点、图片、路由、认证、SSE、重试和取消。
+- 两个 Profile 都包含随镜像发布的 Model Catalog、内存查询和远程原子更新，因此维护模型事实不需要重新构建镜像。
+- `minimum` 关闭预算、PostgreSQL runtime event store、Log Analytics 输出与初始化及数据库诊断 API；Model Catalog 和基础内存管理能力仍可用。
+- Profile 上限只作用于运行时副本。nextgen 的持久化设置会继续保留，从 `minimum` 切回后可恢复。
+- `/admin/api/runtime` 返回当前 Profile 与 capability manifest；`/version` 通过 `X-AOAI-Proxy-Profile` 响应头暴露 Profile，不改变 JSON 契约。
+
 ## 持久化方式
 
 当前支持在部署时选择持久化方式，且 Azure 模板默认使用 `database+azureFile`。
@@ -167,6 +177,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 - `CADDY_BIN`：可选的 Caddy 可执行文件路径覆盖
 - `SHUTDOWN_TIMEOUT_MS`：可选的优雅关闭时限覆盖；未设置时使用 `server.gracefulShutdownMs`
 - `ADMIN_LOG_BUFFER_SIZE`：管理页内存日志环形缓冲大小，默认值和硬上限均为 `100`
+- `AOAI_PROXY_PROFILE`：运行范围 Profile，可选 `nextgen`（默认）或 `minimum`
 - `AOAI_PROXY_ADMIN_USERNAME`：管理端 Basic Auth 用户名
 - `AOAI_PROXY_ADMIN_PASSWORD`：管理端 Basic Auth 密码；设置后默认启用管理认证
 - `AOAI_PROXY_API_KEY`：覆盖默认客户端 API Key
@@ -339,7 +350,7 @@ az deployment group create \
 模板会创建或配置：
 
 - 启用系统分配托管身份的 Container Group
-- `persistenceMode=database` 或 `persistenceMode=database+azureFile` 时的 Azure Database for PostgreSQL Flexible Server 和数据库子资源
+- `distributionProfile=nextgen` 且 `persistenceMode=database` 或 `persistenceMode=database+azureFile` 时的 Azure Database for PostgreSQL Flexible Server 和数据库子资源
 - 仅当 `allowAzureServicesToDatabase=true` 时创建 PostgreSQL `0.0.0.0` Azure 服务访问防火墙规则
 - 仅在 `persistenceMode=azureFile` 或 `persistenceMode=database+azureFile` 时创建 Storage Account
 - `persistenceMode=azureFile` 或 `persistenceMode=database+azureFile` 时的 Azure Files 共享
@@ -347,6 +358,8 @@ az deployment group create \
 - 安全注入管理密码与客户端 API Key；仓库参数样例刻意不保存这两个秘密值
 - 自动配置 Caddy HTTPS，公网仅开放 `443`；Node 的 `3000` 仅用于容器内健康探针
 - 面向目标 Azure OpenAI 资源的 `Cognitive Services OpenAI User` 角色授权
+
+`distributionProfile=minimum` 会把部署的有效持久化模式固定为 `azureFile`，因此使用同一镜像但不创建 PostgreSQL 资源；`distributionProfile=nextgen` 保留所选 `persistenceMode`。
 
 目标 Azure OpenAI / Foundry 资源可以位于同一订阅下的不同资源组；不在当前部署资源组时，设置 `cognitiveServicesAccountResourceGroup` 即可。
 如果 `storageAccountName` 为空，模板会在存储模式下自动生成一个合法名称。
@@ -438,14 +451,14 @@ az managedapp create \
 
 ### 现代模型兼容处理
 
-针对 `gpt-5` 及更新模型，以及 `o*` 推理模型，代理现在会在转发到 Foundry 前做一小组高频兼容处理：
+针对 Model Catalog 声明了 `reasoning` capability 的模型，以及显式携带协议推理字段的请求，代理会在转发到 Foundry 前做一小组高频兼容处理：
 
-- 在 `chat/completions` 上把 `max_tokens` 自动升级为 `max_completion_tokens`
+- 在推理型 `chat/completions` 请求上把 `max_tokens` 自动升级为 `max_completion_tokens`
 - 当客户端只传 `top_logprobs` 而未传 `logprobs` 时，自动补 `logprobs: true`
-- `reasoning_effort` 和 `reasoning.effort` 只接受 `low`、`medium`、`high`；如果传入常见的 `xhigh`，会自动降级为 `high`
+- `reasoning_effort` 和 `reasoning.effort` 会规范化为小写；`xhigh` 到 `max` 等模型特定别名来自 Model Catalog，未知档位默认继续交给真实上游判断
 - `serviceTier` 会规范化为 `service_tier`；`service_tier`、`verbosity`、`top_k` 默认保留，不再根据模型名猜测是否支持
 - 如果某个 provider 会拒绝可选字段，可在 `upstreams[].requestPolicy.blockedParams` 中列出；`dropUnsupportedParams: true` 表示删除，否则会明确返回请求错误
-- 如果请求里使用了 `web_search_preview` 相关 tools，代理会直接返回 `400`，因为 Azure Foundry 当前不支持 web search tools
+- `web_search_preview` 相关 tool spelling 会规范化为 `web_search`；除非显式请求策略阻止，否则由真实上游判断是否支持
 
 代理会在兼容的原生路由上保留 `stream_options`。当 Chat 转换到 Responses 或 Messages 时，代理会消费 `stream_options.include_usage`，并在 `[DONE]` 前生成客户端要求的 Chat usage chunk；未知 stream option 按协议 shim 的有损转换策略处理。
 
@@ -469,16 +482,16 @@ az managedapp create \
 
 近似透传指 typed 语义保真，不是原始字节透传。代理仍会映射模型 ID、执行请求策略和图片处理、替换认证 header、采集 usage，并实施流超时。原生 Responses 保留 Responses item 和事件；原生 Messages 保留有序 Anthropic block 与 SSE 事件，包括 body 中的工具调用/结果和 thinking signature。
 
-跨协议转换覆盖文本、输入图片、函数工具、工具调用/结果、token 上限、停止原因、usage 与流式生命周期。Responses `reasoning.encrypted_content` 会与 Anthropic thinking signature 双向映射，包括流式续接。其他缺少安全等价表达的协议专属字段默认会被明确拒绝。
+跨协议转换覆盖文本、输入图片、函数工具、工具调用/结果、token 上限、停止原因、usage 与流式生命周期。Responses `reasoning.encrypted_content` 会与 Anthropic thinking signature 双向映射，包括流式续接。其他缺少安全等价表达的协议专属字段默认执行尽力转换并记录结构化告警；需要无损边界时可显式开启严格模式。
 
-`compatibility.protocolShim.rejectLossyRequests` 与 `rejectLossyResponses` 默认均为 `true`。只有在尽力转换优先于停止请求时才应关闭相应开关。兼容模式会写入 `proxy.protocol_shim_lossy_conversion` 结构化告警，包含转换阶段、字段路径、源/目标协议和丢失原因；响应开关同时作用于 JSON 与 SSE。
+`compatibility.protocolShim.rejectLossyRequests` 与 `rejectLossyResponses` 默认均为 `false`。兼容模式会写入 `proxy.protocol_shim_lossy_conversion` 结构化告警，包含转换阶段、字段路径、源/目标协议和丢失原因；响应开关同时作用于 JSON 与 SSE。只有明确要求无损边界时才应开启相应严格开关。
 
 ```json
 {
   "compatibility": {
     "protocolShim": {
-      "rejectLossyRequests": true,
-      "rejectLossyResponses": true
+      "rejectLossyRequests": false,
+      "rejectLossyResponses": false
     }
   }
 }
@@ -519,8 +532,8 @@ claude
 - `betaAllowlistEnabled`：只转发已审查的 beta token；默认包含细粒度工具流、交错 thinking 与上下文管理。
 - `normalizeManualThinkingToolChoice`：仅当 `thinking.type="enabled"` 为手动模式时，把强制 `any` / 指定工具改为 `auto`；adaptive thinking 不受影响。
 - `sanitizeCacheControl`：保留合法 ephemeral cache control 以及 Foundry 支持的 `5m` / `1h` TTL，移除不支持的字段和位置。
-- `validateThinkingByModel`：对微软文档已明确列出的 Claude 模型校验 `thinking.type`。解析顺序为 deployment 名、模型 ID、`pricingRef`；可在 `thinkingTypesByModel` 中添加 deployment 专属项覆盖标准模型 profile。完全未知的模型仍继续透传。
-- `effortLevelsByModel`：列出各 Claude 模型支持的 effort level。不支持的 level 会在调用上游前返回错误；仅当模型支持 `max` 而不支持 `xhigh` 时，才按 provider 文档中的等价关系把 `xhigh` 规范化为 `max`。
+- `validateThinkingByModel`：Model Catalog 提供 Claude thinking 类型、默认值和别名，但默认采用 passthrough；可在 `thinkingTypesByModel` 中添加 deployment 专属严格列表。完全未知的模型继续透传。
+- `effortLevelsByModel`：这是管理员显式严格 override。未配置时使用 Model Catalog 做归一化但不本地拒绝；配置后，不支持的 level 会在调用上游前返回错误。
 
 这些设置只控制请求兼容性，不选择 wire protocol。需要回滚原生 Messages 时，应修改模型 route override，而不是关闭全部兼容策略。
 

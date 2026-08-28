@@ -409,7 +409,7 @@ test("dual-protocol GPT models preserve the requested native protocol", () => {
   assert.equal(resolveEffectiveRouteKey("responses", model, upstream), "responses");
 });
 
-test("pricing protocol metadata distinguishes GPT, Claude, and DeepSeek interfaces", () => {
+test("pricing protocol metadata distinguishes GPT, Claude, DeepSeek, and Grok interfaces", () => {
   for (const modelId of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
     const definition = getPricingDefinition(modelId);
     assert.deepEqual(definition?.interfaces, ["chat/completions", "responses"]);
@@ -432,12 +432,18 @@ test("pricing protocol metadata distinguishes GPT, Claude, and DeepSeek interfac
     assert.deepEqual(definition?.interfaces, ["chat/completions"]);
   }
 
+  const grok43 = getPricingDefinition("grok-4.3");
+  assert.deepEqual(grok43?.interfaces, ["chat/completions", "responses"]);
+  assert.equal(grok43?.pricingCatalogEntry, null);
+  assert.equal(grok43?.pricing?.tiers?.[1]?.promptTokensAtLeast, 200000);
+  assert.equal(grok43?.pricing?.tiers?.[1]?.inputPer1mTokens, 2.5);
+
   const grok46 = getPricingDefinition("grok-4.6");
-  assert.deepEqual(grok46?.interfaces, ["chat/completions"]);
+  assert.deepEqual(grok46?.interfaces, ["chat/completions", "responses"]);
   assert.deepEqual(grok46?.inputModalities, ["text", "image"]);
-  assert.equal(grok46?.pricingCatalogEntry?.inputPer1kTokens, 0.002);
-  assert.equal(grok46?.pricingCatalogEntry?.cachedInputPer1kTokens, 0.0005);
-  assert.equal(grok46?.pricingCatalogEntry?.outputPer1kTokens, 0.006);
+  assert.equal(grok46?.pricingCatalogEntry, null);
+  assert.equal(grok46?.pricing?.tiers?.[1]?.promptTokensAtLeast, 200000);
+  assert.equal(grok46?.pricing?.tiers?.[1]?.inputPer1mTokens, 4);
 });
 
 test("Anthropic token count routes are explicit or safely derived from Messages", () => {
@@ -780,27 +786,10 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     },
     {
       sourceProtocol: "messages",
-      targetProtocol: "responses",
-      payload: { top_k: 40, messages: [{ role: "user", content: "hello" }] },
-      path: "top_k",
-      type: "top_k"
-    },
-    {
-      sourceProtocol: "messages",
       targetProtocol: "chat/completions",
       payload: { metadata: { user_id: "user_1" }, messages: [{ role: "user", content: "hello" }] },
       path: "metadata",
       type: "metadata"
-    },
-    {
-      sourceProtocol: "messages",
-      targetProtocol: "responses",
-      payload: {
-        tool_choice: { type: "auto", disable_parallel_tool_use: true },
-        messages: [{ role: "user", content: "hello" }]
-      },
-      path: "tool_choice.disable_parallel_tool_use",
-      type: "disable_parallel_tool_use"
     },
     {
       sourceProtocol: "chat/completions",
@@ -905,7 +894,13 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
       phase: "response",
       sourceProtocol: "responses",
       targetProtocol: "messages",
-      payload: { output: [{ type: "reasoning", id: "rs_1", encrypted_content: "opaque", summary: [] }] },
+      payload: {
+        output: [{
+          type: "reasoning",
+          id: "rs_1",
+          summary: [{ type: "summary_text", text: "unsigned" }]
+        }]
+      },
       path: "output[0]",
       type: "reasoning"
     },
@@ -1217,6 +1212,57 @@ test("Messages cross-protocol requests preserve text, images, and tool history",
   assert.equal(responses.input.find((item) => item.type === "function_call_output")?.output, "found");
   assert.equal(responses.tools[0].name, "lookup");
 
+  const reasoningResponses = messagesToResponsesRequest({
+    model: "claude",
+    messages: [{
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "checked", signature: "signed-state" },
+        { type: "redacted_thinking", data: "redacted-state" }
+      ]
+    }],
+    output_config: { effort: "high" },
+    stop_sequences: ["STOP"],
+    top_k: 12,
+    metadata: { user_id: "user-1" },
+    tool_choice: { type: "auto", disable_parallel_tool_use: true }
+  }, "responses-deployment");
+  assert.deepEqual(reasoningResponses.input, [
+    {
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: "checked" }],
+      encrypted_content: "signed-state"
+    },
+    {
+      type: "reasoning",
+      summary: [],
+      encrypted_content: "redacted-state"
+    }
+  ]);
+  assert.deepEqual(reasoningResponses.reasoning, { effort: "high" });
+  assert.deepEqual(reasoningResponses.stop, ["STOP"]);
+  assert.equal(reasoningResponses.top_k, 12);
+  assert.deepEqual(reasoningResponses.metadata, { user_id: "user-1" });
+  assert.equal(reasoningResponses.tool_choice, "auto");
+  assert.equal(reasoningResponses.parallel_tool_calls, false);
+  assert.equal("output_config" in reasoningResponses, false);
+  assert.equal("stop_sequences" in reasoningResponses, false);
+
+  assert.equal(getProtocolShimCompatibilityIssue({
+    messages: [{
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "checked", signature: "signed-state" }]
+    }],
+    output_config: { effort: "high" },
+    top_k: 12,
+    metadata: { user_id: "user-1" },
+    tool_choice: { type: "auto", disable_parallel_tool_use: true }
+  }, {
+    phase: "request",
+    sourceProtocol: "messages",
+    targetProtocol: "responses"
+  }), null);
+
   const roundTripMessages = responsesToMessagesRequest(responses, "messages-deployment");
   assert.equal(roundTripMessages.model, "messages-deployment");
   assert.equal(roundTripMessages.system, "system instruction");
@@ -1315,6 +1361,54 @@ test("Messages cross-protocol JSON responses preserve tools, stop reasons, and u
   const responsesAsMessages = mapResponsesJsonToMessages(responsesPayload, "fallback");
   assert.equal(responsesAsMessages.stop_reason, "max_tokens");
   assert.equal(responsesAsMessages.content[1].name, "lookup");
+
+  const reasoningAsMessages = mapResponsesJsonToMessages({
+    id: "resp_reasoning",
+    model: "responses-model",
+    status: "completed",
+    output: [
+      {
+        id: "rs_1",
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "checked" }],
+        encrypted_content: "opaque-signature"
+      },
+      {
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "done", annotations: [], logprobs: [] }]
+      }
+    ],
+    usage: {
+      input_tokens: 12,
+      output_tokens: 4,
+      total_tokens: 16,
+      input_tokens_details: { cached_tokens: 3 }
+    }
+  }, "fallback");
+  assert.deepEqual(reasoningAsMessages.content, [
+    { type: "thinking", thinking: "checked", signature: "opaque-signature" },
+    { type: "text", text: "done" }
+  ]);
+  assert.deepEqual(reasoningAsMessages.usage, {
+    input_tokens: 9,
+    output_tokens: 4,
+    cache_read_input_tokens: 3
+  });
+  assert.equal(getProtocolShimCompatibilityIssue({
+    status: "completed",
+    output: [{
+      id: "rs_1",
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: "checked" }],
+      encrypted_content: "opaque-signature"
+    }]
+  }, {
+    phase: "response",
+    sourceProtocol: "responses",
+    targetProtocol: "messages"
+  }), null);
 });
 
 test("chunked JSON responses are bounded and timed-out bodies are cancelled", async () => {

@@ -20,6 +20,19 @@
     "vision",
     "function-calling"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default": "max"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",

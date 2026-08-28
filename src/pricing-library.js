@@ -12,17 +12,27 @@ const DEFAULT_GITHUB_REPO = "AOAI-Proxy";
 const DEFAULT_GITHUB_PATH = "pricing";
 const PRICING_SYNC_METADATA_FILE = ".pricing-sync-meta";
 const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "messages", "stream", "images", "image"]);
+const MODEL_CATALOG_PROTOCOLS = new Set([
+  "chat/completions",
+  "responses",
+  "messages",
+  "images/generations",
+  "realtime"
+]);
+const MODEL_CATALOG_PARAMETER_PATH = /^[^.\s]+(?:\.[^.\s]+)*$/;
 const DEFAULT_UPSTREAM_ROUTES = {
   "chat/completions": "/openai/v1/chat/completions",
   responses: "/openai/v1/responses",
   messages: "/anthropic/v1/messages",
   "images/generations": "/openai/v1/images/generations"
 };
+const PROXY_ROUTABLE_INTERFACES = new Set(Object.keys(DEFAULT_UPSTREAM_ROUTES));
 
 let pricingDefinitionsCache = null;
 let pricingLookupCache = null;
 let pricingCacheDir = "";
 let missingPricingDirLogged = false;
+let pricingSyncQueue = Promise.resolve();
 
 function asPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -36,6 +46,113 @@ function normalizeStringArray(value) {
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeValueMap(value) {
+  return Object.fromEntries(
+    Object.entries(asPlainObject(value))
+      .map(([key, mappedValue]) => [String(key).trim().toLowerCase(), String(mappedValue || "").trim().toLowerCase()])
+      .filter(([key, mappedValue]) => key && mappedValue)
+  );
+}
+
+function normalizeProtocolProfile(value, profileName) {
+  const profile = asPlainObject(value);
+  const reasoningSource = asPlainObject(profile.reasoning);
+  const thinkingSource = asPlainObject(profile.thinking);
+  const requestSource = asPlainObject(profile.request);
+  const reasoningLevels = [...new Set(normalizeStringArray(reasoningSource.levels).map((level) => level.toLowerCase()))];
+  const thinkingTypes = [...new Set(normalizeStringArray(thinkingSource.types).map((type) => type.toLowerCase()))];
+  const reasoningDefault = String(reasoningSource.default || "").trim().toLowerCase();
+  const thinkingDefault = String(thinkingSource.default || "").trim().toLowerCase();
+  const reasoningAliases = normalizeValueMap(reasoningSource.aliases);
+  const reasoningParameter = String(reasoningSource.parameter || "").trim();
+  const thinkingParameter = String(thinkingSource.parameter || "").trim();
+  const reasoningConfigurable = reasoningSource.configurable !== false;
+
+  if (reasoningSource.configurable != null && typeof reasoningSource.configurable !== "boolean") {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.reasoning.configurable is invalid`);
+  }
+  if (reasoningParameter && !MODEL_CATALOG_PARAMETER_PATH.test(reasoningParameter)) {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.reasoning.parameter is invalid`);
+  }
+  if (thinkingParameter && !MODEL_CATALOG_PARAMETER_PATH.test(thinkingParameter)) {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.thinking.parameter is invalid`);
+  }
+  if (reasoningDefault && reasoningLevels.length > 0 && !reasoningLevels.includes(reasoningDefault)) {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.reasoning.default must be included in levels`);
+  }
+  for (const mappedValue of Object.values(reasoningAliases)) {
+    if (reasoningLevels.length > 0 && !reasoningLevels.includes(mappedValue)) {
+      throw new Error(`Model Catalog protocolProfiles.${profileName}.reasoning alias target ${mappedValue} must be included in levels`);
+    }
+  }
+  if (thinkingDefault && thinkingTypes.length > 0 && !thinkingTypes.includes(thinkingDefault)) {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.thinking.default must be included in types`);
+  }
+  if (profile.request != null && (typeof profile.request !== "object" || Array.isArray(profile.request))) {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.request must be an object`);
+  }
+  if (requestSource.removeModel != null && typeof requestSource.removeModel !== "boolean") {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.request.removeModel must be a boolean`);
+  }
+  if (
+    requestSource.dropParameters != null
+    && (!Array.isArray(requestSource.dropParameters) || requestSource.dropParameters.some((item) => typeof item !== "string"))
+  ) {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.request.dropParameters must be an array of strings`);
+  }
+  const requestTransport = String(requestSource.transport || "any").trim().toLowerCase();
+  if (!["any", "azure-deployment", "blackforest-provider"].includes(requestTransport)) {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.request.transport is invalid`);
+  }
+  const sizeExpansionSource = asPlainObject(requestSource.sizeExpansion);
+  const sizeExpansion = {
+    source: String(sizeExpansionSource.source || "").trim(),
+    width: String(sizeExpansionSource.width || "").trim(),
+    height: String(sizeExpansionSource.height || "").trim()
+  };
+  if (requestSource.sizeExpansion != null && (!sizeExpansion.source || !sizeExpansion.width || !sizeExpansion.height)) {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.request.sizeExpansion requires source, width, and height`);
+  }
+
+  return {
+    reasoning: {
+      configurable: reasoningConfigurable,
+      parameter: reasoningConfigurable ? reasoningParameter : "",
+      levels: reasoningLevels,
+      default: reasoningDefault,
+      aliases: reasoningAliases,
+      validation: reasoningSource.validation === "strict" ? "strict" : "passthrough"
+    },
+    thinking: {
+      parameter: thinkingParameter,
+      types: thinkingTypes,
+      default: thinkingDefault,
+      validation: thinkingSource.validation === "strict" ? "strict" : "passthrough"
+    },
+    request: {
+      transport: requestTransport,
+      removeModel: requestSource.removeModel === true,
+      qualityAliases: normalizeValueMap(requestSource.qualityAliases),
+      dropParameters: [...new Set(normalizeStringArray(requestSource.dropParameters))],
+      sizeExpansion: sizeExpansion.source ? sizeExpansion : null
+    }
+  };
+}
+
+function normalizeProtocolProfiles(value) {
+  const normalizedProfiles = {};
+  for (const [profileName, profile] of Object.entries(asPlainObject(value))) {
+    const normalizedName = String(profileName).trim().toLowerCase();
+    if (!normalizedName) continue;
+    const protocolName = normalizedName.split(":").at(-1);
+    if (!MODEL_CATALOG_PROTOCOLS.has(protocolName)) {
+      throw new Error(`Model Catalog protocolProfiles.${profileName} uses unsupported protocol ${protocolName}`);
+    }
+    normalizedProfiles[normalizedName] = normalizeProtocolProfile(profile, profileName);
+  }
+  return normalizedProfiles;
 }
 
 function getResolvedDataDir() {
@@ -152,6 +269,7 @@ function rememberLookup(lookup, key, definition) {
 
 function normalizePricingDefinition(rawDefinition) {
   const definition = asPlainObject(rawDefinition);
+  const hasPricingCatalogEntry = Object.prototype.hasOwnProperty.call(definition, "pricingCatalogEntry");
   const interfacesByHostingMode = Object.fromEntries(
     Object.entries(asPlainObject(definition.interfacesByHostingMode))
       .map(([mode, interfaces]) => [String(mode).trim().toLowerCase(), normalizeStringArray(interfaces)])
@@ -164,35 +282,49 @@ function normalizePricingDefinition(rawDefinition) {
       routes: asPlainObject(definition.proxyTemplate.routes)
     }
     : null;
+  const interfaces = normalizeStringArray(definition.interfaces);
 
-  return {
+  const normalizedDefinition = {
+    schemaVersion: Number.isInteger(definition.schemaVersion) && definition.schemaVersion > 0
+      ? definition.schemaVersion
+      : 1,
     id: String(definition.id || ""),
+    aliases: normalizeStringArray(definition.aliases),
     displayName: String(definition.displayName || definition.id || ""),
     provider: String(definition.provider || "azure-openai"),
     family: String(definition.family || ""),
     modelVersion: definition.modelVersion ?? null,
     status: String(definition.status || "unknown"),
-    interfaces: normalizeStringArray(definition.interfaces),
+    interfaces,
     hostingModes: normalizeStringArray(definition.hostingModes).map((mode) => mode.toLowerCase()),
     defaultHostingMode: String(definition.defaultHostingMode || "").trim().toLowerCase(),
+    defaultInterface: String(definition.defaultInterface || "").trim().toLowerCase(),
     interfacesByHostingMode,
+    protocolProfiles: normalizeProtocolProfiles(definition.protocolProfiles),
     inputModalities: normalizeStringArray(definition.inputModalities),
     outputModalities: normalizeStringArray(definition.outputModalities),
     capabilities: normalizeStringArray(definition.capabilities),
     pricing: asPlainObject(definition.pricing),
-    pricingCatalogEntry: definition.pricingCatalogEntry && typeof definition.pricingCatalogEntry === "object"
-      ? asPlainObject(definition.pricingCatalogEntry)
-      : null,
     proxyTemplate,
     sources: asPlainObject(definition.sources),
     notes: Array.isArray(definition.notes) ? definition.notes.filter((item) => typeof item === "string") : [],
-    supportsProxyTemplate: !!(proxyTemplate?.id && proxyTemplate?.targetModel),
+    supportsProxyTemplate: !!(
+      proxyTemplate?.id
+      && proxyTemplate?.targetModel
+      && interfaces.some((protocol) => PROXY_ROUTABLE_INTERFACES.has(protocol))
+    ),
     upstreamTemplate: {
       provider: String(definition.provider || "azure-openai"),
       capabilities: normalizeStringArray(definition.capabilities),
       routes: cloneJson(DEFAULT_UPSTREAM_ROUTES)
     }
   };
+  if (hasPricingCatalogEntry) {
+    normalizedDefinition.pricingCatalogEntry = definition.pricingCatalogEntry && typeof definition.pricingCatalogEntry === "object"
+      ? asPlainObject(definition.pricingCatalogEntry)
+      : null;
+  }
+  return normalizedDefinition;
 }
 
 function parsePricingDefinition(text, fileName) {
@@ -225,9 +357,13 @@ function enrichWithBundledProtocolMetadata(definitions, activeSource) {
       ...definition,
       hostingModes: definition.hostingModes.length ? definition.hostingModes : bundled.hostingModes,
       defaultHostingMode: definition.defaultHostingMode || bundled.defaultHostingMode,
+      defaultInterface: definition.defaultInterface || bundled.defaultInterface,
       interfacesByHostingMode: Object.keys(definition.interfacesByHostingMode).length
         ? definition.interfacesByHostingMode
-        : bundled.interfacesByHostingMode
+        : bundled.interfacesByHostingMode,
+      protocolProfiles: Object.keys(definition.protocolProfiles).length
+        ? definition.protocolProfiles
+        : bundled.protocolProfiles
     };
   });
 }
@@ -368,7 +504,7 @@ async function resolveGitHubRef(syncSettings) {
   return String(repoInfo?.default_branch || "main").trim() || "main";
 }
 
-async function replacePricingDirectory(targetDir, stagingDir) {
+async function replacePricingDirectory(targetDir, stagingDir, activate) {
   const parentDir = path.dirname(targetDir);
   const backupDir = `${targetDir}.backup-${Date.now()}`;
   const targetExists = fs.existsSync(targetDir);
@@ -381,7 +517,9 @@ async function replacePricingDirectory(targetDir, stagingDir) {
 
   try {
     await fsp.rename(stagingDir, targetDir);
+    activate?.();
   } catch (error) {
+    await fsp.rm(targetDir, { recursive: true, force: true }).catch(() => {});
     if (targetExists && fs.existsSync(backupDir) && !fs.existsSync(targetDir)) {
       await fsp.rename(backupDir, targetDir).catch(() => {});
     }
@@ -389,11 +527,11 @@ async function replacePricingDirectory(targetDir, stagingDir) {
   }
 
   if (targetExists && fs.existsSync(backupDir)) {
-    await fsp.rm(backupDir, { recursive: true, force: true });
+    await fsp.rm(backupDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-export async function syncPricingDefinitionsFromGitHub(overrides = {}) {
+async function performPricingDefinitionsSync(overrides, transaction) {
   const syncSettings = getPricingSyncSettings(overrides);
   const githubRef = await resolveGitHubRef(syncSettings);
   const encodedPath = buildGitHubPathFragment(syncSettings.path);
@@ -426,14 +564,19 @@ export async function syncPricingDefinitionsFromGitHub(overrides = {}) {
   await fsp.mkdir(stagingDir, { recursive: true });
 
   try {
+    const candidateDefinitions = [];
     for (const file of files) {
       const fileName = sanitizePricingFileName(file.name);
       const downloadUrl = file.download_url || buildGitHubRawUrl(syncSettings.owner, syncSettings.repo, githubRef, syncSettings.path, fileName);
       const text = await fetchGitHubText(downloadUrl, syncSettings.token);
       const rawDefinition = JSON.parse(text);
-      parsePricingDefinition(text, fileName);
+      candidateDefinitions.push(parsePricingDefinition(text, fileName));
       await fsp.writeFile(path.join(stagingDir, fileName), `${JSON.stringify(rawDefinition, null, 2)}\n`, "utf8");
     }
+
+    const compiledDefinitions = enrichWithBundledProtocolMetadata(candidateDefinitions, "persisted")
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+    const preparedTransaction = transaction.prepare?.(compiledDefinitions);
 
     const metadata = {
       lastSyncedAt: new Date().toISOString(),
@@ -445,8 +588,12 @@ export async function syncPricingDefinitionsFromGitHub(overrides = {}) {
     };
     await fsp.writeFile(path.join(stagingDir, PRICING_SYNC_METADATA_FILE), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
 
-    await replacePricingDirectory(targetDir, stagingDir);
-    resetPricingCaches();
+    await replacePricingDirectory(targetDir, stagingDir, () => {
+      pricingDefinitionsCache = compiledDefinitions;
+      pricingLookupCache = null;
+      pricingCacheDir = targetDir;
+      transaction.commit?.(preparedTransaction);
+    });
 
     const status = getPricingLibraryStatus();
     const items = listPricingDefinitions();
@@ -464,8 +611,15 @@ export async function syncPricingDefinitionsFromGitHub(overrides = {}) {
     };
   } catch (error) {
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    resetPricingCaches();
     throw error;
   }
+}
+
+export function syncPricingDefinitionsFromGitHub(overrides = {}, transaction = {}) {
+  const syncResult = pricingSyncQueue.then(() => performPricingDefinitionsSync(overrides, transaction));
+  pricingSyncQueue = syncResult.catch(() => {});
+  return syncResult;
 }
 
 export function getPricingDefinition(definitionId) {

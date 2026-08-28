@@ -39,11 +39,7 @@
       }
     }
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.0025,
-    "outputPer1kTokens": 0.01
-  },
+  "pricingCatalogEntry": null,
   "proxyTemplate": {
     "id": "gpt-4o-audio-preview",
     "displayName": "GPT-4o Audio Preview",
@@ -58,5 +54,8 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+  },
+  "notes": [
+    "Text and audio tokens use different rates; scalar token governance is intentionally disabled until channel-aware accounting is available."
+  ]
 }

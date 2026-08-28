@@ -2,6 +2,7 @@ import { getUpstreamAuthHeaders } from "./auth.js";
 import { appendStructuredLog, buildContentLogSnapshot, resolveLogContentMode } from "./logs.js";
 import { recordError, recordRequest, recordUsage } from "./stats.js";
 import { recordRuntimeError, recordRuntimeRequest, recordRuntimeUsage } from "./runtime-store.js";
+import { getDescriptorProtocolProfile, resolveModelDescriptor } from "./model-catalog.js";
 import {
   findUpstream,
   findModel,
@@ -153,7 +154,7 @@ function sanitizeAnthropicCacheControls(value, path = []) {
   }
 }
 
-function resolveAnthropicModelValues(config, profileName, modelId, model) {
+function resolveConfiguredAnthropicModelValues(config, profileName, modelId, model) {
   const profiles = anthropicCompatibility(config)[profileName];
   if (!profiles || typeof profiles !== "object") return null;
   for (const candidate of [modelId, model?.targetModel, model?.id, model?.pricingRef]) {
@@ -164,18 +165,37 @@ function resolveAnthropicModelValues(config, profileName, modelId, model) {
   return null;
 }
 
-function applyAnthropicBodyCompatibility(body, config, modelId, model) {
+function resolveAnthropicModelPolicy(config, profileName, modelId, model, descriptor) {
+  const configuredValues = resolveConfiguredAnthropicModelValues(config, profileName, modelId, model);
+  const catalogProfile = getDescriptorProtocolProfile(descriptor, "messages");
+  const catalogPolicy = profileName === "thinkingTypesByModel"
+    ? catalogProfile?.thinking
+    : catalogProfile?.reasoning;
+  return {
+    values: configuredValues || catalogPolicy?.types || catalogPolicy?.levels || null,
+    aliases: catalogPolicy?.aliases || {},
+    validation: configuredValues ? "strict" : catalogPolicy?.validation || "passthrough"
+  };
+}
+
+function applyAnthropicBodyCompatibility(body, config, modelId, model, descriptor) {
   if (!body || typeof body !== "object") return null;
   const policy = anthropicCompatibility(config);
   const thinkingType = typeof body.thinking?.type === "string"
     ? body.thinking.type.trim()
     : "";
   if (thinkingType && policy.validateThinkingByModel !== false) {
-    const allowedTypes = resolveAnthropicModelValues(config, "thinkingTypesByModel", modelId, model);
-    if (allowedTypes && !allowedTypes.includes(thinkingType)) {
+    const thinkingPolicy = resolveAnthropicModelPolicy(
+      config,
+      "thinkingTypesByModel",
+      modelId,
+      model,
+      descriptor
+    );
+    if (thinkingPolicy.validation === "strict" && thinkingPolicy.values && !thinkingPolicy.values.includes(thinkingType)) {
       return {
         param: "thinking.type",
-        message: `thinking.type=${thinkingType} is not supported by ${modelId}; use ${allowedTypes.join(" or ")}`
+        message: `thinking.type=${thinkingType} is not supported by ${modelId}; use ${thinkingPolicy.values.join(" or ")}`
       };
     }
   }
@@ -183,14 +203,18 @@ function applyAnthropicBodyCompatibility(body, config, modelId, model) {
     ? body.output_config.effort.trim().toLowerCase()
     : "";
   if (effort && policy.validateThinkingByModel !== false) {
-    const allowedLevels = resolveAnthropicModelValues(config, "effortLevelsByModel", modelId, model);
-    const normalizedEffort = effort === "xhigh" && allowedLevels?.includes("max") && !allowedLevels.includes("xhigh")
-      ? "max"
-      : effort;
-    if (allowedLevels && !allowedLevels.includes(normalizedEffort)) {
+    const effortPolicy = resolveAnthropicModelPolicy(
+      config,
+      "effortLevelsByModel",
+      modelId,
+      model,
+      descriptor
+    );
+    const normalizedEffort = effortPolicy.aliases[effort] || effort;
+    if (effortPolicy.validation === "strict" && effortPolicy.values && !effortPolicy.values.includes(normalizedEffort)) {
       return {
         param: "output_config.effort",
-        message: `output_config.effort=${effort} is not supported by ${modelId}; use ${allowedLevels.join(" or ")}`
+        message: `output_config.effort=${effort} is not supported by ${modelId}; use ${effortPolicy.values.join(" or ")}`
       };
     }
     body.output_config.effort = normalizedEffort;
@@ -721,6 +745,7 @@ export async function proxyRequest({
     });
     return;
   }
+  const modelDescriptor = resolveModelDescriptor(modelId);
 
   body = isNativeUtilityRequest
     ? { ...body, model: modelId }
@@ -803,7 +828,7 @@ export async function proxyRequest({
     return;
   }
 
-  if (!hasUsableUpstreamBaseUrl(upstream, { routeKey: protocolRouteKey, model })) {
+  if (!hasUsableUpstreamBaseUrl(upstream, { routeKey: protocolRouteKey, model, descriptor: modelDescriptor })) {
     log.error({
       source: "proxy",
       requestId,
@@ -828,7 +853,7 @@ export async function proxyRequest({
   const override = resolveModelRoute(model, protocolRouteKey);
   let effectiveRouteKey = usesModelRouter
     ? "chat/completions"
-    : resolveEffectiveRouteKey(protocolRouteKey, model, upstream, override);
+    : resolveEffectiveRouteKey(protocolRouteKey, model, upstream, override, modelDescriptor);
   let backendRouteKey = override
     ? inferBackendRouteKey(protocolRouteKey, override)
     : normalizeBackendRouteKey(effectiveRouteKey);
@@ -878,8 +903,8 @@ export async function proxyRequest({
   }
 
   const protocolTargetUrl = override?.type === "path"
-    ? buildDirectUpstreamUrl(upstream, override.value, deployment, model)
-    : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model);
+    ? buildDirectUpstreamUrl(upstream, override.value, deployment, model, modelDescriptor)
+    : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model, modelDescriptor);
   backendRouteKey = reconcileBackendRouteKey(backendRouteKey, protocolTargetUrl);
   if (TEXT_PROTOCOL_ROUTE_KEYS.has(protocolRouteKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
     log.error({
@@ -923,9 +948,9 @@ export async function proxyRequest({
   let targetUrl;
   try {
     if (isMessagesCountTokens) {
-      targetUrl = buildMessagesCountTokensUrl(upstream, protocolTargetUrl, deployment, model);
+      targetUrl = buildMessagesCountTokensUrl(upstream, protocolTargetUrl, deployment, model, modelDescriptor);
     } else if (isResponsesCompact) {
-      targetUrl = buildResponsesCompactUrl(upstream, protocolTargetUrl, deployment, model);
+      targetUrl = buildResponsesCompactUrl(upstream, protocolTargetUrl, deployment, model, modelDescriptor);
     } else {
       targetUrl = protocolTargetUrl;
     }
@@ -1057,17 +1082,17 @@ export async function proxyRequest({
 
   let nextBody;
   if (routeKey === "chat/completions" && backendRouteKey === "responses") {
-    nextBody = chatToResponsesRequest(body, deployment);
+    nextBody = chatToResponsesRequest(body, deployment, modelDescriptor);
   } else if (routeKey === "responses" && backendRouteKey === "chat/completions") {
-    nextBody = responsesToChatRequest(body, deployment);
+    nextBody = responsesToChatRequest(body, deployment, modelDescriptor);
   } else if (routeKey === "chat/completions" && backendRouteKey === "messages") {
-    nextBody = chatToMessagesRequest(body, deployment);
+    nextBody = chatToMessagesRequest(body, deployment, modelDescriptor);
   } else if (routeKey === "responses" && backendRouteKey === "messages") {
-    nextBody = responsesToMessagesRequest(body, deployment);
+    nextBody = responsesToMessagesRequest(body, deployment, modelDescriptor);
   } else if (routeKey === "messages" && backendRouteKey === "chat/completions") {
-    nextBody = messagesToChatRequest(body, deployment);
+    nextBody = messagesToChatRequest(body, deployment, modelDescriptor);
   } else if (routeKey === "messages" && backendRouteKey === "responses") {
-    nextBody = messagesToResponsesRequest(body, deployment);
+    nextBody = messagesToResponsesRequest(body, deployment, modelDescriptor);
   } else {
     nextBody = body.model === deployment
       ? body
@@ -1081,6 +1106,7 @@ export async function proxyRequest({
   nextBody = prepareImageGenerationRequest({
     body: nextBody,
     model,
+    descriptor: modelDescriptor,
     routeKey,
     backendRouteKey,
     targetUrl
@@ -1094,7 +1120,8 @@ export async function proxyRequest({
         nextBody,
         config,
         deployment || modelId,
-        model
+        model,
+        modelDescriptor
       );
       if (anthropicCompatibilityError) {
         log.error({
@@ -1149,7 +1176,9 @@ export async function proxyRequest({
     }
     const unsupportedRequest = sanitizeModernModelRequest(nextBody, {
       backendRouteKey,
-      modelId: deployment || modelId,
+      descriptor: modelDescriptor
+    }) || sanitizeWebSearchRequest(nextBody, {
+      backendRouteKey,
       model
     });
     if (unsupportedRequest) {
@@ -1340,7 +1369,8 @@ export async function proxyRequest({
     const cost = recordGovernanceUsage(config, consumer, model, usage, Date.now(), actualModelName || resolvedUpstreamModel, {
       requestId,
       routeKey,
-      backendRouteKey
+      backendRouteKey,
+      modelDescriptor
     });
     recordUsage(model.id, usage, {
       keyId: consumer?.keyId,
@@ -2521,49 +2551,8 @@ function normalizeResponsesToolDescriptions(body, backendRouteKey) {
   }
 }
 
-function isModernModel(modelId) {
-  const value = String(modelId || "").toLowerCase();
-  return /^gpt-(?:[5-9]|\d{2,})(?:$|[.-])/.test(value) || /^o\d(?:$|[.-])/.test(value);
-}
-
-function isGpt56Model(modelId, model) {
-  return [modelId, model?.id, model?.targetModel, model?.pricingRef]
-    .some((value) => /^gpt-5\.6(?:$|[.-])/.test(String(value || "").trim().toLowerCase()));
-}
-
-function getSupportedReasoningEfforts(modelId, model) {
-  return isGpt56Model(modelId, model)
-    ? ["none", "low", "medium", "high", "xhigh", "max"]
-    : ["low", "medium", "high"];
-}
-
-function normalizeModernReasoningEffort(value, modelId, model) {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  if (isGpt56Model(modelId, model) && getSupportedReasoningEfforts(modelId, model).includes(normalized)) {
-    return normalized;
-  }
-  if (normalized === "xhigh") return "high";
-  if (getSupportedReasoningEfforts(modelId, model).includes(normalized)) return normalized;
-  return undefined;
-}
-
-function normalizeCapabilityName(value) {
-  return typeof value === "string"
-    ? value.trim().toLowerCase().replaceAll("_", "-")
-    : "";
-}
-
-function collectCapabilityNames(...values) {
-  const names = new Set();
-  for (const value of values) {
-    if (!Array.isArray(value)) continue;
-    for (const item of value) {
-      const normalized = normalizeCapabilityName(item);
-      if (normalized) names.add(normalized);
-    }
-  }
-  return names;
+function normalizeModernReasoningEffort(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : value;
 }
 
 function normalizeWebSearchToolType(type) {
@@ -2616,47 +2605,19 @@ function normalizeWebSearchRequest(body) {
   }
 }
 
-function supportsWebSearchRequest({ backendRouteKey, upstream, model }) {
-  if (backendRouteKey !== "responses") {
-    return false;
-  }
-
-  const capabilityNames = collectCapabilityNames(model?.capabilities, upstream?.capabilities);
-  if (capabilityNames.has("web-search")) {
-    return true;
-  }
-
-  try {
-    const hostname = new URL(resolveUpstreamBaseUrl(upstream, { routeKey: backendRouteKey, model })).hostname.toLowerCase();
-    return hostname.endsWith(".openai.azure.com");
-  } catch {
-    return false;
-  }
-}
-
-function sanitizeWebSearchRequest(body, { backendRouteKey, upstream, model }) {
+function sanitizeWebSearchRequest(body, { backendRouteKey }) {
   if (!body || typeof body !== "object") {
     return null;
   }
 
-  const webSearchParam = findWebSearchParam(body);
-  if (!webSearchParam) {
-    return null;
+  if (backendRouteKey === "responses" && findWebSearchParam(body)) {
+    normalizeWebSearchRequest(body);
   }
-
-  if (!supportsWebSearchRequest({ backendRouteKey, upstream, model })) {
-    return {
-      param: webSearchParam,
-      message: "web_search 仅在 Azure OpenAI Responses API 后端受支持；请使用 *.openai.azure.com 的 /openai/v1/responses 路由。若仍失败，请检查订阅是否禁用了 OpenAI.BlockedTools.web_search。"
-    };
-  }
-
-  normalizeWebSearchRequest(body);
   return null;
 }
 
-function sanitizeModernModelRequest(body, { backendRouteKey, modelId, model }) {
-  if (!body || typeof body !== "object" || !isModernModel(modelId)) {
+function sanitizeModernModelRequest(body, { backendRouteKey, descriptor }) {
+  if (!body || typeof body !== "object") {
     return null;
   }
 
@@ -2666,36 +2627,23 @@ function sanitizeModernModelRequest(body, { backendRouteKey, modelId, model }) {
   delete body.serviceTier;
 
   if (backendRouteKey === "chat/completions") {
-    if (typeof body.max_completion_tokens !== "number" && typeof body.max_tokens === "number") {
+    const reasoningRequest = descriptor?.capabilities?.includes("reasoning") || body.reasoning_effort != null;
+    if (reasoningRequest && typeof body.max_completion_tokens !== "number" && typeof body.max_tokens === "number") {
       body.max_completion_tokens = body.max_tokens;
     }
-    delete body.max_tokens;
+    if (reasoningRequest) delete body.max_tokens;
 
     if (body.top_logprobs != null && body.logprobs == null) {
       body.logprobs = true;
     }
 
     if (body.reasoning_effort != null) {
-      const normalizedEffort = normalizeModernReasoningEffort(body.reasoning_effort, modelId, model);
-      if (!normalizedEffort) {
-        return {
-          param: "reasoning_effort",
-          message: `reasoning_effort 仅支持 ${getSupportedReasoningEfforts(modelId, model).join("、")}。`
-        };
-      }
-      body.reasoning_effort = normalizedEffort;
+      body.reasoning_effort = normalizeModernReasoningEffort(body.reasoning_effort);
     }
   }
 
   if (backendRouteKey === "responses" && body.reasoning && typeof body.reasoning === "object" && body.reasoning.effort != null) {
-    const normalizedEffort = normalizeModernReasoningEffort(body.reasoning.effort, modelId, model);
-    if (!normalizedEffort) {
-      return {
-        param: "reasoning.effort",
-        message: `reasoning.effort 仅支持 ${getSupportedReasoningEfforts(modelId, model).join("、")}。`
-      };
-    }
-    body.reasoning.effort = normalizedEffort;
+    body.reasoning.effort = normalizeModernReasoningEffort(body.reasoning.effort);
   }
 
   return null;

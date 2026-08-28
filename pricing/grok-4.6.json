@@ -6,7 +6,8 @@
   "modelVersion": null,
   "status": "preview",
   "interfaces": [
-    "chat/completions"
+    "chat/completions",
+    "responses"
   ],
   "inputModalities": [
     "text",
@@ -20,6 +21,27 @@
     "vision",
     "function-calling"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default": "high"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "configurable": false,
+        "default": "high"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -30,14 +52,29 @@
     "outputPer1mTokens": 6,
     "inputPer1kTokens": 0.002,
     "cachedInputPer1kTokens": 0.0005,
-    "outputPer1kTokens": 0.006
+    "outputPer1kTokens": 0.006,
+    "tiers": [
+      {
+        "promptTokensBelow": 200000,
+        "inputPer1mTokens": 2,
+        "cachedInputPer1mTokens": 0.5,
+        "outputPer1mTokens": 6,
+        "inputPer1kTokens": 0.002,
+        "cachedInputPer1kTokens": 0.0005,
+        "outputPer1kTokens": 0.006
+      },
+      {
+        "promptTokensAtLeast": 200000,
+        "inputPer1mTokens": 4,
+        "cachedInputPer1mTokens": 1,
+        "outputPer1mTokens": 12,
+        "inputPer1kTokens": 0.004,
+        "cachedInputPer1kTokens": 0.001,
+        "outputPer1kTokens": 0.012
+      }
+    ]
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.002,
-    "cachedInputPer1kTokens": 0.0005,
-    "outputPer1kTokens": 0.006
-  },
+  "pricingCatalogEntry": null,
   "proxyTemplate": {
     "id": "grok-4.6",
     "displayName": "Grok 4.6",
@@ -50,11 +87,11 @@
     "pricingRef": "grok-4.6"
   },
   "sources": {
-    "capabilities": "https://docs.x.ai/developers/models/grok-4.6",
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-grok",
     "pricing": "https://docs.x.ai/developers/models/grok-4.6"
   },
   "notes": [
-    "xAI 模型页将 Grok 4.6 标为 500K context window，支持文本与图片输入、文本输出、函数调用和可配置 reasoning。",
-    "当前 pricingCatalogEntry 使用 xAI Standard Tier 低于 200K prompt tokens 的公开单价：input、cached input、output 分别为 2、0.5、6 USD 每 1M tokens；文档还列出 200K 及以上 prompt 的更高单价，当前仓库 pricingCatalog schema 仅支持单组 token 单价，未单独建模高上下文阶梯价。"
+    "Azure Foundry 将 Grok 4.6 列为支持 Chat Completions 和 Responses 的 preview deployment；Responses reasoning effort 固定为 high。",
+    "xAI 直连请求在 prompt 达到 200K tokens 时整次请求使用高档费率；当前治理不支持该阶梯，pricingCatalogEntry 保持为空以避免低估。"
   ]
 }

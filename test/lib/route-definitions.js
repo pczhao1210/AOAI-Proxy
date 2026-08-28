@@ -10,11 +10,63 @@ export const routeTests = [
 
       assert.equal(result.status, 200, result.text);
       assert.equal(result.headers.get("cache-control"), "no-store");
+      assert.equal(result.headers.get("x-aoai-proxy-profile"), "nextgen");
       assert.deepEqual(result.json, {
         service: "aoai-proxy",
         version: "nextgen-202608100000",
         buildTime: "2026-08-10T00:00:00Z"
       });
+    }
+  },
+  {
+    id: "minimum-profile-boundaries",
+    description: "minimum profile disables peripheral admin capabilities without disabling proxy routes",
+    async run(ctx) {
+      const loaded = await ctx.adminRequest("/admin/api/config");
+      assert.equal(loaded.status, 200, loaded.text);
+      loaded.json.distribution.profile = "minimum";
+      loaded.json.observability.logAnalytics.enabled = true;
+      loaded.json.observability.runtimeStore.enabled = true;
+      loaded.json.access.budgets.enabled = true;
+
+      const saved = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: loaded.json
+      });
+      assert.equal(saved.status, 200, saved.text);
+      assert.equal(saved.json.config.distribution.profile, "minimum");
+      assert.equal(saved.json.config.observability.logAnalytics.enabled, false);
+      assert.equal(saved.json.config.observability.runtimeStore.enabled, false);
+      assert.equal(saved.json.config.access.budgets.enabled, false);
+
+      const runtime = await ctx.adminRequest("/admin/api/runtime");
+      assert.equal(runtime.status, 200, runtime.text);
+      assert.equal(runtime.json.runtime.distribution.profile, "minimum");
+      assert.equal(runtime.json.runtime.distribution.capabilities.databaseAdmin, false);
+      assert.equal(runtime.json.runtime.distribution.capabilities.logAnalytics, false);
+      assert.equal(runtime.json.runtime.distribution.capabilities.modelCatalog, true);
+      assert.equal(runtime.json.runtime.distribution.capabilities.modelCatalogSync, true);
+
+      for (const [route, method] of [
+        ["/admin/api/database/config", "GET"],
+        ["/admin/api/database/test", "POST"],
+        ["/admin/api/log-analytics/initialize", "POST"]
+      ]) {
+        const result = await ctx.adminRequest(route, {
+          method,
+          headers: { "x-aoai-admin-csrf": "1" },
+          ...(method === "POST" ? { json: {} } : {})
+        });
+        assert.equal(result.status, 404, `${route}: ${result.text}`);
+        assert.equal(result.json.code, "DISTRIBUTION_FEATURE_DISABLED");
+        assert.equal(result.json.profile, "minimum");
+      }
+
+      const pricing = await ctx.adminRequest("/admin/api/pricing-library");
+      assert.equal(pricing.status, 200, pricing.text);
+      const models = await ctx.publicRequest("/v1/models");
+      assert.equal(models.status, 200, models.text);
     }
   },
   {
@@ -88,7 +140,7 @@ export const routeTests = [
       assert.equal(codexModel.display_name, "GPT-5.6 Luna");
       assert.equal(codexModel.context_window, 128000);
       assert.equal(codexModel.default_reasoning_level, "medium");
-      assert.deepEqual(codexModel.supported_reasoning_levels.map((item) => item.effort), ["low", "medium", "high", "xhigh", "max"]);
+      assert.deepEqual(codexModel.supported_reasoning_levels.map((item) => item.effort), ["none", "low", "medium", "high", "xhigh", "max"]);
       assert.equal(codexModel.support_verbosity, false);
       assert.equal(codexModel.use_responses_lite, false);
       assert.equal(result.json.models.some((model) => model.slug === "gpt-5-mini"), false);
@@ -304,6 +356,8 @@ export const routeTests = [
     async run(ctx) {
       const legacyConfig = await ctx.readConfigFile();
       legacyConfig.version = 2;
+      legacyConfig.server.upstream.maxResponseBytes = 32 * 1024 * 1024;
+      delete legacyConfig.proxy.guards.maxResponseBodyBytes;
       const legacyModel = legacyConfig.models.find((model) => model.id === "gpt-5.6-luna");
       ensure(legacyModel, "Expected GPT-5.6 model config");
       legacyModel.routes = { "*": "responses" };
@@ -317,7 +371,18 @@ export const routeTests = [
       const migratedConfig = await ctx.readConfigFile();
       const migratedModel = migratedConfig.models.find((model) => model.id === "gpt-5.6-luna");
       assert.equal(migratedConfig.version, 3);
+      assert.equal(migratedConfig.proxy.guards.maxResponseBodyBytes, 32 * 1024 * 1024);
       assert.deepEqual(migratedModel?.routes, {});
+
+      migratedConfig.admin.basePath = "/admin?unsafe=true";
+      const invalidAdminPath = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: migratedConfig
+      });
+      assert.equal(invalidAdminPath.status, 400, invalidAdminPath.text);
+      assert.match(invalidAdminPath.json?.error || "", /absolute URL path without query or fragment/);
+      migratedConfig.admin.basePath = "/admin";
 
       ctx.clearUpstreamRequests();
       const nativeChat = await ctx.publicRequest("/v1/chat/completions", {
@@ -671,6 +736,65 @@ export const routeTests = [
       assert.equal(rejectedRoutePolicy.status, 400, rejectedRoutePolicy.text);
       assert.match(rejectedRoutePolicy.json?.error || "", /allowedRequestFields must be an array of strings/);
 
+      const extensionConfig = await ctx.readConfigFile();
+      const extensionUpstream = extensionConfig.upstreams.find((upstream) => upstream.name === "mock-foundry");
+      ensure(extensionUpstream, "Expected mock Foundry upstream");
+      extensionConfig.upstreams.push({
+        ...structuredClone(extensionUpstream),
+        name: "mock-provider-extension",
+        capabilities: []
+      });
+      extensionConfig.models.push({
+        id: "gpt-6-provider-extension",
+        displayName: "GPT-6 Provider Extension",
+        status: "active",
+        upstream: "mock-provider-extension",
+        targetModel: "gpt-6-provider-extension",
+        pricingRef: "",
+        routes: { "*": "responses" }
+      });
+      const savedExtensionConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: extensionConfig
+      });
+      assert.equal(savedExtensionConfig.status, 200, savedExtensionConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const forwardedExtension = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-6-provider-extension",
+          input: "let the upstream evaluate provider extensions",
+          reasoning: { effort: "FUTURE_LEVEL" },
+          tools: [{ type: "web_search_preview_2025_03_11" }]
+        }
+      });
+      assert.equal(forwardedExtension.status, 200, forwardedExtension.text);
+      const forwardedExtensionRequest = ctx.getUpstreamRequest(
+        (item) => item.body?.model === "gpt-6-provider-extension"
+      );
+      ensure(forwardedExtensionRequest, "Provider extension request must reach the upstream");
+      assert.equal(forwardedExtensionRequest.body?.reasoning?.effort, "future_level");
+      assert.equal(forwardedExtensionRequest.body?.tools?.[0]?.type, "web_search");
+
+      ctx.clearUpstreamRequests();
+      const convertedExtension = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-6-provider-extension",
+          messages: [{ role: "user", content: "preserve future reasoning through the shim" }],
+          reasoning_effort: "FUTURE_LEVEL"
+        }
+      });
+      assert.equal(convertedExtension.status, 200, convertedExtension.text);
+      const convertedExtensionRequest = ctx.getUpstreamRequest(
+        (item) => item.body?.model === "gpt-6-provider-extension"
+      );
+      ensure(convertedExtensionRequest, "Converted provider extension request must reach the Responses upstream");
+      assert.equal(convertedExtensionRequest.body?.reasoning?.effort, "future_level");
+      assert.equal("reasoning_effort" in convertedExtensionRequest.body, false);
+
       ctx.clearUpstreamRequests();
       const preserved = await ctx.publicRequest("/v1/responses", {
         method: "POST",
@@ -983,7 +1107,7 @@ export const routeTests = [
   },
   {
     id: "message-thinking-model-policy",
-    description: "known Claude models validate thinking mode",
+    description: "Claude catalog policy passes through while explicit overrides validate thinking mode",
     async run(ctx) {
       ctx.clearUpstreamRequests();
       const result = await ctx.publicRequest("/v1/messages", {
@@ -996,11 +1120,12 @@ export const routeTests = [
         }
       });
 
-      assert.equal(result.status, 400, result.text);
-      assert.equal(result.json?.error?.param, "thinking.type");
-      assert.match(result.json?.error?.message || "", /adaptive/);
-      assert.equal(ctx.upstreamRequests.length, 0);
+      assert.equal(result.status, 200, result.text);
+      const catalogRequest = ctx.getUpstreamRequest((item) => item.body?.model === "claude-sonnet-5");
+      ensure(catalogRequest, "Expected catalog policy request to reach the upstream");
+      assert.deepEqual(catalogRequest.body?.thinking, { type: "enabled", budget_tokens: 1024 });
 
+      ctx.clearUpstreamRequests();
       const aliasResult = await ctx.publicRequest("/v1/messages", {
         method: "POST",
         json: {
@@ -1010,14 +1135,15 @@ export const routeTests = [
           messages: [{ role: "user", content: "hello alias" }]
         }
       });
-      assert.equal(aliasResult.status, 400, aliasResult.text);
-      assert.equal(aliasResult.json?.error?.param, "thinking.type");
+      assert.equal(aliasResult.status, 200, aliasResult.text);
+      const aliasRequest = ctx.getUpstreamRequest((item) => item.body?.model === "team-sonnet-deployment");
+      ensure(aliasRequest, "Expected configured alias to inherit catalog passthrough policy");
 
       const aliasConfig = await ctx.readConfigFile();
       aliasConfig.compatibility = aliasConfig.compatibility || {};
       aliasConfig.compatibility.anthropic = aliasConfig.compatibility.anthropic || {};
       aliasConfig.compatibility.anthropic.thinkingTypesByModel = aliasConfig.compatibility.anthropic.thinkingTypesByModel || {};
-      aliasConfig.compatibility.anthropic.thinkingTypesByModel["team-sonnet-deployment"] = ["enabled"];
+      aliasConfig.compatibility.anthropic.thinkingTypesByModel["team-sonnet-deployment"] = ["adaptive"];
       const savedAliasConfig = await ctx.adminRequest("/admin/api/config", {
         method: "PUT",
         headers: { "x-aoai-admin-csrf": "1" },
@@ -1026,7 +1152,7 @@ export const routeTests = [
       assert.equal(savedAliasConfig.status, 200, savedAliasConfig.text);
 
       ctx.clearUpstreamRequests();
-      const overriddenAliasResult = await ctx.publicRequest("/v1/messages", {
+      const strictAliasResult = await ctx.publicRequest("/v1/messages", {
         method: "POST",
         json: {
           model: "claude-sonnet-5-alias",
@@ -1035,10 +1161,10 @@ export const routeTests = [
           messages: [{ role: "user", content: "hello alias" }]
         }
       });
-      assert.equal(overriddenAliasResult.status, 200, overriddenAliasResult.text);
-      const aliasRequest = ctx.getUpstreamRequest((item) => item.body?.model === "team-sonnet-deployment");
-      ensure(aliasRequest, "Expected custom Claude deployment request");
-      assert.deepEqual(aliasRequest.body?.thinking, { type: "enabled", budget_tokens: 1024 });
+      assert.equal(strictAliasResult.status, 400, strictAliasResult.text);
+      assert.equal(strictAliasResult.json?.error?.param, "thinking.type");
+      assert.match(strictAliasResult.json?.error?.message || "", /adaptive/);
+      assert.equal(ctx.upstreamRequests.length, 0);
     }
   },
   {
@@ -1194,9 +1320,10 @@ export const routeTests = [
           reasoning: { effort: "minimal" }
         }
       });
-      assert.equal(invalidResult.status, 400, invalidResult.text);
-      assert.equal(invalidResult.json?.error?.param, "output_config.effort");
-      assert.equal(ctx.upstreamRequests.length, 0);
+      assert.equal(invalidResult.status, 200, invalidResult.text);
+      const passthroughRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/messages"));
+      ensure(passthroughRequest, "Expected unknown catalog effort to reach the upstream");
+      assert.deepEqual(passthroughRequest.body?.output_config, { effort: "minimal" });
 
       const invalidHostingConfig = structuredClone(config);
       const invalidHostingModel = invalidHostingConfig.models.find((model) => model.id === "claude-sonnet-4-6");
@@ -1209,6 +1336,7 @@ export const routeTests = [
       assert.equal(invalidHostingResult.status, 400, invalidHostingResult.text);
       assert.match(invalidHostingResult.json?.error || "", /hostingMode=azure is not supported/);
 
+      ctx.clearUpstreamRequests();
       const opusResult = await ctx.publicRequest("/v1/responses", {
         method: "POST",
         json: {

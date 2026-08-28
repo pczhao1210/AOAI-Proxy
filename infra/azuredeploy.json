@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.41.2.15936",
-      "templateHash": "14044674146891393951"
+      "version": "0.45.15.27210",
+      "templateHash": "1065293857737379044"
     }
   },
   "parameters": {
@@ -27,6 +27,17 @@
       "type": "string",
       "metadata": {
         "description": "Container image to deploy."
+      }
+    },
+    "distributionProfile": {
+      "type": "string",
+      "defaultValue": "nextgen",
+      "allowedValues": [
+        "minimum",
+        "nextgen"
+      ],
+      "metadata": {
+        "description": "Runtime scope profile. Both profiles use the same image; minimum disables peripheral management and observability capabilities."
       }
     },
     "dnsNameLabel": {
@@ -281,7 +292,8 @@
   "variables": {
     "cognitiveServicesOpenAiUserRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
     "azureFileShareContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb')]",
-    "normalizedPersistenceMode": "[toLower(replace(replace(parameters('persistenceMode'), ' ', ''), '_', ''))]",
+    "effectivePersistenceMode": "[if(equals(parameters('distributionProfile'), 'minimum'), 'azureFile', parameters('persistenceMode'))]",
+    "normalizedPersistenceMode": "[toLower(replace(replace(variables('effectivePersistenceMode'), ' ', ''), '_', ''))]",
     "enableAzureFile": "[contains(variables('normalizedPersistenceMode'), 'azurefile')]",
     "enableDatabase": "[contains(variables('normalizedPersistenceMode'), 'database')]",
     "useStorage": "[variables('enableAzureFile')]",
@@ -301,8 +313,12 @@
     "imageRegistryCredentials": "[if(variables('useImageRegistryCredentials'), createArray(createObject('server', parameters('acrLoginServer'), 'username', parameters('acrUsername'), 'password', parameters('acrPassword'))), createArray())]",
     "baseEnvironmentVariables": [
       {
+        "name": "AOAI_PROXY_PROFILE",
+        "value": "[parameters('distributionProfile')]"
+      },
+      {
         "name": "PERSISTENCE_MODE",
-        "value": "[parameters('persistenceMode')]"
+        "value": "[variables('effectivePersistenceMode')]"
       },
       {
         "name": "AOAI_PROXY_ADMIN_AUTH_ENABLED",
@@ -559,8 +575,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.41.2.15936",
-              "templateHash": "1818408129181591694"
+              "version": "0.45.15.27210",
+              "templateHash": "15887680327478156054"
             }
           },
           "parameters": {
@@ -613,9 +629,13 @@
       "type": "string",
       "value": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName')), '2023-05-01', 'full').identity.principalId]"
     },
+    "distributionProfileOutput": {
+      "type": "string",
+      "value": "[parameters('distributionProfile')]"
+    },
     "persistenceModeOutput": {
       "type": "string",
-      "value": "[parameters('persistenceMode')]"
+      "value": "[variables('effectivePersistenceMode')]"
     },
     "storageAccountModeOutput": {
       "type": "string",

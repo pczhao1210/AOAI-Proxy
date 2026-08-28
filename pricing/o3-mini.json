@@ -20,6 +20,28 @@
     "function-calling",
     "structured-outputs"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",

@@ -21,6 +21,14 @@
     "function-calling",
     "structured-outputs"
   ],
+  "protocolProfiles": {
+    "responses": {
+      "reasoning": {
+        "configurable": false,
+        "default": "high"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",

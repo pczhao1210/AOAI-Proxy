@@ -11,6 +11,9 @@
     "image": {
       "value": "alexmcr.azurecr.io/aoai-proxy:nextgen-latest"
     },
+    "distributionProfile": {
+      "value": "nextgen"
+    },
     "dnsNameLabel": {
       "value": "aoai-proxy-dev"
     },

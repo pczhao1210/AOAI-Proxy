@@ -23,22 +23,46 @@
     "structured-outputs",
     "parallel-tool-calling"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-openai-global",
     "status": "published",
     "inputPer1mTokens": 1.25,
-    "cachedInputPer1mTokens": 0.13,
+    "cachedInputPer1mTokens": 0.125,
     "outputPer1mTokens": 10,
     "inputPer1kTokens": 0.00125,
-    "cachedInputPer1kTokens": 0.00013,
+    "cachedInputPer1kTokens": 0.000125,
     "outputPer1kTokens": 0.01
   },
   "pricingCatalogEntry": {
     "currency": "USD",
     "inputPer1kTokens": 0.00125,
-    "cachedInputPer1kTokens": 0.00013,
+    "cachedInputPer1kTokens": 0.000125,
     "outputPer1kTokens": 0.01
   },
   "proxyTemplate": {

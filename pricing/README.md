@@ -21,6 +21,14 @@ This directory stores reusable model definitions for AOAI Proxy.
 - `proxyTemplate.capabilities`
   - Mirrors the same model-native capability list for direct config scaffolding.
 
+- `defaultInterface`
+  - Selects the provider-facing protocol used when the requested protocol is unavailable and more than one declared interface remains.
+
+- `protocolProfiles`
+  - Stores protocol-specific parameter facts consumed by runtime routing and request conversion.
+  - Text profiles can declare `reasoning.parameter`, `levels`, `default`, `aliases`, and `validation`; Messages profiles can also declare thinking types and a default.
+  - `images/generations.request` can declare `transport`, `removeModel`, `qualityAliases`, `dropParameters`, and `sizeExpansion`.
+
 ### Label glossary
 
 The tables below document the labels that are currently used by pricing definitions in this directory. When a new label is introduced, update this glossary in the same change so the JSON remains self-explanatory.

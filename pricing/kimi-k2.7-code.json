@@ -21,6 +21,13 @@
     "code-optimized",
     "function-calling"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "configurable": false
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",

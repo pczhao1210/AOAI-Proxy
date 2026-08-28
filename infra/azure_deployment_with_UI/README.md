@@ -4,6 +4,8 @@ This folder contains a service-catalog style Azure Managed Application package s
 
 The packaged portal experience defaults to the combined ACI persistence path:
 
+- `nextgen` and `minimum` select runtime scope on the same image; `nextgen` remains the default
+- `minimum` forces Azure Files persistence and does not provision PostgreSQL
 - Default persistence mode is PostgreSQL config persistence plus an Azure Files `/app/data` mount
 - The custom UI exposes database server name, database name, admin username, admin password, and SKU selection
 - The custom UI requires a Caddy certificate email, a strong proxy admin password, and a strong client API key
@@ -67,7 +69,7 @@ az managedapp definition create \
   --package-file-uri https://<storage>.blob.core.windows.net/<container>/app.zip
 ```
 
-The custom UI passes database parameters, storage parameters, Foundry resource selection, and optional registry credentials into the deployment template. The template creates only the resources required by the chosen persistence mode.
+The custom UI passes the distribution profile, database parameters, storage parameters, Foundry resource selection, and optional registry credentials into the deployment template. The template creates only the resources required by the effective profile and persistence mode.
 
 ## Deploy An Instance
 

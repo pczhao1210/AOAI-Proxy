@@ -27,6 +27,15 @@
     "vision",
     "function-calling"
   ],
+  "protocolProfiles": {
+    "messages": {
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": ["enabled", "disabled"],
+        "validation": "passthrough"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",

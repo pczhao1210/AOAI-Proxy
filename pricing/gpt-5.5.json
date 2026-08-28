@@ -24,6 +24,25 @@
     "parallel-tool-calling",
     "computer-use"
   ],
+  "defaultInterface": "responses",
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["none", "low", "medium", "high", "xhigh"],
+        "default": "medium",
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": ["none", "low", "medium", "high", "xhigh"],
+        "default": "medium",
+        "validation": "passthrough"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -58,6 +77,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "reasoning": "https://developers.openai.com/api/docs/guides/reasoning",
     "pricing": "https://developers.openai.com/api/docs/pricing"
   }
 }

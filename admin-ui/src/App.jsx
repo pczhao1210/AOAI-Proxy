@@ -167,6 +167,7 @@ export default function App() {
   const persistenceRuntime = runtime?.persistence || {};
   const loggingRuntime = runtime?.logging || {};
   const runtimeStore = runtime?.runtimeStore || {};
+  const distributionCapabilities = runtime?.distribution?.capabilities || {};
   const logLevelKey = logFilters.level.join(",");
   const caddyPreview = useMemo(
     () => buildCaddyPreview(config?.server?.caddy || {}, config?.server?.port),
@@ -1428,6 +1429,7 @@ export default function App() {
       {activeTab === "workspace" && config ? (
         <WorkspaceTab
           config={config}
+          capabilities={distributionCapabilities}
           updateField={updateField}
           pricingCatalogText={pricingCatalogText}
           updatePricingCatalog={updatePricingCatalog}

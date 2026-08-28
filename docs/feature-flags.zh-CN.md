@@ -92,8 +92,8 @@
 | --- | --- | --- | --- |
 | `compatibility.claudeCode.enabled` | `true` | 启用 Claude Code 模型发现与相关兼容行为；不会关闭基础 Messages 路由。 | Workspace；热 |
 | `compatibility.codex.enabled` | `true` | 启用 Codex 模型发现及 Responses 严格流完整性行为；不会关闭基础 Responses 路由。 | Workspace；热 |
-| `compatibility.protocolShim.rejectLossyRequests` | `true` | 跨协议请求无法无损表示时返回 400；关闭后尽力转换并记录 warning。 | Workspace；热 |
-| `compatibility.protocolShim.rejectLossyResponses` | `true` | JSON 或 SSE 响应无法无损表示时拒绝/终止转换；关闭后尽力转换并记录 warning。 | Workspace；热 |
+| `compatibility.protocolShim.rejectLossyRequests` | `false` | 默认尽力转换并记录 warning；开启后，跨协议请求无法无损表示时返回 400。 | Workspace；热 |
+| `compatibility.protocolShim.rejectLossyResponses` | `false` | 默认尽力转换并记录 warning；开启后，JSON 或 SSE 响应无法无损表示时拒绝/终止转换。 | Workspace；热 |
 | `compatibility.anthropic.betaAllowlistEnabled` | `true` | 对 Azure/Foundry Messages 上游过滤未审核的 `anthropic-beta`；直接 Anthropic 上游保留未知值。 | Workspace；热 |
 | `compatibility.anthropic.normalizeManualThinkingToolChoice` | `true` | 修正 manual thinking 与强制工具选择的不兼容组合。 | Workspace；热 |
 | `compatibility.anthropic.sanitizeCacheControl` | `true` | 清理目标 Messages 实现不支持的 `cache_control` 位置或属性。 | Workspace；热 |

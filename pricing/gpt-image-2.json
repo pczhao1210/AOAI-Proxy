@@ -20,6 +20,19 @@
     "image-generation",
     "image-editing"
   ],
+  "protocolProfiles": {
+    "images/generations": {
+      "request": {
+        "transport": "azure-deployment",
+        "removeModel": true,
+        "qualityAliases": {
+          "standard": "medium",
+          "hd": "high"
+        },
+        "dropParameters": ["style", "response_format"]
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",

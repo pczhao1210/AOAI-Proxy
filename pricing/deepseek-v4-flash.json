@@ -3,7 +3,7 @@
   "displayName": "DeepSeek V4 Flash",
   "provider": "deepseek",
   "family": "deepseek-v4",
-  "modelVersion": "DeepSeek-V4-Flash",
+  "modelVersion": "2026-04-23",
   "status": "ga",
   "interfaces": [
     "chat/completions"
@@ -18,6 +18,31 @@
     "reasoning",
     "json-output"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default": "high",
+        "aliases": {
+          "medium": "high",
+          "xhigh": "high"
+        }
+      },
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": [
+          "enabled",
+          "disabled"
+        ],
+        "default": "enabled"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",

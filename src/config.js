@@ -1,4 +1,5 @@
 import { getLogRuntimeInfo } from "./logs.js";
+import { compileModelCatalog, getModelCatalogRuntimeInfo, installModelCatalogSnapshot } from "./model-catalog.js";
 import { getConfiguredModelBindingIssues } from "./model-validation.js";
 import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
 import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from "./pricing-library.js";
@@ -6,6 +7,25 @@ import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
 import { isSupportedPersistenceMode } from "./persistence-mode.js";
 
 const CURRENT_CONFIG_VERSION = 3;
+const DISTRIBUTION_PROFILES = new Set(["minimum", "nextgen"]);
+const DISTRIBUTION_CAPABILITIES = Object.freeze({
+  minimum: Object.freeze({
+    databaseAdmin: false,
+    logAnalytics: false,
+    modelCatalog: true,
+    modelCatalogSync: true,
+    runtimeStore: false,
+    budgets: false
+  }),
+  nextgen: Object.freeze({
+    databaseAdmin: true,
+    logAnalytics: true,
+    modelCatalog: true,
+    modelCatalogSync: true,
+    runtimeStore: true,
+    budgets: true
+  })
+});
 const GPT_56_DUAL_PROTOCOL_MODELS = new Set([
   "gpt-5.6-luna",
   "gpt-5.6-sol",
@@ -14,6 +34,9 @@ const GPT_56_DUAL_PROTOCOL_MODELS = new Set([
 
 // Default config values
 const DEFAULTS = {
+  distribution: {
+    profile: "nextgen"
+  },
   server: {
     host: "0.0.0.0",
     port: 3000,
@@ -371,8 +394,8 @@ const DEFAULTS = {
       enabled: true
     },
     protocolShim: {
-      rejectLossyRequests: true,
-      rejectLossyResponses: true
+      rejectLossyRequests: false,
+      rejectLossyResponses: false
     },
     anthropic: {
       betaAllowlistEnabled: true,
@@ -384,27 +407,8 @@ const DEFAULTS = {
       normalizeManualThinkingToolChoice: true,
       sanitizeCacheControl: true,
       validateThinkingByModel: true,
-      thinkingTypesByModel: {
-        "claude-mythos-5": ["adaptive"],
-        "claude-fable-5": ["adaptive"],
-        "claude-mythos-preview": ["adaptive", "enabled"],
-        "claude-opus-5": ["adaptive", "disabled"],
-        "claude-opus-4-8": ["adaptive", "disabled"],
-        "claude-opus-4-7": ["adaptive", "disabled"],
-        "claude-opus-4-6": ["adaptive", "enabled", "disabled"],
-        "claude-sonnet-5": ["adaptive", "disabled"],
-        "claude-sonnet-4-6": ["adaptive", "enabled", "disabled"]
-      },
-      effortLevelsByModel: {
-        "claude-mythos-5": ["low", "medium", "high", "xhigh"],
-        "claude-fable-5": ["low", "medium", "high", "xhigh"],
-        "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
-        "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
-        "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
-        "claude-opus-4-6": ["low", "medium", "high", "max"],
-        "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
-        "claude-sonnet-4-6": ["low", "medium", "high", "max"]
-      }
+      thinkingTypesByModel: {},
+      effortLevelsByModel: {}
     }
   },
   apiKeys: [],
@@ -414,6 +418,7 @@ const DEFAULTS = {
 
 let currentConfig = null;
 let persistedConfig = null;
+let currentDistributionProfile = null;
 const INSECURE_SECRET_VALUES = new Set([
   "admin",
   "password",
@@ -447,6 +452,7 @@ function isKnownInsecureSecret(value) {
 }
 
 export function applyConfigEnvironmentOverrides(config) {
+  const distributionProfile = getEnvironmentValue("AOAI_PROXY_PROFILE");
   const adminUsername = getEnvironmentValue("AOAI_PROXY_ADMIN_USERNAME", "ADMIN_USERNAME");
   const passwordRef = String(config?.admin?.auth?.passwordRef || "").trim();
   const adminPassword = getEnvironmentValue(
@@ -462,6 +468,7 @@ export function applyConfigEnvironmentOverrides(config) {
   const caddyEmail = getEnvironmentValue("AOAI_PROXY_CADDY_EMAIL", "CADDY_EMAIL");
   const trustProxy = getEnvironmentBoolean("AOAI_PROXY_TRUST_PROXY", "TRUST_PROXY");
 
+  if (distributionProfile) config.distribution.profile = distributionProfile.toLowerCase();
   if (adminUsername) {
     config.admin.auth.username = adminUsername;
     config.server.adminAuth.username = adminUsername;
@@ -523,7 +530,9 @@ function preserveEnvironmentManagedFields(config, previousPersistedConfig) {
   const caddyDomain = getEnvironmentValue("AOAI_PROXY_CADDY_DOMAIN", "CADDY_DOMAIN");
   const caddyEmail = getEnvironmentValue("AOAI_PROXY_CADDY_EMAIL", "CADDY_EMAIL");
   const trustProxy = getEnvironmentBoolean("AOAI_PROXY_TRUST_PROXY", "TRUST_PROXY");
+  const distributionProfile = getEnvironmentValue("AOAI_PROXY_PROFILE");
 
+  if (distributionProfile) config.distribution.profile = previous.distribution.profile;
   if (adminUsername) {
     config.admin.auth.username = previous.admin.auth.username;
     config.server.adminAuth.username = previous.server.adminAuth.username;
@@ -553,6 +562,37 @@ function preserveEnvironmentManagedFields(config, previousPersistedConfig) {
   if (caddyDomain) config.server.caddy.domain = previous.server.caddy.domain;
   if (caddyEmail) config.server.caddy.email = previous.server.caddy.email;
   if (trustProxy !== null) config.server.trustProxy = previous.server.trustProxy;
+  return config;
+}
+
+function resolveDistributionProfile(config) {
+  return String(config?.distribution?.profile || "nextgen").trim().toLowerCase();
+}
+
+export function getDistributionCapabilities(config = currentConfig) {
+  const profile = resolveDistributionProfile(config);
+  return { ...(DISTRIBUTION_CAPABILITIES[profile] || DISTRIBUTION_CAPABILITIES.nextgen) };
+}
+
+export function isDistributionFeatureEnabled(config, feature) {
+  return getDistributionCapabilities(config)[feature] === true;
+}
+
+function applyDistributionProfile(config) {
+  if (resolveDistributionProfile(config) !== "minimum") return config;
+  config.observability.logAnalytics.enabled = false;
+  config.observability.runtimeStore.enabled = false;
+  config.access.budgets.enabled = false;
+  return config;
+}
+
+function preserveDistributionManagedFields(config, previousPersistedConfig) {
+  if (!previousPersistedConfig || currentDistributionProfile !== "minimum") {
+    return config;
+  }
+  config.observability.logAnalytics = cloneConfig(previousPersistedConfig.observability.logAnalytics);
+  config.observability.runtimeStore = cloneConfig(previousPersistedConfig.observability.runtimeStore);
+  config.access.budgets = cloneConfig(previousPersistedConfig.access.budgets);
   return config;
 }
 
@@ -783,6 +823,7 @@ function applySchemaCompatibility(rawConfig, merged) {
   const rawProxyTimeouts = asPlainObject(rawProxy.timeouts);
   const rawProxyRetries = asPlainObject(rawProxy.retries);
   const rawProxyHttpClient = asPlainObject(rawProxy.httpClient);
+  const rawProxyGuards = asPlainObject(rawProxy.guards);
   merged.proxy = deepMerge(DEFAULTS.proxy, asPlainObject(merged.proxy));
   merged.proxy.timeouts = deepMerge(DEFAULTS.proxy.timeouts, asPlainObject(merged.proxy.timeouts));
   merged.proxy.timeouts.connectMs = pickInteger(rawProxyTimeouts.connectMs, rawLegacyUpstream.connectTimeoutMs, merged.proxy.timeouts.connectMs, DEFAULTS.proxy.timeouts.connectMs);
@@ -819,6 +860,12 @@ function applySchemaCompatibility(rawConfig, merged) {
   merged.proxy.forwardHeaders.deny = normalizeStringArray(merged.proxy.forwardHeaders.deny);
 
   merged.proxy.guards = deepMerge(DEFAULTS.proxy.guards, asPlainObject(merged.proxy.guards));
+  merged.proxy.guards.maxResponseBodyBytes = pickInteger(
+    rawProxyGuards.maxResponseBodyBytes,
+    rawLegacyUpstream.maxResponseBytes,
+    merged.proxy.guards.maxResponseBodyBytes,
+    DEFAULTS.proxy.guards.maxResponseBodyBytes
+  );
   merged.server.upstream = {
     connectTimeoutMs: merged.proxy.timeouts.connectMs,
     requestTimeoutMs: merged.proxy.timeouts.requestMs,
@@ -1024,6 +1071,10 @@ function normalizeConfig(raw, options = {}) {
 
 // Validate config structure and types
 function validateConfig(cfg) {
+  const distributionProfile = resolveDistributionProfile(cfg);
+  if (!DISTRIBUTION_PROFILES.has(distributionProfile)) {
+    throw new Error("distribution.profile must be minimum or nextgen");
+  }
   const publicServer = isPublicListenHost(cfg?.server?.host);
   const allowInsecurePublicAdmin = getEnvironmentBoolean("ALLOW_INSECURE_PUBLIC_ADMIN") === true;
   if (publicServer && !allowInsecurePublicAdmin) {
@@ -1049,6 +1100,9 @@ function validateConfig(cfg) {
   if (!cfg.server.adminPath || typeof cfg.server.adminPath !== "string") {
     throw new Error("server.adminPath must be a string");
   }
+  if (!/^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*\/?$/.test(cfg.server.adminPath)) {
+    throw new Error("server.adminPath must be an absolute URL path without query or fragment");
+  }
   if (!Number.isInteger(cfg.server.gracefulShutdownMs) || cfg.server.gracefulShutdownMs <= 0) {
     throw new Error("server.gracefulShutdownMs must be a positive integer");
   }
@@ -1057,6 +1111,12 @@ function validateConfig(cfg) {
   }
   if (!cfg.admin.basePath || typeof cfg.admin.basePath !== "string") {
     throw new Error("admin.basePath must be a string");
+  }
+  if (!/^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*\/?$/.test(cfg.admin.basePath)) {
+    throw new Error("admin.basePath must be an absolute URL path without query or fragment");
+  }
+  if (!Number.isInteger(cfg.proxy.guards.maxResponseBodyBytes) || cfg.proxy.guards.maxResponseBodyBytes <= 0) {
+    throw new Error("proxy.guards.maxResponseBodyBytes must be a positive integer");
   }
   if (cfg.server.caddy != null) {
     if (typeof cfg.server.caddy !== "object") {
@@ -1730,12 +1790,13 @@ function validateConfig(cfg) {
       throw new Error(`upstreams[${idx}].routes must be an object`);
     }
   }
-  const bindingIssues = getConfiguredModelBindingIssues(cfg);
+  const modelCatalogSnapshot = compileModelCatalog(cfg);
+  const bindingIssues = getConfiguredModelBindingIssues(cfg, modelCatalogSnapshot);
   if (bindingIssues.length) {
     const preview = bindingIssues.slice(0, 3).map((issue) => issue.message).join("; ");
     throw new Error(preview);
   }
-  return cfg;
+  return { config: cfg, modelCatalogSnapshot };
 }
 
 export function getConfigPath() {
@@ -1746,9 +1807,13 @@ export async function loadConfig() {
   const rawText = await readPersistedConfigText();
   const raw = JSON.parse(rawText);
   const normalizedPersistedConfig = normalizeConfig(raw, { applyEnvironment: false });
-  const cfg = validateConfig(applyConfigEnvironmentOverrides(cloneConfig(normalizedPersistedConfig)));
+  const { config: cfg, modelCatalogSnapshot } = validateConfig(
+    applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalizedPersistedConfig)))
+  );
   persistedConfig = normalizedPersistedConfig;
   currentConfig = cfg;
+  currentDistributionProfile = resolveDistributionProfile(cfg);
+  installModelCatalogSnapshot(modelCatalogSnapshot);
   setPersistenceConfig(cfg);
   setRuntimeStoreConfig(cfg);
   return cfg;
@@ -1769,14 +1834,21 @@ export function getPersistedConfig() {
 }
 
 export async function saveConfig(nextConfig) {
-  const normalized = preserveEnvironmentManagedFields(
-    normalizeConfig(nextConfig, { applyEnvironment: false }),
+  const normalized = preserveDistributionManagedFields(
+    preserveEnvironmentManagedFields(
+      normalizeConfig(nextConfig, { applyEnvironment: false }),
+      persistedConfig
+    ),
     persistedConfig
   );
-  const validated = validateConfig(applyConfigEnvironmentOverrides(cloneConfig(normalized)));
+  const { config: validated, modelCatalogSnapshot } = validateConfig(
+    applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)))
+  );
   await writePersistedConfigText(JSON.stringify(normalized, null, 2), validated);
   persistedConfig = normalized;
   currentConfig = validated;
+  currentDistributionProfile = resolveDistributionProfile(validated);
+  installModelCatalogSnapshot(modelCatalogSnapshot);
   setPersistenceConfig(validated);
   setRuntimeStoreConfig(validated);
   return validated;
@@ -1788,6 +1860,11 @@ export async function reloadConfig() {
 
 export function getConfigRuntimeInfo() {
   return {
+    distribution: {
+      profile: resolveDistributionProfile(currentConfig),
+      capabilities: getDistributionCapabilities(currentConfig)
+    },
+    modelCatalog: getModelCatalogRuntimeInfo(),
     persistence: getPersistenceSummary(currentConfig),
     logging: getLogRuntimeInfo(currentConfig),
     runtimeStore: getRuntimeStoreInfo(currentConfig)

@@ -20,6 +20,18 @@
     "vision",
     "function-calling"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": [
+          "enabled",
+          "disabled"
+        ],
+        "default": "enabled"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",

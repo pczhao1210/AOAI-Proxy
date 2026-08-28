@@ -15,8 +15,22 @@
     "text"
   ],
   "capabilities": [
-    "reasoning"
+    "reasoning",
+    "function-calling",
+    "json-output"
   ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": [
+          "enabled",
+          "disabled"
+        ],
+        "default": "enabled"
+      }
+    }
+  },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -40,15 +54,18 @@
     "displayName": "GLM 5",
     "targetModel": "GLM-5",
     "capabilities": [
-      "reasoning"
+      "reasoning",
+      "function-calling",
+      "json-output"
     ],
     "pricingRef": "GLM-5"
   },
   "sources": {
+    "capabilities": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
     "Azure Retail Prices API 的 Foundry Models 计量 FW GLM 5 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00022、0.0011、0.00352 USD 每 1K tokens。",
-    "公开资料里不同厂商对 GLM-5 能力标签表述不完全一致，因此这里先使用保守的 reasoning 能力集合。"
+    "智谱官方文档声明 GLM-5 支持思考模式、Function Calling 和结构化输出；thinking 默认开启，可通过 thinking.type 在 enabled 与 disabled 间切换。"
   ]
 }
