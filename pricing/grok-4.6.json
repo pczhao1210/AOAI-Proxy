@@ -1,0 +1,60 @@
+{
+  "id": "grok-4.6",
+  "displayName": "Grok 4.6",
+  "provider": "xai",
+  "family": "grok-4.6",
+  "modelVersion": null,
+  "status": "preview",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "xai-official",
+    "status": "published",
+    "inputPer1mTokens": 2,
+    "cachedInputPer1mTokens": 0.5,
+    "outputPer1mTokens": 6,
+    "inputPer1kTokens": 0.002,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.006
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.002,
+    "cachedInputPer1kTokens": 0.0005,
+    "outputPer1kTokens": 0.006
+  },
+  "proxyTemplate": {
+    "id": "grok-4.6",
+    "displayName": "Grok 4.6",
+    "targetModel": "grok-4.6",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling"
+    ],
+    "pricingRef": "grok-4.6"
+  },
+  "sources": {
+    "capabilities": "https://docs.x.ai/developers/models/grok-4.6",
+    "pricing": "https://docs.x.ai/developers/models/grok-4.6"
+  },
+  "notes": [
+    "xAI 模型页将 Grok 4.6 标为 500K context window，支持文本与图片输入、文本输出、函数调用和可配置 reasoning。",
+    "当前 pricingCatalogEntry 使用 xAI Standard Tier 低于 200K prompt tokens 的公开单价：input、cached input、output 分别为 2、0.5、6 USD 每 1M tokens；文档还列出 200K 及以上 prompt 的更高单价，当前仓库 pricingCatalog schema 仅支持单组 token 单价，未单独建模高上下文阶梯价。"
+  ]
+}

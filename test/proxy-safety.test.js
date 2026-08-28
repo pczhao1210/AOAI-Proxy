@@ -431,6 +431,13 @@ test("pricing protocol metadata distinguishes GPT, Claude, and DeepSeek interfac
     const definition = getPricingDefinition(modelId);
     assert.deepEqual(definition?.interfaces, ["chat/completions"]);
   }
+
+  const grok46 = getPricingDefinition("grok-4.6");
+  assert.deepEqual(grok46?.interfaces, ["chat/completions"]);
+  assert.deepEqual(grok46?.inputModalities, ["text", "image"]);
+  assert.equal(grok46?.pricingCatalogEntry?.inputPer1kTokens, 0.002);
+  assert.equal(grok46?.pricingCatalogEntry?.cachedInputPer1kTokens, 0.0005);
+  assert.equal(grok46?.pricingCatalogEntry?.outputPer1kTokens, 0.006);
 });
 
 test("Anthropic token count routes are explicit or safely derived from Messages", () => {
