@@ -218,8 +218,9 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 
 - **P0 核心验收已关闭**：Claude Code 与 Codex 的固定版本原生 HTTP/SSE 基础工作流、模型发现、路由约束和安全边界均有自动化及真实 CLI smoke 证据。
 - **P1 四项均已完成**：`messages/count_tokens`、`responses/compact`、现代 item/content 的无损 shim 门禁，以及显式参数/错误保真策略。
-- **回归基线已建立**：93/93 单元测试、32/32 路由契约、两条固定版本 CLI smoke 和管理端生产构建均通过。
+- **回归基线已建立**：103/103 单元测试、34/34 路由契约、既有两条固定版本 CLI smoke 和管理端生产构建均通过。
 - **通用兼容性边界已明确**：原生路径透明保留未知结构；shim 只承诺基础文本、URL/base64 图片和普通 function tool 的有限兼容，其他结构明确失败。
+- **2026-08-28 permissive shim 保活修复**：当 `rejectLossyResponses=false` 且 Responses reasoning 等不支持事件被丢弃时，代理会立即写入协议中立的 SSE comment，避免响应已 hijack 但下游仍为零字节；严格拒绝、原生透传与 Responses 顶层终态要求保持不变。reasoning 分步单元回归和 `shim-compatibility-guards` 路由契约已通过。
 
 ### 6.3 待完成
 
@@ -324,17 +325,19 @@ P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单�
 | token counting | 原生 Messages 已支持 | 不适用 | 有路由、URL、安全和 no-shim 覆盖 |
 | server-side compact | 不适用 | 原生 Responses 已支持；Codex 自动触发未验证 | 有路由、URL、usage 和 no-shim 覆盖 |
 | SSE 非正常 EOF | 基础检查已有 | 严格模式已拒绝 output done 假终态 | 有 passthrough/shim 错误测试，缺真实 CLI 错误矩阵 |
+| permissive shim 前导 reasoning | 不适用 | Chat 降级路径立即发送 SSE comment 保活 | 有分步 reader 单元测试和 route 级 HTTP 覆盖 |
 | WebSocket | 不适用 | 不支持 | 未覆盖 |
 | 真实 CLI | **`2.1.226` 基础文本流通过** | **`0.147.0` 基础文本流通过** | 两条固定版本 smoke 已固化 |
 
 ## 8. 本次验证结果
 
-- `npm run test:routes`：32/32 通过，覆盖原生 Messages、Messages token counting、原生 Responses、Responses compact、参数 policy、可选原生错误、严格 shim 门禁、协议转换、客户端专用模型目录、路由门禁、SSE 和错误帧。
-- `npm run test:unit`：93/93 通过，覆盖请求安全、utility URL 门禁、现代 item/content block 可表示性、参数保真、undici 网络错误分类、默认关闭的 SSE 错误透传、转换语义、严格且协议绑定的流终止、usage、取消、POSIX CLI 进程组升级清理和测试夹具失败清理；与路由套件合计 125 项代理级检查通过。
+- `npm run test:routes`：34/34 通过，覆盖原生 Messages、Messages token counting、原生 Responses、Responses compact、参数 policy、可选原生错误、严格 shim 门禁、协议转换、客户端专用模型目录、路由门禁、SSE 和错误帧。
+- `npm run test:unit`：103/103 通过，覆盖请求安全、utility URL 门禁、现代 item/content block 可表示性、参数保真、undici 网络错误分类、默认关闭的 SSE 错误透传、转换语义、严格且协议绑定的流终止、usage、取消、POSIX CLI 进程组升级清理和测试夹具失败清理；与路由套件合计 137 项代理级检查通过。
 - `npm run test:cli:claude-code`：Claude Code `2.1.226` 在本轮复核中再次通过原生 Messages stream；新 beta、Claude/Stainless 元数据、模型映射和上游凭据隔离均通过。
 - `npm run test:cli:codex`：Codex `0.147.0` 在隔离 `CODEX_HOME` 下通过 command-backed test auth 刷新并解析专用模型目录，再以生产式 `env_key` provider 验证合法 Responses item 生命周期，生成 `agent_message` 并正常退出。
 - `npm run build:admin`：107 个模块成功构建；Settings 开关和模型兼容状态已进入生产静态资源。
 - Foundry beta 可观测性：路由测试确认 `unknown-beta` 被过滤，同时日志事件准确记录过滤值和 upstream 类型。
+- 2026-08-28：reasoning-first permissive Responses→Chat 流在读取后续块前已写出 `: protocol-shim keep-alive`；focused 与完整门禁均通过（103/103 单元、34/34 路由、管理端构建）。本次未复跑依赖外部 CLI/凭据的 Claude Code 与 Codex smoke；下一最小步骤是在部署候选镜像上复现同类请求并确认不再出现 `ERR_EMPTY_RESPONSE`。
 
 ## 9. 验收门槛
 

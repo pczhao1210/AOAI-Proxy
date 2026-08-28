@@ -1942,6 +1942,7 @@ export const routeTests = [
       });
       assert.equal(lossyResponseStream.status, 200, lossyResponseStream.text);
       assert.doesNotMatch(lossyResponseStream.text, /unsupported_protocol_shim_stream/);
+      assert.match(lossyResponseStream.text, /: protocol-shim keep-alive/);
       assert.equal((lossyResponseStream.text.match(/data: \[DONE\]/g) || []).length, 1);
       const streamWarnings = await ctx.adminRequest(
         "/admin/api/logs?event=proxy.protocol_shim_lossy_conversion"
