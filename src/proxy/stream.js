@@ -175,6 +175,10 @@ async function writeSseDone(replyRaw) {
   await writeWithBackpressure(replyRaw, "data: [DONE]\n\n");
 }
 
+async function writeSseKeepAlive(replyRaw) {
+  await writeWithBackpressure(replyRaw, ": protocol-shim keep-alive\n\n");
+}
+
 function emitOutputDeltas(json, onContent) {
   if (typeof onContent !== "function") return;
   if (json?.type === "response.output_text.delta" && typeof json.delta === "string") {
@@ -1252,6 +1256,7 @@ export async function streamShim({
             break;
           }
           onCompatibilityIssue?.(shimEventIssue);
+          await writeSseKeepAlive(reply.raw);
         }
         if (
           backendRouteKey === "responses"

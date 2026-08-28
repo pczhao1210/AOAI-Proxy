@@ -1861,6 +1861,61 @@ test("protocol-shim provider errors are surfaced", async () => {
   assert.equal(raw.output, "");
 });
 
+test("permissive Responses reasoning emits keep-alive before later Chat output", async () => {
+  const raw = new FakeReplyRaw();
+  const chunks = encodeEvents([
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { id: "rs_1", type: "reasoning", summary: [] }
+    },
+    { type: "response.output_text.delta", delta: "answer" },
+    {
+      type: "response.completed",
+      response: {
+        status: "completed",
+        output: [{ id: "rs_1", type: "reasoning", summary: [] }]
+      }
+    }
+  ]);
+  let readIndex = 0;
+  const compatibilityIssues = [];
+  const result = await streamShim({
+    upstreamResponse: {
+      body: {
+        getReader: () => ({
+          async read() {
+            if (readIndex === 1) {
+              assert.match(raw.output, /^: protocol-shim keep-alive\n\n$/);
+            }
+            return readIndex < chunks.length
+              ? { done: false, value: chunks[readIndex++] }
+              : { done: true };
+          },
+          async cancel() {}
+        })
+      }
+    },
+    reply: { raw },
+    modelId: "test-model",
+    routeKey: "chat/completions",
+    backendRouteKey: "responses",
+    strictResponsesCompletion: true,
+    rejectLossyResponses: false,
+    model: {},
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {},
+    onCompatibilityIssue(issue) { compatibilityIssues.push(issue); }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(compatibilityIssues[0]?.type, "reasoning");
+  assert.match(raw.output, /"content":"answer"/);
+  assert.equal((raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+});
+
 test("Responses incomplete events finish Chat streams without becoming provider errors", async () => {
   const { result, raw } = await runResponsesToChatShim(encodeEvents([
     {
