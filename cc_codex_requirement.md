@@ -338,6 +338,7 @@ P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单�
 - `npm run build:admin`：107 个模块成功构建；Settings 开关和模型兼容状态已进入生产静态资源。
 - Foundry beta 可观测性：路由测试确认 `unknown-beta` 被过滤，同时日志事件准确记录过滤值和 upstream 类型。
 - 2026-08-28：reasoning-first permissive Responses→Chat 流在读取后续块前已写出 `: protocol-shim keep-alive`；focused 与完整门禁均通过（103/103 单元、34/34 路由、管理端构建）。本次未复跑依赖外部 CLI/凭据的 Claude Code 与 Codex smoke；下一最小步骤是在部署候选镜像上复现同类请求并确认不再出现 `ERR_EMPTY_RESPONSE`。
+- 2026-08-28 ACR 发布：`alexmcr.azurecr.io/aoai-proxy:nextgen-latest` 已通过 Buildx 原子构建推送更新为 `sha256:99543e6fc92922a5b55afbb41b11b0ca143beb0defa1a635d7c6799e9180be1c`（`linux/amd64`，版本 `nextgen-202608280853`，构建时间 `2026-08-28T08:53:33Z`）。从 ACR 拉回后已确认镜像标签、环境版本和 protocol-shim keep-alive 修复。ACI/其他运行环境尚未切换到该摘要；下一最小步骤是按部署清单更新固定摘要并执行 `/version` 与 reasoning 流式复验。
 
 ## 9. 验收门槛
 

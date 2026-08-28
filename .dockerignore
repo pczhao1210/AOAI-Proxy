@@ -9,6 +9,7 @@ npm-debug.log*
 .env.*
 coverage
 dist
+data
 
 # Don’t bake local config into image
 config/config.json
