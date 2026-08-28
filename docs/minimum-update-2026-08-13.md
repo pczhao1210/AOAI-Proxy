@@ -21,6 +21,12 @@
 | 流完整性检查 | Chat/Responses 流在缺少协议终止证据时返回 `UPSTREAM_INCOMPLETE_STREAM`，不再把提前 EOF 当成功 | `b35a858` 及后续修正 |
 | SSE 尾帧解析 | 最后一个事件即使没有末尾换行，也能被解析为有效完成证据 | 后续 stream 修正 |
 
+## 2026-08-28 补充修复
+
+- Responses→Chat 非流式映射不再只读取 `output[0]`；reasoning 位于首项时，会继续扫描后续 message 内容。
+- `response.output_item.done` 与 `response.reasoning.done` 不再单独证明 Responses 流完整；缺少 `response.completed`、`response.incomplete` 或协议终止标记时返回 `UPSTREAM_INCOMPLETE_STREAM`，不生成空的成功 Chat 尾帧。
+- 已增加 reasoning-first JSON 与 reasoning-only 提前 EOF 回归。生产故障日志包含 minimal 分支不存在的完整 protocol-shim 遥测，部署镜像对齐仍是发布前门禁。
+
 ## 路由规则
 
 GPT-5.6 自动提升仅在以下条件全部满足时启用：

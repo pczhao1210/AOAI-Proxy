@@ -417,13 +417,19 @@ export function responsesToChatRequest(body, deployment) {
 
 export function mapResponsesJsonToChatCompletion(payload, modelId) {
   const created = Math.floor(Date.now() / 1000);
+  const output = Array.isArray(payload?.output) ? payload.output : [];
   const outputText = payload?.output_text
-    ?? payload?.output?.[0]?.content?.map((c) => c?.text).filter(Boolean).join("")
+    ?? output
+      .filter((item) => item?.type === "message")
+      .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+      .map((content) => content?.text)
+      .filter((text) => typeof text === "string")
+      .join("")
     ?? "";
   const toolCalls = [];
-  if (Array.isArray(payload?.output)) {
+  if (output.length > 0) {
     let index = 0;
-    for (const item of payload.output) {
+    for (const item of output) {
       if (!item || item.type !== "function_call") continue;
       const callId = item.call_id || item.id || `call_${index}`;
       toolCalls.push({

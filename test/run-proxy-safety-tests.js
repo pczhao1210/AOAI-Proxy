@@ -270,7 +270,7 @@ async function testPassthroughAcceptsChatFinishReasonAtEof() {
   assert.equal(result.ok, true);
 }
 
-async function testShimRejectsPrematureEofAndAcceptsCompletedOutput() {
+async function testShimRejectsPrematureEofAndAcceptsCompletedResponse() {
   const partialResult = await streamShim({
     upstreamResponse: createChunkedResponse([
       new TextEncoder().encode(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "partial" })}\n\n`)
@@ -291,7 +291,8 @@ async function testShimRejectsPrematureEofAndAcceptsCompletedOutput() {
     upstreamResponse: createChunkedResponse([
       new TextEncoder().encode([
         `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "complete" })}\n\n`,
-        `data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "message", status: "completed" } })}`
+        `data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "message", status: "completed" } })}\n\n`,
+        `data: ${JSON.stringify({ type: "response.completed", response: { usage: null } })}`
       ].join(""))
     ]),
     reply: { raw },
@@ -304,6 +305,26 @@ async function testShimRejectsPrematureEofAndAcceptsCompletedOutput() {
   });
   assert.equal(completedResult.ok, true);
   assert.match(raw.output(), /data: \[DONE\]/);
+
+  const reasoningRaw = createReplyRaw();
+  const reasoningResult = await streamShim({
+    upstreamResponse: createChunkedResponse([
+      new TextEncoder().encode(`data: ${JSON.stringify({
+        type: "response.output_item.done",
+        item: { id: "rs-test", type: "reasoning", summary: [] }
+      })}`)
+    ]),
+    reply: { raw: reasoningRaw },
+    modelId: "test-model",
+    routeKey: "chat/completions",
+    backendRouteKey: "responses",
+    model: { id: "test-model" },
+    policy,
+    onFirstChunk() {}
+  });
+  assert.equal(reasoningResult.ok, false);
+  assert.equal(reasoningResult.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+  assert.doesNotMatch(reasoningRaw.output(), /data: \[DONE\]/);
 }
 
 async function testJsonTimeoutCancelsBody() {
@@ -565,7 +586,7 @@ const tests = [
   testPassthroughHonorsBackpressure,
   testPassthroughRejectsPrematureEof,
   testPassthroughAcceptsChatFinishReasonAtEof,
-  testShimRejectsPrematureEofAndAcceptsCompletedOutput,
+  testShimRejectsPrematureEofAndAcceptsCompletedResponse,
   testJsonTimeoutCancelsBody,
   testJsonResponseLimitCancelsBody,
   testBackendRouteInferenceHandlesQueriesAndFinalUrls,

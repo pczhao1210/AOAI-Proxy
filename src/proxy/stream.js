@@ -5,9 +5,7 @@ const MAX_SSE_BUFFER_CHARS = 8 * 1024 * 1024;
 const RESPONSES_TERMINAL_OUTPUT_EVENTS = new Set([
   "response.output_text.done",
   "response.refusal.done",
-  "response.output_item.done",
-  "response.function_call_arguments.done",
-  "response.reasoning.done"
+  "response.function_call_arguments.done"
 ]);
 
 function buildProviderStreamError(event) {

@@ -178,6 +178,28 @@ assert.equal(promoted.request.body.tools[0].description, "lookup");
 assert.equal(promoted.reply.statusCode, 200);
 assert.equal(promoted.reply.payload.choices[0].message.content, "ok");
 
+const reasoningThenMessage = await invokeProxy({
+  model: "gpt-5.6-luna",
+  messages: [{ role: "user", content: "reason first" }]
+}, (request) => ({
+  id: "resp-reasoning-test",
+  object: "response",
+  status: "completed",
+  model: request.body.model,
+  output: [{
+    id: "rs-test",
+    type: "reasoning",
+    summary: []
+  }, {
+    id: "msg-test",
+    type: "message",
+    role: "assistant",
+    content: [{ type: "output_text", text: "visible answer" }]
+  }]
+}));
+assert.equal(reasoningThenMessage.reply.statusCode, 200);
+assert.equal(reasoningThenMessage.reply.payload.choices[0].message.content, "visible answer");
+
 const explicitNative = await invokeProxy({
   model: "gpt-5.6-luna-native",
   messages: [{ role: "user", content: "hello" }]
@@ -241,7 +263,8 @@ const completedShim = await streamShim({
     `data: ${JSON.stringify({
       type: "response.output_item.done",
       item: { type: "message", status: "completed" }
-    })}`
+    })}\n\n`,
+    `data: ${JSON.stringify({ type: "response.completed", response: { usage: null } })}`
   ].join("")),
   reply: { raw: completedStreamRaw },
   modelId: "gpt-5.6-luna",
@@ -253,5 +276,25 @@ const completedShim = await streamShim({
 });
 assert.equal(completedShim.ok, true);
 assert.match(completedStreamRaw.output(), /data: \[DONE\]/);
+
+const reasoningOnlyRaw = createStreamReplyRaw();
+const reasoningOnlyShim = await streamShim({
+  upstreamResponse: createStreamResponse(
+    `data: ${JSON.stringify({
+      type: "response.output_item.done",
+      item: { id: "rs-test", type: "reasoning", summary: [] }
+    })}`
+  ),
+  reply: { raw: reasoningOnlyRaw },
+  modelId: "gpt-5.6-luna",
+  routeKey: "chat/completions",
+  backendRouteKey: "responses",
+  model: { id: "gpt-5.6-luna" },
+  policy: streamPolicy,
+  onFirstChunk() {}
+});
+assert.equal(reasoningOnlyShim.ok, false);
+assert.equal(reasoningOnlyShim.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
+assert.doesNotMatch(reasoningOnlyRaw.output(), /data: \[DONE\]/);
 
 console.log("Routing regression tests passed");
