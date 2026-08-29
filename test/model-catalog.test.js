@@ -8,14 +8,22 @@ import {
   installModelCatalogSnapshot,
   resolveModelDescriptor
 } from "../src/model-catalog.js";
-import { getConfiguredModelBindingIssues } from "../src/model-validation.js";
+import { getConfiguredModelBindingIssues, validateConfiguredModels } from "../src/model-validation.js";
 import { recordGovernanceUsage } from "../src/governance.js";
 import { listPricingDefinitions } from "../src/pricing-library.js";
-import { resolveEffectiveRouteKey } from "../src/proxy/routing.js";
+import { resolveEffectiveRouteKey, resolveRoutePlan } from "../src/proxy/routing.js";
 import { chatToResponsesRequest, responsesToMessagesRequest } from "../src/proxy/shim.js";
 
 const config = {
-  upstreams: [{ name: "azure", provider: "azure-openai" }],
+  upstreams: [{
+    name: "azure",
+    provider: "azure-openai",
+    baseUrl: "https://example.openai.azure.com/",
+    routes: {
+      "chat/completions": "/openai/v1/chat/completions",
+      responses: "/openai/v1/responses"
+    }
+  }],
   models: [
     { id: "public-gpt", targetModel: "gpt-special", pricingRef: "gpt-special", upstream: "azure" },
     { id: "unknown-model", targetModel: "unknown-deployment", upstream: "azure" }
@@ -142,7 +150,7 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
 });
 
 test("Model Catalog compiler resolves exact model facts and protocol defaults", () => {
-  const snapshot = compileModelCatalog(config, definitions, { generation: 7 });
+  const snapshot = compileModelCatalog(config, definitions);
   installModelCatalogSnapshot(snapshot);
 
   const matched = resolveModelDescriptor("public-gpt", snapshot);
@@ -151,11 +159,12 @@ test("Model Catalog compiler resolves exact model facts and protocol defaults", 
   assert.equal(matched.defaultInterface, "responses");
   assert.deepEqual(matched.capabilities, ["reasoning", "vision"]);
   assert.deepEqual(getDescriptorProtocolProfile(matched, "responses").reasoning.levels, ["low", "medium", "high", "xhigh"]);
+  assert.equal(resolveModelDescriptor("gpt-special-alias", snapshot), matched);
 
   const unknown = resolveModelDescriptor("unknown-model", snapshot);
   assert.equal(unknown.catalogMatched, false);
   assert.equal(getDescriptorProtocolProfile(unknown, "responses"), getDefaultProtocolProfile("responses"));
-  assert.equal(snapshot.generation, 7);
+  assert.ok(snapshot.generation > 0);
   assert.equal(snapshot.modelCount, 2);
 });
 
@@ -169,14 +178,20 @@ test("Model Catalog compiler rejects ambiguous aliases", () => {
 test("Model Catalog digest is deterministic across definition order", () => {
   const first = { ...definitions[0], id: "first", aliases: [] };
   const second = { ...definitions[0], id: "second", aliases: [] };
-  const left = compileModelCatalog(config, [first, second], { generation: 1 });
-  const right = compileModelCatalog(config, [second, first], { generation: 2 });
+  const left = compileModelCatalog(config, [first, second]);
+  const right = compileModelCatalog(config, [second, first]);
   assert.equal(left.sourceDigest, right.sourceDigest);
 });
 
 test("Model Catalog sync validates candidates and commits against the latest config", () => {
-  let currentConfig = config;
-  const transaction = createModelCatalogSyncTransaction(() => currentConfig);
+  let currentConfig = {
+    ...config,
+    models: [config.models[0]]
+  };
+  const transaction = createModelCatalogSyncTransaction(
+    () => currentConfig,
+    getConfiguredModelBindingIssues
+  );
   const prepared = transaction.prepare(definitions);
 
   currentConfig = {
@@ -215,8 +230,309 @@ test("model binding validation uses the candidate catalog snapshot", () => {
 
   assert.match(
     getConfiguredModelBindingIssues(candidateConfig, candidateSnapshot)[0]?.message || "",
-    /requires a \/providers\/blackforestlabs/
+    /route target "openai-image".*candidate-image/
   );
+});
+
+test("model route bindings are constrained by their Catalog definition", () => {
+  const routeConfig = {
+    upstreams: [{
+      name: "azure",
+      provider: "azure-openai",
+      baseUrl: "https://example.openai.azure.com/",
+      routes: {
+        "chat/completions": "/openai/v1/chat/completions",
+        responses: "/openai/v1/responses",
+        messages: "/openai/v1/messages",
+        "images/generations": "/openai/v1/images/generations",
+        "openai-image": "/openai/deployments/{deployment}/images/generations",
+        "audio/transcriptions": "/openai/v1/audio/transcriptions"
+      }
+    }],
+    models: [
+      {
+        id: "unknown-public",
+        pricingRef: "missing-catalog-model",
+        upstream: "azure",
+        routes: {}
+      },
+      {
+        id: "text-public",
+        pricingRef: "catalog-text",
+        upstream: "azure",
+        routes: { "chat/completions": "messages" }
+      },
+      {
+        id: "typo-source-public",
+        pricingRef: "catalog-text",
+        upstream: "azure",
+        routes: { responsez: "responses" }
+      },
+      {
+        id: "direct-path-public",
+        pricingRef: "catalog-text",
+        upstream: "azure",
+        routes: { responses: "/openai/v1/responses" }
+      },
+      {
+        id: "image-public",
+        pricingRef: "catalog-image",
+        upstream: "azure",
+        routes: { "images/generations": "openai-image" }
+      },
+      {
+        id: "audio-public",
+        pricingRef: "catalog-audio",
+        upstream: "azure",
+        routes: { "audio/transcriptions": "audio/transcriptions" }
+      },
+      {
+        id: "hosted-audio-public",
+        pricingRef: "catalog-hosted-audio",
+        hostingMode: "azure",
+        upstream: "azure",
+        routes: { "audio/transcriptions": "audio/transcriptions" }
+      },
+      {
+        id: "mixed-public",
+        pricingRef: "catalog-mixed",
+        upstream: "azure",
+        routes: { "images/generations": "responses" }
+      }
+    ]
+  };
+  const routeDefinitions = [
+    {
+      id: "catalog-text",
+      provider: "azure-openai",
+      interfaces: ["chat/completions", "responses"],
+      defaultInterface: "responses",
+      capabilities: ["reasoning"]
+    },
+    {
+      id: "catalog-image",
+      provider: "azure-openai",
+      interfaces: ["images/generations"],
+      capabilities: ["image-generation"],
+      proxyTemplate: { routes: { "*": "openai-image" } }
+    },
+    {
+      id: "catalog-audio",
+      provider: "azure-openai",
+      interfaces: ["audio/transcriptions"],
+      capabilities: ["transcription"]
+    },
+    {
+      id: "catalog-hosted-audio",
+      provider: "custom",
+      interfaces: ["realtime"],
+      interfacesByHostingMode: { azure: ["audio/transcriptions"] },
+      capabilities: ["transcription"]
+    },
+    {
+      id: "catalog-mixed",
+      provider: "azure-openai",
+      interfaces: ["images/generations", "responses"],
+      capabilities: ["image-generation", "reasoning"]
+    }
+  ];
+  const snapshot = compileModelCatalog(routeConfig, routeDefinitions);
+  const issues = getConfiguredModelBindingIssues(routeConfig, snapshot);
+
+  assert.match(
+    issues.find((issue) => issue.modelId === "unknown-public")?.message || "",
+    /missing-catalog-model.*Model Catalog/
+  );
+  assert.match(
+    issues.find((issue) => issue.modelId === "text-public")?.message || "",
+    /route target "messages".*catalog-text.*chat\/completions.*responses/
+  );
+  assert.match(
+    issues.find((issue) => issue.modelId === "typo-source-public")?.message || "",
+    /route source "responsez".*Model Catalog/
+  );
+  assert.match(
+    issues.find((issue) => issue.modelId === "direct-path-public")?.message || "",
+    /route target "\/openai\/v1\/responses".*catalog-text/
+  );
+  assert.equal(issues.some((issue) => issue.modelId === "image-public"), false);
+  assert.equal(issues.some((issue) => issue.modelId === "audio-public"), false);
+  assert.equal(issues.some((issue) => issue.modelId === "hosted-audio-public"), false);
+  assert.match(
+    issues.find((issue) => issue.modelId === "mixed-public")?.message || "",
+    /does not support route conversion from images\/generations to responses/
+  );
+
+  const upstream = routeConfig.upstreams[0];
+  assert.throws(() => resolveRoutePlan({
+    routeKey: "chat/completions",
+    model: routeConfig.models.find((model) => model.id === "text-public"),
+    upstream,
+    descriptor: resolveModelDescriptor("text-public", snapshot)
+  }), /does not allow route target messages/);
+  assert.throws(() => resolveRoutePlan({
+    routeKey: "responses",
+    model: routeConfig.models.find((model) => model.id === "direct-path-public"),
+    upstream,
+    descriptor: resolveModelDescriptor("direct-path-public", snapshot)
+  }), /Direct model route paths are not supported/);
+  assert.throws(() => resolveRoutePlan({
+    routeKey: "images/generations",
+    model: routeConfig.models.find((model) => model.id === "mixed-public"),
+    upstream,
+    descriptor: resolveModelDescriptor("mixed-public", snapshot)
+  }), /does not support route conversion from images\/generations to responses/);
+});
+
+test("model validation skips probes for Catalog interfaces without a probe payload", async () => {
+  const audioConfig = {
+    upstreams: [{
+      name: "azure",
+      provider: "azure-openai",
+      baseUrl: "https://example.openai.azure.com/",
+      routes: { "audio/transcriptions": "/openai/v1/audio/transcriptions" }
+    }],
+    models: [{
+      id: "audio-public",
+      pricingRef: "catalog-audio",
+      upstream: "azure"
+    }]
+  };
+  installModelCatalogSnapshot(compileModelCatalog(audioConfig, [{
+    id: "catalog-audio",
+    provider: "azure-openai",
+    interfaces: ["audio/transcriptions"],
+    capabilities: ["transcription"]
+  }]));
+  const previousFetch = globalThis.fetch;
+  let upstreamCalls = 0;
+  globalThis.fetch = async () => {
+    upstreamCalls += 1;
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const result = await validateConfiguredModels(audioConfig, { probe: true });
+    assert.equal(result.items[0]?.state, "skipped");
+    assert.equal(result.items[0]?.probe?.errorCode, "MODEL_VALIDATION_PROBE_UNSUPPORTED");
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("final upstream URLs cannot resolve outside the model Catalog interfaces", () => {
+  const mismatchConfig = {
+    upstreams: [{
+      name: "azure",
+      provider: "azure-openai",
+      baseUrl: "https://example.openai.azure.com/",
+      routes: { responses: "/openai/v1/chat/completions" }
+    }],
+    models: [{
+      id: "responses-only-public",
+      pricingRef: "responses-only",
+      upstream: "azure"
+    }]
+  };
+  const snapshot = compileModelCatalog(mismatchConfig, [
+    {
+      id: "responses-only",
+      provider: "azure-openai",
+      interfaces: ["responses"],
+      capabilities: ["reasoning"]
+    },
+    {
+      id: "foreign-nested-interface",
+      provider: "custom",
+      interfaces: ["vendor/responses"],
+      capabilities: []
+    }
+  ]);
+
+  assert.match(
+    getConfiguredModelBindingIssues(mismatchConfig, snapshot)[0]?.message || "",
+    /responses-only.*final backend route chat\/completions.*allowed interfaces: responses/
+  );
+
+  const foreignSuffixConfig = structuredClone(mismatchConfig);
+  foreignSuffixConfig.upstreams[0].routes.responses = "/v1/vendor/responses";
+  const foreignSuffixSnapshot = compileModelCatalog(foreignSuffixConfig, [
+    {
+      id: "responses-only",
+      provider: "azure-openai",
+      interfaces: ["responses"],
+      capabilities: ["reasoning"]
+    },
+    {
+      id: "foreign-nested-interface",
+      provider: "custom",
+      interfaces: ["vendor/responses"],
+      capabilities: []
+    }
+  ]);
+  assert.match(
+    getConfiguredModelBindingIssues(foreignSuffixConfig, foreignSuffixSnapshot)[0]?.message || "",
+    /responses-only.*final backend route vendor\/responses.*allowed interfaces: responses/
+  );
+
+  const partialMismatchConfig = {
+    upstreams: [{
+      name: "azure",
+      provider: "azure-openai",
+      baseUrl: "https://example.openai.azure.com/",
+      routes: {
+        "chat/completions": "/openai/v1/unknown-chat",
+        responses: "/openai/v1/responses"
+      }
+    }],
+    models: [{
+      id: "dual-public",
+      pricingRef: "dual-model",
+      upstream: "azure"
+    }]
+  };
+  const partialSnapshot = compileModelCatalog(partialMismatchConfig, [{
+    id: "dual-model",
+    provider: "azure-openai",
+    interfaces: ["chat/completions", "responses"],
+    defaultInterface: "responses",
+    capabilities: ["reasoning"]
+  }]);
+
+  assert.match(
+    getConfiguredModelBindingIssues(partialMismatchConfig, partialSnapshot)[0]?.message || "",
+    /chat\/completions.*final backend route unknown/
+  );
+
+  const nestedInterfaceConfig = {
+    upstreams: [{
+      name: "custom",
+      provider: "custom",
+      baseUrl: "https://example.test/",
+      routes: { "vendor/responses": "/v1/vendor/responses" }
+    }],
+    models: [{
+      id: "nested-interface-public",
+      pricingRef: "nested-interface",
+      upstream: "custom"
+    }]
+  };
+  const nestedInterfaceSnapshot = compileModelCatalog(nestedInterfaceConfig, [{
+    id: "nested-interface",
+    provider: "custom",
+    interfaces: ["vendor/responses"],
+    capabilities: []
+  }]);
+  const nestedDescriptor = resolveModelDescriptor("nested-interface-public", nestedInterfaceSnapshot);
+
+  assert.equal(getConfiguredModelBindingIssues(nestedInterfaceConfig, nestedInterfaceSnapshot).length, 0);
+  assert.equal(resolveRoutePlan({
+    routeKey: "vendor/responses",
+    model: nestedInterfaceConfig.models[0],
+    upstream: nestedInterfaceConfig.upstreams[0],
+    descriptor: nestedDescriptor
+  }).backendRouteKey, "vendor/responses");
 });
 
 test("fallback routing honors the catalog default interface", () => {
@@ -236,6 +552,27 @@ test("fallback routing honors the catalog default interface", () => {
   assert.equal(
     resolveEffectiveRouteKey("messages", routeConfig.models[0], routeConfig.upstreams[0], null, descriptor),
     "chat/completions"
+  );
+
+  const hostedConfig = {
+    upstreams: [{ name: "azure", provider: "azure-openai" }],
+    models: [{ id: "hosted-model", pricingRef: "hosted-model", upstream: "azure" }]
+  };
+  const hostedSnapshot = compileModelCatalog(hostedConfig, [{
+    id: "hosted-model",
+    provider: "custom",
+    defaultHostingMode: "azure",
+    interfaces: ["chat/completions", "messages"],
+    interfacesByHostingMode: { azure: ["messages"] },
+    defaultInterface: "messages",
+    capabilities: ["reasoning"]
+  }]);
+  const hostedDescriptor = resolveModelDescriptor("hosted-model", hostedSnapshot);
+  assert.equal(hostedDescriptor.hostingMode, "azure");
+  assert.deepEqual(hostedDescriptor.interfaces, ["messages"]);
+  assert.equal(
+    resolveEffectiveRouteKey("chat/completions", hostedConfig.models[0], hostedConfig.upstreams[0], null, hostedDescriptor),
+    "messages"
   );
 });
 

@@ -1,20 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { getUpstreamAuthHeaders } from "./auth.js";
-import { resolveModelDescriptor } from "./model-catalog.js";
+import { getDescriptorRouteTargets, resolveModelDescriptor } from "./model-catalog.js";
 import {
   prepareImageGenerationRequest,
   isBlackForestLabsProviderPath
 } from "./proxy/image-adapter.js";
 import {
   findUpstream,
-  buildUpstreamUrl,
-  buildDirectUpstreamUrl,
-  resolveModelRoute,
-  resolveEffectiveRouteKey,
-  normalizeBackendRouteKey,
   isPublicRouteEnabled,
-  inferBackendRouteKey,
-  reconcileBackendRouteKey
+  resolveRoutePlan
 } from "./proxy/routing.js";
 import { classifyFetchError, resolveUpstreamPolicy } from "./proxy/reliability.js";
 
@@ -37,7 +31,10 @@ function isDisabledStatus(status) {
 }
 
 function inferValidationRouteKey(model, definition, descriptor = null) {
-  const interfaces = normalizeStringArray(definition?.interfaces);
+  const descriptorInterfaces = normalizeStringArray(descriptor?.interfaces);
+  const interfaces = descriptorInterfaces.length > 0
+    ? descriptorInterfaces
+    : normalizeStringArray(definition?.interfaces);
   const defaultInterface = normalizeString(descriptor?.defaultInterface || definition?.defaultInterface).toLowerCase();
   const routeKey = interfaces.includes("images/generations")
     ? "images/generations"
@@ -52,27 +49,15 @@ function inferValidationRouteKey(model, definition, descriptor = null) {
 }
 
 function buildValidationTarget(model, upstream, routeKey, descriptor = null) {
-  const deployment = normalizeString(model?.targetModel) || normalizeString(model?.id);
-  const usesModelRouter = deployment.toLowerCase() === "model-router";
-  const override = resolveModelRoute(model, routeKey);
-  const effectiveRouteKey = usesModelRouter
-    ? "chat/completions"
-    : resolveEffectiveRouteKey(routeKey, model, upstream, override, descriptor);
-  const configuredBackendRouteKey = override
-    ? inferBackendRouteKey(routeKey, override)
-    : normalizeBackendRouteKey(effectiveRouteKey);
-  const targetUrl = override?.type === "path"
-    ? buildDirectUpstreamUrl(upstream, override.value, deployment, model, descriptor)
-    : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model, descriptor);
-  const backendRouteKey = reconcileBackendRouteKey(configuredBackendRouteKey, targetUrl);
+  const plan = resolveRoutePlan({ routeKey, model, upstream, descriptor });
 
   return {
-    deployment,
+    deployment: plan.deployment,
     routeKey,
-    backendRouteKey,
-    targetUrl,
+    backendRouteKey: plan.backendRouteKey,
+    targetUrl: plan.targetUrl,
     descriptor,
-    overrideType: override?.type || "routeKey"
+    overrideType: plan.override?.type || "routeKey"
   };
 }
 
@@ -99,7 +84,8 @@ function buildValidationPayload(target) {
         prompt: "health-check",
         size: "1024x1024"
       }
-      : {
+      : target.backendRouteKey === "chat/completions"
+        ? {
         model: target.deployment,
         messages: [
           {
@@ -107,7 +93,10 @@ function buildValidationPayload(target) {
             content: "health-check"
           }
         ]
-      };
+        }
+        : null;
+
+  if (!basePayload) return null;
 
   return prepareImageGenerationRequest({
     body: basePayload,
@@ -155,6 +144,37 @@ function buildStaticIssue(model, message) {
   };
 }
 
+function getCatalogIdentity(model) {
+  return normalizeString(model?.pricingRef)
+    || normalizeString(model?.id)
+    || normalizeString(model?.targetModel);
+}
+
+function getCatalogRouteBindingIssues(model, descriptor, snapshot) {
+  const issues = [];
+  const allowedSources = new Set(normalizeStringArray(snapshot?.routeInterfaces));
+  const allowedTargets = new Set(getDescriptorRouteTargets(descriptor));
+
+  for (const [source, target] of Object.entries(model?.routes || {})) {
+    const normalizedSource = normalizeString(source);
+    const normalizedTarget = normalizeString(target);
+    if (normalizedSource !== "*" && !allowedSources.has(normalizedSource)) {
+      issues.push(buildStaticIssue(
+        model,
+        `model "${model.id}" route source "${source}" is not an interface declared by the Model Catalog`
+      ));
+    }
+    if (!allowedTargets.has(normalizedTarget)) {
+      const allowed = [...allowedTargets].sort().join(", ") || "none";
+      issues.push(buildStaticIssue(
+        model,
+        `model "${model.id}" route target "${target}" is not allowed by Model Catalog model "${descriptor.catalogId}"; allowed targets: ${allowed}`
+      ));
+    }
+  }
+  return issues;
+}
+
 const CLIENT_COMPATIBILITY_PROTOCOLS = {
   claudeCode: { label: "Claude Code", routeKey: "messages" },
   codex: { label: "Codex", routeKey: "responses" }
@@ -195,6 +215,35 @@ export function getConfiguredModelBindingIssues(config, snapshot) {
   for (const model of Array.isArray(config?.models) ? config.models : []) {
     if (!model?.id || isDisabledStatus(model?.status)) continue;
 
+    const descriptor = resolveModelDescriptor(model.id, snapshot);
+    if (!descriptor?.catalogMatched) {
+      issues.push(buildStaticIssue(
+        model,
+        `model "${model.id}" references "${getCatalogIdentity(model)}", which was not found in the Model Catalog`
+      ));
+      continue;
+    }
+
+    const configuredHostingMode = normalizeString(model.hostingMode).toLowerCase();
+    const supportedHostingModes = new Set([
+      ...normalizeStringArray(descriptor.definition?.hostingModes),
+      ...Object.keys(descriptor.definition?.interfacesByHostingMode || {})
+    ].map((mode) => mode.toLowerCase()));
+    if (
+      configuredHostingMode
+      && !supportedHostingModes.has(configuredHostingMode)
+    ) {
+      issues.push(buildStaticIssue(
+        model,
+        `model "${model.id}" hostingMode "${configuredHostingMode}" is not supported by Model Catalog model "${descriptor.catalogId}"; supported modes: ${[...supportedHostingModes].sort().join(", ") || "none"}`
+      ));
+      continue;
+    }
+
+    const routeBindingIssues = getCatalogRouteBindingIssues(model, descriptor, snapshot);
+    issues.push(...routeBindingIssues);
+    if (routeBindingIssues.length > 0) continue;
+
     const upstream = findUpstream(config, model.upstream);
     if (!upstream) {
       issues.push(buildStaticIssue(model, `model \"${model.id}\" references unknown upstream \"${model.upstream}\"`));
@@ -204,24 +253,36 @@ export function getConfiguredModelBindingIssues(config, snapshot) {
       issues.push(buildStaticIssue(model, `model \"${model.id}\" is bound to disabled upstream \"${upstream.name}\"`));
     }
 
-    const descriptor = resolveModelDescriptor(model.id, snapshot);
     issues.push(...getClientCompatibilityIssues(config, model, upstream, descriptor));
 
     const definition = descriptor?.definition;
     const definitionProvider = normalizeProvider(definition?.provider);
-    try {
-      const target = buildValidationTarget(model, upstream, inferValidationRouteKey(model, definition, descriptor), descriptor);
-      if (
-        definitionProvider === "black-forest-labs"
-        && !isBlackForestLabsProviderPath(target.targetUrl)
-      ) {
+    const validationRouteKeys = new Set(normalizeStringArray(descriptor?.interfaces));
+    for (const sourceRouteKey of Object.keys(model?.routes || {})) {
+      const normalizedSource = normalizeString(sourceRouteKey).toLowerCase();
+      if (normalizedSource && normalizedSource !== "*") validationRouteKeys.add(normalizedSource);
+    }
+    if (validationRouteKeys.size === 0) {
+      validationRouteKeys.add(inferValidationRouteKey(model, definition, descriptor));
+    }
+    for (const validationRouteKey of validationRouteKeys) {
+      try {
+        const target = buildValidationTarget(model, upstream, validationRouteKey, descriptor);
+        if (
+          definitionProvider === "black-forest-labs"
+          && !isBlackForestLabsProviderPath(target.targetUrl)
+        ) {
+          issues.push(buildStaticIssue(
+            model,
+            `model \"${model.id}\" requires a /providers/blackforestlabs/v1/... route, but route \"${validationRouteKey}\" resolves to \"${target.targetUrl}\"`
+          ));
+        }
+      } catch (error) {
         issues.push(buildStaticIssue(
           model,
-          `model \"${model.id}\" requires a /providers/blackforestlabs/v1/... route, but currently resolves to \"${target.targetUrl}\"`
+          `model \"${model.id}\" has no usable upstream route for \"${validationRouteKey}\": ${error?.message || "route resolution failed"}`
         ));
       }
-    } catch (error) {
-      issues.push(buildStaticIssue(model, `model \"${model.id}\" has no usable upstream route: ${error?.message || "route resolution failed"}`));
     }
   }
   return issues;
@@ -346,6 +407,14 @@ async function probeConfiguredModel(config, item) {
     descriptor
   );
   const payload = buildValidationPayload(target);
+  if (!payload) {
+    applyProbeOutcome(item, {
+      state: "skipped",
+      errorCode: "MODEL_VALIDATION_PROBE_UNSUPPORTED",
+      message: `validation probe is not implemented for ${target.backendRouteKey}`
+    });
+    return;
+  }
   const policy = resolveUpstreamPolicy(config, {
     routeKey: target.routeKey,
     model,

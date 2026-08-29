@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import { ensure } from "./harness.js";
 
 export const routeTests = [
@@ -16,6 +17,38 @@ export const routeTests = [
         version: "nextgen-202608100000",
         buildTime: "2026-08-10T00:00:00Z"
       });
+    }
+  },
+  {
+    id: "request-body-limit",
+    description: "chunked request bodies are bounded before normalization",
+    async run(ctx) {
+      const config = await ctx.readConfigFile();
+      config.proxy.guards.maxRequestBodyBytes = 1024;
+      const saved = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(saved.status, 200, saved.text);
+
+      const rawBody = JSON.stringify({
+        model: "gpt-5-mini",
+        messages: [{ role: "user", content: "hello" }],
+        discarded: Array.from({ length: 600 }, () => null)
+      });
+      ensure(Buffer.byteLength(rawBody) > 1024, "Expected oversized raw request fixture");
+
+      ctx.clearUpstreamRequests();
+      const result = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: Readable.from([rawBody]),
+        duplex: "half"
+      });
+
+      assert.equal(result.status, 413, result.text);
+      assert.equal(ctx.upstreamRequests.length, 0, "Oversized raw request must not reach upstream");
     }
   },
   {
@@ -106,6 +139,13 @@ export const routeTests = [
       assert.equal(formatOnlyResult.json?.object, undefined);
       assert.deepEqual(formatOnlyResult.json.data.map((model) => model.id), ["claude-native"]);
 
+      const explicitFormatResult = await ctx.publicRequest("/v1/models?format=claude-code", {
+        headers: { "user-agent": "codex_cli_rs/0.147.0" }
+      });
+      assert.equal(explicitFormatResult.status, 200, explicitFormatResult.text);
+      assert.equal(explicitFormatResult.json?.models, undefined);
+      assert.deepEqual(explicitFormatResult.json?.data?.map((model) => model.id), ["claude-native"]);
+
       const config = await ctx.readConfigFile();
       config.compatibility = {
         ...(config.compatibility || {}),
@@ -147,6 +187,24 @@ export const routeTests = [
       assert.equal(result.json.models.some((model) => model.slug === "claude-sonnet-4-6"), false);
       assert.equal(result.json.models.some((model) => model.slug === "chat-only"), false);
       assert.equal(result.json.models.some((model) => model.slug === "gpt-image-1.5"), false);
+
+      const staleCapabilityConfig = await ctx.readConfigFile();
+      const staleCapabilityModel = staleCapabilityConfig.models.find((model) => model.id === "gpt-5.6-luna");
+      staleCapabilityModel.capabilities = ["reasoning"];
+      const savedStaleCapabilities = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: staleCapabilityConfig
+      });
+      assert.equal(savedStaleCapabilities.status, 200, savedStaleCapabilities.text);
+
+      const refreshedResult = await ctx.publicRequest("/v1/models?format=codex");
+      assert.equal(refreshedResult.status, 200, refreshedResult.text);
+      const refreshedModel = refreshedResult.json?.models?.find((model) => model.slug === "gpt-5.6-luna");
+      ensure(refreshedModel, "Expected refreshed Codex model data");
+      assert.deepEqual(refreshedModel.input_modalities, ["text", "image"]);
+      assert.equal(refreshedModel.supports_image_detail_original, true);
+      assert.equal(refreshedModel.supports_parallel_tool_calls, true);
 
       const standardResult = await ctx.publicRequest("/v1/models", {
         headers: { "user-agent": "openai-node/6.0" }
@@ -270,7 +328,10 @@ export const routeTests = [
         json: config
       });
       assert.equal(unknownResponsesPath.status, 400, unknownResponsesPath.text);
-      assert.match(unknownResponsesPath.json?.error || "", /marked for Codex.*resolves to unknown/);
+      assert.match(
+        unknownResponsesPath.json?.error || "",
+        /marked for Codex.*no usable native responses route.*final backend route unknown/
+      );
       foundryUpstream.routes.responses = originalResponsesRoute;
 
       config.routing = {
@@ -316,7 +377,10 @@ export const routeTests = [
         json: config
       });
       assert.equal(claudeModelRouter.status, 400, claudeModelRouter.text);
-      assert.match(claudeModelRouter.json?.error || "", /marked for Claude Code.*resolves to chat\/completions/);
+      assert.match(
+        claudeModelRouter.json?.error || "",
+        /marked for Claude Code.*does not allow route target chat\/completions/
+      );
       claudeModel.targetModel = originalClaudeTargetModel;
 
       claudeModel.routes = { "*": "responses" };
@@ -326,19 +390,19 @@ export const routeTests = [
         json: config
       });
       assert.equal(invalidClaude.status, 400, invalidClaude.text);
-      assert.match(invalidClaude.json?.error || "", /marked for Claude Code.*native messages is required/);
+      assert.match(invalidClaude.json?.error || "", /route target "responses".*claude-sonnet-4-6/);
 
       const claudeUpstream = config.upstreams.find((upstream) => upstream.name === claudeModel.upstream);
       ensure(claudeUpstream, "Expected Claude Code model upstream");
       claudeUpstream.routes.messagez = "/custom/messages";
       claudeModel.routes = { "*": "messagez" };
-      const unknownClaudeProtocol = await ctx.adminRequest("/admin/api/config", {
+      const aliasedClaudeProtocol = await ctx.adminRequest("/admin/api/config", {
         method: "PUT",
         headers: { "x-aoai-admin-csrf": "1" },
         json: config
       });
-      assert.equal(unknownClaudeProtocol.status, 400, unknownClaudeProtocol.text);
-      assert.match(unknownClaudeProtocol.json?.error || "", /marked for Claude Code.*resolves to messagez/);
+      assert.equal(aliasedClaudeProtocol.status, 400, aliasedClaudeProtocol.text);
+      assert.match(aliasedClaudeProtocol.json?.error || "", /route target "messagez".*claude-sonnet-4-6/);
 
       delete claudeUpstream.routes.messagez;
       claudeModel.routes = { "*": "messages" };
@@ -418,6 +482,84 @@ export const routeTests = [
       ensure(
         ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses")),
         "Expected explicit v3 wildcard override to use Responses"
+      );
+    }
+  },
+  {
+    id: "chat-web-search-to-responses",
+    description: "Chat web search uses the Azure Responses protocol without a client-specific gate",
+    async run(ctx) {
+      const config = await ctx.readConfigFile();
+      const chatOnlyModel = config.models.find((model) => model.id === "chat-only");
+      ensure(chatOnlyModel, "Expected chat-only model config");
+      chatOnlyModel.pricingRef = "model-router";
+      config.compatibility = {
+        ...(config.compatibility || {}),
+        protocolShim: {
+          ...(config.compatibility?.protocolShim || {}),
+          rejectLossyRequests: true
+        }
+      };
+      const savedConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(savedConfig.status, 200, savedConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const result = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5-mini",
+          messages: [{ role: "user", content: "Find today's Azure AI news." }],
+          tools: [{
+            type: "web_search_preview_2025_03_11",
+            search_context_size: "medium",
+            user_location: {
+              type: "approximate",
+              country: "US",
+              city: "Redmond",
+              region: "Washington"
+            }
+          }],
+          tool_choice: { type: "web_search_preview_2025_03_11" }
+        }
+      });
+
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.json?.object, "chat.completion");
+      const upstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(upstreamRequest, "Expected Chat web search to use the Responses upstream");
+      assert.deepEqual(upstreamRequest.body?.tools, [{
+        type: "web_search",
+        search_context_size: "medium",
+        user_location: {
+          type: "approximate",
+          country: "US",
+          city: "Redmond",
+          region: "Washington"
+        }
+      }]);
+      assert.deepEqual(upstreamRequest.body?.tool_choice, { type: "web_search" });
+
+      ctx.clearUpstreamRequests();
+      const chatOnlyResult = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "chat-only",
+          messages: [{ role: "user", content: "Search from a Chat-only model." }],
+          tools: [{ type: "web_search_preview" }]
+        }
+      });
+      assert.equal(chatOnlyResult.status, 200, chatOnlyResult.text);
+      ensure(
+        ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions")),
+        "Expected a Catalog Chat-only model to stay on the Chat upstream"
+      );
+      assert.equal(
+        ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses")),
+        null
       );
     }
   },
@@ -750,7 +892,7 @@ export const routeTests = [
         status: "active",
         upstream: "mock-provider-extension",
         targetModel: "gpt-6-provider-extension",
-        pricingRef: "",
+        pricingRef: "gpt-5.6-luna",
         routes: { "*": "responses" }
       });
       const savedExtensionConfig = await ctx.adminRequest("/admin/api/config", {
@@ -913,6 +1055,7 @@ export const routeTests = [
 
       assert.equal(result.status, 200, result.text);
       assert.equal(result.json?.type, "message");
+      assert.equal(result.json?.model, "claude-sonnet-4-6");
       assert.equal(result.json?.stop_reason, "end_turn");
 
       const upstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/messages"));
@@ -1189,6 +1332,8 @@ export const routeTests = [
       assert.equal(result.status, 200, result.text);
       assert.match(result.headers.get("content-type") || "", /^text\/event-stream/);
       assert.match(result.text, /event: message_start/);
+      assert.match(result.text, /"model":"claude-sonnet-4-6"/);
+      assert.doesNotMatch(result.text, /"model":"claude-sonnet-4-20250514"/);
       assert.match(result.text, /"type":"content_block_delta"/);
       assert.match(result.text, /ok from mock messages stream/);
       assert.match(result.text, /event: message_stop/);
@@ -1410,6 +1555,7 @@ export const routeTests = [
 
       assert.equal(result.status, 200, result.text);
       assert.equal(result.json?.type, "message");
+      assert.equal(result.json?.model, "chat-only");
       assert.equal(result.json?.content?.[0]?.text, "ok from mock chat");
 
       const upstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions"));
@@ -1419,6 +1565,56 @@ export const routeTests = [
       assert.deepEqual(upstreamRequest.body?.messages?.[1], { role: "user", content: "hello" });
       assert.equal(upstreamRequest.headers?.["anthropic-version"], undefined);
       assert.equal(upstreamRequest.headers?.["anthropic-beta"], undefined);
+    }
+  },
+  {
+    id: "responses-nonterminal-shim-rejected",
+    description: "Nonterminal Responses JSON is never fabricated as a final Chat or Messages response",
+    async run(ctx) {
+      const config = await ctx.readConfigFile();
+      const model = config.models.find((item) => item.id === "gpt-5.6-luna");
+      ensure(model, "Expected GPT-5.6 model config");
+      model.routes = {
+        ...(model.routes || {}),
+        "chat/completions": "responses",
+        messages: "responses"
+      };
+      config.compatibility = {
+        ...(config.compatibility || {}),
+        protocolShim: {
+          ...(config.compatibility?.protocolShim || {}),
+          rejectLossyResponses: false
+        }
+      };
+      const savedConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(savedConfig.status, 200, savedConfig.text);
+
+      const chatResult = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "trigger nonterminal response" }]
+        }
+      });
+      assert.equal(chatResult.status, 502, chatResult.text);
+      assert.equal(chatResult.json?.error?.code, "UnsupportedProtocolShimResponse");
+      assert.equal(chatResult.json?.error?.param, "status");
+
+      const messagesResult = await ctx.publicRequest("/v1/messages", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "trigger nonterminal response" }]
+        }
+      });
+      assert.equal(messagesResult.status, 502, messagesResult.text);
+      assert.equal(messagesResult.json?.error?.code, "UnsupportedProtocolShimResponse");
+      assert.equal(messagesResult.json?.error?.param, "status");
     }
   },
   {
@@ -1451,15 +1647,18 @@ export const routeTests = [
         method: "POST",
         json: {
           model: "claude-sonnet-4-6",
-          input: "hello",
+          input: "trigger encrypted reasoning stream",
           max_output_tokens: 64,
+          include: ["reasoning.encrypted_content"],
+          reasoning: { effort: "medium" },
           stream: true
         }
       });
 
       assert.equal(result.status, 200, result.text);
       assert.match(result.text, /"type":"response.output_text.delta"/);
-      assert.match(result.text, /ok from mock messages stream/);
+      assert.match(result.text, /reasoning preserved/);
+      assert.match(result.text, /"encrypted_content":"opaque-stream-signature"/);
       assert.match(result.text, /"type":"response.completed"/);
       assert.equal((result.text.match(/data: \[DONE\]/g) || []).length, 1);
     }
@@ -1504,6 +1703,8 @@ export const routeTests = [
 
       assert.equal(result.status, 200, result.text);
       assert.match(result.text, /event: message_start/);
+      assert.match(result.text, /"model":"chat-only"/);
+      assert.doesNotMatch(result.text, /"model":"chat-only-deployment"/);
       assert.match(result.text, /ok from mock chat stream/);
       assert.match(result.text, /"usage":\{"input_tokens":11,"output_tokens":7/);
       assert.match(result.text, /event: message_stop/);
@@ -2206,31 +2407,70 @@ export const routeTests = [
   },
   {
     id: "invalid-protocol-route",
-    description: "unknown text backend protocols are rejected",
+    description: "arbitrary aliases and direct model route paths are rejected during config validation",
     async run(ctx) {
+      const config = await ctx.readConfigFile();
+      const model = config.models.find((item) => item.id === "chat-only");
+      ensure(model, "Expected chat-only model config");
+      const originalRoutes = structuredClone(model.routes);
+
+      model.routes = { "*": "unknown-protocol" };
+      const invalidAlias = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(invalidAlias.status, 400, invalidAlias.text);
+      assert.match(invalidAlias.json?.error || "", /route target "unknown-protocol".*gpt-4o-mini/);
+
+      model.routes = { "*": "/openai/v1/responsez" };
+      const invalidPath = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(invalidPath.status, 400, invalidPath.text);
+      assert.match(invalidPath.json?.error || "", /route target "\/openai\/v1\/responsez".*gpt-4o-mini/);
+
+      const persistedConfig = await ctx.readConfigFile();
+      const persistedModel = persistedConfig.models.find((item) => item.id === "chat-only");
+      assert.deepEqual(persistedModel?.routes, originalRoutes);
+
+      const invalidRouteShapeConfig = await ctx.readConfigFile();
+      const disabledModel = invalidRouteShapeConfig.models.find((item) => item.id === "chat-only");
+      ensure(disabledModel, "Expected chat-only model config");
+      disabledModel.status = "disabled";
+      disabledModel.routes = [];
+      const invalidRouteShape = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: invalidRouteShapeConfig
+      });
+      assert.equal(invalidRouteShape.status, 400, invalidRouteShape.text);
+      assert.match(invalidRouteShape.json?.error || "", /models\[\d+\]\.routes must be an object/);
+
+      const invalidUpstreamRouteShapeConfig = await ctx.readConfigFile();
+      const invalidUpstream = invalidUpstreamRouteShapeConfig.upstreams.find((item) => item.name === "mock-foundry");
+      ensure(invalidUpstream, "Expected mock Foundry upstream config");
+      invalidUpstream.routes = [];
+      const invalidUpstreamRouteShape = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: invalidUpstreamRouteShapeConfig
+      });
+      assert.equal(invalidUpstreamRouteShape.status, 400, invalidUpstreamRouteShape.text);
+      assert.match(invalidUpstreamRouteShape.json?.error || "", /upstreams\[\d+\]\.routes must be an object/);
+
       ctx.clearUpstreamRequests();
-      const result = await ctx.publicRequest("/v1/chat/completions", {
+      const incompatibleEndpoint = await ctx.publicRequest("/v1/chat/completions", {
         method: "POST",
         json: {
-          model: "invalid-protocol-route",
-          messages: [{ role: "user", content: "hello" }]
+          model: "gpt-image-1.5",
+          messages: [{ role: "user", content: "This model only supports image generation." }]
         }
       });
-
-      assert.equal(result.status, 400, result.text);
-      assert.equal(result.json?.code, "UNSUPPORTED_PROTOCOL_ROUTE");
-      assert.equal(ctx.upstreamRequests.length, 0);
-
-      const invalidPathResult = await ctx.publicRequest("/v1/chat/completions", {
-        method: "POST",
-        json: {
-          model: "invalid-protocol-path",
-          messages: [{ role: "user", content: "hello" }]
-        }
-      });
-
-      assert.equal(invalidPathResult.status, 400, invalidPathResult.text);
-      assert.equal(invalidPathResult.json?.code, "UNSUPPORTED_PROTOCOL_ROUTE");
+      assert.equal(incompatibleEndpoint.status, 400, incompatibleEndpoint.text);
+      assert.equal(incompatibleEndpoint.json?.code, "UNSUPPORTED_PROTOCOL_ROUTE");
       assert.equal(ctx.upstreamRequests.length, 0);
     }
   },

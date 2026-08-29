@@ -1,5 +1,10 @@
 import { getLogRuntimeInfo } from "./logs.js";
-import { compileModelCatalog, getModelCatalogRuntimeInfo, installModelCatalogSnapshot } from "./model-catalog.js";
+import {
+  compileModelCatalog,
+  getModelCatalogRuntimeInfo,
+  installModelCatalogSnapshot,
+  withModelCatalogUpdateLock
+} from "./model-catalog.js";
 import { getConfiguredModelBindingIssues } from "./model-validation.js";
 import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
 import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from "./pricing-library.js";
@@ -860,6 +865,11 @@ function applySchemaCompatibility(rawConfig, merged) {
   merged.proxy.forwardHeaders.deny = normalizeStringArray(merged.proxy.forwardHeaders.deny);
 
   merged.proxy.guards = deepMerge(DEFAULTS.proxy.guards, asPlainObject(merged.proxy.guards));
+  merged.proxy.guards.maxRequestBodyBytes = pickInteger(
+    rawProxyGuards.maxRequestBodyBytes,
+    merged.proxy.guards.maxRequestBodyBytes,
+    DEFAULTS.proxy.guards.maxRequestBodyBytes
+  );
   merged.proxy.guards.maxResponseBodyBytes = pickInteger(
     rawProxyGuards.maxResponseBodyBytes,
     rawLegacyUpstream.maxResponseBytes,
@@ -979,6 +989,7 @@ function applySchemaCompatibility(rawConfig, merged) {
 
   merged.upstreams = Array.isArray(merged.upstreams)
     ? merged.upstreams.map((upstream) => {
+      const configuredRoutes = upstream?.routes;
       const next = deepMerge({
         provider: "azure-openai",
         apiVersion: "",
@@ -1017,6 +1028,9 @@ function applySchemaCompatibility(rawConfig, merged) {
           timeoutMs: 10000
         }
       }, upstream || {});
+      if (configuredRoutes != null && (typeof configuredRoutes !== "object" || Array.isArray(configuredRoutes))) {
+        next.routes = configuredRoutes;
+      }
       next.tags = normalizeStringArray(next.tags);
       next.capabilities = collectCapabilitiesForUpstream(merged.models, next.name);
       next.requestPolicy.allowedParams = normalizeStringArray(next.requestPolicy.allowedParams);
@@ -1117,6 +1131,9 @@ function validateConfig(cfg) {
   }
   if (!Number.isInteger(cfg.proxy.guards.maxResponseBodyBytes) || cfg.proxy.guards.maxResponseBodyBytes <= 0) {
     throw new Error("proxy.guards.maxResponseBodyBytes must be a positive integer");
+  }
+  if (!Number.isInteger(cfg.proxy.guards.maxRequestBodyBytes) || cfg.proxy.guards.maxRequestBodyBytes <= 0) {
+    throw new Error("proxy.guards.maxRequestBodyBytes must be a positive integer");
   }
   if (cfg.server.caddy != null) {
     if (typeof cfg.server.caddy !== "object") {
@@ -1616,7 +1633,7 @@ function validateConfig(cfg) {
       throw new Error(`models[${idx}].fallbackModels is not supported by this proxy version`);
     }
     if (model.routes != null) {
-      if (typeof model.routes !== "object") {
+      if (typeof model.routes !== "object" || Array.isArray(model.routes)) {
         throw new Error(`models[${idx}].routes must be an object`);
       }
       for (const [k, v] of Object.entries(model.routes)) {
@@ -1786,8 +1803,15 @@ function validateConfig(cfg) {
         throw new Error(`upstreams[${idx}].errorPolicy.nativePassthrough must be a boolean`);
       }
     }
-    if (upstream.routes && typeof upstream.routes !== "object") {
-      throw new Error(`upstreams[${idx}].routes must be an object`);
+    if (upstream.routes != null) {
+      if (typeof upstream.routes !== "object" || Array.isArray(upstream.routes)) {
+        throw new Error(`upstreams[${idx}].routes must be an object`);
+      }
+      for (const [routeKey, routeTarget] of Object.entries(upstream.routes)) {
+        if (typeof routeTarget !== "string") {
+          throw new Error(`upstreams[${idx}].routes[${routeKey}] must be a string`);
+        }
+      }
     }
   }
   const modelCatalogSnapshot = compileModelCatalog(cfg);
@@ -1803,7 +1827,7 @@ export function getConfigPath() {
   return getPersistenceSummary(currentConfig).configPath;
 }
 
-export async function loadConfig() {
+async function loadConfig() {
   const rawText = await readPersistedConfigText();
   const raw = JSON.parse(rawText);
   const normalizedPersistedConfig = normalizeConfig(raw, { applyEnvironment: false });
@@ -1834,24 +1858,26 @@ export function getPersistedConfig() {
 }
 
 export async function saveConfig(nextConfig) {
-  const normalized = preserveDistributionManagedFields(
-    preserveEnvironmentManagedFields(
-      normalizeConfig(nextConfig, { applyEnvironment: false }),
+  return withModelCatalogUpdateLock(async () => {
+    const normalized = preserveDistributionManagedFields(
+      preserveEnvironmentManagedFields(
+        normalizeConfig(nextConfig, { applyEnvironment: false }),
+        persistedConfig
+      ),
       persistedConfig
-    ),
-    persistedConfig
-  );
-  const { config: validated, modelCatalogSnapshot } = validateConfig(
-    applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)))
-  );
-  await writePersistedConfigText(JSON.stringify(normalized, null, 2), validated);
-  persistedConfig = normalized;
-  currentConfig = validated;
-  currentDistributionProfile = resolveDistributionProfile(validated);
-  installModelCatalogSnapshot(modelCatalogSnapshot);
-  setPersistenceConfig(validated);
-  setRuntimeStoreConfig(validated);
-  return validated;
+    );
+    const { config: validated, modelCatalogSnapshot } = validateConfig(
+      applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)))
+    );
+    await writePersistedConfigText(JSON.stringify(normalized, null, 2), validated);
+    persistedConfig = normalized;
+    currentConfig = validated;
+    currentDistributionProfile = resolveDistributionProfile(validated);
+    installModelCatalogSnapshot(modelCatalogSnapshot);
+    setPersistenceConfig(validated);
+    setRuntimeStoreConfig(validated);
+    return validated;
+  });
 }
 
 export async function reloadConfig() {

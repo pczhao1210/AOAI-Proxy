@@ -40,9 +40,26 @@ const DEFAULT_PROTOCOL_PROFILES = Object.freeze({
 
 let installedSnapshot = null;
 let catalogGeneration = 0;
+let catalogUpdateQueue = Promise.resolve();
+
+export function withModelCatalogUpdateLock(operation) {
+  if (typeof operation !== "function") {
+    throw new Error("Model Catalog update lock requires an operation");
+  }
+  const result = catalogUpdateQueue.then(operation);
+  catalogUpdateQueue = result.catch(() => {});
+  return result;
+}
 
 function normalizeKey(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeRouteIdentifier(value) {
+  const normalized = normalizeKey(value);
+  return /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/.test(normalized)
+    ? normalized
+    : "";
 }
 
 function cloneJson(value) {
@@ -110,6 +127,41 @@ function resolveInterfaces(model, definition) {
   return [...new Set((Array.isArray(interfaces) ? interfaces : []).map(normalizeKey).filter(Boolean))];
 }
 
+function resolveRouteTargets(definition, interfaces) {
+  const targets = new Set(interfaces);
+  for (const target of Object.values(definition?.proxyTemplate?.routes || {})) {
+    const normalized = normalizeRouteIdentifier(target);
+    if (normalized) targets.add(normalized);
+  }
+  return [...targets].sort();
+}
+
+export function getDescriptorRouteTargets(descriptor) {
+  if (Array.isArray(descriptor?.routeTargets)) return descriptor.routeTargets;
+  return Object.freeze(resolveRouteTargets(descriptor?.definition, descriptor?.interfaces || []));
+}
+
+function collectRouteInterfaces(definitions) {
+  const interfaces = new Set();
+  for (const definition of definitions) {
+    for (const interfaceName of definition?.interfaces || []) {
+      const normalized = normalizeKey(interfaceName);
+      if (normalized) interfaces.add(normalized);
+    }
+    for (const hostedInterfaces of Object.values(definition?.interfacesByHostingMode || {})) {
+      for (const interfaceName of Array.isArray(hostedInterfaces) ? hostedInterfaces : []) {
+        const normalized = normalizeKey(interfaceName);
+        if (normalized) interfaces.add(normalized);
+      }
+    }
+    for (const routeKey of Object.keys(definition?.proxyTemplate?.routes || {})) {
+      const normalized = normalizeRouteIdentifier(routeKey);
+      if (normalized && normalized !== "*") interfaces.add(normalized);
+    }
+  }
+  return Object.freeze([...interfaces].sort());
+}
+
 function resolveDefaultInterface(definition, interfaces) {
   const configured = normalizeKey(definition?.defaultInterface);
   if (configured && interfaces.includes(configured)) return configured;
@@ -119,8 +171,9 @@ function resolveDefaultInterface(definition, interfaces) {
   return interfaces[0] || "";
 }
 
-function compileDescriptor(model, definition, upstream) {
+function compileDescriptor(model, definition, upstream, knownRouteInterfaces) {
   const interfaces = resolveInterfaces(model, definition);
+  const routeTargets = resolveRouteTargets(definition, interfaces);
   const capabilities = definition?.capabilities?.length
     ? definition.capabilities
     : (Array.isArray(model?.capabilities) ? model.capabilities : []);
@@ -134,6 +187,8 @@ function compileDescriptor(model, definition, upstream) {
     provider: String(definition?.provider || upstream?.provider || ""),
     hostingMode: normalizeKey(model.hostingMode || definition?.defaultHostingMode),
     interfaces: Object.freeze(interfaces),
+    knownRouteInterfaces,
+    routeTargets: Object.freeze(routeTargets),
     defaultInterface: resolveDefaultInterface(definition, interfaces),
     capabilities: Object.freeze([...new Set(capabilities.map(normalizeKey).filter(Boolean))]),
     protocolProfiles,
@@ -157,7 +212,7 @@ export function getDescriptorProtocolProfile(descriptor, protocol) {
     || getDefaultProtocolProfile(protocolKey);
 }
 
-export function compileModelCatalog(config, definitions = listPricingDefinitions(), options = {}) {
+export function compileModelCatalog(config, definitions = listPricingDefinitions()) {
   const normalizedDefinitions = Array.isArray(definitions)
     ? definitions.map((definition) => freezeJson(cloneJson(definition)))
     : [];
@@ -168,25 +223,24 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
   const modelsByPublicId = new Map();
   const modelsByAlias = new Map();
   const descriptors = [];
+  const routeInterfaces = collectRouteInterfaces(normalizedDefinitions);
 
   for (const model of config?.models || []) {
     if (!model?.id) continue;
     const definition = findDefinition(model, indexes);
-    const descriptor = compileDescriptor(model, definition, upstreamsByName.get(model.upstream));
+    const descriptor = compileDescriptor(model, definition, upstreamsByName.get(model.upstream), routeInterfaces);
     rememberUnique(modelsByPublicId, model.id, descriptor, "configured model ID");
     for (const alias of definition?.aliases || []) rememberUnique(modelsByAlias, alias, descriptor, "configured model alias");
     descriptors.push(descriptor);
   }
 
-  const generation = Number.isInteger(options.generation) && options.generation > 0
-    ? options.generation
-    : catalogGeneration + 1;
   return Object.freeze({
-    generation,
+    generation: catalogGeneration + 1,
     compiledAt: new Date().toISOString(),
     sourceDigest: digestDefinitions(normalizedDefinitions),
     definitionCount: normalizedDefinitions.length,
     modelCount: descriptors.length,
+    routeInterfaces,
     modelsByPublicId,
     modelsByAlias,
     descriptors: Object.freeze(descriptors)
@@ -206,23 +260,34 @@ export function refreshModelCatalog(config, definitions) {
   return installModelCatalogSnapshot(compileModelCatalog(config, definitions));
 }
 
-export function createModelCatalogSyncTransaction(getConfig) {
+export function createModelCatalogSyncTransaction(getConfig, getBindingIssues) {
   if (typeof getConfig !== "function") {
     throw new Error("Model Catalog sync requires a config provider");
   }
+  if (typeof getBindingIssues !== "function") {
+    throw new Error("Model Catalog sync requires a binding validator");
+  }
+  const compileCandidate = (definitions) => {
+    const config = getConfig();
+    const snapshot = compileModelCatalog(config, definitions);
+    const bindingIssues = getBindingIssues(config, snapshot);
+    if (bindingIssues.length) {
+      throw new Error(bindingIssues.slice(0, 3).map((issue) => issue.message).join("; "));
+    }
+    return snapshot;
+  };
   return {
+    runExclusive(operation) {
+      return withModelCatalogUpdateLock(operation);
+    },
     prepare(definitions) {
-      compileModelCatalog(getConfig(), definitions);
+      compileCandidate(definitions);
       return definitions;
     },
     commit(definitions) {
-      return installModelCatalogSnapshot(compileModelCatalog(getConfig(), definitions));
+      return installModelCatalogSnapshot(compileCandidate(definitions));
     }
   };
-}
-
-export function getModelCatalogSnapshot() {
-  return installedSnapshot;
 }
 
 export function resolveModelDescriptor(modelOrId, snapshot = installedSnapshot) {

@@ -187,6 +187,7 @@ function createMockUpstreamServer() {
       const upstreamDisconnectBeforeUsage = body?.input === "upstream disconnect usage fallback";
       const providerErrorAfterDelta = JSON.stringify(body).includes("trigger provider error");
       const failedJsonResponse = JSON.stringify(body).includes("trigger failed json");
+      const nonTerminalJsonResponse = JSON.stringify(body).includes("trigger nonterminal response");
       const modernItemResponse = JSON.stringify(body).includes("trigger modern Responses item");
       const modernItemStream = JSON.stringify(body).includes("trigger modern Responses stream item");
       const nativeProviderStreamError = JSON.stringify(body).includes("trigger native stream error");
@@ -296,6 +297,22 @@ function createMockUpstreamServer() {
         res.end(`data: ${JSON.stringify({ type: "response.completed", response })}\n\n`);
         return;
       }
+      if (nonTerminalJsonResponse) {
+        jsonResponse(res, 200, {
+          id: "resp-nonterminal-test",
+          object: "response",
+          model: body?.model || "gpt-5.6-luna",
+          status: "in_progress",
+          output: [{
+            id: "msg-nonterminal-test",
+            type: "message",
+            status: "in_progress",
+            role: "assistant",
+            content: [{ type: "output_text", text: "partial output" }]
+          }]
+        });
+        return;
+      }
       if (failedJsonResponse) {
         const failedBody = `{
   "id": "resp-failed-test",
@@ -378,6 +395,7 @@ function createMockUpstreamServer() {
     if (req.method === "POST" && pathname.endsWith("/messages")) {
       const modernContentResponse = JSON.stringify(body).includes("trigger modern Messages block");
       const modernContentStream = JSON.stringify(body).includes("trigger modern Messages stream block");
+      const reasoningContentStream = JSON.stringify(body).includes("trigger encrypted reasoning stream");
       if (body?.stream === true) {
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
@@ -403,6 +421,42 @@ function createMockUpstreamServer() {
             content_block: { type: "server_tool_use", id: "srvtool-stream-test", name: "web_search", input: {} }
           })}\n\n`);
           res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+          res.write(`event: message_delta\ndata: ${JSON.stringify({
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { output_tokens: 5 }
+          })}\n\n`);
+          res.end(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+          return;
+        }
+        if (reasoningContentStream) {
+          res.write(`event: content_block_start\ndata: ${JSON.stringify({
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "thinking", thinking: "", signature: "" }
+          })}\n\n`);
+          res.write(`event: content_block_delta\ndata: ${JSON.stringify({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "thinking_delta", thinking: "checked sources" }
+          })}\n\n`);
+          res.write(`event: content_block_delta\ndata: ${JSON.stringify({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "signature_delta", signature: "opaque-stream-signature" }
+          })}\n\n`);
+          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+          res.write(`event: content_block_start\ndata: ${JSON.stringify({
+            type: "content_block_start",
+            index: 1,
+            content_block: { type: "text", text: "" }
+          })}\n\n`);
+          res.write(`event: content_block_delta\ndata: ${JSON.stringify({
+            type: "content_block_delta",
+            index: 1,
+            delta: { type: "text_delta", text: "reasoning preserved" }
+          })}\n\n`);
+          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 1 })}\n\n`);
           res.write(`event: message_delta\ndata: ${JSON.stringify({
             type: "message_delta",
             delta: { stop_reason: "end_turn", stop_sequence: null },
@@ -628,7 +682,6 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
           "chat/completions": "/openai/v1/chat/completions",
           responses: "/openai/v1/responses",
           messages: "/openai/v1/messages",
-          messagez: "/custom/messages",
           "images/generations": "/openai/v1/images/generations"
         }
       },
@@ -726,28 +779,6 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
         pricingRef: "gpt-4o-mini",
         routes: {
           "*": "chat/completions"
-        }
-      },
-      {
-        id: "invalid-protocol-route",
-        displayName: "Invalid Protocol Route",
-        status: "active",
-        upstream: "mock-foundry",
-        targetModel: "invalid-protocol-route",
-        pricingRef: "gpt-4o-mini",
-        routes: {
-          "*": "messagez"
-        }
-      },
-      {
-        id: "invalid-protocol-path",
-        displayName: "Invalid Protocol Path",
-        status: "active",
-        upstream: "mock-foundry",
-        targetModel: "invalid-protocol-path",
-        pricingRef: "gpt-4o-mini",
-        routes: {
-          "*": "/openai/v1/responsez"
         }
       },
       {
@@ -899,6 +930,7 @@ export async function createTestContext({
       headers = {},
       json,
       body,
+      duplex,
       redirect = "follow"
     } = options;
     const response = await fetch(`${proxyBaseUrl}${routePath}`, {
@@ -908,6 +940,7 @@ export async function createTestContext({
         ...(json !== undefined ? { "content-type": "application/json" } : {})
       },
       body: json !== undefined ? JSON.stringify(json) : body,
+      ...(duplex ? { duplex } : {}),
       redirect
     });
     const text = await response.text();

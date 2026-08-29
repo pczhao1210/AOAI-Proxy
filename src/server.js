@@ -2,6 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { Transform } from "node:stream";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { getConfig, getPersistedConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo, isDistributionFeatureEnabled } from "./config.js";
@@ -13,7 +14,7 @@ import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnec
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, setLogConfig } from "./logs.js";
-import { validateConfiguredModels } from "./model-validation.js";
+import { getConfiguredModelBindingIssues, validateConfiguredModels } from "./model-validation.js";
 import { createModelCatalogSyncTransaction, getDescriptorProtocolProfile, resolveModelDescriptor } from "./model-catalog.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
@@ -24,23 +25,18 @@ import { redactConfigSecrets, restoreConfigSecrets } from "./admin-config.js";
 import { initializeLogAnalytics } from "./log-analytics-admin.js";
 import { getBuildInfo } from "./build-info.js";
 import {
-  buildDirectUpstreamUrl,
-  buildUpstreamUrl,
   findUpstream,
-  inferBackendRouteKey,
   isPublicRouteEnabled,
-  normalizeBackendRouteKey,
-  reconcileBackendRouteKey,
-  resolveEffectiveRouteKey,
-  resolveModelRoute
+  resolveRoutePlan
 } from "./proxy/routing.js";
 
 const { LogController } = fastify;
 
 // Fastify server entry
 const defaultBodyLimit = 50 * 1024 * 1024;
-const bodyLimitEnv = Number(process.env.BODY_LIMIT || process.env.SERVER_BODY_LIMIT);
-const bodyLimit = Number.isFinite(bodyLimitEnv) && bodyLimitEnv > 0 ? bodyLimitEnv : defaultBodyLimit;
+const bodyLimit = [process.env.BODY_LIMIT, process.env.SERVER_BODY_LIMIT]
+  .map((value) => Number(value))
+  .find((value) => Number.isSafeInteger(value) && value > 0) || defaultBodyLimit;
 const STATIC_ADMIN_PATH = "/admin";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30000;
@@ -165,6 +161,33 @@ function getPositiveInteger(value) {
   return Number.isInteger(value) && value > 0 ? value : 0;
 }
 
+function createPayloadTooLargeError(limit) {
+  const error = new Error(`Request body exceeds ${limit} bytes`);
+  error.code = "FST_ERR_CTP_BODY_TOO_LARGE";
+  error.statusCode = 413;
+  return error;
+}
+
+function limitRequestBodyStream(payload, limit) {
+  let receivedEncodedLength = 0;
+  const limiter = new Transform({
+    transform(chunk, encoding, callback) {
+      receivedEncodedLength += typeof chunk === "string"
+        ? Buffer.byteLength(chunk, encoding)
+        : chunk.byteLength;
+      limiter.receivedEncodedLength = receivedEncodedLength;
+      if (receivedEncodedLength > limit) {
+        callback(createPayloadTooLargeError(limit));
+        return;
+      }
+      callback(null, chunk);
+    }
+  });
+  limiter.receivedEncodedLength = 0;
+  payload.pipe(limiter);
+  return limiter;
+}
+
 function parseBasicAuthHeader(headerValue) {
   if (!headerValue || typeof headerValue !== "string") return null;
   if (!headerValue.toLowerCase().startsWith("basic ")) return null;
@@ -218,18 +241,8 @@ function modelUsesNativeProtocol(config, model, routeKey) {
     return false;
   }
   const descriptor = resolveModelDescriptor(model?.id);
-  const override = resolveModelRoute(model, routeKey);
-  const effectiveRouteKey = resolveEffectiveRouteKey(routeKey, model, upstream, override, descriptor);
-  const backendRouteKey = override
-    ? inferBackendRouteKey(routeKey, override)
-    : normalizeBackendRouteKey(effectiveRouteKey);
-  if (backendRouteKey !== routeKey) return false;
-  const deployment = String(model?.targetModel || model?.id || "").trim();
   try {
-    const targetUrl = override?.type === "path"
-      ? buildDirectUpstreamUrl(upstream, override.value, deployment, model, descriptor)
-      : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model, descriptor);
-    return reconcileBackendRouteKey(backendRouteKey, targetUrl) === routeKey;
+    return resolveRoutePlan({ routeKey, model, upstream, descriptor }).backendRouteKey === routeKey;
   } catch {
     return false;
   }
@@ -266,8 +279,12 @@ const CODEX_REASONING_DESCRIPTIONS = {
 };
 
 function normalizeCapabilitySet(model) {
+  const descriptor = resolveModelDescriptor(model?.id);
+  const capabilities = Array.isArray(descriptor?.capabilities) && descriptor.capabilities.length > 0
+    ? descriptor.capabilities
+    : model?.capabilities;
   return new Set(
-    (Array.isArray(model?.capabilities) ? model.capabilities : [])
+    (Array.isArray(capabilities) ? capabilities : [])
       .filter((value) => typeof value === "string")
       .map((value) => value.trim().toLowerCase().replaceAll("_", "-"))
       .filter(Boolean)
@@ -374,14 +391,14 @@ function buildCodexModelList(config, consumer) {
 function wantsCodexModelList(req, config) {
   if (config?.compatibility?.codex?.enabled === false) return false;
   const format = String(req.query?.format || "").trim().toLowerCase();
-  if (["codex", "codex_cli", "codex-cli"].includes(format)) return true;
+  if (format) return ["codex", "codex_cli", "codex-cli"].includes(format);
   return String(req.headers["user-agent"] || "").toLowerCase().includes("codex");
 }
 
 function wantsClaudeCodeModelList(req, config) {
   if (config?.compatibility?.claudeCode?.enabled === false) return false;
   const format = String(req.query?.format || "").trim().toLowerCase();
-  if (["claude-code", "claude_code", "claude-cli"].includes(format)) return true;
+  if (format) return ["claude-code", "claude_code", "claude-cli"].includes(format);
   const userAgent = String(req.headers["user-agent"] || "").toLowerCase();
   return userAgent.includes("claude-code")
     || userAgent.includes("claude_cli")
@@ -390,7 +407,7 @@ function wantsClaudeCodeModelList(req, config) {
 
 function wantsAnthropicModelList(req) {
   const format = String(req.query?.format || "").trim().toLowerCase();
-  if (["anthropic", "messages", "anthropic_messages"].includes(format)) return true;
+  if (format) return ["anthropic", "messages", "anthropic_messages"].includes(format);
   if (String(req.headers["anthropic-version"] || "").trim()) return true;
   const userAgent = String(req.headers["user-agent"] || "").toLowerCase();
   return userAgent.includes("claude") || userAgent.includes("anthropic");
@@ -532,6 +549,21 @@ app.addHook("onRequest", async (req) => {
   attachRequestContext(req);
 });
 
+app.addHook("preParsing", async (req, reply, payload) => {
+  const config = getConfig();
+  const rawUrl = req.raw?.url || req.url;
+  if (isAdminRoute(rawUrl, config.server.adminPath)) return payload;
+
+  const configuredLimit = getPositiveInteger(config?.proxy?.guards?.maxRequestBodyBytes);
+  if (!configuredLimit || configuredLimit >= bodyLimit) return payload;
+
+  const contentLength = Number(req.headers["content-length"]);
+  if (Number.isFinite(contentLength) && contentLength > configuredLimit) {
+    throw createPayloadTooLargeError(configuredLimit);
+  }
+  return limitRequestBodyStream(payload, configuredLimit);
+});
+
 app.addHook("preHandler", async (req, reply) => {
   const config = getConfig();
   const rawUrl = req.raw?.url || req.url;
@@ -554,11 +586,6 @@ app.addHook("preHandler", async (req, reply) => {
       return reply.code(403).send({ error: "AdminCsrfRejected", message: "Missing admin CSRF header" });
     }
     return;
-  }
-  const maxRequestBodyBytes = getPositiveInteger(config?.proxy?.guards?.maxRequestBodyBytes);
-  const contentLength = Number(req.headers["content-length"]);
-  if (maxRequestBodyBytes > 0 && Number.isFinite(contentLength) && contentLength > maxRequestBodyBytes) {
-    return reply.code(413).send({ error: "PayloadTooLarge", message: `Request body exceeds ${maxRequestBodyBytes} bytes` });
   }
   const key = extractApiKey(config, req.headers);
   const consumerResult = resolveApiConsumer(config, key);
@@ -869,7 +896,7 @@ app.post("/admin/api/pricing-library/sync", async (req, reply) => {
     };
     const result = await syncPricingDefinitionsFromGitHub(
       overrides,
-      createModelCatalogSyncTransaction(getConfig)
+      createModelCatalogSyncTransaction(getConfig, getConfiguredModelBindingIssues)
     );
     app.log.info({
       source: "admin",

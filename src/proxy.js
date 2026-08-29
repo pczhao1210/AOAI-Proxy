@@ -7,15 +7,11 @@ import {
   findUpstream,
   findModel,
   buildUpstreamUrl,
-  buildDirectUpstreamUrl,
   buildMessagesCountTokensUrl,
   buildResponsesCompactUrl,
-  resolveModelRoute,
-  resolveEffectiveRouteKey,
-  normalizeBackendRouteKey,
   isPublicRouteEnabled,
-  inferBackendRouteKey,
   reconcileBackendRouteKey,
+  resolveRoutePlan,
   resolveUpstreamBaseUrl,
   hasUsableUpstreamBaseUrl
 } from "./proxy/routing.js";
@@ -42,7 +38,8 @@ import {
   mapChatCompletionJsonToResponses,
   getProtocolShimCompatibilityIssue,
   messagesToChatRequest,
-  messagesToResponsesRequest
+  messagesToResponsesRequest,
+  normalizeWebSearchToolType
 } from "./proxy/shim.js";
 import {
   resolveUpstreamPolicy,
@@ -344,6 +341,20 @@ function getProviderPayloadError(payload) {
       : "provider_error",
     param: source.param ?? null
   };
+}
+
+function restorePublicResponseModel(payload, modelId) {
+  if (
+    !payload
+    || typeof payload !== "object"
+    || Array.isArray(payload)
+    || typeof payload.model !== "string"
+    || !modelId
+    || payload.model === modelId
+  ) {
+    return payload;
+  }
+  return { ...payload, model: modelId };
 }
 
 function markTiming(timing, key) {
@@ -848,64 +859,71 @@ export async function proxyRequest({
     });
     return;
   }
-  const deployment = model.targetModel || model.id;
-  const usesModelRouter = String(deployment || "").trim().toLowerCase() === "model-router";
-  const override = resolveModelRoute(model, protocolRouteKey);
-  let effectiveRouteKey = usesModelRouter
-    ? "chat/completions"
-    : resolveEffectiveRouteKey(protocolRouteKey, model, upstream, override, modelDescriptor);
-  let backendRouteKey = override
-    ? inferBackendRouteKey(protocolRouteKey, override)
-    : normalizeBackendRouteKey(effectiveRouteKey);
-  if (TEXT_PROTOCOL_ROUTE_KEYS.has(protocolRouteKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
-    log.error({
-      source: "proxy",
-      requestId,
-      ...requestNetworkContext,
-      modelId,
-      routeKey,
-      backendRouteKey,
-      status: 400,
-      event: "proxy.request_rejected",
-      errorCode: "UNSUPPORTED_PROTOCOL_ROUTE",
-      failureReason: `Unsupported text backend protocol: ${backendRouteKey}`
-    }, "request rejected: unsupported text backend protocol");
-    sendProxyError(400, {
-      code: "UNSUPPORTED_PROTOCOL_ROUTE",
-      exposedCode: "UNSUPPORTED_PROTOCOL_ROUTE",
-      message: `Cannot route ${protocolRouteKey} requests to unsupported backend protocol ${backendRouteKey}`,
-      detail: { clientProtocol: protocolRouteKey, backendProtocol: backendRouteKey }
-    });
-    return;
-  }
+  const buildRequestRoutePlan = (override) => {
+    try {
+      return resolveRoutePlan({
+        routeKey: protocolRouteKey,
+        model,
+        upstream,
+        ...(override ? { override } : {}),
+        descriptor: modelDescriptor
+      });
+    } catch (error) {
+      log.error({
+        source: "proxy",
+        requestId,
+        ...requestNetworkContext,
+        modelId,
+        routeKey,
+        status: 400,
+        event: "proxy.request_rejected",
+        errorCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+        failureReason: error?.message || "Model Catalog route planning failed"
+      }, "request rejected: unsupported model route");
+      sendProxyError(400, {
+        code: "UNSUPPORTED_PROTOCOL_ROUTE",
+        exposedCode: "UNSUPPORTED_PROTOCOL_ROUTE",
+        message: `Model ${modelId} does not support the requested ${protocolRouteKey} route`,
+        detail: {
+          clientProtocol: protocolRouteKey,
+          catalogModel: modelDescriptor?.catalogId || null,
+          reason: error?.message || "route planning failed"
+        }
+      });
+      return null;
+    }
+  };
+  let routePlan = buildRequestRoutePlan();
+  if (!routePlan) return;
   if (
     routeKey === "chat/completions"
-    && backendRouteKey === "chat/completions"
-    && override?.type !== "path"
+    && routePlan.backendRouteKey === "chat/completions"
+    && routePlan.override?.type !== "path"
     && findWebSearchParam(body)
     && supportsWebSearchRequest({
-      backendRouteKey: "responses",
       upstream,
-      model
+      model,
+      descriptor: modelDescriptor
     })
   ) {
-    effectiveRouteKey = "responses";
-    backendRouteKey = "responses";
+    routePlan = buildRequestRoutePlan({ type: "routeKey", value: "responses" });
+    if (!routePlan) return;
     log.info({
       source: "proxy",
       requestId,
       ...requestNetworkContext,
       modelId,
       routeKey,
-      backendRouteKey,
+      backendRouteKey: routePlan.backendRouteKey,
       event: "proxy.web_search_route_promoted"
     }, "promoted chat/completions request with web_search to responses backend");
   }
 
-  const protocolTargetUrl = override?.type === "path"
-    ? buildDirectUpstreamUrl(upstream, override.value, deployment, model, modelDescriptor)
-    : buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model, modelDescriptor);
-  backendRouteKey = reconcileBackendRouteKey(backendRouteKey, protocolTargetUrl);
+  const {
+    deployment,
+    backendRouteKey,
+    targetUrl: protocolTargetUrl
+  } = routePlan;
   if (TEXT_PROTOCOL_ROUTE_KEYS.has(protocolRouteKey) && !TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey)) {
     log.error({
       source: "proxy",
@@ -1788,6 +1806,7 @@ export async function proxyRequest({
           ? await streamPassthrough({
             upstreamResponse,
             reply,
+            modelId,
             backendRouteKey,
             strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
             forwardProviderErrors: nativeErrorPassthrough,
@@ -1806,6 +1825,9 @@ export async function proxyRequest({
             modelId,
             routeKey,
             backendRouteKey,
+            includeReasoningEncryptedContent: routeKey === "responses"
+              && Array.isArray(body.include)
+              && body.include.includes("reasoning.encrypted_content"),
             includeChatStreamUsage: routeKey === "chat/completions"
               && body?.stream_options?.include_usage === true,
             strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
@@ -2258,7 +2280,10 @@ export async function proxyRequest({
         targetProtocol: routeKey
       })
       : null;
-    if (shimResponseIssue && shimPolicy.rejectLossyResponses !== false) {
+    if (
+      shimResponseIssue
+      && (shimResponseIssue.requiredRejection === true || shimPolicy.rejectLossyResponses !== false)
+    ) {
       recordProxyError({
         status: 502,
         errorCode: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",
@@ -2448,13 +2473,14 @@ export async function proxyRequest({
       }
     }
 
-    reply.code(upstreamResponse.status).send(payload);
+    const downstreamPayload = restorePublicResponseModel(payload, modelId);
+    reply.code(upstreamResponse.status).send(downstreamPayload);
     deferPostResponse(() => {
       noteResolvedUpstreamModel(payload?.model);
       if (payload?.usage) {
         recordProxyUsage(payload.usage, payload?.model || (isResponsesCompact ? deployment : ""));
       }
-      emitRequestCompleted({ responsePayload: payload, status: upstreamResponse.status, attempt: fetchResult.attempt });
+      emitRequestCompleted({ responsePayload: downstreamPayload, status: upstreamResponse.status, attempt: fetchResult.attempt });
     });
     finishTiming({
       status: upstreamResponse.status,
@@ -2555,17 +2581,6 @@ function normalizeModernReasoningEffort(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : value;
 }
 
-function normalizeWebSearchToolType(type) {
-  const normalized = typeof type === "string" ? type.trim().toLowerCase() : "";
-  if (
-    normalized === "web_search_preview"
-    || normalized === "web_search_preview_2025_03_11"
-  ) {
-    return "web_search";
-  }
-  return normalized;
-}
-
 function findWebSearchParam(body) {
   if (Array.isArray(body?.tools)) {
     for (const tool of body.tools) {
@@ -2584,6 +2599,22 @@ function findWebSearchParam(body) {
   }
 
   return null;
+}
+
+function supportsWebSearchRequest({ upstream, model, descriptor }) {
+  if (
+    Array.isArray(descriptor?.interfaces)
+    && !descriptor.interfaces.includes("responses")
+  ) {
+    return false;
+  }
+  const deployment = model?.targetModel || model?.id;
+  try {
+    const targetUrl = buildUpstreamUrl(upstream, "responses", deployment, model, descriptor);
+    return reconcileBackendRouteKey("responses", targetUrl) === "responses";
+  } catch {
+    return false;
+  }
 }
 
 function normalizeWebSearchRequest(body) {

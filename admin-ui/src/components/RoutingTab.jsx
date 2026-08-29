@@ -6,7 +6,6 @@ import {
   findPricingTemplateForModel,
   formatList,
   getSuggestedModelRouteValues,
-  isKnownModelRouteValue,
   parseList,
   supportsPricingTemplate,
   syncUpstreamCapabilities,
@@ -93,7 +92,8 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
   const searchTerm = search.trim().toLowerCase();
   const upstreams = config.upstreams || [];
   const upstreamOptions = config.upstreams || [];
-  const templateOptions = (pricingLibrary || []).filter((definition) => supportsPricingTemplate(definition));
+  const catalogDefinitions = pricingLibrary || [];
+  const templateOptions = catalogDefinitions.filter((definition) => supportsPricingTemplate(definition));
 
   function applyTemplateForModel(next, modelIndex, definition) {
     if (!definition || !next?.models?.[modelIndex]) return;
@@ -219,12 +219,13 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
             {filteredModels.map(({ item, index }) => {
               const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
               const clientCompatibilityMeta = getClientCompatibilityMeta(t, item, upstreams);
-              const matchedTemplate = findPricingTemplateForModel(templateOptions, item);
-              const hostingModes = Array.isArray(matchedTemplate?.hostingModes) ? matchedTemplate.hostingModes : [];
+              const matchedDefinition = findPricingTemplateForModel(catalogDefinitions, item);
+              const matchedTemplate = supportsPricingTemplate(matchedDefinition) ? matchedDefinition : null;
+              const hostingModes = Array.isArray(matchedDefinition?.hostingModes) ? matchedDefinition.hostingModes : [];
               const wildcardRoute = typeof item?.routes?.["*"] === "string" ? item.routes["*"].trim() : "";
-              const routeOptions = getSuggestedModelRouteValues(matchedTemplate || item);
-              const hasCustomRoute = wildcardRoute && !isKnownModelRouteValue(wildcardRoute);
-              const allRouteOptions = hasCustomRoute ? [wildcardRoute, ...routeOptions] : routeOptions;
+              const routeOptions = getSuggestedModelRouteValues(matchedDefinition, item.hostingMode);
+              const hasUnavailableRoute = wildcardRoute && !routeOptions.includes(wildcardRoute);
+              const allRouteOptions = hasUnavailableRoute ? [wildcardRoute, ...routeOptions] : routeOptions;
               return (
                 <EntityCard
                   id={`model-card-${index}`}
@@ -295,9 +296,9 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                       <select value={wildcardRoute} onChange={(event) => updateConfig((next) => { setModelWildcardRoute(next, index, event.target.value); })}>
                         <option value="">{t("routing.route.auto", "Use template default")}</option>
                         {allRouteOptions.map((routeValue) => (
-                          <option key={routeValue} value={routeValue}>
-                            {hasCustomRoute && routeValue === wildcardRoute
-                              ? `${t("routing.route.custom", "Custom")}: ${routeValue}`
+                          <option key={routeValue} value={routeValue} disabled={hasUnavailableRoute && routeValue === wildcardRoute}>
+                            {hasUnavailableRoute && routeValue === wildcardRoute
+                              ? `${t("routing.route.unavailable", "Not allowed by Model Catalog")}: ${routeValue}`
                               : getRouteOptionLabel(t, routeValue)}
                           </option>
                         ))}

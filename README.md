@@ -13,7 +13,7 @@
 - Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or protocol-appropriate `api-key` / `x-api-key` headers, based on `auth.mode`
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
-- Native protocol routes preserve modern Responses items and Anthropic content blocks; cross-protocol shims reject structures they cannot represent without loss by default and expose explicit request/response policy switches
+- Native protocol routes preserve modern Responses items and Anthropic content blocks; cross-protocol shims use best-effort conversion with structured loss warnings by default and expose strict request/response rejection switches
 - Optional DCE-based Log Analytics export for correlated proxy events, usage, and redacted prompt/output content; see the [setup guide](docs/log-analytics-dce.en.md)
 
 ## Deployment Assets
@@ -171,7 +171,8 @@ Non-loopback listeners fail closed when admin authentication is disabled or know
 ### General
 
 - `CONFIG_PATH`: local cached config path, default `./config/config.json`
-- `BODY_LIMIT`: request body limit in bytes, default `52428800`
+- `BODY_LIMIT`: process-wide Fastify request-body hard ceiling in bytes, default `52428800`; read at startup and requires a restart to change
+- `SERVER_BODY_LIMIT`: legacy alias for `BODY_LIMIT`, used when `BODY_LIMIT` is absent or not a positive integer
 - `CADDY_BIN`: optional Caddy binary path override
 - `SHUTDOWN_TIMEOUT_MS`: optional graceful-shutdown deadline override; otherwise `server.gracefulShutdownMs` is used
 - `ADMIN_LOG_BUFFER_SIZE`: in-memory admin log ring buffer size, default and hard maximum `100`
@@ -183,6 +184,8 @@ Non-loopback listeners fail closed when admin authentication is disabled or know
 - `AOAI_PROXY_UPSTREAM_API_KEY`: overrides `auth.apiKey` for upstream API-key authentication
 - `AOAI_PROXY_CADDY_ENABLED`, `AOAI_PROXY_CADDY_DOMAIN`, `AOAI_PROXY_CADDY_EMAIL`: Caddy HTTPS overrides
 - `AOAI_PROXY_TRUST_PROXY`: trust proxy-appended forwarding headers; enable only when Node is reachable exclusively through the trusted reverse proxy
+
+The effective limit for a public proxy request is the smaller of `BODY_LIMIT` and `proxy.guards.maxRequestBodyBytes`. The process limit applies to every parsed request, including admin APIs, and is fixed when Fastify starts. The config guard applies to public proxy routes, can be changed through config reload or the admin API without a restart, and counts the raw request stream before JSON normalization, including chunked bodies. Both values must be positive integers. `proxy.guards.maxResponseBodyBytes` bounds buffered upstream JSON responses; streaming SSE is instead bounded by per-event buffering and stream timeout policies, not by a total response-byte limit.
 - `ALLOW_INSECURE_PUBLIC_ADMIN`: explicit opt-out from non-loopback credential checks; avoid in production
 
 ### Pricing Sync
@@ -201,9 +204,11 @@ When you trigger `Sync From GitHub` from `/admin`, the proxy downloads pricing J
 
 Each `pricing/*.json` file is also a Model Catalog definition. Besides pricing, it can declare `aliases`, `defaultInterface`, and `protocolProfiles`. Text protocol profiles may define a reasoning parameter path, supported levels, default, aliases, validation mode, and Messages thinking types. An `images/generations` profile may define request transport matching, model removal, quality aliases, dropped parameters, and size expansion into width/height fields.
 
-Catalog definitions are compiled when config is loaded or saved and after a successful remote update. Requests resolve one immutable descriptor by public model ID and reuse it for routing, provider/interface selection, normalization, discovery, image adaptation, and governance pricing. Exact catalog facts take precedence over protocol defaults; administrator model/compatibility overrides remain highest priority.
+Catalog definitions are compiled when config is loaded or saved and after a successful remote update. Every active configured model must resolve a definition through its `pricingRef`, public ID, or target model before the candidate config or catalog can become active. Requests then reuse that immutable descriptor for routing, provider/interface selection, normalization, discovery, image adaptation, and governance pricing.
 
-Catalog levels are compatibility metadata, not a global upstream capability gate. Profiles default to `validation: "passthrough"`, so an unlisted future field or level is forwarded to the real upstream unless an explicit administrator policy rejects it. Uncataloged models use protocol-level defaults and configured capabilities.
+`models[].routes` is constrained by that descriptor. A route target must be one of its hosting-resolved `interfaces` or a transport target explicitly declared by its Catalog `proxyTemplate.routes`; arbitrary aliases and direct URL paths are rejected. Concrete paths belong in `upstreams[].routes`. Administrator policies may narrow behavior, but cannot route a model outside its Catalog definition.
+
+Catalog levels are compatibility metadata, not a global upstream capability gate. Profiles default to `validation: "passthrough"`, so an unlisted future field or level is forwarded to the real upstream unless an explicit administrator policy rejects it.
 
 ### Optional Upstream Pool Overrides
 
@@ -498,7 +503,7 @@ Upstream errors use the proxy's normalized error envelope by default. Set `upstr
 
 Near-passthrough is semantic rather than byte-for-byte. The proxy still maps the model ID, applies request policy and media handling, replaces authentication headers, observes usage, and enforces stream timeouts. Native Responses preserves Responses items and events. Native Messages preserves ordered Anthropic blocks and SSE events, including tool use/results and thinking signatures present in the body.
 
-Cross-protocol conversion covers text, input images, function tools, tool calls/results, token limits, stop reasons, usage, and streaming lifecycle events. Responses `reasoning.encrypted_content` is mapped to Anthropic thinking signatures in both directions, including streaming continuations. Other protocol-specific fields without a safe equivalent are rejected by default.
+Cross-protocol conversion covers text, input images, function tools, tool calls/results, token limits, stop reasons, usage, and streaming lifecycle events. Responses `reasoning.encrypted_content` is mapped to Anthropic thinking signatures in both directions, including streaming continuations. Protocol-unrepresentable core state is always rejected; other non-core fields without a safe equivalent follow the configured strict or best-effort loss policy.
 
 `compatibility.protocolShim.rejectLossyRequests` and `rejectLossyResponses` both default to `false`. Best-effort conversions emit `proxy.protocol_shim_lossy_conversion` with the phase, field path, source/target protocols, and loss reason. Enable either strict switch only when rejecting a non-lossless conversion is preferable to continuing. The response switch applies to both JSON and SSE responses.
 
@@ -513,11 +518,11 @@ Cross-protocol conversion covers text, input images, function tools, tool calls/
 }
 ```
 
-Config normalization upgrades version 2 files to version 3. For GPT-5.6 Luna, Sol, and Terra only, the exact legacy template route `{ "*": "responses" }` is removed during that upgrade so Chat and Responses requests use their native interfaces. Route overrides saved in version 3 remain explicit and are preserved.
+Config normalization upgrades version 2 files to version 3. For GPT-5.6 Luna, Sol, and Terra only, the exact legacy template route `{ "*": "responses" }` is removed during that upgrade so Chat and Responses requests use their native interfaces. Other version 3 route overrides are preserved only when their targets remain allowed by the matched Catalog definition.
 
 For Claude deployments in Microsoft Foundry, configure the upstream route as `messages: "/anthropic/v1/messages"`. The proxy automatically switches an Azure OpenAI resource host to `*.services.ai.azure.com`, injects `anthropic-version: 2023-06-01` when absent, uses `x-api-key` for key authentication, and uses the `https://ai.azure.com/.default` scope for AAD authentication.
 
-Set `models[].hostingMode` to `azure` or `anthropic` when the matched Claude pricing template offers both hosting modes. This records the deployment infrastructure for region, data-handling, and capability metadata; it is not evidence of Responses support. The currently documented Azure-hosted and Anthropic-hosted Claude deployments both use Messages. Incoming Responses `reasoning.effort` is therefore converted to `output_config.effort` with `thinking.type="adaptive"`. An explicit `models[].routes` override still takes precedence.
+Set `models[].hostingMode` to `azure` or `anthropic` when the matched Claude pricing template offers both hosting modes. This records the deployment infrastructure for region, data-handling, and capability metadata; it is not evidence of Responses support. The currently documented Azure-hosted and Anthropic-hosted Claude deployments both use Messages. Incoming Responses `reasoning.effort` is therefore converted to `output_config.effort` with `thinking.type="adaptive"`. A route override may select only an interface or transport target allowed by that hosting-resolved Catalog descriptor.
 
 ### Claude Code
 
@@ -548,10 +553,10 @@ The proxy enables three Foundry-specific Anthropic compatibility policies by def
 - `betaAllowlistEnabled`: forwards only reviewed beta tokens. Defaults include fine-grained tool streaming, interleaved thinking, and context management.
 - `normalizeManualThinkingToolChoice`: changes forced `any` / named-tool choice to `auto` only for manual `thinking.type="enabled"`; adaptive thinking is unchanged.
 - `sanitizeCacheControl`: retains valid ephemeral cache controls and the Foundry-supported `5m` / `1h` TTL values while removing unsupported fields or placements.
-- `validateThinkingByModel`: validates `thinking.type` for Claude models whose capabilities are explicitly documented. Resolution checks the deployment name first, then the model ID and `pricingRef`; add a deployment-specific entry under `thinkingTypesByModel` to override the standard model profile. Fully unknown models remain pass-through.
+- `validateThinkingByModel`: validates `thinking.type` for Claude models whose capabilities are explicitly documented. Resolution checks the deployment name first, then the model ID and `pricingRef`; add a deployment-specific entry under `thinkingTypesByModel` to override the standard model profile. Thinking values not covered by an explicit strict policy remain pass-through.
 - `effortLevelsByModel`: lists each Claude model's supported effort levels. Unsupported levels fail before the upstream call; `xhigh` is normalized to `max` only when the model supports `max` but not `xhigh`, matching the provider's documented equivalence.
 
-These settings are request compatibility controls, not protocol selectors. Roll a model back from native Messages by changing its route override rather than disabling all compatibility policies.
+These settings are request compatibility controls, not protocol selectors. A protocol change requires the matched Catalog definition and hosting mode to declare the target interface; compatibility switches cannot bypass that boundary.
 
 ### Codex
 
@@ -580,13 +585,16 @@ Client cancellation propagates through upstream header waits, retry backoff, str
 
 Use `models[].routes` when the client-facing route and backend-supported route differ.
 
+The model must first bind to a Catalog definition. Source keys are `"*"` or Catalog interface names, and target values are limited to that model's hosting-resolved interfaces plus explicit Catalog transport targets. Direct paths and administrator-invented aliases are invalid; configure their concrete URL templates under `upstreams[].routes`.
+
 ```json
 {
   "models": [
     {
-      "id": "my-model",
+      "id": "my-public-model",
       "upstream": "foundry",
       "targetModel": "my-deployment",
+      "pricingRef": "gpt-5.6-luna",
       "routes": {
         "chat/completions": "responses"
       }

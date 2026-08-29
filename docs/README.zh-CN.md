@@ -173,7 +173,8 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 ### 通用
 
 - `CONFIG_PATH`：本地缓存配置路径，默认 `./config/config.json`
-- `BODY_LIMIT`：请求体大小限制，默认 `52428800`
+- `BODY_LIMIT`：Fastify 进程级请求体硬上限（字节），默认 `52428800`；仅在启动时读取，修改后必须重启
+- `SERVER_BODY_LIMIT`：`BODY_LIMIT` 的兼容别名；当 `BODY_LIMIT` 缺失或不是正整数时使用
 - `CADDY_BIN`：可选的 Caddy 可执行文件路径覆盖
 - `SHUTDOWN_TIMEOUT_MS`：可选的优雅关闭时限覆盖；未设置时使用 `server.gracefulShutdownMs`
 - `ADMIN_LOG_BUFFER_SIZE`：管理页内存日志环形缓冲大小，默认值和硬上限均为 `100`
@@ -185,6 +186,8 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 - `AOAI_PROXY_CADDY_ENABLED`、`AOAI_PROXY_CADDY_DOMAIN`、`AOAI_PROXY_CADDY_EMAIL`：Caddy HTTPS 覆盖项
 - `AOAI_PROXY_TRUST_PROXY`：仅在 Node 只能通过受信反向代理访问时启用
 - `ALLOW_INSECURE_PUBLIC_ADMIN`：跳过非回环凭据门禁的显式兼容开关，不建议生产使用
+
+公开代理请求的有效上限是 `BODY_LIMIT` 与 `proxy.guards.maxRequestBodyBytes` 中的较小值。进程级上限适用于所有需要解析 body 的请求（包括管理 API），并在 Fastify 启动时固定；配置 guard 只适用于公开代理路由，可通过配置 reload 或管理 API 热更新，并在 JSON 归一化之前按原始请求流计数，chunked body 也不能绕过。两者都必须是正整数。`proxy.guards.maxResponseBodyBytes` 只限制需要缓冲的上游 JSON 响应；SSE 流由单事件缓冲和流超时策略约束，不承诺总响应字节上限。
 
 ### 可选的上游连接池覆盖项
 
@@ -497,11 +500,11 @@ az managedapp create \
 }
 ```
 
-配置归一化会把版本 2 升级为版本 3。仅对于 GPT-5.6 Luna、Sol 和 Terra，升级时会删除旧模板生成的精确路由 `{ "*": "responses" }`，使 Chat 与 Responses 请求恢复使用各自的原生接口；版本 3 中保存的路由覆盖均视为显式配置并予以保留。
+配置归一化会把版本 2 升级为版本 3。仅对于 GPT-5.6 Luna、Sol 和 Terra，升级时会删除旧模板生成的精确路由 `{ "*": "responses" }`，使 Chat 与 Responses 请求恢复使用各自的原生接口；其他版本 3 路由覆盖只有在目标仍被匹配的 Catalog 定义允许时才会保留生效。
 
 Microsoft Foundry 的 Claude deployment 应配置上游路由 `messages: "/anthropic/v1/messages"`。代理会自动把 Azure OpenAI resource host 切换为 `*.services.ai.azure.com`，缺省注入 `anthropic-version: 2023-06-01`，API key 模式使用 `x-api-key`，AAD 模式使用 `https://ai.azure.com/.default` scope。
 
-当匹配的 Claude pricing 模板同时提供两种托管模式时，通过 `models[].hostingMode` 记录实际的 `azure` 或 `anthropic` 托管基础设施，用于区域、数据处理与能力元数据，不能据此推断 Responses 支持。当前有文档依据的 Azure-hosted 与 Anthropic-hosted Claude deployment 都使用 Messages，因此客户端 Responses 的 `reasoning.effort` 会转换为 `output_config.effort`，并设置 `thinking.type="adaptive"`。显式 `models[].routes` 覆盖仍具有最高优先级。
+当匹配的 Claude pricing 模板同时提供两种托管模式时，通过 `models[].hostingMode` 记录实际的 `azure` 或 `anthropic` 托管基础设施，用于区域、数据处理与能力元数据，不能据此推断 Responses 支持。当前有文档依据的 Azure-hosted 与 Anthropic-hosted Claude deployment 都使用 Messages，因此客户端 Responses 的 `reasoning.effort` 会转换为 `output_config.effort`，并设置 `thinking.type="adaptive"`。路由覆盖只能选择该 hosting-resolved Catalog descriptor 允许的 interface 或 transport target。
 
 ### Claude Code
 
@@ -532,10 +535,10 @@ claude
 - `betaAllowlistEnabled`：只转发已审查的 beta token；默认包含细粒度工具流、交错 thinking 与上下文管理。
 - `normalizeManualThinkingToolChoice`：仅当 `thinking.type="enabled"` 为手动模式时，把强制 `any` / 指定工具改为 `auto`；adaptive thinking 不受影响。
 - `sanitizeCacheControl`：保留合法 ephemeral cache control 以及 Foundry 支持的 `5m` / `1h` TTL，移除不支持的字段和位置。
-- `validateThinkingByModel`：Model Catalog 提供 Claude thinking 类型、默认值和别名，但默认采用 passthrough；可在 `thinkingTypesByModel` 中添加 deployment 专属严格列表。完全未知的模型继续透传。
+- `validateThinkingByModel`：Model Catalog 提供 Claude thinking 类型、默认值和别名，但默认采用 passthrough；可在 `thinkingTypesByModel` 中添加 deployment 专属严格列表。未被显式严格策略覆盖的 thinking 值继续透传。
 - `effortLevelsByModel`：这是管理员显式严格 override。未配置时使用 Model Catalog 做归一化但不本地拒绝；配置后，不支持的 level 会在调用上游前返回错误。
 
-这些设置只控制请求兼容性，不选择 wire protocol。需要回滚原生 Messages 时，应修改模型 route override，而不是关闭全部兼容策略。
+这些设置只控制请求兼容性，不选择 wire protocol。协议变更要求匹配的 Catalog 定义与 hosting mode 声明目标 interface，兼容开关不能绕过这条边界。
 
 ### Codex
 
@@ -564,13 +567,16 @@ Codex 自定义 provider 的 `base_url` 应以 `/v1` 结尾，并设置 `wire_ap
 
 当客户端请求路由与后端能力不一致时，可使用 `models[].routes` 做覆盖：
 
+模型必须先绑定到一个 Catalog 定义。source key 只能是 `"*"` 或 Catalog interface 名称；target value 只能来自该模型按 hosting mode 解析后的 interfaces，或 Catalog 显式声明的 transport target。直接路径和管理员自造 alias 均无效，具体 URL 模板应配置在 `upstreams[].routes`。
+
 ```json
 {
   "models": [
     {
-      "id": "my-model",
+      "id": "my-public-model",
       "upstream": "foundry",
       "targetModel": "my-deployment",
+      "pricingRef": "gpt-5.6-luna",
       "routes": {
         "chat/completions": "responses"
       }

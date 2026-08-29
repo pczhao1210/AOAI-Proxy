@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { withModelCatalogUpdateLock } from "../src/model-catalog.js";
 
 const ENV_NAMES = [
   "CONFIG_PATH",
@@ -34,8 +35,8 @@ test("environment-managed config values remain memory-only across saves", async 
   process.env.AOAI_PROXY_CADDY_DOMAIN = "environment.example.com";
 
   try {
-    const { getConfig, getConfigRuntimeInfo, loadConfig, saveConfig } = await import("../src/config.js");
-    const effectiveConfig = await loadConfig();
+    const { getConfig, getConfigRuntimeInfo, reloadConfig, saveConfig } = await import("../src/config.js");
+    const effectiveConfig = await reloadConfig();
     assert.equal(effectiveConfig.distribution.profile, "minimum");
     assert.equal(effectiveConfig.observability.logAnalytics.enabled, false);
     assert.equal(effectiveConfig.observability.runtimeStore.enabled, false);
@@ -67,6 +68,40 @@ test("environment-managed config values remain memory-only across saves", async 
     assert.equal(effectiveConfig.observability.logAnalytics.dataCollectionRuleName, "aoai-proxy-logs");
     assert.equal(effectiveConfig.compatibility.protocolShim.rejectLossyRequests, false);
     assert.equal(effectiveConfig.compatibility.protocolShim.rejectLossyResponses, false);
+
+    let releaseCatalogUpdate;
+    let markCatalogUpdateStarted;
+    const catalogUpdateStarted = new Promise((resolve) => {
+      markCatalogUpdateStarted = resolve;
+    });
+    const catalogUpdateRelease = new Promise((resolve) => {
+      releaseCatalogUpdate = resolve;
+    });
+    const heldCatalogUpdate = withModelCatalogUpdateLock(async () => {
+      markCatalogUpdateStarted();
+      await catalogUpdateRelease;
+    });
+    await catalogUpdateStarted;
+
+    const invalidConfig = JSON.parse(JSON.stringify(effectiveConfig));
+    invalidConfig.server.gracefulShutdownMs = 0;
+    let invalidSaveRejected = false;
+    const invalidSave = saveConfig(invalidConfig).catch((error) => {
+      invalidSaveRejected = true;
+      throw error;
+    });
+    await Promise.resolve();
+    assert.equal(invalidSaveRejected, false, "Config validation must wait for the Catalog update lock");
+    releaseCatalogUpdate();
+    await heldCatalogUpdate;
+    await assert.rejects(invalidSave, /gracefulShutdownMs must be a positive integer/);
+
+    const invalidRequestLimit = JSON.parse(JSON.stringify(effectiveConfig));
+    invalidRequestLimit.proxy.guards.maxRequestBodyBytes = 0;
+    await assert.rejects(
+      saveConfig(invalidRequestLimit),
+      /maxRequestBodyBytes must be a positive integer/
+    );
 
     effectiveConfig.server.gracefulShutdownMs = 12345;
     await saveConfig(effectiveConfig);
@@ -102,7 +137,7 @@ test("environment-managed config values remain memory-only across saves", async 
     assert.equal(getConfig().access.budgets.enabled, true);
 
     process.env.AOAI_PROXY_PROFILE = "unsupported";
-    await assert.rejects(loadConfig(), /distribution\.profile must be minimum or nextgen/);
+    await assert.rejects(reloadConfig(), /distribution\.profile must be minimum or nextgen/);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
     for (const [name, value] of Object.entries(previousEnvironment)) {

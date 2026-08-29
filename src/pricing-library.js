@@ -12,21 +12,14 @@ const DEFAULT_GITHUB_REPO = "AOAI-Proxy";
 const DEFAULT_GITHUB_PATH = "pricing";
 const PRICING_SYNC_METADATA_FILE = ".pricing-sync-meta";
 const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "messages", "stream", "images", "image"]);
-const MODEL_CATALOG_PROTOCOLS = new Set([
-  "chat/completions",
-  "responses",
-  "messages",
-  "images/generations",
-  "realtime"
-]);
 const MODEL_CATALOG_PARAMETER_PATH = /^[^.\s]+(?:\.[^.\s]+)*$/;
+const MODEL_CATALOG_ROUTE_IDENTIFIER = /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/;
 const DEFAULT_UPSTREAM_ROUTES = {
   "chat/completions": "/openai/v1/chat/completions",
   responses: "/openai/v1/responses",
   messages: "/anthropic/v1/messages",
   "images/generations": "/openai/v1/images/generations"
 };
-const PROXY_ROUTABLE_INTERFACES = new Set(Object.keys(DEFAULT_UPSTREAM_ROUTES));
 
 let pricingDefinitionsCache = null;
 let pricingLookupCache = null;
@@ -42,6 +35,31 @@ function normalizeStringArray(value) {
   return Array.isArray(value)
     ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
     : [];
+}
+
+function normalizeProxyTemplateRoutes(value) {
+  if (value == null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Model Catalog proxyTemplate.routes must be an object");
+  }
+  const routes = {};
+  for (const [routeKey, routeTarget] of Object.entries(value)) {
+    const normalizedKey = String(routeKey).trim().toLowerCase();
+    const normalizedTarget = typeof routeTarget === "string"
+      ? routeTarget.trim().toLowerCase()
+      : "";
+    if (normalizedKey !== "*" && !MODEL_CATALOG_ROUTE_IDENTIFIER.test(normalizedKey)) {
+      throw new Error(`Model Catalog proxyTemplate.routes.${routeKey} has an invalid route key`);
+    }
+    if (!MODEL_CATALOG_ROUTE_IDENTIFIER.test(normalizedTarget)) {
+      throw new Error(`Model Catalog proxyTemplate.routes.${routeKey} must be a route identifier`);
+    }
+    if (Object.prototype.hasOwnProperty.call(routes, normalizedKey)) {
+      throw new Error(`Model Catalog proxyTemplate.routes has duplicate route key ${normalizedKey}`);
+    }
+    routes[normalizedKey] = normalizedTarget;
+  }
+  return routes;
 }
 
 function cloneJson(value) {
@@ -141,14 +159,18 @@ function normalizeProtocolProfile(value, profileName) {
   };
 }
 
-function normalizeProtocolProfiles(value) {
+function normalizeProtocolProfiles(value, interfaces, interfacesByHostingMode) {
   const normalizedProfiles = {};
+  const declaredInterfaces = new Set([
+    ...interfaces,
+    ...Object.values(interfacesByHostingMode).flat()
+  ].map((interfaceName) => String(interfaceName).trim().toLowerCase()).filter(Boolean));
   for (const [profileName, profile] of Object.entries(asPlainObject(value))) {
     const normalizedName = String(profileName).trim().toLowerCase();
     if (!normalizedName) continue;
     const protocolName = normalizedName.split(":").at(-1);
-    if (!MODEL_CATALOG_PROTOCOLS.has(protocolName)) {
-      throw new Error(`Model Catalog protocolProfiles.${profileName} uses unsupported protocol ${protocolName}`);
+    if (!declaredInterfaces.has(protocolName)) {
+      throw new Error(`Model Catalog protocolProfiles.${profileName} uses interface ${protocolName} that is not declared by the model`);
     }
     normalizedProfiles[normalizedName] = normalizeProtocolProfile(profile, profileName);
   }
@@ -279,7 +301,7 @@ function normalizePricingDefinition(rawDefinition) {
     ? {
       ...asPlainObject(definition.proxyTemplate),
       capabilities: normalizeStringArray(definition.proxyTemplate.capabilities),
-      routes: asPlainObject(definition.proxyTemplate.routes)
+      routes: normalizeProxyTemplateRoutes(definition.proxyTemplate.routes)
     }
     : null;
   const interfaces = normalizeStringArray(definition.interfaces);
@@ -300,7 +322,7 @@ function normalizePricingDefinition(rawDefinition) {
     defaultHostingMode: String(definition.defaultHostingMode || "").trim().toLowerCase(),
     defaultInterface: String(definition.defaultInterface || "").trim().toLowerCase(),
     interfacesByHostingMode,
-    protocolProfiles: normalizeProtocolProfiles(definition.protocolProfiles),
+    protocolProfiles: normalizeProtocolProfiles(definition.protocolProfiles, interfaces, interfacesByHostingMode),
     inputModalities: normalizeStringArray(definition.inputModalities),
     outputModalities: normalizeStringArray(definition.outputModalities),
     capabilities: normalizeStringArray(definition.capabilities),
@@ -311,7 +333,7 @@ function normalizePricingDefinition(rawDefinition) {
     supportsProxyTemplate: !!(
       proxyTemplate?.id
       && proxyTemplate?.targetModel
-      && interfaces.some((protocol) => PROXY_ROUTABLE_INTERFACES.has(protocol))
+      && interfaces.length > 0
     ),
     upstreamTemplate: {
       provider: String(definition.provider || "azure-openai"),
@@ -413,6 +435,9 @@ function getPricingLookup() {
   pricingLookupCache = new Map();
   for (const definition of definitions) {
     rememberLookup(pricingLookupCache, definition.id, definition);
+    for (const alias of definition.aliases || []) {
+      rememberLookup(pricingLookupCache, alias, definition);
+    }
     rememberLookup(pricingLookupCache, definition.displayName, definition);
     rememberLookup(pricingLookupCache, definition.proxyTemplate?.id, definition);
     rememberLookup(pricingLookupCache, definition.proxyTemplate?.targetModel, definition);
@@ -588,12 +613,17 @@ async function performPricingDefinitionsSync(overrides, transaction) {
     };
     await fsp.writeFile(path.join(stagingDir, PRICING_SYNC_METADATA_FILE), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
 
-    await replacePricingDirectory(targetDir, stagingDir, () => {
+    const activateCandidate = () => replacePricingDirectory(targetDir, stagingDir, () => {
       pricingDefinitionsCache = compiledDefinitions;
       pricingLookupCache = null;
       pricingCacheDir = targetDir;
       transaction.commit?.(preparedTransaction);
     });
+    if (typeof transaction.runExclusive === "function") {
+      await transaction.runExclusive(activateCandidate);
+    } else {
+      await activateCandidate();
+    }
 
     const status = getPricingLibraryStatus();
     const items = listPricingDefinitions();
@@ -622,7 +652,7 @@ export function syncPricingDefinitionsFromGitHub(overrides = {}, transaction = {
   return syncResult;
 }
 
-export function getPricingDefinition(definitionId) {
+function getPricingDefinition(definitionId) {
   if (!definitionId) return null;
   return getPricingLookup().get(String(definitionId).trim().toLowerCase()) || null;
 }

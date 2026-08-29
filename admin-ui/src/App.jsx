@@ -1299,7 +1299,10 @@ export default function App() {
                   key={definition.id}
                   type="button"
                   className={selected ? "template-option selected" : "template-option"}
-                  onClick={() => setSelectedPricingTemplateId(definition.id)}
+                  onClick={() => {
+                    setSelectedPricingTemplateId(definition.id);
+                    setTemplateRouteOverride("");
+                  }}
                 >
                   <div className="template-option-head">
                     <strong>{definition.displayName}</strong>

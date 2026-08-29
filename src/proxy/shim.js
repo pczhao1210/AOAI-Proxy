@@ -20,6 +20,17 @@ const SUPPORTED_CHAT_STREAM_FINISH_REASONS = new Set([null, undefined, ...SUPPOR
 const SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS = new Set(["end_turn", "max_tokens", "stop_sequence", "tool_use"]);
 const SUPPORTED_ANTHROPIC_STREAM_STOP_REASONS = new Set([null, undefined, ...SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS]);
 
+export function normalizeWebSearchToolType(type) {
+  const normalized = typeof type === "string" ? type.trim().toLowerCase() : "";
+  if (
+    normalized === "web_search_preview"
+    || normalized === "web_search_preview_2025_03_11"
+  ) {
+    return "web_search";
+  }
+  return normalized;
+}
+
 function getValueAtPath(value, path) {
   const segments = String(path || "").split(".").filter(Boolean);
   let current = value;
@@ -111,7 +122,15 @@ function ensureMessagesThinking(out, descriptor) {
   }
 }
 
-function createShimCompatibilityIssue({ phase, sourceProtocol, targetProtocol, path, type, reason }) {
+function createShimCompatibilityIssue({
+  phase,
+  sourceProtocol,
+  targetProtocol,
+  path,
+  type,
+  reason,
+  requiredRejection = false
+}) {
   return {
     phase,
     sourceProtocol,
@@ -119,6 +138,7 @@ function createShimCompatibilityIssue({ phase, sourceProtocol, targetProtocol, p
     path,
     type: type || "unknown",
     reason,
+    ...(requiredRejection ? { requiredRejection: true } : {}),
     message: `Cannot losslessly convert ${sourceProtocol} ${phase} ${path} (${type || "unknown"}) to ${targetProtocol}: ${reason}`
   };
 }
@@ -316,13 +336,25 @@ function validateResponsesPayload(payload, context) {
         reason: "structured output format is not represented by Anthropic Messages"
       });
     }
-  } else if (payload?.status === "incomplete" && payload?.incomplete_details?.reason !== "max_output_tokens") {
-    return createShimCompatibilityIssue({
-      ...context,
-      path: "incomplete_details.reason",
-      type: payload?.incomplete_details?.reason || "unknown",
-      reason: "only max_output_tokens can be represented by the target protocol's length termination"
-    });
+  } else {
+    const status = payload?.status;
+    if (status != null && status !== "completed" && status !== "incomplete") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "status",
+        type: status,
+        reason: "a non-success Responses state cannot be represented as a final target-protocol response",
+        requiredRejection: true
+      });
+    }
+    if (status === "incomplete" && payload?.incomplete_details?.reason !== "max_output_tokens") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "incomplete_details.reason",
+        type: payload?.incomplete_details?.reason || "unknown",
+        reason: "only max_output_tokens can be represented by the target protocol's length termination"
+      });
+    }
   }
 
   const tools = Array.isArray(payload?.tools) ? payload.tools : [];
@@ -661,10 +693,8 @@ function validateChatPayload(payload, context) {
       "prediction",
       "presence_penalty",
       "seed",
-      "stop",
-      "top_k",
       "top_logprobs",
-      "top_p"
+      ...(context.targetProtocol === "messages" ? [] : ["stop", "top_k", "top_p"])
     ];
     for (const field of droppedControls) {
       const value = payload?.[field];
@@ -769,7 +799,9 @@ function validateChatPayload(payload, context) {
   }
   const tools = Array.isArray(payload?.tools) ? payload.tools : [];
   for (let index = 0; index < tools.length; index += 1) {
-    if (tools[index]?.type !== "function") {
+    const toolType = normalizeWebSearchToolType(tools[index]?.type);
+    const supportedWebSearch = context.targetProtocol === "responses" && toolType === "web_search";
+    if (toolType !== "function" && !supportedWebSearch) {
       return createShimCompatibilityIssue({
         ...context,
         path: `tools[${index}]`,
@@ -883,7 +915,10 @@ export function getProtocolShimStreamCompatibilityIssue(event, {
       return validateResponsesContent([event.part], { ...context, phase: "response" }, "part");
     }
     if (["response.created", "response.in_progress", "response.completed", "response.incomplete"].includes(eventType) && event.response) {
-      const responseIssue = validateResponsesPayload(event.response, { ...context, phase: "response" });
+      const responsePayload = eventType === "response.created" || eventType === "response.in_progress"
+        ? { ...event.response, status: undefined }
+        : event.response;
+      const responseIssue = validateResponsesPayload(responsePayload, { ...context, phase: "response" });
       if (responseIssue) return responseIssue;
     }
     if (eventType === "response.incomplete" && !event.response) {
@@ -1373,6 +1408,10 @@ function normalizeToolChoiceForResponses(toolChoice) {
   if (!toolChoice) return undefined;
   if (typeof toolChoice === "string") return toolChoice;
   if (typeof toolChoice === "object") {
+    const toolType = normalizeWebSearchToolType(toolChoice.type);
+    if (toolType === "web_search") {
+      return { ...toolChoice, type: toolType };
+    }
     if (toolChoice.type === "function" && toolChoice.function?.name) {
       return { type: "function", name: toolChoice.function.name };
     }
@@ -1774,21 +1813,32 @@ function buildChatMessagesFromAnthropic(body) {
       continue;
     }
 
-    const regularBlocks = blocks.filter((block) => block?.type !== "tool_result");
-    const regularContent = Array.isArray(message.content)
-      ? anthropicContentToChatContent(regularBlocks)
-      : anthropicContentToChatContent(message.content);
-    if (regularContent !== "") {
-      messages.push({ role: "user", content: regularContent });
+    if (!Array.isArray(message.content)) {
+      const content = anthropicContentToChatContent(message.content);
+      if (content !== "") messages.push({ role: "user", content });
+      continue;
     }
+
+    let regularBlocks = [];
+    const flushRegularBlocks = () => {
+      const content = anthropicContentToChatContent(regularBlocks);
+      if (content !== "") messages.push({ role: "user", content });
+      regularBlocks = [];
+    };
     for (const block of blocks) {
-      if (block?.type !== "tool_result" || !block.tool_use_id) continue;
+      if (block?.type !== "tool_result") {
+        regularBlocks.push(block);
+        continue;
+      }
+      flushRegularBlocks();
+      if (!block.tool_use_id) continue;
       messages.push({
         role: "tool",
         tool_call_id: block.tool_use_id,
         content: anthropicToolResultToText(block.content)
       });
     }
+    flushRegularBlocks();
   }
 
   return messages;
@@ -2384,7 +2434,7 @@ export function mapResponsesJsonToChatCompletion(payload, modelId) {
     id: payload?.id || `chatcmpl_${created}`,
     object: "chat.completion",
     created,
-    model: payload?.model || modelId,
+    model: modelId || payload?.model,
     choices: [
       {
         index: 0,
@@ -2456,7 +2506,7 @@ export function mapChatCompletionJsonToResponses(payload, modelId) {
     error: null,
     incomplete_details: incomplete ? { reason: "max_output_tokens" } : null,
     instructions: null,
-    model: payload?.model || modelId,
+    model: modelId || payload?.model,
     output,
     output_text: text,
     parallel_tool_calls: true,
@@ -2516,7 +2566,7 @@ export function mapMessagesJsonToChatCompletion(payload, modelId) {
     id: payload?.id || `chatcmpl_${Math.floor(Date.now() / 1000)}`,
     object: "chat.completion",
     created: payload?.created_at || Math.floor(Date.now() / 1000),
-    model: payload?.model || modelId,
+    model: modelId || payload?.model,
     choices: [{
       index: 0,
       message: {
@@ -2563,7 +2613,7 @@ export function mapChatCompletionJsonToMessages(payload, modelId) {
     id: payload?.id || `msg_${Math.floor(Date.now() / 1000)}`,
     type: "message",
     role: "assistant",
-    model: payload?.model || modelId,
+    model: modelId || payload?.model,
     content,
     stop_reason: chatFinishReasonToAnthropic(choice.finish_reason, content.some((block) => block.type === "tool_use")),
     stop_sequence: null,
@@ -2642,7 +2692,7 @@ export function mapMessagesJsonToResponses(payload, modelId, { includeEncryptedC
     error: null,
     incomplete_details: incomplete ? { reason: "max_output_tokens" } : null,
     instructions: null,
-    model: payload?.model || modelId,
+    model: modelId || payload?.model,
     output,
     output_text: output
       .filter((item) => item.type === "message")
@@ -2710,7 +2760,7 @@ export function mapResponsesJsonToMessages(payload, modelId) {
     id: payload?.id || `msg_${Math.floor(Date.now() / 1000)}`,
     type: "message",
     role: "assistant",
-    model: payload?.model || modelId,
+    model: modelId || payload?.model,
     content,
     stop_reason: payload?.status === "incomplete" && incompleteReason === "max_output_tokens"
       ? "max_tokens"

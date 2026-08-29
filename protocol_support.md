@@ -68,20 +68,20 @@
 1. 原生路径是完整能力的首选路径。
 2. 跨协议路径只承诺文本、常见输入图片、普通 function tool、普通工具调用与结果、基础 token 限制、基础终止原因和 usage 的交集。
 3. Responses 的现代 item、服务端状态和内置工具，以及 Messages 的 thinking、document、cache control 等高级语义，不能视为可跨协议等价转换。
-4. 无法无损表达的结构默认应被明确拒绝。只有运维方显式关闭对应 shim 严格开关时才可尽力转换，并且必须记录结构化丢失告警，不能静默删除。
+4. 协议不可表达的核心状态必须明确拒绝。非核心字段默认按尽力模式转换并记录结构化丢失告警；运维方可开启对应 shim 严格开关，把这类损失也改为拒绝。
 5. Claude Code 必须绑定原生 Messages；Codex 必须绑定原生 Responses。转换路径只能作为普通客户端的基础兼容手段，不能作为这两个客户端的生产主路径。
 6. `responses/compact` 和 `messages/count_tokens` 是协议专属能力，不能由其他协议模拟。
 7. 请求控制字段的转换不是完全对称的。尤其是停止序列、采样控制和供应商扩展字段，必须按具体源协议和目标协议逐方向判断。
 
 ### 2.4 当前已知边界
 
-- 请求发往上游时会把公开模型 ID 替换为目标部署名；成功响应中的 `model` 当前通常沿用上游 payload 或事件，不保证统一改回公开模型 ID，因此客户端可能看到上游部署名。
-- Chat 跨协议请求中的 `stop` 当前会在兼容性验证阶段被拒绝，即使目标 Messages 存在 `stop_sequences` 字段。
-- Messages 的 `stop_sequences` 转 Chat 时可以保留；转 Responses 时当前不会保留，也不会自动报错。需要严格无损语义的调用方应在策略层禁止这一组合。
+- 请求发往上游时会把公开模型 ID 替换为目标部署名；成功 JSON 与 SSE 响应会把 `model`、`response.model` 或 `message.model` 恢复为公开模型 ID，上游模型名只用于日志、usage 与计价观测。
+- Chat 转 Messages 时，`stop` 映射为 `stop_sequences`，`top_p` 与 `top_k` 保留为同名控制字段；Messages 转 Chat 时执行反向 stop 映射。
+- Messages 的 `stop_sequences` 转 Responses 时映射为 `stop`。它是目标上游扩展兼容字段，不应被解释为所有 Responses 服务都原生支持；最终能力由真实上游判断。
 - Responses 转 Chat 时，`service_tier`、`verbosity`、`top_k` 等字段当前会作为顶层扩展字段继续传递；这不代表标准 Chat 语义与其等价，最终是否接受由字段策略和上游决定。
 - Responses 严格流终止由全局 Codex 兼容开关控制，默认影响所有 Responses 源流，而不是只根据单个请求是否来自 Codex 决定。
 - `compatibility.protocolShim.rejectLossyRequests` 和 `rejectLossyResponses` 默认均为 `false`；兼容模式允许有损尽力转换并记录 `proxy.protocol_shim_lossy_conversion`，需要无损边界时可显式开启严格拒绝；后者同时控制 JSON 与 SSE 响应。
-- 配置版本 2 升级到版本 3 时，会删除 GPT-5.6 Luna/Sol/Terra 的精确旧模板 wildcard `{ "*": "responses" }`；版本 3 中显式保存的路由覆盖保持不变。
+- 配置版本 2 升级到版本 3 时，会删除 GPT-5.6 Luna/Sol/Terra 的精确旧模板 wildcard `{ "*": "responses" }`；其他显式路由覆盖仍必须通过匹配 Catalog 定义的 target allowlist。
 - Chat 跨协议流支持代理侧模拟 `stream_options.include_usage`；代理会在 `[DONE]` 前生成 Chat usage chunk，其他未知 stream option 仍按有损策略处理。
 - 跨协议 SSE 当前只解释 `data:` 内容；`event`、`id`、`retry` 等字段只会在原生流的原始 frame 中被保留，不参与 shim 状态机。
 
@@ -96,7 +96,7 @@
 - 控制面：公开模型 ID、上游部署、路由覆盖、客户端兼容标记、字段策略、限流、预算、超时和错误策略；
 - 数据面：实际请求体、响应体、SSE 事件、认证头和 usage。
 
-公开模型 ID 是面向客户端的稳定别名，上游模型名或部署名是供应商侧标识。当前网关会在请求发往上游前完成公开 ID 到部署名的映射，但成功响应的 `model` 字段通常保留上游值，不保证反向映射。另一项目若要求部署细节隔离，应在原生 JSON、shim JSON 和所有 SSE 事件上统一回填公开模型 ID，并把这一点作为显式客户端契约。
+公开模型 ID 是面向客户端的稳定别名，上游模型名或部署名是供应商侧标识。当前网关会在请求发往上游前完成公开 ID 到部署名的映射，并在成功的原生 JSON、shim JSON 与 SSE 事件中统一恢复公开模型 ID；部署名只进入上游请求和内部观测。
 
 ### 3.2 两层协议模型
 
@@ -156,7 +156,7 @@ flowchart LR
 
 ### 3.4 路由结果必须由最终地址校验
 
-模型可以声明后端 route key，也可以声明具体上游路径。普通生成和图片请求会根据实际上游 URL 再次推断协议：
+模型只能从匹配 Catalog descriptor 的 hosting-resolved interfaces 或 `proxyTemplate.routes` 显式 transport target 中选择后端 route key；任意 alias 与直接路径在配置阶段拒绝。具体路径只由 `upstreams[].routes` 声明。普通生成和图片请求仍会根据实际上游 URL 再次推断协议：
 
 - 以 `/chat/completions` 结束，视为 Chat；
 - 以 `/responses` 结束，视为 Responses；
@@ -172,9 +172,9 @@ flowchart LR
 
 `pricing/*.json` 同时是模型事实的来源。除价格外，定义可声明模型别名、默认接口，以及 Chat、Responses、Messages 各自的 reasoning 参数路径、档位、默认值、别名和 thinking 类型。配置加载、配置保存和远程目录更新都会先编译不可变 snapshot；编译失败时不得替换当前 generation。
 
-一次请求在解析公开模型 ID 后只解析一个 descriptor，后续路由、最终 URL、provider/interface 判断、参数归一化、图片适配和成本治理复用该 descriptor。精确 Catalog 事实优先于协议通用默认，管理员显式 model/compatibility 配置优先于 Catalog。
+每个 active 配置模型必须先通过 `pricingRef`、公开 ID 或 target model 命中 Catalog 定义，candidate config 或远程 Catalog 才能激活。一次请求解析公开模型 ID 后只复用这一个 immutable descriptor；管理员策略可以收紧行为，但 `models[].routes` 不能超出该 descriptor 的 route target 集合。
 
-Catalog 是归一化、默认值和发现信息的依据，但默认不是上游能力拒绝器。`validation: passthrough` 下，Catalog 未列出的新字段或新档位继续发往真实上游；只有安全边界、协议不可表达核心状态、显式管理员策略或真实上游错误可以拒绝。未编目模型根据已配置 capability 使用协议级默认，不能仅因型号不在本地目录而失败。
+Catalog route target 是配置与协议选择边界，但 Catalog capability、字段和档位默认不是上游能力拒绝器。`validation: passthrough` 下，Catalog 未列出的新字段或新档位继续发往真实上游；只有安全边界、协议不可表达核心状态、显式管理员策略或真实上游错误可以拒绝。
 
 ---
 
@@ -291,10 +291,10 @@ Claude Code 和 Anthropic SDK 会发送版本、运行时和 Stainless 生成器
 - Chat 的 `reasoning_effort` 与 Responses 的 `reasoning.effort` 互相映射；
 - 某些上游不接受 `xhigh` 时可按明确策略降为 `high`，但不能假设所有模型都允许该降级；
 - Responses function/custom/namespace tool 缺少 description 时补充非空描述；
-- 原生 Responses 请求中的 `web_search_preview` 及带日期后缀的旧类型可规范化为 `web_search`；只有 Responses 后端且模型、上游或 Azure OpenAI host 表明支持时才放行；
+- 原生 Responses 请求中的 `web_search_preview` 及带日期后缀的旧类型可规范化为 Microsoft Foundry Responses 使用的 `web_search`；只按最终上游 URL 是否为 Responses 协议决定是否可发送，不按客户端身份或静态模型 capability 增加门禁；
 - `stream_options` 仅在流式 Chat 或 Responses 且上游能够识别时保留。
 
-当前还存在 Chat web search 的路由提升逻辑：当 Chat 请求原本解析到 Chat、没有直接路径覆盖、包含 web search 且同一上游可使用 Responses 时，后端候选会提升为 Responses。但当前跨协议守卫只允许普通 function tool，仍会把 Chat 形式的 web search tool 作为不可无损转换而拒绝。因此实际使用 web search 时应直接调用原生 `/v1/responses`；不能把“存在自动提升判断”理解为 Chat web search 已完整兼容。
+Chat web search 的路由提升逻辑只在 descriptor 声明 Responses interface 且最终可构造原生 Responses URL 时，把 Chat 请求提升到 Responses，并将 preview 工具名规范化为 `web_search`。该行为只提供协议兼容，不增加客户端专属门禁，也不预判具体供应商版本是否支持 Web Search；规范化后由真实上游接受或拒绝。
 
 ---
 
@@ -473,10 +473,11 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 | assistant tool call | `tool_use` block |
 | tool message | `tool_result` block |
 | `max_tokens` / `max_completion_tokens` | `max_tokens` |
+| `stop` | `stop_sequences` |
+| `top_p` / `top_k` | 同名 Messages 控制字段 |
 
 #### 必须拒绝的内容
 
-- `stop`；当前公共 shim 在转换前将其视为不可保留控制项，不会利用目标协议的 `stop_sequences`；
 - 图片 `detail`，因为 Messages 没有完全等价表达；
 - `response_format`；
 - `reasoning` 或 `reasoning_effort`；
@@ -567,11 +568,14 @@ Responses 与 Messages 的转换通过双方都能投影到的基础消息与 fu
 - function tool；
 - function call 和 function call output；
 - 输出 token 上限；
+- `stop` 到 `stop_sequences`；
+- `reasoning.effort` 到 Catalog 声明的 Messages effort/thinking 控制；
+- `include: ["reasoning.encrypted_content"]` 对应的 thinking signature 响应保留；
 - 基础 tool choice 交集。
 
 拒绝：
 
-- Responses reasoning 配置与 reasoning item；
+- 非 effort 的 Responses reasoning 配置与输入 reasoning item；
 - structured output `text.format`；
 - service tier、verbosity、top-k 等目标无法表达的控制；
 - conversation、previous response、store、background、cache state；
@@ -605,11 +609,13 @@ Responses 与 Messages 的转换通过双方都能投影到的基础消息与 fu
 - system 和普通文本 message；
 - URL/data URL 图片；
 - function tool、tool use 和普通文本 tool result；
-- token 上限。
+- token 上限；
+- `stop_sequences` 到 Responses `stop`；
+- Catalog 可表达的 effort/thinking 控制。
 
 拒绝范围与 Messages 转 Chat 基本一致，并额外拒绝任何无法在 Responses 中证明等价的 reasoning 或 metadata 语义。
 
-当前已知例外：Messages 请求中的 `stop_sequences` 会被接受，但转成 Responses 请求时不会保留。另一项目不应复制这一静默损失；应选择明确拒绝、实现有证明的等价映射，或要求客户端改用原生 Messages。
+Messages 的 `stop_sequences` 会作为 Responses `stop` 扩展字段保留并交由上游判定。该映射不等于标准 Responses 在所有供应商上都支持停止序列；要求供应商无关语义时应使用原生 Messages。
 
 ### 10.4 Responses 响应转 Messages
 

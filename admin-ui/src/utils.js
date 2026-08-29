@@ -82,14 +82,6 @@ export const DEFAULT_MODEL_TEMPLATE = {
 };
 
 const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "messages", "stream", "images", "image"]);
-export const KNOWN_MODEL_ROUTE_VALUES = [
-  "chat/completions",
-  "responses",
-  "messages",
-  "images/generations",
-  "openai-image",
-  "blackforest-image"
-];
 
 export const DEFAULT_LOG_FILTERS = {
   level: ["fatal", "error", "warn", "info"],
@@ -153,40 +145,25 @@ export function hasLegacyRouteCapabilities(capabilities) {
   return normalized.length > 0 && normalized.every((capability) => LEGACY_ROUTE_CAPABILITIES.has(capability));
 }
 
-export function isKnownModelRouteValue(value) {
-  return KNOWN_MODEL_ROUTE_VALUES.includes(String(value || "").trim());
+function normalizeModelRouteValue(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/.test(normalized)
+    ? normalized
+    : "";
 }
 
-export function getSuggestedModelRouteValues(source) {
-  const interfaces = normalizeStringArray(source?.interfaces);
-  const capabilities = normalizeStringArray(source?.capabilities);
-  const provider = String(source?.provider || "").trim().toLowerCase();
-  const values = [];
+export function getSuggestedModelRouteValues(source, hostingMode = "") {
+  if (!source || typeof source !== "object") return [];
+  const normalizedHostingMode = String(hostingMode || source.defaultHostingMode || "").trim().toLowerCase();
+  const hostedInterfaces = normalizeStringArray(source.interfacesByHostingMode?.[normalizedHostingMode]);
+  const interfaces = hostedInterfaces.length > 0
+    ? hostedInterfaces
+    : normalizeStringArray(source.interfaces);
+  const values = interfaces.map(normalizeModelRouteValue).filter(Boolean);
 
-  const isImageModel = interfaces.includes("images/generations")
-    || capabilities.includes("image-generation")
-    || capabilities.includes("image-editing");
-
-  if (interfaces.includes("chat/completions")) {
-    values.push("chat/completions");
-  }
-  if (interfaces.includes("responses")) {
-    values.push("responses");
-  }
-  if (interfaces.includes("messages")) {
-    values.push("messages");
-  }
-  if (isImageModel) {
-    values.push("images/generations");
-    if (provider === "black-forest-labs") {
-      values.push("blackforest-image");
-    } else {
-      values.push("openai-image");
-    }
-  }
-
-  if (!values.length) {
-    values.push(...KNOWN_MODEL_ROUTE_VALUES);
+  for (const target of Object.values(asPlainObject(source.proxyTemplate?.routes))) {
+    const normalized = normalizeModelRouteValue(target);
+    if (normalized) values.push(normalized);
   }
 
   return Array.from(new Set(values));
@@ -236,6 +213,7 @@ function normalizeTemplateLookupValue(value) {
 function getTemplateLookupValues(definition) {
   return [
     definition?.id,
+    ...(Array.isArray(definition?.aliases) ? definition.aliases : []),
     definition?.displayName,
     definition?.proxyTemplate?.id,
     definition?.proxyTemplate?.targetModel,

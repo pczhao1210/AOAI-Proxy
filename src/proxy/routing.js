@@ -1,4 +1,5 @@
 import { findPricingDefinitionForModel } from "../pricing-library.js";
+import { getDescriptorRouteTargets } from "../model-catalog.js";
 
 const upstreamIndexCache = new WeakMap();
 const modelIndexCache = new WeakMap();
@@ -91,10 +92,13 @@ export function resolveEffectiveRouteKey(routeKey, model, upstream, override = n
   if (requestedRouteKey !== "images/generations") {
     if (override || !TEXT_ROUTE_KEYS.has(requestedRouteKey)) return requestedRouteKey;
     const definition = resolveModelDefinition(model, descriptor);
-    const hostingMode = normalizeLower(model?.hostingMode);
-    const configuredInterfaces = hostingMode && Array.isArray(definition?.interfacesByHostingMode?.[hostingMode])
-      ? definition.interfacesByHostingMode[hostingMode]
-      : definition?.interfaces;
+    const descriptorInterfaces = Array.isArray(descriptor?.interfaces) ? descriptor.interfaces : [];
+    const hostingMode = normalizeLower(model?.hostingMode || definition?.defaultHostingMode);
+    const configuredInterfaces = descriptorInterfaces.length > 0
+      ? descriptorInterfaces
+      : hostingMode && Array.isArray(definition?.interfacesByHostingMode?.[hostingMode])
+        ? definition.interfacesByHostingMode[hostingMode]
+        : definition?.interfaces;
     const interfaces = Array.isArray(configuredInterfaces)
       ? configuredInterfaces.filter((item) => TEXT_ROUTE_KEYS.has(item))
       : [];
@@ -235,16 +239,6 @@ export function buildUpstreamUrl(upstream, routeKey, deployment, model = null, d
   return new URL(renderedRoute, resolveUpstreamBaseUrl(upstream, { routeKey, routePath: renderedRoute, model, descriptor })).toString();
 }
 
-export function buildDirectUpstreamUrl(upstream, routePath, deployment, model = null, descriptor = null) {
-  if (!routePath || typeof routePath !== "string") {
-    throw new Error("routePath must be a string");
-  }
-  const renderedRoute = deployment
-    ? routePath.replaceAll("{deployment}", encodeURIComponent(deployment))
-    : routePath;
-  return new URL(renderedRoute, resolveUpstreamBaseUrl(upstream, { routePath: renderedRoute, model, descriptor })).toString();
-}
-
 export function buildMessagesCountTokensUrl(upstream, messagesUrl, deployment, model = null, descriptor = null) {
   const configuredRoute = resolveRouteTemplate(upstream, "messages/count_tokens");
   if (configuredRoute) {
@@ -292,16 +286,24 @@ export function resolveModelRoute(model, incomingRouteKey) {
   if (!mapped || typeof mapped !== "string") return null;
   const trimmed = mapped.trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith("/")) {
-    return { type: "path", value: trimmed };
+  if (trimmed.startsWith("/") || trimmed.includes("://")) {
+    throw new Error("Direct model route paths are not supported");
   }
   return { type: "routeKey", value: trimmed };
 }
 
-export function inferBackendRouteKey(routeKey, override) {
+export function inferBackendRouteKey(routeKey, override, routeInterfaces = []) {
   if (override?.type === "routeKey") return normalizeBackendRouteKey(override.value);
   if (override?.type === "path") {
     const p = override.value.toLowerCase().split(/[?#]/, 1)[0].replace(/\/+$/, "");
+    const interfaceCandidates = [...new Set([
+      ...routeInterfaces,
+      normalizeBackendRouteKey(routeKey)
+    ].map(normalizeLower).filter(Boolean))]
+      .sort((left, right) => right.length - left.length);
+    for (const interfaceName of interfaceCandidates) {
+      if (p.endsWith(`/${interfaceName}`)) return interfaceName;
+    }
     if (p.endsWith("/responses")) return "responses";
     if (p.endsWith("/messages")) return "messages";
     if (p.endsWith("/chat/completions")) return "chat/completions";
@@ -312,13 +314,78 @@ export function inferBackendRouteKey(routeKey, override) {
   return normalizeBackendRouteKey(routeKey);
 }
 
-export function reconcileBackendRouteKey(configuredBackendRouteKey, targetUrl) {
+export function reconcileBackendRouteKey(configuredBackendRouteKey, targetUrl, routeInterfaces = []) {
   const normalizedRouteKey = normalizeBackendRouteKey(configuredBackendRouteKey);
-  if (!KNOWN_BACKEND_ROUTE_KEYS.has(normalizedRouteKey)) return normalizedRouteKey;
   return inferBackendRouteKey(normalizedRouteKey, {
     type: "path",
     value: targetUrl
-  });
+  }, routeInterfaces);
+}
+
+export function resolveRoutePlan({
+  routeKey,
+  model,
+  upstream,
+  override,
+  descriptor = null
+}) {
+  const deployment = normalizeString(model?.targetModel) || normalizeString(model?.id);
+  const resolvedOverride = override === undefined
+    ? resolveModelRoute(model, routeKey)
+    : override;
+  const allowedRouteTargets = new Set(getDescriptorRouteTargets(descriptor));
+  if (
+    resolvedOverride
+    && (
+      resolvedOverride.type !== "routeKey"
+      || !allowedRouteTargets.has(normalizeLower(resolvedOverride.value))
+    )
+  ) {
+    throw new Error(`Model Catalog does not allow route target ${resolvedOverride.value || "unknown"}`);
+  }
+  const effectiveRouteKey = deployment.toLowerCase() === "model-router"
+    ? "chat/completions"
+    : resolveEffectiveRouteKey(routeKey, model, upstream, resolvedOverride, descriptor);
+  if (
+    descriptor?.catalogMatched
+    && !allowedRouteTargets.has(normalizeLower(effectiveRouteKey))
+  ) {
+    throw new Error(`Model Catalog does not allow route target ${effectiveRouteKey}`);
+  }
+  const configuredBackendRouteKey = resolvedOverride
+    ? inferBackendRouteKey(routeKey, resolvedOverride)
+    : normalizeBackendRouteKey(effectiveRouteKey);
+  const targetUrl = buildUpstreamUrl(upstream, effectiveRouteKey, deployment, model, descriptor);
+  const backendRouteKey = reconcileBackendRouteKey(
+    configuredBackendRouteKey,
+    targetUrl,
+    descriptor?.knownRouteInterfaces || descriptor?.interfaces || []
+  );
+  if (
+    descriptor?.catalogMatched
+    && !descriptor.interfaces.includes(backendRouteKey)
+  ) {
+    throw new Error(
+      `Model Catalog model "${descriptor.catalogId}" does not allow final backend route ${backendRouteKey}; allowed interfaces: ${descriptor.interfaces.join(", ") || "none"}`
+    );
+  }
+  const sourceRouteKey = normalizeBackendRouteKey(routeKey);
+  if (
+    sourceRouteKey !== backendRouteKey
+    && !(TEXT_ROUTE_KEYS.has(sourceRouteKey) && TEXT_ROUTE_KEYS.has(backendRouteKey))
+  ) {
+    throw new Error(`Proxy does not support route conversion from ${sourceRouteKey} to ${backendRouteKey}`);
+  }
+
+  return {
+    routeKey,
+    deployment,
+    override: resolvedOverride || null,
+    effectiveRouteKey,
+    configuredBackendRouteKey,
+    backendRouteKey,
+    targetUrl
+  };
 }
 
 export function isPlaceholderBaseUrl(baseUrl) {

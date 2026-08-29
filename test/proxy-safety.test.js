@@ -27,8 +27,12 @@ import { REDACTED_SECRET_VALUE, redactConfigSecrets, restoreConfigSecrets } from
 import { getRequestNetworkContext } from "../src/request-network.js";
 import { buildCorrelationHeaders, resolveRequestContext } from "../src/request-context.js";
 import { getStats, recordUsage } from "../src/stats.js";
-import { getPricingDefinition } from "../src/pricing-library.js";
-import { buildModelFromPricingTemplate } from "../admin-ui/src/utils.js";
+import { findPricingDefinitionForModel } from "../src/pricing-library.js";
+import { buildModelFromPricingTemplate, getSuggestedModelRouteValues } from "../admin-ui/src/utils.js";
+
+function getPricingDefinition(definitionId) {
+  return findPricingDefinitionForModel({ pricingRef: definitionId });
+}
 
 const STREAM_POLICY = {
   firstByteTimeoutMs: 1000,
@@ -444,6 +448,29 @@ test("pricing protocol metadata distinguishes GPT, Claude, DeepSeek, and Grok in
   assert.equal(grok46?.pricingCatalogEntry, null);
   assert.equal(grok46?.pricing?.tiers?.[1]?.promptTokensAtLeast, 200000);
   assert.equal(grok46?.pricing?.tiers?.[1]?.inputPer1mTokens, 4);
+});
+
+test("admin model route options come from the hosting-resolved Catalog definition", () => {
+  const definition = {
+    interfaces: ["realtime"],
+    defaultHostingMode: "azure",
+    interfacesByHostingMode: {
+      azure: ["audio/transcriptions"],
+      provider: ["realtime"]
+    },
+    proxyTemplate: {
+      routes: { "*": "azure-audio" }
+    }
+  };
+
+  assert.deepEqual(
+    getSuggestedModelRouteValues(definition, "azure"),
+    ["audio/transcriptions", "azure-audio"]
+  );
+  assert.deepEqual(
+    getSuggestedModelRouteValues(definition, "provider"),
+    ["realtime", "azure-audio"]
+  );
 });
 
 test("Anthropic token count routes are explicit or safely derived from Messages", () => {
@@ -1049,6 +1076,20 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     sourceProtocol: "chat/completions",
     targetProtocol: "responses"
   }), null);
+  const compatibleMessagesControls = {
+    stop: ["END"],
+    top_k: 20,
+    top_p: 0.5,
+    messages: [{ role: "user", content: "hello" }]
+  };
+  assert.equal(getProtocolShimCompatibilityIssue(compatibleMessagesControls, {
+    sourceProtocol: "chat/completions",
+    targetProtocol: "messages"
+  }), null);
+  const convertedMessagesControls = chatToMessagesRequest(compatibleMessagesControls, "claude-deployment");
+  assert.deepEqual(convertedMessagesControls.stop_sequences, ["END"]);
+  assert.equal(convertedMessagesControls.top_k, 20);
+  assert.equal(convertedMessagesControls.top_p, 0.5);
   assert.equal(getProtocolShimCompatibilityIssue({
     stop_reason: "end_turn",
     content: [{ type: "redacted_thinking", data: "opaque" }]
@@ -1146,6 +1187,23 @@ test("protocol shim stream compatibility rejects unsupported event semantics", (
     assert.match(issue?.message || "", /Cannot losslessly convert/);
   }
 
+  for (const eventType of ["response.created", "response.in_progress"]) {
+    assert.equal(getProtocolShimStreamCompatibilityIssue({
+      type: eventType,
+      response: { status: "in_progress", output: [] }
+    }, {
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions"
+    }), null);
+  }
+  assert.equal(getProtocolShimStreamCompatibilityIssue({
+    type: "response.completed",
+    response: { status: "in_progress", output: [] }
+  }, {
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  })?.type, "in_progress");
+
   assert.equal(getProtocolShimStreamCompatibilityIssue({
     type: "response.output_item.added",
     output_index: 0,
@@ -1198,6 +1256,25 @@ test("Messages cross-protocol requests preserve text, images, and tool history",
   assert.equal(chat.tools[0].function.name, "lookup");
   assert.deepEqual(chat.tool_choice, { type: "function", function: { name: "lookup" } });
   assert.deepEqual(chat.stop, ["STOP"]);
+
+  const orderedChat = messagesToChatRequest({
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "toolu_ordered", name: "lookup", input: {} }]
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_ordered", content: "result first" },
+          { type: "text", text: "then continue" }
+        ]
+      }
+    ]
+  }, "chat-deployment");
+  assert.deepEqual(orderedChat.messages.map((message) => message.role), ["assistant", "tool", "user"]);
+  assert.equal(orderedChat.messages[1].content, "result first");
+  assert.equal(orderedChat.messages[2].content, "then continue");
 
   const responses = messagesToResponsesRequest(messagesRequest, "responses-deployment");
   assert.equal(responses.model, "responses-deployment");
@@ -1731,6 +1808,9 @@ test("Messages stream converts to Chat and Responses lifecycles", async () => {
     },
     { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"id\":1}" } },
     { type: "content_block_stop", index: 1 },
+    { type: "content_block_start", index: 2, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 2, delta: { type: "text_delta", text: " after" } },
+    { type: "content_block_stop", index: 2 },
     { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
     { type: "message_stop" }
   ]);
@@ -1748,6 +1828,18 @@ test("Messages stream converts to Chat and Responses lifecycles", async () => {
   assert.match(responses.raw.output, /"type":"response.output_text.delta"/);
   assert.match(responses.raw.output, /"type":"response.function_call_arguments.delta"/);
   assert.match(responses.raw.output, /"type":"response.completed"/);
+  const responsesCompleted = responses.raw.output
+    .split("\n\n")
+    .map((frame) => frame.startsWith("data: ") && frame.slice(6) !== "[DONE]" ? JSON.parse(frame.slice(6)) : null)
+    .find((event) => event?.type === "response.completed");
+  assert.deepEqual(responsesCompleted.response.output.map((item) => item.type), [
+    "message",
+    "function_call",
+    "message"
+  ]);
+  assert.equal(responsesCompleted.response.output[0].content[0].text, "hello");
+  assert.equal(responsesCompleted.response.output[2].content[0].text, " after");
+  assert.equal(responsesCompleted.response.output_text, "hello after");
   assert.equal((responses.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
 });
 
@@ -1821,13 +1913,24 @@ test("Chat and Responses streams convert to Anthropic Messages lifecycle", async
 
   const responsesSource = encodeEvents([
     { type: "response.created", response: { id: "resp_1", model: "responses-model" } },
-    { type: "response.output_text.delta", delta: "hello" },
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { id: "msg_1", type: "message", status: "in_progress", role: "assistant", content: [] }
+    },
+    { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "hello" },
     {
       type: "response.output_item.added",
       output_index: 1,
       item: { id: "fc_1", type: "function_call", call_id: "call_1", name: "lookup", arguments: "" }
     },
     { type: "response.function_call_arguments.delta", item_id: "fc_1", delta: "{\"id\":1}" },
+    {
+      type: "response.output_item.added",
+      output_index: 2,
+      item: { id: "msg_2", type: "message", status: "in_progress", role: "assistant", content: [] }
+    },
+    { type: "response.output_text.delta", item_id: "msg_2", output_index: 2, content_index: 0, delta: " after" },
     {
       type: "response.completed",
       response: { model: "responses-model", usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } }
@@ -1841,6 +1944,27 @@ test("Chat and Responses streams convert to Anthropic Messages lifecycle", async
   assert.match(responses.raw.output, /"stop_reason":"tool_use"/);
   assert.match(responses.raw.output, /event: message_stop/);
   assert.doesNotMatch(responses.raw.output, /data: \[DONE\]/);
+  const messagesFrames = responses.raw.output
+    .split("\n\n")
+    .map((frame) => frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6))
+    .filter(Boolean)
+    .map(JSON.parse);
+  assert.deepEqual(
+    messagesFrames
+      .filter((event) => event.type === "content_block_start")
+      .map((event) => [event.index, event.content_block.type]),
+    [[0, "text"], [1, "tool_use"], [2, "text"]]
+  );
+  assert.deepEqual(
+    messagesFrames
+      .filter((event) => event.type === "content_block_delta" && event.delta.type === "text_delta")
+      .map((event) => [event.index, event.delta.text]),
+    [[0, "hello"], [2, " after"]]
+  );
+  assert.deepEqual(
+    messagesFrames.filter((event) => event.type === "content_block_stop").map((event) => event.index),
+    [0, 1, 2]
+  );
 });
 
 test("streaming cache usage is projected without double counting", async () => {

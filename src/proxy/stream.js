@@ -98,6 +98,40 @@ function createRawSseParser() {
   };
 }
 
+function restorePublicModelInSseEvent(event, modelId) {
+  if (!modelId || !event?.payload || event.payload === "[DONE]") return event.raw;
+
+  let payload;
+  try {
+    payload = JSON.parse(event.payload);
+  } catch {
+    return event.raw;
+  }
+
+  let changed = false;
+  for (const value of [payload, payload?.response, payload?.message]) {
+    if (value && typeof value === "object" && typeof value.model === "string" && value.model !== modelId) {
+      value.model = modelId;
+      changed = true;
+    }
+  }
+  if (!changed) return event.raw;
+
+  const rawText = event.raw.toString("utf8");
+  const delimiterMatch = rawText.match(/(\r\n\r\n|\n\n)$/);
+  const delimiter = delimiterMatch?.[0] || "";
+  const block = delimiter ? rawText.slice(0, -delimiter.length) : rawText;
+  const lineEnding = block.includes("\r\n") ? "\r\n" : "\n";
+  let dataWritten = false;
+  const lines = block.split(/\r?\n/).flatMap((line) => {
+    if (line !== "data" && !line.startsWith("data:")) return [line];
+    if (dataWritten) return [];
+    dataWritten = true;
+    return [`data: ${JSON.stringify(payload)}`];
+  });
+  return dataWritten ? Buffer.from(`${lines.join(lineEnding)}${delimiter}`) : event.raw;
+}
+
 function extractAzureRequestId(value) {
   if (typeof value !== "string") return "";
   const match = value.match(/request ID\s+([0-9a-fA-F-]{16,})/i);
@@ -351,6 +385,7 @@ export async function writeSseDoneFrame(replyRaw) {
 export async function streamPassthrough({
   upstreamResponse,
   reply,
+  modelId,
   backendRouteKey = "",
   strictResponsesCompletion = false,
   forwardProviderErrors = false,
@@ -489,7 +524,7 @@ export async function streamPassthrough({
         if (providerError || terminalMarkerSeen) break;
         processPayload(event.payload);
         if (!providerError || forwardProviderErrors) {
-          await writeWithBackpressure(reply.raw, event.raw);
+          await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId));
         }
       }
       if (sseParser.bufferedLength > MAX_SSE_BUFFER_CHARS) {
@@ -505,7 +540,7 @@ export async function streamPassthrough({
         if (providerError || terminalMarkerSeen) break;
         processPayload(event.payload);
         if (!providerError || forwardProviderErrors) {
-          await writeWithBackpressure(reply.raw, event.raw);
+          await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId));
         }
       }
     }
@@ -627,7 +662,7 @@ export async function streamShim({
   let reverseCompleted = false;
   let reverseFinishReason = null;
   let reverseUsage = null;
-  let reverseTextItem = null;
+  const reverseTextItems = new Map();
   const reverseOutputItems = [];
   const reverseToolItems = new Map();
   const reverseReasoningItems = new Map();
@@ -645,8 +680,9 @@ export async function streamShim({
   const messagesToolAliases = new Map();
   const updateResolvedModel = (value) => {
     if (typeof value === "string" && value.trim()) {
-      resolvedModel = value.trim();
-      onModel?.(resolvedModel);
+      const upstreamModel = value.trim();
+      if (!resolvedModel) resolvedModel = upstreamModel;
+      onModel?.(upstreamModel);
     }
   };
   const maybeRecordUsage = (usage) => {
@@ -779,7 +815,10 @@ export async function streamShim({
     instructions: null,
     model: resolvedModel,
     output,
-    output_text: reverseTextItem?.text || "",
+    output_text: reverseOutputItems
+      .filter((item) => item.kind === "message")
+      .map((item) => item.text)
+      .join(""),
     parallel_tool_calls: true,
     usage: buildReverseUsage()
   });
@@ -802,21 +841,23 @@ export async function streamShim({
       response: buildReverseResponse("in_progress")
     });
   };
-  const ensureReverseTextItem = async () => {
-    if (reverseTextItem) return reverseTextItem;
+  const ensureReverseTextItem = async (sourceIndex = "default") => {
+    const existing = reverseTextItems.get(sourceIndex);
+    if (existing) return existing;
     await ensureReverseEnvelope();
-    reverseTextItem = {
+    const textItem = {
       kind: "message",
-      id: `msg_${created}`,
+      id: reverseTextItems.size === 0 ? `msg_${created}` : `msg_${created}_${reverseTextItems.size}`,
       outputIndex: reverseOutputItems.length,
       text: ""
     };
-    reverseOutputItems.push(reverseTextItem);
+    reverseTextItems.set(sourceIndex, textItem);
+    reverseOutputItems.push(textItem);
     await writeResponsesEvent({
       type: "response.output_item.added",
-      output_index: reverseTextItem.outputIndex,
+      output_index: textItem.outputIndex,
       item: {
-        id: reverseTextItem.id,
+        id: textItem.id,
         type: "message",
         status: "in_progress",
         role: "assistant",
@@ -825,12 +866,12 @@ export async function streamShim({
     });
     await writeResponsesEvent({
       type: "response.content_part.added",
-      item_id: reverseTextItem.id,
-      output_index: reverseTextItem.outputIndex,
+      item_id: textItem.id,
+      output_index: textItem.outputIndex,
       content_index: 0,
       part: { type: "output_text", text: "", annotations: [], logprobs: [] }
     });
-    return reverseTextItem;
+    return textItem;
   };
   const ensureReverseReasoningItem = async (blockIndex, sourceBlock = {}) => {
     const existing = reverseReasoningItems.get(blockIndex);
@@ -1023,8 +1064,13 @@ export async function streamShim({
       }
     });
   };
+  const closeMessagesBlock = async (block) => {
+    if (!block?.open) return;
+    await writeAnthropicSse(reply.raw, { type: "content_block_stop", index: block.index });
+    block.open = false;
+  };
   const ensureMessagesTextBlock = async () => {
-    if (messagesTextBlock) return messagesTextBlock;
+    if (messagesTextBlock?.open) return messagesTextBlock;
     await ensureMessagesEnvelope();
     messagesTextBlock = { index: messagesNextBlockIndex, open: true };
     messagesNextBlockIndex += 1;
@@ -1050,6 +1096,10 @@ export async function streamShim({
     const name = block.name || (force ? "tool" : "");
     if (!id || !name) return false;
     await ensureMessagesEnvelope();
+    if (backendRouteKey === "responses" && messagesTextBlock?.open) {
+      await closeMessagesBlock(messagesTextBlock);
+      messagesTextBlock = null;
+    }
     block.id = id;
     block.name = name;
     block.started = true;
@@ -1090,6 +1140,9 @@ export async function streamShim({
   const writeMessagesTextDelta = async (delta) => {
     if (typeof delta !== "string" || !delta) return;
     onContent?.(delta, "text");
+    if (backendRouteKey === "responses") {
+      for (const block of messagesToolBlocks.values()) await closeMessagesBlock(block);
+    }
     const block = await ensureMessagesTextBlock();
     await writeAnthropicSse(reply.raw, {
       type: "content_block_delta",
@@ -1125,9 +1178,7 @@ export async function streamShim({
       .filter((block) => block?.open)
       .sort((left, right) => left.index - right.index);
     for (const block of openBlocks) {
-      if (!block.open) continue;
-      await writeAnthropicSse(reply.raw, { type: "content_block_stop", index: block.index });
-      block.open = false;
+      await closeMessagesBlock(block);
     }
     const usage = buildMessagesUsage(messagesUsage) || { input_tokens: 0, output_tokens: 0 };
     await writeAnthropicSse(reply.raw, {
@@ -1347,7 +1398,7 @@ export async function streamShim({
                 });
               } else {
                 onContent?.(sourceBlock.text, "text");
-                const textItem = await ensureReverseTextItem();
+                const textItem = await ensureReverseTextItem(evt?.index);
                 textItem.text += sourceBlock.text;
                 await writeResponsesEvent({
                   type: "response.output_text.delta",
@@ -1376,7 +1427,7 @@ export async function streamShim({
                 });
               } else {
                 onContent?.(delta, "text");
-                const textItem = await ensureReverseTextItem();
+                const textItem = await ensureReverseTextItem(evt?.index);
                 textItem.text += delta;
                 await writeResponsesEvent({
                   type: "response.output_text.delta",

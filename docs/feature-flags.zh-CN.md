@@ -38,6 +38,8 @@
 | `proxy.retries.classifyNetworkErrorsAsRetryable` | `true` | 将支持的网络错误分类为可重试；仍受 retry 次数和“输出前重试”约束。 | JSON；热 |
 | `proxy.httpClient.forceIpv4` | `false` | 让上游 Undici 连接优先使用 IPv4。保存后会重建 HTTP client。 | JSON；热 |
 | `proxy.forwardHeaders.addRequestIdHeader` | `true` | 向上游注入请求关联 header。 | JSON；热 |
+| `proxy.guards.maxRequestBodyBytes` | `52428800` | 公开代理路由的原始请求体策略上限；在解析前统计，实际还受启动时 `BODY_LIMIT` 硬上限约束。 | JSON；热 |
+| `proxy.guards.maxResponseBodyBytes` | `52428800` | 需要缓冲的上游 JSON 响应上限；不作为 SSE 总流量上限。 | JSON；热 |
 | `proxy.guards.rejectUnknownProxyParams` | `false` | 拒绝未知的代理专属超时控制字段；不是通用 OpenAI 字段白名单。 | JSON；热 |
 | `proxy.guards.dropUnsupportedOpenAiParams` | `false` | 将请求策略判定为不允许的 OpenAI 字段静默删除；关闭时返回错误。 | JSON；热 |
 | `proxy.guards.sanitizeMeaninglessValues` | `true` | 删除目标协议没有意义的空值，减少上游参数校验失败。 | JSON；热 |

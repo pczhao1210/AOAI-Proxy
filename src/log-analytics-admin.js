@@ -505,9 +505,7 @@ export async function initializeLogAnalytics(input = {}, dependencies = {}) {
     const credential = dependencies.credential || createCredential(input);
     const armRequest = dependencies.armRequest || createArmRequest(credential);
     const armPolling = {
-      sleep: dependencies.sleep,
-      pollIntervalMs: dependencies.armPollIntervalMs,
-      maxAttempts: dependencies.armMaxPollAttempts
+      sleep: dependencies.sleep
     };
 
     const discovered = await runPhase("resources", async () => {

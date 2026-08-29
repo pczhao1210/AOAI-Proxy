@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { LogsIngestionClient } from "@azure/monitor-ingestion";
 import { appendStructuredLog, buildContentLogSnapshot, buildLogAnalyticsRecord, flushLogAnalyticsSink, getLogRuntimeInfo, LOG_ANALYTICS_COLUMNS, queryLogs, setLogConfig } from "../src/logs.js";
 import { createTestContext } from "./lib/harness.js";
 
@@ -302,7 +303,7 @@ test("Log Analytics queue is bounded by bytes as well as entry count", () => {
   }
 });
 
-test("Log Analytics upload timeout aborts, requeues, and applies retry backoff", async () => {
+test("Log Analytics upload timeout aborts, requeues, and applies retry backoff", async (context) => {
   try {
     configureLogs({
       logAnalytics: {
@@ -319,19 +320,16 @@ test("Log Analytics upload timeout aborts, requeues, and applies retry backoff",
     });
     appendStructuredLog("info", { event: "test.upload.timeout" });
     let uploadCalls = 0;
+    context.mock.method(LogsIngestionClient.prototype, "upload", (ruleId, streamName, records, options) => {
+      uploadCalls += 1;
+      return new Promise((resolve, reject) => {
+        options.abortSignal.addEventListener("abort", () => reject(options.abortSignal.reason), { once: true });
+      });
+    });
     const startedAt = Date.now();
-    const result = await flushLogAnalyticsSink({
-      upload: ({ abortSignal }) => {
-        uploadCalls += 1;
-        return new Promise((resolve, reject) => {
-          abortSignal.addEventListener("abort", () => reject(abortSignal.reason), { once: true });
-        });
-      }
-    });
+    const result = await flushLogAnalyticsSink();
     const elapsedMs = Date.now() - startedAt;
-    const deferred = await flushLogAnalyticsSink({
-      upload: async () => { uploadCalls += 1; }
-    });
+    const deferred = await flushLogAnalyticsSink();
     const runtime = getLogRuntimeInfo();
 
     assert.equal(result.error?.code, "LOG_ANALYTICS_UPLOAD_TIMEOUT");
@@ -351,7 +349,7 @@ test("Log Analytics upload timeout aborts, requeues, and applies retry backoff",
   }
 });
 
-test("an upload that ignores abort blocks additional uploads without growing orphaned batches", async () => {
+test("an upload that ignores abort blocks additional uploads without growing orphaned batches", async (context) => {
   try {
     configureLogs({
       logAnalytics: {
@@ -369,16 +367,12 @@ test("an upload that ignores abort blocks additional uploads without growing orp
     appendStructuredLog("info", { event: "test.upload.stuck" });
     let releaseUpload;
     let uploadCalls = 0;
-    const result = await flushLogAnalyticsSink({
-      upload: () => {
-        uploadCalls += 1;
-        return new Promise((resolve) => { releaseUpload = resolve; });
-      }
+    context.mock.method(LogsIngestionClient.prototype, "upload", () => {
+      uploadCalls += 1;
+      return new Promise((resolve) => { releaseUpload = resolve; });
     });
-    const blocked = await flushLogAnalyticsSink({
-      force: true,
-      upload: async () => { uploadCalls += 1; }
-    });
+    const result = await flushLogAnalyticsSink();
+    const blocked = await flushLogAnalyticsSink({ force: true });
 
     assert.equal(result.error?.code, "LOG_ANALYTICS_UPLOAD_TIMEOUT");
     assert.equal(blocked.pendingUpload, true);
@@ -396,7 +390,7 @@ test("an upload that ignores abort blocks additional uploads without growing orp
   }
 });
 
-test("a failed batch does not evict newer queued logs", async () => {
+test("a failed batch does not evict newer queued logs", async (context) => {
   configureLogs({
     bufferSize: 500,
     logAnalytics: {
@@ -415,10 +409,17 @@ test("a failed batch does not evict newer queued logs", async () => {
   });
   appendStructuredLog("info", { event: "test.retry.oldest", payload: "o".repeat(4000) });
   let rejectUpload;
-  const failedFlush = flushLogAnalyticsSink({
-    force: true,
-    upload: () => new Promise((resolve, reject) => { rejectUpload = reject; })
+  let firstUpload = true;
+  const uploadedEvents = [];
+  context.mock.method(LogsIngestionClient.prototype, "upload", (ruleId, streamName, records) => {
+    if (firstUpload) {
+      firstUpload = false;
+      return new Promise((resolve, reject) => { rejectUpload = reject; });
+    }
+    uploadedEvents.push(...records.map((record) => record.Event));
+    return Promise.resolve();
   });
+  const failedFlush = flushLogAnalyticsSink({ force: true });
   await new Promise((resolve) => setImmediate(resolve));
   for (let index = 0; index < 20; index += 1) {
     appendStructuredLog("info", { event: `test.retry.new.${index}`, payload: "n".repeat(4000) });
@@ -426,12 +427,8 @@ test("a failed batch does not evict newer queued logs", async () => {
   rejectUpload(Object.assign(new Error("temporary outage"), { code: "ECONNRESET" }));
   await failedFlush;
 
-  const uploadedEvents = [];
   while (getLogRuntimeInfo().queueLength > 0) {
-    await flushLogAnalyticsSink({
-      force: true,
-      upload: async ({ records }) => uploadedEvents.push(...records.map((record) => record.Event))
-    });
+    await flushLogAnalyticsSink({ force: true });
   }
   assert.equal(uploadedEvents.includes("test.retry.oldest"), false);
   assert.equal(uploadedEvents.includes("test.retry.new.19"), true);

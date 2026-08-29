@@ -8,13 +8,6 @@ function asPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const PROXY_ROUTABLE_INTERFACES = new Set([
-  "chat/completions",
-  "responses",
-  "messages",
-  "images/generations"
-]);
-
 function normalizePricingDefinition(rawDefinition) {
   const definition = asPlainObject(rawDefinition);
   const interfacesByHostingMode = Object.fromEntries(
@@ -33,6 +26,7 @@ function normalizePricingDefinition(rawDefinition) {
 
   return {
     id: String(definition.id || ""),
+    aliases: normalizeStringArray(definition.aliases),
     displayName: String(definition.displayName || definition.id || ""),
     provider: String(definition.provider || "azure-openai"),
     family: String(definition.family || ""),
@@ -48,7 +42,7 @@ function normalizePricingDefinition(rawDefinition) {
     supportsProxyTemplate: !!(
       proxyTemplate?.id
       && proxyTemplate?.targetModel
-      && interfaces.some((protocol) => PROXY_ROUTABLE_INTERFACES.has(protocol))
+      && interfaces.length > 0
     ),
     upstreamTemplate: {
       provider: String(definition.provider || "azure-openai"),

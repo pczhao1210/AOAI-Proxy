@@ -528,7 +528,7 @@ function enqueueLogAnalyticsEntry(entry) {
   scheduleLogAnalyticsFlush();
 }
 
-async function flushLogAnalyticsBatch(settings, batchItems, uploadOverride) {
+async function flushLogAnalyticsBatch(settings, batchItems) {
   const records = batchItems.map((item) => item.record);
   const controller = new AbortController();
   let timeoutHandle;
@@ -547,14 +547,12 @@ async function flushLogAnalyticsBatch(settings, batchItems, uploadOverride) {
     }, settings.uploadTimeoutMs);
   });
   const rawUploadPromise = Promise.resolve().then(() => (
-    uploadOverride
-      ? uploadOverride({ settings, records, abortSignal: controller.signal })
-      : getLogAnalyticsClient(settings).upload(
-          settings.ruleId,
-          settings.streamName,
-          records,
-          { maxConcurrency: settings.maxConcurrency, abortSignal: controller.signal }
-        )
+    getLogAnalyticsClient(settings).upload(
+      settings.ruleId,
+      settings.streamName,
+      records,
+      { maxConcurrency: settings.maxConcurrency, abortSignal: controller.signal }
+    )
   ));
   uploadPromise = rawUploadPromise.finally(() => {
     if (logAnalyticsOutstandingUpload !== uploadPromise) return;
@@ -608,7 +606,7 @@ export async function flushLogAnalyticsSink(options = {}) {
   );
   updateLogAnalyticsState({});
   try {
-    await flushLogAnalyticsBatch(settings, batchItems, options.upload);
+    await flushLogAnalyticsBatch(settings, batchItems);
     logAnalyticsConsecutiveFailures = 0;
     logAnalyticsRetryNotBefore = 0;
     updateLogAnalyticsState({
