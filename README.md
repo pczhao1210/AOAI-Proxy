@@ -2,7 +2,7 @@
 
 > OpenAI-compatible reverse proxy for Azure AI Foundry / Azure OpenAI with SSE streaming, configurable Caddy TLS, and deployment-selectable persistence.
 
-[English](README.md) | [简体中文](docs/README.zh-CN.md) | [Docs Index](docs/README.md) | [Git Workflow（中文）](GIT_WORKFLOW.zh-CN.md)
+[English](README.md) | [简体中文](docs/README.zh-CN.md) | [Docs Index](docs/README.md) | [Git Workflow（中文）](docs/development/git-workflow.zh-CN.md)
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fpczhao1210%2FAOAI-Proxy%2Faoai-nextgen%2Finfra%2Fazuredeploy.json)
 
@@ -14,14 +14,14 @@
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
 - Native protocol routes preserve modern Responses items and Anthropic content blocks; cross-protocol shims use best-effort conversion with structured loss warnings by default and expose strict request/response rejection switches
-- Optional DCE-based Log Analytics export for correlated proxy events, usage, and redacted prompt/output content; see the [setup guide](docs/log-analytics-dce.en.md)
+- Optional DCE-based Log Analytics export for correlated proxy events, usage, and redacted prompt/output content; see the [setup guide](docs/observability/log-analytics-dce.en.md)
 
 ## Deployment Assets
 
 - Bicep template: [infra/main.bicep](infra/main.bicep)
 - ARM template for portal deployment: [infra/azuredeploy.json](infra/azuredeploy.json)
 - Portal UI definition for managed app / custom portal packaging: [infra/createUiDefinition.json](infra/createUiDefinition.json)
-- Azure Managed Application package source: [infra/azure_deployment_with_UI](infra/azure_deployment_with_UI)
+- Azure Managed Application package source: [infra/azure_deployment_with_UI/README.md](infra/azure_deployment_with_UI/README.md)
 - Example parameters: [infra/parameters/dev.json](infra/parameters/dev.json), [infra/parameters/prod.json](infra/parameters/prod.json)
 
 The Deploy to Azure button targets the ARM JSON template because the portal button flow does not deploy remote Bicep files directly.
@@ -402,7 +402,7 @@ Current limitation: this ACI-based deployment does not expose an ARM64 machine-f
 
 ### Deploy as Azure Managed Application With Custom UI
 
-Use [infra/azure_deployment_with_UI](infra/azure_deployment_with_UI) when you want the Azure Portal to use `createUiDefinition.json` and show the richer resource-selection UI.
+Use [infra/azure_deployment_with_UI/README.md](infra/azure_deployment_with_UI/README.md) when you want the Azure Portal to use `createUiDefinition.json` and show the richer resource-selection UI.
 
 That custom UI now defaults to PostgreSQL-backed config persistence, exposes database server/name/admin fields, and hides storage inputs unless you explicitly switch to Azure Files.
 
@@ -453,8 +453,8 @@ The portal UI in this package supports selecting an existing Foundry or Azure Op
 
 ## ACI Persistence, Database Notes, and RBAC
 
-- Azure Files walkthrough: [docs/aci_persist_vol.en.md](docs/aci_persist_vol.en.md)
-- Chinese version: [docs/aci_persist_vol.md](docs/aci_persist_vol.md)
+- Azure Files walkthrough: [docs/deployment/aci-persistence.en.md](docs/deployment/aci-persistence.en.md)
+- Chinese version: [docs/deployment/aci-persistence.zh-CN.md](docs/deployment/aci-persistence.zh-CN.md)
 
 ## Caddy TLS
 

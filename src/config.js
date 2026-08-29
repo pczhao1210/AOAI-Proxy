@@ -783,6 +783,64 @@ function migrateLegacyGpt56Routes(models, sourceVersion) {
   }
 }
 
+function isLegacyConfigVersion(raw) {
+  return pickInteger(asPlainObject(raw).version, 2) < CURRENT_CONFIG_VERSION;
+}
+
+function resolvePositiveInteger(value, fallback) {
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+export function optimizeV2Config(rawConfig) {
+  const raw = cloneConfig(rawConfig);
+  if (!isLegacyConfigVersion(raw)) {
+    return { config: raw, upgraded: false };
+  }
+
+  const legacyImageCompression = asPlainObject(raw.server?.imageCompression);
+  const media = asPlainObject(raw.media);
+  const inputCompression = asPlainObject(media.inputCompression);
+  raw.media = {
+    ...media,
+    inputCompression: {
+      ...inputCompression,
+      ...(inputCompression.enabled == null && legacyImageCompression.enabled != null
+        ? { enabled: legacyImageCompression.enabled }
+        : {}),
+      ...(inputCompression.maxLongSidePx == null && legacyImageCompression.maxSize != null
+        ? { maxLongSidePx: legacyImageCompression.maxSize }
+        : {}),
+      ...(inputCompression.quality == null && legacyImageCompression.quality != null
+        ? { quality: legacyImageCompression.quality }
+        : {}),
+      ...(inputCompression.outputFormat == null && legacyImageCompression.format != null
+        ? { outputFormat: legacyImageCompression.format }
+        : {})
+    }
+  };
+  const guards = asPlainObject(raw.proxy?.guards);
+  const legacyUpstream = asPlainObject(raw.server?.upstream);
+  raw.proxy = asPlainObject(raw.proxy);
+  raw.proxy.guards = {
+    ...guards,
+    maxRequestBodyBytes: resolvePositiveInteger(
+      guards.maxRequestBodyBytes,
+      DEFAULTS.proxy.guards.maxRequestBodyBytes
+    ),
+    maxResponseBodyBytes: resolvePositiveInteger(
+      guards.maxResponseBodyBytes,
+      resolvePositiveInteger(
+        legacyUpstream.maxResponseBytes,
+        DEFAULTS.proxy.guards.maxResponseBodyBytes
+      )
+    )
+  };
+  migrateLegacyGpt56Routes(raw.models, 2);
+  raw.version = CURRENT_CONFIG_VERSION;
+
+  return { config: raw, upgraded: true };
+}
+
 function applySchemaCompatibility(rawConfig, merged) {
   const raw = asPlainObject(rawConfig);
   const rawServer = asPlainObject(raw.server);
@@ -1830,10 +1888,14 @@ export function getConfigPath() {
 async function loadConfig() {
   const rawText = await readPersistedConfigText();
   const raw = JSON.parse(rawText);
-  const normalizedPersistedConfig = normalizeConfig(raw, { applyEnvironment: false });
+  const optimized = optimizeV2Config(raw);
+  const normalizedPersistedConfig = normalizeConfig(optimized.config, { applyEnvironment: false });
   const { config: cfg, modelCatalogSnapshot } = validateConfig(
     applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalizedPersistedConfig)))
   );
+  if (optimized.upgraded) {
+    await writePersistedConfigText(JSON.stringify(normalizedPersistedConfig, null, 2), cfg);
+  }
   persistedConfig = normalizedPersistedConfig;
   currentConfig = cfg;
   currentDistributionProfile = resolveDistributionProfile(cfg);

@@ -82,6 +82,41 @@ npm run test:real:chat
 npm run test:real:openai-image
 ```
 
+Real Chat/Responses/Messages protocol matrix:
+
+```bash
+export AOAI_PROXY_MATRIX_BASE_URL=http://127.0.0.1:3000
+export AOAI_PROXY_MATRIX_API_KEY=your-proxy-api-key
+export AOAI_PROXY_MATRIX_ADMIN_USERNAME=admin
+export AOAI_PROXY_MATRIX_ADMIN_PASSWORD=your-admin-password
+
+npm run test:real:matrix -- --list
+npm run test:real:matrix -- --preflight
+npm run test:real:matrix
+```
+
+The runner covers all nine client-to-backend protocol directions with sequential `basic`, `stream`, `tool`, and `reasoning` scenarios. It checks the client JSON or SSE contract and then uses the request ID in `/admin/api/logs` to assert the actual `backendRouteKey`. Use `--no-log-check` only when admin log access is unavailable.
+
+Configure these public model IDs, or override each ID with the named environment variable printed by `--help`:
+
+- `claude-sonnet-5`
+- `claude-sonnet-4-6`
+- `gpt-5.6-terra`
+- `gpt-5.4`
+- `DeepSeek-V4-Pro`
+- `Kimi-K2.6`
+- `grok-4.6`
+
+The GPT-5.6 Terra model must retain the pricing-template route `chat/completions -> responses`. DeepSeek V4 has no function-tool capability, so Kimi K2.6 covers the Chat-backend tool cells. Kimi K2.6 exposes a thinking toggle rather than a reasoning level, so reasoning-level cells use the other compatible models.
+
+Focused reruns:
+
+```bash
+npm run test:real:matrix -- --scenario=stream
+npm run test:real:matrix -- --scenario=tool --source=messages
+npm run test:real:matrix -- --model=gpt-5.6-terra --scenario=basic,reasoning
+```
+
 If an image route returns `b64_json`, the script writes a `.png` file into `test/output` by default. You can override that with `AOAI_PROXY_REAL_OUTPUT_DIR`.
 
 Latency analysis script:

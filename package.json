@@ -15,6 +15,7 @@
     "test:cli:claude-code": "node test/cli/claude-code-smoke.js",
     "test:cli:codex": "node test/cli/codex-smoke.js",
     "test:real": "node test/run-all-real-routes.js",
+    "test:real:matrix": "node test/run-real-protocol-matrix.js",
     "test:latency": "node test/analyze-first-token-latency.js",
     "test:real:chat": "node test/routes/real-chat-completion.js",
     "test:real:response": "node test/routes/real-response.js",

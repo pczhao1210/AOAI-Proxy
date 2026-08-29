@@ -6,21 +6,29 @@ This directory contains the project documentation and deployment guides.
 
 - English overview: [../README.md](../README.md)
 - 中文概览: [README.zh-CN.md](README.zh-CN.md)
-- Git 协作指南（中文）: [../GIT_WORKFLOW.zh-CN.md](../GIT_WORKFLOW.zh-CN.md)
+
+## Development
+
+- Git 协作指南（中文）: [development/git-workflow.zh-CN.md](development/git-workflow.zh-CN.md)
+- Claude Code / Codex 接入要求: [development/claude-code-codex-requirements.md](development/claude-code-codex-requirements.md)
+
+## Protocols
+
+- Chat / Responses / Messages 兼容性与 $3 \times 3$ 路由矩阵: [protocols/protocol-support.md](protocols/protocol-support.md)
 
 ## Configuration Reference
 
-- Feature Flag 与布尔开关目录（中文）: [feature-flags.zh-CN.md](feature-flags.zh-CN.md)
+- Feature Flag 与布尔开关目录（中文）: [configuration/feature-flags.zh-CN.md](configuration/feature-flags.zh-CN.md)
 
 ## Deployment Guides
 
-- Log Analytics through DCE (English): [log-analytics-dce.en.md](log-analytics-dce.en.md)
-- 通过 DCE 写入 Log Analytics（中文）: [log-analytics-dce.md](log-analytics-dce.md)
+- Log Analytics through DCE (English): [observability/log-analytics-dce.en.md](observability/log-analytics-dce.en.md)
+- 通过 DCE 写入 Log Analytics（中文）: [observability/log-analytics-dce.zh-CN.md](observability/log-analytics-dce.zh-CN.md)
 - Database-first Azure deployment: [../README.md#azure-deployment](../README.md#azure-deployment)
 - Azure deployment overview: [../README.md#azure-deployment](../README.md#azure-deployment)
 - Azure Managed Application package: [../infra/azure_deployment_with_UI/README.md](../infra/azure_deployment_with_UI/README.md)
-- ACI persistence guide (English): [aci_persist_vol.en.md](aci_persist_vol.en.md)
-- ACI 持久化指南（中文）: [aci_persist_vol.md](aci_persist_vol.md)
+- ACI persistence guide (English): [deployment/aci-persistence.en.md](deployment/aci-persistence.en.md)
+- ACI 持久化指南（中文）: [deployment/aci-persistence.zh-CN.md](deployment/aci-persistence.zh-CN.md)
 
 ## Infrastructure Templates
 

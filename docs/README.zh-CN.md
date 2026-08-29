@@ -14,14 +14,14 @@
 - 静态管理页支持配置编辑、AAD 验证、统计查看和最近日志排查
 - 支持 `models[].routes` 与 `upstreams[].routes` 做模型级和上游级路由映射
 - 原生协议路由透明保留现代 Responses item 与 Anthropic content block；跨协议 shim 默认拒绝无法无损表示的结构，并提供独立的请求/响应策略开关
-- 可选通过 DCE 将关联请求、用量和脱敏 Prompt/输出写入 Log Analytics；参见 [接入指南](log-analytics-dce.md)
+- 可选通过 DCE 将关联请求、用量和脱敏 Prompt/输出写入 Log Analytics；参见 [接入指南](observability/log-analytics-dce.zh-CN.md)
 
 ## 部署资产
 
 - Bicep 模板：[../infra/main.bicep](../infra/main.bicep)
 - ARM 模板：[../infra/azuredeploy.json](../infra/azuredeploy.json)
 - Portal 自定义参数页定义：[../infra/createUiDefinition.json](../infra/createUiDefinition.json)
-- Azure Managed Application 包源文件：[../infra/azure_deployment_with_UI](../infra/azure_deployment_with_UI)
+- Azure Managed Application 包源文件：[../infra/azure_deployment_with_UI/README.md](../infra/azure_deployment_with_UI/README.md)
 - 参数文件：[../infra/parameters/dev.json](../infra/parameters/dev.json)、[../infra/parameters/prod.json](../infra/parameters/prod.json)
 
 说明：Deploy to Azure 按钮指向 ARM JSON 模板，因为 Azure Portal 的远程模板按钮当前不直接支持远程 Bicep 文件。
@@ -166,7 +166,7 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 非回环监听会采用 fail-closed：管理认证关闭或仍存在已知占位凭据时拒绝启动。`ALLOW_INSECURE_PUBLIC_ADMIN=true` 仅用于显式兼容，不建议用于正常部署。
 
-所有可配置布尔开关的默认值、功能、管理页入口、生效方式，以及预留或未接线字段，统一收录在 [Feature Flag 与布尔开关目录](feature-flags.zh-CN.md)。
+所有可配置布尔开关的默认值、功能、管理页入口、生效方式，以及预留或未接线字段，统一收录在 [Feature Flag 与布尔开关目录](configuration/feature-flags.zh-CN.md)。
 
 ## 环境变量
 
@@ -387,7 +387,7 @@ Azure Files 凭据补充说明：
 
 ### 使用 Azure Managed Application 与自定义 UI 部署
 
-如果希望在 Azure Portal 中使用资源选择器，而不是原始参数页，请使用 [../infra/azure_deployment_with_UI](../infra/azure_deployment_with_UI) 里的 Managed Application 包源文件。
+如果希望在 Azure Portal 中使用资源选择器，而不是原始参数页，请使用 [../infra/azure_deployment_with_UI/README.md](../infra/azure_deployment_with_UI/README.md) 里的 Managed Application 包源文件。
 
 这套自定义 UI 现在默认走 PostgreSQL 配置持久化，并暴露数据库服务器名、数据库名、管理员账号和 SKU 选择；只有切换到 Azure Files 时才显示存储相关输入。
 
@@ -435,8 +435,8 @@ az managedapp create \
 
 ## ACI 持久化、数据库说明与 RBAC
 
-- Azure Files 指南：[aci_persist_vol.md](aci_persist_vol.md)
-- English version: [aci_persist_vol.en.md](aci_persist_vol.en.md)
+- Azure Files 指南：[deployment/aci-persistence.zh-CN.md](deployment/aci-persistence.zh-CN.md)
+- English version: [deployment/aci-persistence.en.md](deployment/aci-persistence.en.md)
 
 ## Caddy TLS
 
