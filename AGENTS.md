@@ -4,9 +4,9 @@
 
 - Treat public request/response objects, SSE frames, errors, and model catalogs as wire contracts.
 - Keep the bundled Model Catalog, runtime compilation and lookup, and remote atomic catalog updates in both `minimum` and `nextgen`.
-- Use [protocol support](../docs/protocols/protocol-support.md) for protocol semantics, compatibility boundaries, and the 3x3 Chat/Responses/Messages matrix.
-- Use [test/README.md](../test/README.md) for focused, CLI, real-upstream, and latency test prerequisites.
-- Use [README.md](../README.md) for runtime and deployment configuration, and the [Git workflow guide](../docs/development/git-workflow.zh-CN.md) for branch/worktree operations.
+- Use [protocol support](docs/protocols/protocol-support.md) for protocol semantics, compatibility boundaries, and the 3x3 Chat/Responses/Messages matrix.
+- Use [test/README.md](test/README.md) for focused, CLI, real-upstream, and latency test prerequisites.
+- Use [README.md](README.md) for runtime and deployment configuration, and the [Git workflow guide](docs/development/git-workflow.zh-CN.md) for branch/worktree operations.
 - Keep `minimum` and `nextgen` as scope profiles on the same code baseline. Do not restore long-lived feature branches or hard-merge the old minimum branch unless explicitly requested.
 
 ## Protocol Invariants
