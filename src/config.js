@@ -787,56 +787,75 @@ function isLegacyConfigVersion(raw) {
   return pickInteger(asPlainObject(raw).version, 2) < CURRENT_CONFIG_VERSION;
 }
 
+function hasLegacyZeroGuardValue(raw) {
+  const guards = asPlainObject(asPlainObject(raw).proxy?.guards);
+  return guards.maxRequestBodyBytes === 0 || guards.maxResponseBodyBytes === 0;
+}
+
 function resolvePositiveInteger(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 export function optimizeV2Config(rawConfig) {
   const raw = cloneConfig(rawConfig);
-  if (!isLegacyConfigVersion(raw)) {
+  const upgradesVersion = isLegacyConfigVersion(raw);
+  const repairsLegacyZeroGuard = hasLegacyZeroGuardValue(raw);
+  if (!upgradesVersion && !repairsLegacyZeroGuard) {
     return { config: raw, upgraded: false };
   }
 
-  const legacyImageCompression = asPlainObject(raw.server?.imageCompression);
-  const media = asPlainObject(raw.media);
-  const inputCompression = asPlainObject(media.inputCompression);
-  raw.media = {
-    ...media,
-    inputCompression: {
-      ...inputCompression,
-      ...(inputCompression.enabled == null && legacyImageCompression.enabled != null
-        ? { enabled: legacyImageCompression.enabled }
-        : {}),
-      ...(inputCompression.maxLongSidePx == null && legacyImageCompression.maxSize != null
-        ? { maxLongSidePx: legacyImageCompression.maxSize }
-        : {}),
-      ...(inputCompression.quality == null && legacyImageCompression.quality != null
-        ? { quality: legacyImageCompression.quality }
-        : {}),
-      ...(inputCompression.outputFormat == null && legacyImageCompression.format != null
-        ? { outputFormat: legacyImageCompression.format }
-        : {})
-    }
-  };
+  if (upgradesVersion) {
+    const legacyImageCompression = asPlainObject(raw.server?.imageCompression);
+    const media = asPlainObject(raw.media);
+    const inputCompression = asPlainObject(media.inputCompression);
+    raw.media = {
+      ...media,
+      inputCompression: {
+        ...inputCompression,
+        ...(inputCompression.enabled == null && legacyImageCompression.enabled != null
+          ? { enabled: legacyImageCompression.enabled }
+          : {}),
+        ...(inputCompression.maxLongSidePx == null && legacyImageCompression.maxSize != null
+          ? { maxLongSidePx: legacyImageCompression.maxSize }
+          : {}),
+        ...(inputCompression.quality == null && legacyImageCompression.quality != null
+          ? { quality: legacyImageCompression.quality }
+          : {}),
+        ...(inputCompression.outputFormat == null && legacyImageCompression.format != null
+          ? { outputFormat: legacyImageCompression.format }
+          : {})
+      }
+    };
+  }
   const guards = asPlainObject(raw.proxy?.guards);
   const legacyUpstream = asPlainObject(raw.server?.upstream);
   raw.proxy = asPlainObject(raw.proxy);
   raw.proxy.guards = {
     ...guards,
-    maxRequestBodyBytes: resolvePositiveInteger(
-      guards.maxRequestBodyBytes,
-      DEFAULTS.proxy.guards.maxRequestBodyBytes
-    ),
-    maxResponseBodyBytes: resolvePositiveInteger(
-      guards.maxResponseBodyBytes,
-      resolvePositiveInteger(
-        legacyUpstream.maxResponseBytes,
-        DEFAULTS.proxy.guards.maxResponseBodyBytes
-      )
-    )
+    ...(upgradesVersion || guards.maxRequestBodyBytes === 0
+      ? {
+        maxRequestBodyBytes: resolvePositiveInteger(
+          guards.maxRequestBodyBytes,
+          DEFAULTS.proxy.guards.maxRequestBodyBytes
+        )
+      }
+      : {}),
+    ...(upgradesVersion || guards.maxResponseBodyBytes === 0
+      ? {
+        maxResponseBodyBytes: resolvePositiveInteger(
+          guards.maxResponseBodyBytes,
+          resolvePositiveInteger(
+            legacyUpstream.maxResponseBytes,
+            DEFAULTS.proxy.guards.maxResponseBodyBytes
+          )
+        )
+      }
+      : {})
   };
-  migrateLegacyGpt56Routes(raw.models, 2);
-  raw.version = CURRENT_CONFIG_VERSION;
+  if (upgradesVersion) {
+    migrateLegacyGpt56Routes(raw.models, 2);
+    raw.version = CURRENT_CONFIG_VERSION;
+  }
 
   return { config: raw, upgraded: true };
 }

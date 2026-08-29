@@ -107,13 +107,47 @@ test("reload does not rewrite an existing v3 config", async () => {
   }
 });
 
-test("reload preserves strict validation for an invalid v3 guard", async () => {
+test("reload repairs legacy zero guards already stamped as v3", async () => {
+  const previousEnvironment = captureEnvironment();
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-config-v3-zero-guard-"));
+  const configPath = path.join(tempDir, "config.json");
+  const config = await readSampleConfig();
+  config.server.host = "127.0.0.1";
+  config.server.upstream = { maxResponseBytes: 12 * 1024 * 1024 };
+  config.proxy.guards.maxRequestBodyBytes = 0;
+  config.proxy.guards.maxResponseBodyBytes = 0;
+  config.persistence.configStore.filePath = configPath;
+  config.persistence.compatibilityExport.enabled = false;
+  config.persistence.compatibilityExport.exportLegacyConfigOnChange = false;
+  config.persistence.compatibilityExport.legacyConfigPath = configPath;
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+
+  process.env.CONFIG_PATH = configPath;
+  delete process.env.AOAI_PROXY_ADMIN_PASSWORD;
+  delete process.env.AOAI_PROXY_API_KEY;
+
+  try {
+    const { reloadConfig } = await import("../src/config.js");
+    const effectiveConfig = await reloadConfig();
+    const persisted = JSON.parse(await fs.readFile(configPath, "utf8"));
+
+    assert.equal(effectiveConfig.version, 3);
+    assert.equal(persisted.version, 3);
+    assert.equal(persisted.proxy.guards.maxRequestBodyBytes, 50 * 1024 * 1024);
+    assert.equal(persisted.proxy.guards.maxResponseBodyBytes, 12 * 1024 * 1024);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    restoreEnvironment(previousEnvironment);
+  }
+});
+
+test("reload preserves strict validation for other invalid v3 guards", async () => {
   const previousEnvironment = captureEnvironment();
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-config-v3-strict-"));
   const configPath = path.join(tempDir, "config.json");
   const config = await readSampleConfig();
   config.server.host = "127.0.0.1";
-  config.proxy.guards.maxResponseBodyBytes = 0;
+  config.proxy.guards.maxResponseBodyBytes = -1;
   config.persistence.configStore.filePath = configPath;
   config.persistence.compatibilityExport.enabled = false;
   config.persistence.compatibilityExport.exportLegacyConfigOnChange = false;
