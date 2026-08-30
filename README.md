@@ -623,6 +623,26 @@ Route a Claude deployment to its native Messages backend:
 }
 ```
 
+### Microsoft Model Router
+
+The bundled `model-router` Catalog definition supports native Chat Completions and native Responses. Existing persisted model entries are not rewritten by a Catalog update. Remove any legacy wildcard such as `"*": "chat/completions"`; otherwise Responses requests will still be forced through the Chat shim.
+
+For the complete Chat/Responses/Messages matrix, keep only the explicit Messages fallback:
+
+```json
+{
+  "id": "model-router",
+  "upstream": "foundry",
+  "targetModel": "model-router",
+  "pricingRef": "model-router",
+  "routes": {
+    "messages": "chat/completions"
+  }
+}
+```
+
+If Messages is not exposed, `"routes": {}` is sufficient for native Chat and Responses. The selected upstream must define both `chat/completions` and `responses` paths. Saving through the admin UI applies the change immediately. After editing the active `CONFIG_PATH` file directly, use the admin Reload action or restart the process. Container deployments default to `/app/data/config.json`; an existing persistent file is intentionally not replaced from the image default during startup.
+
 ## curl Examples
 
 List models:

@@ -424,6 +424,15 @@ test("pricing protocol metadata distinguishes GPT, Claude, DeepSeek, and Grok in
     );
   }
 
+  const modelRouter = getPricingDefinition("model-router");
+  assert.deepEqual(modelRouter?.interfaces, ["chat/completions", "responses"]);
+  assert.equal(modelRouter?.protocolProfiles?.responses?.reasoning?.parameter, "reasoning.effort");
+  assert.deepEqual(modelRouter?.proxyTemplate?.routes, { messages: "chat/completions" });
+  assert.deepEqual(
+    buildModelFromPricingTemplate(modelRouter, "foundry", { models: [] }).routes,
+    { messages: "chat/completions" }
+  );
+
   for (const modelId of ["claude-opus-4-8", "claude-opus-5"]) {
     const definition = getPricingDefinition(modelId);
     assert.deepEqual(definition?.interfaces, ["messages"]);
@@ -1098,6 +1107,215 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     sourceProtocol: "messages",
     targetProtocol: "responses"
   }), null);
+});
+
+test("Responses-to-Chat requires rejection for unrepresentable tool state and malformed function history", () => {
+  const cases = [
+    {
+      payload: {
+        input: "find a deferred tool",
+        tools: [{ type: "tool_search", execution: "client" }]
+      },
+      path: "tools[0]",
+      type: "tool_search"
+    },
+    {
+      payload: {
+        input: "find a deferred tool",
+        tool_choice: { type: "tool_search" }
+      },
+      path: "tool_choice",
+      type: "tool_search"
+    },
+    {
+      payload: {
+        input: [{ type: "tool_search_call", call_id: "search-1", arguments: "{}" }]
+      },
+      path: "input[0]",
+      type: "tool_search_call"
+    },
+    {
+      payload: {
+        input: [{ type: "tool_search_output", call_id: "search-1", tools: [] }]
+      },
+      path: "input[0]",
+      type: "tool_search_output"
+    },
+    {
+      payload: {
+        previous_response_id: "resp-previous",
+        input: [{ type: "tool_search_output", call_id: "search-1", tools: [] }]
+      },
+      path: "input[0]",
+      type: "tool_search_output"
+    },
+    {
+      payload: {
+        input: [{
+          type: "additional_tools",
+          role: "developer",
+          tools: [{
+            type: "function",
+            name: "deferred_lookup",
+            parameters: { type: "object", properties: {} }
+          }]
+        }]
+      },
+      path: "input[0]",
+      type: "additional_tools"
+    },
+    {
+      payload: {
+        previous_response_id: "resp-previous",
+        input: [
+          { type: "message", role: "user", content: "continue" },
+          {
+            type: "additional_tools",
+            role: "developer",
+            tools: [{
+              type: "function",
+              name: "deferred_lookup",
+              parameters: { type: "object", properties: {} }
+            }]
+          }
+        ]
+      },
+      path: "input[1]",
+      type: "additional_tools"
+    },
+    {
+      payload: {
+        input: [{ type: "function_call_output", call_id: "orphan", output: "done" }]
+      },
+      path: "input[0].call_id",
+      type: "function_call_output"
+    },
+    {
+      payload: {
+        include: ["web_search_call.action.sources"],
+        input: [{ type: "function_call_output", call_id: "orphan", output: "done" }]
+      },
+      path: "input[0].call_id",
+      type: "function_call_output"
+    },
+    {
+      payload: {
+        input: [
+          { type: "function_call", call_id: "call-1", name: "lookup", arguments: "{}" },
+          { type: "function_call_output", call_id: "call-2", output: "done" }
+        ]
+      },
+      path: "input[1].call_id",
+      type: "function_call_output"
+    },
+    {
+      payload: {
+        input: [
+          { type: "function_call", call_id: "call-1", name: "lookup", arguments: "{}" },
+          { type: "function_call_output", call_id: "call-1", output: "first" },
+          { type: "function_call_output", call_id: "call-1", output: "duplicate" }
+        ]
+      },
+      path: "input[2].call_id",
+      type: "function_call_output"
+    },
+    {
+      payload: {
+        input: [{ type: "function_call", call_id: "call-1", name: "lookup", arguments: "{}" }]
+      },
+      path: "input[0].call_id",
+      type: "function_call"
+    },
+    {
+      payload: {
+        input: [
+          { type: "function_call", call_id: "call-1", name: "lookup", arguments: "{}" },
+          { type: "message", role: "user", content: "interleaved" },
+          { type: "function_call_output", call_id: "call-1", output: "late" }
+        ]
+      },
+      path: "input[0].call_id",
+      type: "function_call"
+    }
+  ];
+
+  for (const item of cases) {
+    const issue = getProtocolShimCompatibilityIssue(item.payload, {
+      phase: "request",
+      sourceProtocol: "responses",
+      targetProtocol: "chat/completions"
+    });
+    assert.equal(issue?.path, item.path);
+    assert.equal(issue?.type, item.type);
+    assert.equal(issue?.requiredRejection, true);
+  }
+
+  assert.equal(getProtocolShimCompatibilityIssue({
+    input: [
+      { type: "message", role: "user", content: "run both" },
+      { type: "function_call", call_id: "call-1", name: "tool_search", arguments: "{}" },
+      { type: "function_call", call_id: "call-2", name: "write", arguments: "{}" },
+      { type: "function_call_output", call_id: "call-1", output: "found" },
+      { type: "function_call_output", call_id: "call-2", output: "written" },
+      { type: "message", role: "user", content: "continue" }
+    ],
+    tools: [{
+      type: "function",
+      name: "tool_search",
+      description: "An ordinary function",
+      parameters: { type: "object", properties: {} }
+    }]
+  }, {
+    phase: "request",
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  }), null);
+
+  const responseIssue = getProtocolShimCompatibilityIssue({
+    status: "incomplete",
+    incomplete_details: { reason: "content_filter" },
+    output: [{ type: "tool_search_call", call_id: "search-1", arguments: "{}" }]
+  }, {
+    phase: "response",
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  });
+  assert.equal(responseIssue?.type, "tool_search_call");
+  assert.equal(responseIssue?.requiredRejection, true);
+
+  const additionalToolsResponseIssue = getProtocolShimCompatibilityIssue({
+    output: [{ type: "additional_tools", role: "developer", tools: [] }]
+  }, {
+    phase: "response",
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  });
+  assert.equal(additionalToolsResponseIssue?.path, "output[0]");
+  assert.equal(additionalToolsResponseIssue?.type, "additional_tools");
+  assert.equal(additionalToolsResponseIssue?.requiredRejection, true);
+
+  const streamIssue = getProtocolShimStreamCompatibilityIssue({
+    type: "response.output_item.added",
+    output_index: 0,
+    item: { type: "tool_search_call", call_id: "search-1", arguments: "{}" }
+  }, {
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  });
+  assert.equal(streamIssue?.type, "tool_search_call");
+  assert.equal(streamIssue?.requiredRejection, true);
+
+  const additionalToolsStreamIssue = getProtocolShimStreamCompatibilityIssue({
+    type: "response.output_item.added",
+    output_index: 0,
+    item: { type: "additional_tools", role: "developer", tools: [] }
+  }, {
+    sourceProtocol: "responses",
+    targetProtocol: "chat/completions"
+  });
+  assert.equal(additionalToolsStreamIssue?.path, "output[0]");
+  assert.equal(additionalToolsStreamIssue?.type, "additional_tools");
+  assert.equal(additionalToolsStreamIssue?.requiredRejection, true);
 });
 
 test("protocol shim stream compatibility rejects unsupported event semantics", () => {

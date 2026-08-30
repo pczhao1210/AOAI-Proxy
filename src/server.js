@@ -237,7 +237,7 @@ function buildModelList(config, consumer) {
 function modelUsesNativeProtocol(config, model, routeKey) {
   if (!isPublicRouteEnabled(config, routeKey)) return false;
   const upstream = findUpstream(config, model?.upstream);
-  if (!upstream || String(model?.targetModel || model?.id || "").trim().toLowerCase() === "model-router") {
+  if (!upstream) {
     return false;
   }
   const descriptor = resolveModelDescriptor(model?.id);

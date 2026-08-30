@@ -344,7 +344,7 @@
       "pricingRef": "model-router",
       "defaultParams": {},
       "routes": {
-        "*": "chat/completions"
+        "messages": "chat/completions"
       }
     },
     {

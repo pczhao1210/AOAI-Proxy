@@ -68,8 +68,7 @@ function getClientCompatibilityMeta(t, model, upstreams) {
   return clients
     .filter(([clientName]) => model?.clientCompatibility?.[clientName] === true)
     .map(([, label, routeKey]) => {
-      const nativeRoute = String(model?.targetModel || model?.id || "").trim().toLowerCase() !== "model-router"
-        && inferClientBackendRoute(model, upstreams, routeKey) === routeKey;
+      const nativeRoute = inferClientBackendRoute(model, upstreams, routeKey) === routeKey;
       return `${label}: ${nativeRoute
         ? t("routing.compatibility.native", "Native")
         : t("routing.compatibility.shim", "Protocol conversion")}`;

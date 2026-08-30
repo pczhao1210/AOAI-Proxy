@@ -576,6 +576,76 @@ test("fallback routing honors the catalog default interface", () => {
   );
 });
 
+test("bundled Model Router preserves native Chat and Responses routes", () => {
+  const definition = listPricingDefinitions().find((item) => item.id === "model-router");
+  assert.ok(definition, "Expected bundled model-router definition");
+  assert.deepEqual(definition.interfaces, ["chat/completions", "responses"]);
+  assert.deepEqual(definition.proxyTemplate?.routes, { messages: "chat/completions" });
+
+  const routeConfig = {
+    upstreams: [{
+      name: "azure",
+      provider: "azure-openai",
+      baseUrl: "https://example.openai.azure.com/",
+      routes: {
+        "chat/completions": "/openai/v1/chat/completions",
+        responses: "/openai/v1/responses"
+      }
+    }],
+    models: [{
+      id: "model-router",
+      targetModel: "model-router",
+      pricingRef: "model-router",
+      upstream: "azure",
+      routes: { messages: "chat/completions" }
+    }]
+  };
+  const snapshot = compileModelCatalog(routeConfig, [definition]);
+  const descriptor = resolveModelDescriptor("model-router", snapshot);
+
+  const chatPlan = resolveRoutePlan({
+    routeKey: "chat/completions",
+    model: routeConfig.models[0],
+    upstream: routeConfig.upstreams[0],
+    descriptor
+  });
+  assert.equal(chatPlan.backendRouteKey, "chat/completions");
+  assert.equal(new URL(chatPlan.targetUrl).pathname, "/openai/v1/chat/completions");
+
+  const responsesPlan = resolveRoutePlan({
+    routeKey: "responses",
+    model: routeConfig.models[0],
+    upstream: routeConfig.upstreams[0],
+    descriptor
+  });
+  assert.equal(responsesPlan.backendRouteKey, "responses");
+  assert.equal(new URL(responsesPlan.targetUrl).pathname, "/openai/v1/responses");
+
+  const messagesPlan = resolveRoutePlan({
+    routeKey: "messages",
+    model: routeConfig.models[0],
+    upstream: routeConfig.upstreams[0],
+    descriptor
+  });
+  assert.equal(messagesPlan.backendRouteKey, "chat/completions");
+
+  routeConfig.models[0].routes = {};
+  const nativeChatPlan = resolveRoutePlan({
+    routeKey: "chat/completions",
+    model: routeConfig.models[0],
+    upstream: routeConfig.upstreams[0],
+    descriptor
+  });
+  const nativeResponsesPlan = resolveRoutePlan({
+    routeKey: "responses",
+    model: routeConfig.models[0],
+    upstream: routeConfig.upstreams[0],
+    descriptor
+  });
+  assert.equal(nativeChatPlan.backendRouteKey, "chat/completions");
+  assert.equal(nativeResponsesPlan.backendRouteKey, "responses");
+});
+
 test("request converters honor catalog parameter paths, aliases, and thinking defaults", () => {
   const conversionConfig = {
     upstreams: [{ name: "provider", provider: "custom" }],

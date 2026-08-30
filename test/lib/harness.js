@@ -190,6 +190,8 @@ function createMockUpstreamServer() {
       const nonTerminalJsonResponse = JSON.stringify(body).includes("trigger nonterminal response");
       const modernItemResponse = JSON.stringify(body).includes("trigger modern Responses item");
       const modernItemStream = JSON.stringify(body).includes("trigger modern Responses stream item");
+      const toolSearchItemResponse = JSON.stringify(body).includes("trigger Tool Search Responses item");
+      const toolSearchItemStream = JSON.stringify(body).includes("trigger Tool Search Responses stream item");
       const nativeProviderStreamError = JSON.stringify(body).includes("trigger native stream error");
       if (body?.stream === true) {
         const outputText = "ok from mock responses stream";
@@ -239,6 +241,29 @@ function createMockUpstreamServer() {
           res.write(`data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { ...modernItem, status: "in_progress" } })}\n\n`);
           res.write(`data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: modernItem })}\n\n`);
           res.end(`data: ${JSON.stringify({ type: "response.completed", response: modernResponse })}\n\n`);
+          return;
+        }
+        if (toolSearchItemStream) {
+          const toolSearchItem = {
+            id: "tool-search-stream-test",
+            type: "tool_search_call",
+            call_id: "tool-search-call-stream-test",
+            status: "completed",
+            execution: "client",
+            arguments: "{\"goal\":\"find a tool\"}"
+          };
+          const toolSearchResponse = { ...response, output: [toolSearchItem] };
+          res.write(`data: ${JSON.stringify({
+            type: "response.output_item.added",
+            output_index: 0,
+            item: { ...toolSearchItem, status: "in_progress" }
+          })}\n\n`);
+          res.write(`data: ${JSON.stringify({
+            type: "response.output_item.done",
+            output_index: 0,
+            item: toolSearchItem
+          })}\n\n`);
+          res.end(`data: ${JSON.stringify({ type: "response.completed", response: toolSearchResponse })}\n\n`);
           return;
         }
         res.write(`data: ${JSON.stringify({
@@ -351,6 +376,24 @@ function createMockUpstreamServer() {
               content: [{ type: "output_text", text: "modern response", annotations: [], logprobs: [] }]
             }
           ],
+          usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16 }
+        });
+        return;
+      }
+      if (toolSearchItemResponse) {
+        jsonResponse(res, 200, {
+          id: "resp-tool-search-test",
+          object: "response",
+          model: body?.model || "gpt-5.6-luna",
+          status: "completed",
+          output: [{
+            id: "tool-search-test",
+            type: "tool_search_call",
+            call_id: "tool-search-call-test",
+            status: "completed",
+            execution: "client",
+            arguments: "{\"goal\":\"find a tool\"}"
+          }],
           usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16 }
         });
         return;
@@ -714,6 +757,18 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
         pricingRef: "gpt-5.6-luna",
         clientCompatibility: { codex: true },
         routes: {}
+      },
+      {
+        id: "model-router",
+        displayName: "Model Router",
+        status: "active",
+        upstream: "mock-foundry",
+        targetModel: "model-router",
+        pricingRef: "model-router",
+        clientCompatibility: { codex: true },
+        routes: {
+          messages: "chat/completions"
+        }
       },
       {
         id: "claude-sonnet-4-6",

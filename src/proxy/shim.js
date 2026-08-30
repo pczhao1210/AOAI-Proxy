@@ -3,6 +3,7 @@ import { getDefaultProtocolProfile, getDescriptorProtocolProfile } from "../mode
 const SHIM_PROTOCOLS = new Set(["chat/completions", "responses", "messages"]);
 const TEXT_CONTENT_TYPES = new Set(["text", "input_text", "output_text"]);
 const IMAGE_CONTENT_TYPES = new Set(["image", "image_url", "input_image"]);
+const RESPONSES_TOOL_SEARCH_ITEM_TYPES = new Set(["tool_search_call", "tool_search_output"]);
 const RESPONSES_SHIM_STREAM_LIFECYCLE_EVENTS = new Set([
   "response.created",
   "response.in_progress",
@@ -252,7 +253,171 @@ function validateResponsesContent(content, context, path) {
   return null;
 }
 
+function normalizeResponsesCallId(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function validateResponsesToChatFunctionHistory(itemList, context) {
+  if (context.phase !== "request" || context.targetProtocol !== "chat/completions") {
+    return null;
+  }
+
+  let activeBatch = null;
+  const seenCallIds = new Set();
+
+  const missingOutputIssue = () => {
+    if (!activeBatch) return null;
+    for (const [callId, call] of activeBatch.calls) {
+      if (activeBatch.outputs.has(callId)) continue;
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `${call.path}.call_id`,
+        type: "function_call",
+        reason: "function_call requires exactly one matching function_call_output before the next message or end of input",
+        requiredRejection: true
+      });
+    }
+    return null;
+  };
+
+  for (let index = 0; index < itemList.length; index += 1) {
+    const item = itemList[index];
+    const itemPath = `input[${index}]`;
+    const itemType = item?.type || (item?.role ? "message" : "unknown");
+
+    if (itemType === "function_call") {
+      if (activeBatch?.outputStarted) {
+        const issue = missingOutputIssue();
+        if (issue) return issue;
+        activeBatch = null;
+      }
+      if (!activeBatch) {
+        activeBatch = { calls: new Map(), outputs: new Set(), outputStarted: false };
+      }
+      const callId = normalizeResponsesCallId(item?.call_id)
+        || normalizeResponsesCallId(item?.id);
+      if (!callId) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${itemPath}.call_id`,
+          type: "function_call",
+          reason: "function_call must provide a non-empty call_id or id",
+          requiredRejection: true
+        });
+      }
+      if (seenCallIds.has(callId)) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${itemPath}.call_id`,
+          type: "function_call",
+          reason: "function call IDs must be unique in converted Chat history",
+          requiredRejection: true
+        });
+      }
+      seenCallIds.add(callId);
+      activeBatch.calls.set(callId, { path: itemPath });
+      continue;
+    }
+
+    if (itemType === "function_call_output") {
+      const callId = normalizeResponsesCallId(item?.call_id);
+      if (!callId) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${itemPath}.call_id`,
+          type: "function_call_output",
+          reason: "function_call_output must provide a non-empty call_id",
+          requiredRejection: true
+        });
+      }
+      if (!activeBatch?.calls.has(callId)) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${itemPath}.call_id`,
+          type: "function_call_output",
+          reason: "function_call_output must match a preceding function_call in the same uninterrupted tool-call batch",
+          requiredRejection: true
+        });
+      }
+      if (activeBatch.outputs.has(callId)) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${itemPath}.call_id`,
+          type: "function_call_output",
+          reason: "function_call_output must occur exactly once for each function_call",
+          requiredRejection: true
+        });
+      }
+      activeBatch.outputStarted = true;
+      activeBatch.outputs.add(callId);
+      continue;
+    }
+
+    const issue = missingOutputIssue();
+    if (issue) return issue;
+    activeBatch = null;
+  }
+
+  return missingOutputIssue();
+}
+
+function getRequiredResponsesToChatIssue(payload, context) {
+  if (context.targetProtocol !== "chat/completions") return null;
+
+  const tools = Array.isArray(payload?.tools) ? payload.tools : [];
+  for (let index = 0; index < tools.length; index += 1) {
+    if (tools[index]?.type !== "tool_search") continue;
+    return createShimCompatibilityIssue({
+      ...context,
+      path: `tools[${index}]`,
+      type: "tool_search",
+      reason: "Responses Tool Search definitions cannot be represented by Chat Completions",
+      requiredRejection: true
+    });
+  }
+
+  if (payload?.tool_choice?.type === "tool_search") {
+    return createShimCompatibilityIssue({
+      ...context,
+      path: "tool_choice",
+      type: "tool_search",
+      reason: "Responses Tool Search choices cannot be represented by Chat Completions",
+      requiredRejection: true
+    });
+  }
+
+  const items = context.phase === "request" ? payload?.input : payload?.output;
+  if (items == null || typeof items === "string") return null;
+  const itemList = Array.isArray(items) ? items : [items];
+  for (let index = 0; index < itemList.length; index += 1) {
+    const item = itemList[index];
+    const itemType = item?.type || (item?.role ? "message" : "unknown");
+    if (itemType === "additional_tools") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `${context.phase === "request" ? "input" : "output"}[${index}]`,
+        type: itemType,
+        reason: "Responses position-scoped additional tool state cannot be represented by Chat Completions",
+        requiredRejection: true
+      });
+    }
+    if (!RESPONSES_TOOL_SEARCH_ITEM_TYPES.has(itemType)) continue;
+    return createShimCompatibilityIssue({
+      ...context,
+      path: `${context.phase === "request" ? "input" : "output"}[${index}]`,
+      type: itemType,
+      reason: "Responses Tool Search state cannot be represented by Chat Completions",
+      requiredRejection: true
+    });
+  }
+
+  return validateResponsesToChatFunctionHistory(itemList, context);
+}
+
 function validateResponsesPayload(payload, context) {
+  const requiredIssue = getRequiredResponsesToChatIssue(payload, context);
+  if (requiredIssue) return requiredIssue;
+
   if (context.phase === "request") {
     if (context.targetProtocol === "messages") {
       for (const field of ["service_tier", "serviceTier", "verbosity", "top_k"]) {
@@ -360,20 +525,22 @@ function validateResponsesPayload(payload, context) {
   const tools = Array.isArray(payload?.tools) ? payload.tools : [];
   for (let index = 0; index < tools.length; index += 1) {
     if (tools[index]?.type !== "function") {
+      const toolType = tools[index]?.type || "unknown";
       return createShimCompatibilityIssue({
         ...context,
         path: `tools[${index}]`,
-        type: tools[index]?.type || "unknown",
+        type: toolType,
         reason: "only function tools can be converted across protocols"
       });
     }
   }
   if (payload?.tool_choice && typeof payload.tool_choice === "object" && payload.tool_choice.type !== "function") {
+    const toolChoiceType = payload.tool_choice.type || "unknown";
     return createShimCompatibilityIssue({
       ...context,
       path: "tool_choice",
-      type: payload.tool_choice.type || "unknown",
-      reason: "only function tool choices can be converted across protocols"
+      type: toolChoiceType,
+        reason: "only function tool choices can be converted across protocols"
     });
   }
 

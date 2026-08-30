@@ -1296,7 +1296,7 @@ export async function streamShim({
           targetProtocol: routeKey
         });
         if (shimEventIssue) {
-          if (rejectLossyResponses) {
+          if (shimEventIssue.requiredRejection === true || rejectLossyResponses) {
             providerError = {
               type: "protocol_error",
               code: "unsupported_protocol_shim_stream",

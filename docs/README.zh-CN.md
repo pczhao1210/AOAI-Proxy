@@ -605,6 +605,26 @@ Codex 自定义 provider 的 `base_url` 应以 `/v1` 结尾，并设置 `wire_ap
 }
 ```
 
+### Microsoft Model Router
+
+内置 `model-router` Catalog 定义同时支持原生 Chat Completions 和原生 Responses。Catalog 更新不会改写已经持久化的模型条目。必须删除旧的 `"*": "chat/completions"` wildcard，否则 Responses 请求仍会被强制送入 Chat shim。
+
+如果需要完整的 Chat/Responses/Messages 矩阵，只保留显式 Messages fallback：
+
+```json
+{
+  "id": "model-router",
+  "upstream": "foundry",
+  "targetModel": "model-router",
+  "pricingRef": "model-router",
+  "routes": {
+    "messages": "chat/completions"
+  }
+}
+```
+
+如果不开放 Messages，使用 `"routes": {}` 即可让 Chat 和 Responses 保持原生协议。对应 upstream 必须同时定义 `chat/completions` 与 `responses` 路径。通过管理界面保存会立即生效；如果直接修改活动 `CONFIG_PATH` 文件，需要在管理界面执行 Reload 或重启进程。容器默认路径为 `/app/data/config.json`；已有持久化文件在启动时不会被镜像默认配置覆盖。
+
 ## curl 示例
 
 列出模型：

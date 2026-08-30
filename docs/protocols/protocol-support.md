@@ -406,6 +406,7 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 
 - reasoning、compaction、web search output；
 - custom tool、MCP、computer、shell 等专用 item；
+- Tool Search call/output 和位置敏感的 `additional_tools`；
 - citations、annotations、logprobs；
 - 无法映射的 incomplete reason；
 - 需要保留服务端 conversation/cache/store 状态的响应；
@@ -435,6 +436,8 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 - `input_file` 或 file-backed image；
 - Responses reasoning item 本身；
 - compaction item；
+- Tool Search 定义、选择、call/output，以及位置敏感的 `additional_tools`；
+- orphan、错配、重复或缺失 output 的 function-call history；
 - annotations、citations 和内容级 metadata；
 
 注意：如果另一项目采用严格公共交集，应主动拒绝或显式映射上述兼容透传字段，而不是依赖 Chat 上游碰巧接受。

@@ -343,9 +343,13 @@ export function resolveRoutePlan({
   ) {
     throw new Error(`Model Catalog does not allow route target ${resolvedOverride.value || "unknown"}`);
   }
-  const effectiveRouteKey = deployment.toLowerCase() === "model-router"
-    ? "chat/completions"
-    : resolveEffectiveRouteKey(routeKey, model, upstream, resolvedOverride, descriptor);
+  const effectiveRouteKey = resolveEffectiveRouteKey(
+    routeKey,
+    model,
+    upstream,
+    resolvedOverride,
+    descriptor
+  );
   if (
     descriptor?.catalogMatched
     && !allowedRouteTargets.has(normalizeLower(effectiveRouteKey))

@@ -1000,7 +1000,10 @@ export async function proxyRequest({
     })
     : null;
   const shimPolicy = protocolShimCompatibility(config);
-  if (shimRequestIssue && shimPolicy.rejectLossyRequests !== false) {
+  if (
+    shimRequestIssue
+    && (shimRequestIssue.requiredRejection === true || shimPolicy.rejectLossyRequests !== false)
+  ) {
     log.warn({
       source: "proxy",
       requestId,

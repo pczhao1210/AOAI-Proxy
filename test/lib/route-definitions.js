@@ -183,6 +183,7 @@ export const routeTests = [
       assert.deepEqual(codexModel.supported_reasoning_levels.map((item) => item.effort), ["none", "low", "medium", "high", "xhigh", "max"]);
       assert.equal(codexModel.support_verbosity, false);
       assert.equal(codexModel.use_responses_lite, false);
+      assert.ok(result.json.models.some((model) => model.slug === "model-router"));
       assert.equal(result.json.models.some((model) => model.slug === "gpt-5-mini"), false);
       assert.equal(result.json.models.some((model) => model.slug === "claude-sonnet-4-6"), false);
       assert.equal(result.json.models.some((model) => model.slug === "chat-only"), false);
@@ -305,8 +306,7 @@ export const routeTests = [
         headers: { "x-aoai-admin-csrf": "1" },
         json: config
       });
-      assert.equal(codexModelRouter.status, 400, codexModelRouter.text);
-      assert.match(codexModelRouter.json?.error || "", /marked for Codex.*resolves to chat\/completions/);
+      assert.equal(codexModelRouter.status, 200, codexModelRouter.text);
       codexModel.targetModel = originalCodexTargetModel;
 
       const foundryUpstream = config.upstreams.find((upstream) => upstream.name === codexModel.upstream);
@@ -376,11 +376,7 @@ export const routeTests = [
         headers: { "x-aoai-admin-csrf": "1" },
         json: config
       });
-      assert.equal(claudeModelRouter.status, 400, claudeModelRouter.text);
-      assert.match(
-        claudeModelRouter.json?.error || "",
-        /marked for Claude Code.*does not allow route target chat\/completions/
-      );
+      assert.equal(claudeModelRouter.status, 200, claudeModelRouter.text);
       claudeModel.targetModel = originalClaudeTargetModel;
 
       claudeModel.routes = { "*": "responses" };
@@ -680,6 +676,100 @@ export const routeTests = [
       assert.equal(upstreamRequest.body.input[0].tools[0].tools[2].description, "missing_description");
       assert.equal(upstreamRequest.body.input[0].tools[1].description, "");
       assert.equal(upstreamRequest.body.input[1].tools[0].description, "");
+    }
+  },
+  {
+    id: "model-router-native-json",
+    description: "Model Router preserves native Chat and Responses JSON protocols",
+    async run(ctx) {
+      ctx.clearUpstreamRequests();
+      const chat = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "model-router",
+          messages: [{ role: "user", content: "route this Chat request natively" }]
+        }
+      });
+      assert.equal(chat.status, 200, chat.text);
+      assert.equal(chat.json?.object, "chat.completion");
+      const chatUpstream = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions"));
+      ensure(chatUpstream, "Expected Model Router Chat request to stay on Chat Completions");
+      assert.equal(chatUpstream.body?.model, "model-router");
+      assert.equal(ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses")), null);
+
+      ctx.clearUpstreamRequests();
+      const responses = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "model-router",
+          input: "route this Responses request natively"
+        }
+      });
+      assert.equal(responses.status, 200, responses.text);
+      assert.equal(responses.json?.object, "response");
+      const responsesUpstream = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(responsesUpstream, "Expected Model Router Responses request to stay on Responses");
+      assert.equal(responsesUpstream.body?.model, "model-router");
+      assert.equal(responsesUpstream.body?.input, "route this Responses request natively");
+      assert.equal(ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions")), null);
+
+      ctx.clearUpstreamRequests();
+      const messages = await ctx.publicRequest("/v1/messages", {
+        method: "POST",
+        headers: { "anthropic-version": "2023-06-01" },
+        json: {
+          model: "model-router",
+          system: "Be concise.",
+          messages: [{ role: "user", content: "route Messages through Chat" }],
+          max_tokens: 64
+        }
+      });
+      assert.equal(messages.status, 200, messages.text);
+      assert.equal(messages.json?.type, "message");
+      const messagesUpstream = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions"));
+      ensure(messagesUpstream, "Expected Model Router Messages request to use the explicit Chat shim");
+      assert.equal(messagesUpstream.body?.model, "model-router");
+    }
+  },
+  {
+    id: "model-router-native-stream",
+    description: "Model Router preserves native Chat and Responses SSE protocols",
+    async run(ctx) {
+      ctx.clearUpstreamRequests();
+      const chat = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "model-router",
+          messages: [{ role: "user", content: "stream Chat natively" }],
+          stream: true
+        }
+      });
+      assert.equal(chat.status, 200, chat.text);
+      assert.match(chat.headers.get("content-type") || "", /^text\/event-stream/);
+      assert.match(chat.text, /"object":"chat\.completion\.chunk"/);
+      assert.equal((chat.text.match(/data: \[DONE\]/g) || []).length, 1);
+      const chatUpstream = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions"));
+      ensure(chatUpstream, "Expected Model Router Chat stream to stay on Chat Completions");
+      assert.equal(chatUpstream.body?.stream, true);
+
+      ctx.clearUpstreamRequests();
+      const responses = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "model-router",
+          input: "stream Responses natively",
+          stream: true
+        }
+      });
+      assert.equal(responses.status, 200, responses.text);
+      assert.match(responses.headers.get("content-type") || "", /^text\/event-stream/);
+      assert.match(responses.text, /"type":"response\.created"/);
+      assert.match(responses.text, /"type":"response\.completed"/);
+      assert.equal(responses.text.includes("data: [DONE]"), false);
+      const responsesUpstream = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(responsesUpstream, "Expected Model Router Responses stream to stay on Responses");
+      assert.equal(responsesUpstream.body?.stream, true);
+      assert.equal(ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/chat/completions")), null);
     }
   },
   {
@@ -1968,6 +2058,280 @@ export const routeTests = [
     }
   },
   {
+    id: "response-to-chat-tool-state-guards",
+    description: "Responses-to-Chat rejects unrepresentable tool state and malformed function history",
+    logLevel: "warn",
+    async run(ctx) {
+      const permissiveConfig = await ctx.readConfigFile();
+      const responsesBackedModel = permissiveConfig.models.find((model) => model.id === "gpt-5.6-luna");
+      ensure(responsesBackedModel, "Expected GPT-5.6 model config");
+      responsesBackedModel.routes = { "chat/completions": "responses" };
+      permissiveConfig.compatibility = {
+        ...(permissiveConfig.compatibility || {}),
+        protocolShim: {
+          rejectLossyRequests: false,
+          rejectLossyResponses: false
+        }
+      };
+      const savedPermissiveConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: permissiveConfig
+      });
+      assert.equal(savedPermissiveConfig.status, 200, savedPermissiveConfig.text);
+
+      const rejectedRequests = [
+        {
+          name: "provider Tool Search definition",
+          path: "tools[0]",
+          body: {
+            input: "find a deferred tool",
+            tools: [{
+              type: "tool_search",
+              execution: "client",
+              description: "Find the required tool",
+              parameters: { type: "object", properties: {} }
+            }]
+          }
+        },
+        {
+          name: "Tool Search call",
+          path: "input[0]",
+          body: {
+            input: [{
+              type: "tool_search_call",
+              id: "tool-search-item-1",
+              call_id: "tool-search-call-1",
+              execution: "client",
+              arguments: "{}"
+            }]
+          }
+        },
+        {
+          name: "Tool Search output",
+          path: "input[0]",
+          body: {
+            input: [{
+              type: "tool_search_output",
+              call_id: "tool-search-call-1",
+              execution: "client",
+              status: "completed",
+              tools: []
+            }]
+          }
+        },
+        {
+          name: "Tool Search output masked by conversation state",
+          path: "input[0]",
+          body: {
+            previous_response_id: "resp-previous",
+            input: [{
+              type: "tool_search_output",
+              call_id: "tool-search-call-1",
+              execution: "client",
+              status: "completed",
+              tools: []
+            }]
+          }
+        },
+        {
+          name: "position-scoped additional tools",
+          path: "input[0]",
+          body: {
+            input: [{
+              type: "additional_tools",
+              role: "developer",
+              tools: [{
+                type: "function",
+                name: "deferred_lookup",
+                parameters: { type: "object", properties: {} }
+              }]
+            }]
+          }
+        },
+        {
+          name: "position-scoped additional tools masked by conversation state",
+          path: "input[1]",
+          body: {
+            previous_response_id: "resp-previous",
+            input: [
+              { type: "message", role: "user", content: "continue" },
+              {
+                type: "additional_tools",
+                role: "developer",
+                tools: [{
+                  type: "function",
+                  name: "deferred_lookup",
+                  parameters: { type: "object", properties: {} }
+                }]
+              }
+            ]
+          }
+        },
+        {
+          name: "orphan function output",
+          path: "input[0].call_id",
+          body: {
+            input: [{ type: "function_call_output", call_id: "call-orphan", output: "orphan" }]
+          }
+        },
+        {
+          name: "orphan function output masked by include state",
+          path: "input[0].call_id",
+          body: {
+            include: ["web_search_call.action.sources"],
+            input: [{ type: "function_call_output", call_id: "call-orphan", output: "orphan" }]
+          }
+        },
+        {
+          name: "mismatched function output",
+          path: "input[1].call_id",
+          body: {
+            input: [
+              { type: "function_call", call_id: "call-1", name: "lookup", arguments: "{}" },
+              { type: "function_call_output", call_id: "call-2", output: "mismatch" }
+            ]
+          }
+        },
+        {
+          name: "duplicate function output",
+          path: "input[2].call_id",
+          body: {
+            input: [
+              { type: "function_call", call_id: "call-1", name: "lookup", arguments: "{}" },
+              { type: "function_call_output", call_id: "call-1", output: "first" },
+              { type: "function_call_output", call_id: "call-1", output: "duplicate" }
+            ]
+          }
+        },
+        {
+          name: "missing function output",
+          path: "input[0].call_id",
+          body: {
+            input: [{ type: "function_call", call_id: "call-1", name: "lookup", arguments: "{}" }]
+          }
+        }
+      ];
+
+      for (const rejectedRequest of rejectedRequests) {
+        ctx.clearUpstreamRequests();
+        const result = await ctx.publicRequest("/v1/responses", {
+          method: "POST",
+          json: {
+            model: "chat-only",
+            ...rejectedRequest.body
+          }
+        });
+        assert.equal(result.status, 400, `${rejectedRequest.name}: ${result.text}`);
+        assert.equal(result.json?.error?.code, "UnsupportedProtocolShim", rejectedRequest.name);
+        assert.equal(result.json?.error?.param, rejectedRequest.path, rejectedRequest.name);
+        assert.equal(
+          ctx.upstreamRequests.length,
+          0,
+          `${rejectedRequest.name} must be rejected before the upstream call`
+        );
+      }
+
+      ctx.clearUpstreamRequests();
+      const validFunctionHistory = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "chat-only",
+          input: [
+            { type: "message", role: "user", content: "run both functions" },
+            { type: "function_call", call_id: "call-1", name: "tool_search", arguments: "{}" },
+            { type: "function_call", call_id: "call-2", name: "write", arguments: "{}" },
+            { type: "function_call_output", call_id: "call-1", output: "found" },
+            { type: "function_call_output", call_id: "call-2", output: "written" },
+            { type: "message", role: "user", content: "continue" }
+          ],
+          tools: [
+            {
+              type: "function",
+              name: "tool_search",
+              description: "An ordinary function whose name is tool_search",
+              parameters: { type: "object", properties: {} }
+            },
+            {
+              type: "function",
+              name: "write",
+              description: "Write data",
+              parameters: { type: "object", properties: {} }
+            }
+          ]
+        }
+      });
+      assert.equal(validFunctionHistory.status, 200, validFunctionHistory.text);
+      const validFunctionUpstream = ctx.getUpstreamRequest(
+        (item) => item.url.includes("/openai/v1/chat/completions")
+      );
+      ensure(validFunctionUpstream, "Expected valid function history to reach Chat Completions");
+      assert.equal(validFunctionUpstream.body?.tools?.[0]?.function?.name, "tool_search");
+      assert.deepEqual(
+        validFunctionUpstream.body?.messages?.[1]?.tool_calls?.map((call) => call.id),
+        ["call-1", "call-2"]
+      );
+      assert.deepEqual(
+        validFunctionUpstream.body?.messages?.slice(2, 4).map((message) => message.tool_call_id),
+        ["call-1", "call-2"]
+      );
+
+      ctx.clearUpstreamRequests();
+      const rejectedToolSearchResponse = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "trigger Tool Search Responses item" }]
+        }
+      });
+      assert.equal(rejectedToolSearchResponse.status, 502, rejectedToolSearchResponse.text);
+      assert.equal(
+        rejectedToolSearchResponse.json?.error?.code,
+        "UnsupportedProtocolShimResponse"
+      );
+      assert.equal(rejectedToolSearchResponse.json?.error?.param, "output[0]");
+      assert.equal(ctx.upstreamRequests.length, 1, "Response validation occurs after one upstream call");
+
+      ctx.clearUpstreamRequests();
+      const nativeToolSearchResponse = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger Tool Search Responses item"
+        }
+      });
+      assert.equal(nativeToolSearchResponse.status, 200, nativeToolSearchResponse.text);
+      assert.equal(nativeToolSearchResponse.json?.output?.[0]?.type, "tool_search_call");
+
+      ctx.clearUpstreamRequests();
+      const rejectedToolSearchStream = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          messages: [{ role: "user", content: "trigger Tool Search Responses stream item" }],
+          stream: true
+        }
+      });
+      assert.equal(rejectedToolSearchStream.status, 200, rejectedToolSearchStream.text);
+      assert.match(rejectedToolSearchStream.text, /unsupported_protocol_shim_stream/);
+      assert.equal((rejectedToolSearchStream.text.match(/data: \[DONE\]/g) || []).length, 1);
+      assert.equal(ctx.upstreamRequests.length, 1, "Stream validation occurs after one upstream call");
+
+      ctx.clearUpstreamRequests();
+      const nativeToolSearchStream = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          input: "trigger Tool Search Responses stream item",
+          stream: true
+        }
+      });
+      assert.equal(nativeToolSearchStream.status, 200, nativeToolSearchStream.text);
+      assert.match(nativeToolSearchStream.text, /"type":"tool_search_call"/);
+      assert.match(nativeToolSearchStream.text, /"type":"response.completed"/);
+    }
+  },
+  {
     id: "shim-compatibility-guards",
     description: "protocol shims reject lossy modern items while native routes preserve them",
     logLevel: "warn",
@@ -2017,6 +2381,31 @@ export const routeTests = [
       assert.equal(rejectedResponses.json?.error?.code, "UnsupportedProtocolShim");
       assert.equal(rejectedResponses.json?.error?.param, "input[0]");
       assert.equal(ctx.upstreamRequests.length, 0, "Rejected Responses shim must not call an upstream");
+
+      ctx.clearUpstreamRequests();
+      const rejectedAdditionalTools = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: {
+          model: "chat-only",
+          input: [{
+            type: "additional_tools",
+            role: "developer",
+            tools: [{
+              type: "function",
+              name: "deferred_lookup",
+              parameters: { type: "object", properties: {} }
+            }]
+          }]
+        }
+      });
+      assert.equal(rejectedAdditionalTools.status, 400, rejectedAdditionalTools.text);
+      assert.equal(rejectedAdditionalTools.json?.error?.code, "UnsupportedProtocolShim");
+      assert.equal(rejectedAdditionalTools.json?.error?.param, "input[0]");
+      assert.equal(
+        ctx.upstreamRequests.length,
+        0,
+        "Position-scoped additional tools must be rejected before the upstream call"
+      );
 
       const rejectedMessages = await ctx.publicRequest("/v1/messages", {
         method: "POST",

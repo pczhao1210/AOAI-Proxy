@@ -6,7 +6,8 @@
   "modelVersion": "2025-11-18",
   "status": "ga",
   "interfaces": [
-    "chat/completions"
+    "chat/completions",
+    "responses"
   ],
   "inputModalities": [
     "text",
@@ -26,6 +27,12 @@
     "chat/completions": {
       "reasoning": {
         "parameter": "reasoning_effort",
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
         "validation": "passthrough"
       }
     }
@@ -55,7 +62,7 @@
     ],
     "pricingRef": "model-router",
     "routes": {
-      "*": "chat/completions"
+      "messages": "chat/completions"
     }
   },
   "sources": {
