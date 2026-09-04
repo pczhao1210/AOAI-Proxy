@@ -593,7 +593,7 @@ test("Chat and Responses conversion preserves multimodal and structured semantic
     messages: [{ role: "user", content: "hello" }],
     reasoning_effort: "max"
   }, "gpt-5.6-luna");
-  assert.deepEqual(gpt56Request.reasoning, { effort: "max" });
+  assert.deepEqual(gpt56Request.reasoning, { effort: "max", summary: "auto" });
   assert.equal("reasoning_effort" in gpt56Request, false);
 
   const claudeRequest = responsesToMessagesRequest({
@@ -925,20 +925,6 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
       payload: { output: [{ type: "web_search_call", id: "ws_1", status: "completed" }] },
       path: "output[0]",
       type: "web_search_call"
-    },
-    {
-      phase: "response",
-      sourceProtocol: "responses",
-      targetProtocol: "messages",
-      payload: {
-        output: [{
-          type: "reasoning",
-          id: "rs_1",
-          summary: [{ type: "summary_text", text: "unsigned" }]
-        }]
-      },
-      path: "output[0]",
-      type: "reasoning"
     },
     {
       phase: "response",
@@ -1330,12 +1316,6 @@ test("protocol shim stream compatibility rejects unsupported event semantics", (
       type: "computer_call"
     },
     {
-      sourceProtocol: "responses",
-      targetProtocol: "messages",
-      event: { type: "response.reasoning_summary_text.delta", delta: "summary" },
-      type: "response.reasoning_summary_text.delta"
-    },
-    {
       sourceProtocol: "messages",
       targetProtocol: "responses",
       event: {
@@ -1350,14 +1330,6 @@ test("protocol shim stream compatibility rejects unsupported event semantics", (
       targetProtocol: "chat/completions",
       event: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } },
       type: "signature_delta"
-    },
-    {
-      sourceProtocol: "chat/completions",
-      targetProtocol: "responses",
-      event: {
-        choices: [{ index: 0, delta: { reasoning_content: "private reasoning" }, finish_reason: null }]
-      },
-      type: "reasoning_content"
     },
     {
       sourceProtocol: "responses",
@@ -1404,6 +1376,37 @@ test("protocol shim stream compatibility rejects unsupported event semantics", (
     assert.equal(issue?.type, item.type);
     assert.match(issue?.message || "", /Cannot losslessly convert/);
   }
+
+  assert.equal(getProtocolShimStreamCompatibilityIssue({
+    type: "response.reasoning_summary_text.delta",
+    delta: "summary"
+  }, {
+    sourceProtocol: "responses",
+    targetProtocol: "messages"
+  }), null);
+  assert.equal(getProtocolShimStreamCompatibilityIssue({
+    choices: [{ index: 0, delta: { reasoning_content: "visible reasoning" }, finish_reason: null }]
+  }, {
+    sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  }), null);
+
+  const malformedReasoningIssue = getProtocolShimStreamCompatibilityIssue({
+    choices: [{ index: 0, delta: { reasoning_content: { text: "invalid" } }, finish_reason: null }]
+  }, {
+    sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  });
+  assert.equal(malformedReasoningIssue?.path, "choices[0].delta.reasoning_content");
+
+  const reasoningHistoryIssue = getProtocolShimCompatibilityIssue({
+    messages: [{ role: "assistant", content: "answer", reasoning_content: "visible reasoning" }]
+  }, {
+    phase: "request",
+    sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  });
+  assert.equal(reasoningHistoryIssue?.path, "messages[0].reasoning_content");
 
   for (const eventType of ["response.created", "response.in_progress"]) {
     assert.equal(getProtocolShimStreamCompatibilityIssue({
@@ -1506,6 +1509,7 @@ test("Messages cross-protocol requests preserve text, images, and tool history",
   assert.equal(responses.input.find((item) => item.type === "function_call")?.name, "lookup");
   assert.equal(responses.input.find((item) => item.type === "function_call_output")?.output, "found");
   assert.equal(responses.tools[0].name, "lookup");
+  assert.equal(responses.reasoning, undefined);
 
   const reasoningResponses = messagesToResponsesRequest({
     model: "claude",
@@ -1534,7 +1538,8 @@ test("Messages cross-protocol requests preserve text, images, and tool history",
       encrypted_content: "redacted-state"
     }
   ]);
-  assert.deepEqual(reasoningResponses.reasoning, { effort: "high" });
+  assert.deepEqual(reasoningResponses.reasoning, { effort: "high", summary: "auto" });
+  assert.deepEqual(reasoningResponses.include, ["reasoning.encrypted_content"]);
   assert.deepEqual(reasoningResponses.stop, ["STOP"]);
   assert.equal(reasoningResponses.top_k, 12);
   assert.deepEqual(reasoningResponses.metadata, { user_id: "user-1" });
@@ -1542,6 +1547,27 @@ test("Messages cross-protocol requests preserve text, images, and tool history",
   assert.equal(reasoningResponses.parallel_tool_calls, false);
   assert.equal("output_config" in reasoningResponses, false);
   assert.equal("stop_sequences" in reasoningResponses, false);
+
+  const thinkingResponses = messagesToResponsesRequest({
+    model: "reasoning-model",
+    messages: [{ role: "user", content: "hello" }],
+    thinking: { type: "enabled", budget_tokens: 1024 }
+  }, "responses-deployment");
+  assert.deepEqual(thinkingResponses.reasoning, { summary: "auto" });
+
+  const thinkingChat = messagesToChatRequest({
+    model: "reasoning-model",
+    messages: [{ role: "user", content: "hello" }],
+    thinking: { type: "enabled", budget_tokens: 1024 }
+  }, "chat-deployment", {
+    protocolProfiles: {
+      "chat/completions": {
+        reasoning: { parameter: "reasoning_effort", default: "high" }
+      }
+    }
+  });
+  assert.equal(thinkingChat.reasoning_effort, "high");
+  assert.equal("thinking" in thinkingChat, false);
 
   assert.equal(getProtocolShimCompatibilityIssue({
     messages: [{
@@ -1637,6 +1663,7 @@ test("Messages cross-protocol JSON responses preserve tools, stop reasons, and u
       finish_reason: "length",
       message: {
         role: "assistant",
+        reasoning_content: "checked the probability",
         content: "partial",
         tool_calls: [{
           id: "call_1",
@@ -1649,15 +1676,24 @@ test("Messages cross-protocol JSON responses preserve tools, stop reasons, and u
   };
   const mappedMessages = mapChatCompletionJsonToMessages(chatPayload, "fallback");
   assert.equal(mappedMessages.stop_reason, "max_tokens");
-  assert.equal(mappedMessages.content[1].type, "tool_use");
+  assert.deepEqual(mappedMessages.content[0], {
+    type: "thinking",
+    thinking: "checked the probability"
+  });
+  assert.equal(mappedMessages.content[2].type, "tool_use");
   assert.deepEqual(mappedMessages.usage, { input_tokens: 7, output_tokens: 3 });
 
   const responsesPayload = mapChatCompletionJsonToResponses(chatPayload, "fallback");
+  assert.deepEqual(responsesPayload.output[0], {
+    id: "rs_chatcmpl_1",
+    type: "reasoning",
+    summary: [{ type: "summary_text", text: "checked the probability" }]
+  });
   const responsesAsMessages = mapResponsesJsonToMessages(responsesPayload, "fallback");
   assert.equal(responsesAsMessages.stop_reason, "max_tokens");
-  assert.equal(responsesAsMessages.content[1].name, "lookup");
+  assert.equal(responsesAsMessages.content[2].name, "lookup");
 
-  const reasoningAsMessages = mapResponsesJsonToMessages({
+  const reasoningPayload = {
     id: "resp_reasoning",
     model: "responses-model",
     status: "completed",
@@ -1681,7 +1717,8 @@ test("Messages cross-protocol JSON responses preserve tools, stop reasons, and u
       total_tokens: 16,
       input_tokens_details: { cached_tokens: 3 }
     }
-  }, "fallback");
+  };
+  const reasoningAsMessages = mapResponsesJsonToMessages(reasoningPayload, "fallback");
   assert.deepEqual(reasoningAsMessages.content, [
     { type: "thinking", thinking: "checked", signature: "opaque-signature" },
     { type: "text", text: "done" }
@@ -1691,6 +1728,37 @@ test("Messages cross-protocol JSON responses preserve tools, stop reasons, and u
     output_tokens: 4,
     cache_read_input_tokens: 3
   });
+  const reasoningAsChat = mapResponsesJsonToChatCompletion(reasoningPayload, "fallback");
+  assert.equal(reasoningAsChat.choices[0].message.reasoning_content, "checked");
+  assert.equal(mapResponsesJsonToChatCompletion({
+    ...reasoningPayload,
+    output_text: ""
+  }, "fallback").choices[0].message.content, "done");
+  assert.deepEqual(mapResponsesJsonToMessages({
+    id: "resp_output_text_only",
+    model: "responses-model",
+    status: "completed",
+    output: [],
+    output_text: "top-level fallback"
+  }, "fallback").content, [
+    { type: "text", text: "top-level fallback" }
+  ]);
+  const summaryOnlyPayload = {
+    ...reasoningPayload,
+    output: [{
+      id: "rs_summary_only",
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: "visible summary" }]
+    }]
+  };
+  assert.equal(getProtocolShimCompatibilityIssue(summaryOnlyPayload, {
+    phase: "response",
+    sourceProtocol: "responses",
+    targetProtocol: "messages"
+  }), null);
+  assert.deepEqual(mapResponsesJsonToMessages(summaryOnlyPayload, "fallback").content, [
+    { type: "thinking", thinking: "visible summary" }
+  ]);
   assert.equal(getProtocolShimCompatibilityIssue({
     status: "completed",
     output: [{
@@ -2006,6 +2074,33 @@ test("Chat-to-Responses shim emits a complete text and tool lifecycle", async ()
   assert.equal((raw.output.match(/data: \[DONE\]/g) || []).length, 1);
 });
 
+test("Chat reasoning stream converts to a Responses reasoning item", async () => {
+  const source = encodeEvents([
+    {
+      id: "chatcmpl_reasoning",
+      model: "model",
+      choices: [{ delta: { reasoning_content: "checked" }, finish_reason: null }]
+    },
+    {
+      id: "chatcmpl_reasoning",
+      model: "model",
+      choices: [{ delta: { content: "done" }, finish_reason: "stop" }]
+    }
+  ]).concat(Buffer.from("data: [DONE]\n\n"));
+  const converted = await runProtocolShim("responses", "chat/completions", source);
+
+  assert.equal(converted.result.ok, true);
+  assert.match(converted.raw.output, /"type":"response.reasoning_summary_text.delta"/);
+  assert.match(converted.raw.output, /"delta":"checked"/);
+  const completed = converted.raw.output
+    .split("\n\n")
+    .map((frame) => frame.startsWith("data: ") && frame.slice(6) !== "[DONE]" ? JSON.parse(frame.slice(6)) : null)
+    .find((event) => event?.type === "response.completed");
+  assert.deepEqual(completed.response.output.map((item) => item.type), ["reasoning", "message"]);
+  assert.equal(completed.response.output[0].summary[0].text, "checked");
+  assert.equal(completed.response.output[1].content[0].text, "done");
+});
+
 test("Messages stream converts to Chat and Responses lifecycles", async () => {
   const source = encodeEvents([
     {
@@ -2094,6 +2189,11 @@ test("Chat and Responses streams convert to Anthropic Messages lifecycle", async
     {
       id: "chatcmpl_1",
       model: "chat-model",
+      choices: [{ index: 0, delta: { reasoning_content: "checked" }, finish_reason: null }]
+    },
+    {
+      id: "chatcmpl_1",
+      model: "chat-model",
       choices: [{ index: 0, delta: { content: "hello" }, finish_reason: null }]
     },
     {
@@ -2122,6 +2222,7 @@ test("Chat and Responses streams convert to Anthropic Messages lifecycle", async
   const chat = await runProtocolShim("messages", "chat/completions", chatSource);
   assert.equal(chat.result.ok, true);
   assert.match(chat.raw.output, /event: message_start/);
+  assert.match(chat.raw.output, /"type":"thinking_delta","thinking":"checked"/);
   assert.match(chat.raw.output, /"type":"text_delta","text":"hello"/);
   assert.match(chat.raw.output, /"type":"tool_use","id":"call_1","name":"lookup"/);
   assert.match(chat.raw.output, /"type":"input_json_delta","partial_json":"\{\\"id\\":1\}"/);
@@ -2134,21 +2235,43 @@ test("Chat and Responses streams convert to Anthropic Messages lifecycle", async
     {
       type: "response.output_item.added",
       output_index: 0,
-      item: { id: "msg_1", type: "message", status: "in_progress", role: "assistant", content: [] }
+      item: { id: "rs_1", type: "reasoning", summary: [] }
     },
-    { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "hello" },
+    {
+      type: "response.reasoning_summary_text.delta",
+      item_id: "rs_1",
+      output_index: 0,
+      summary_index: 0,
+      delta: "checked"
+    },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        id: "rs_1",
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "checked" }],
+        encrypted_content: "opaque-signature"
+      }
+    },
     {
       type: "response.output_item.added",
       output_index: 1,
+      item: { id: "msg_1", type: "message", status: "in_progress", role: "assistant", content: [] }
+    },
+    { type: "response.output_text.delta", item_id: "msg_1", output_index: 1, content_index: 0, delta: "hello" },
+    {
+      type: "response.output_item.added",
+      output_index: 2,
       item: { id: "fc_1", type: "function_call", call_id: "call_1", name: "lookup", arguments: "" }
     },
     { type: "response.function_call_arguments.delta", item_id: "fc_1", delta: "{\"id\":1}" },
     {
       type: "response.output_item.added",
-      output_index: 2,
+      output_index: 3,
       item: { id: "msg_2", type: "message", status: "in_progress", role: "assistant", content: [] }
     },
-    { type: "response.output_text.delta", item_id: "msg_2", output_index: 2, content_index: 0, delta: " after" },
+    { type: "response.output_text.delta", item_id: "msg_2", output_index: 3, content_index: 0, delta: " after" },
     {
       type: "response.completed",
       response: { model: "responses-model", usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } }
@@ -2157,6 +2280,8 @@ test("Chat and Responses streams convert to Anthropic Messages lifecycle", async
   const responses = await runProtocolShim("messages", "responses", responsesSource);
   assert.equal(responses.result.ok, true);
   assert.match(responses.raw.output, /event: message_start/);
+  assert.match(responses.raw.output, /"type":"thinking_delta","thinking":"checked"/);
+  assert.match(responses.raw.output, /"type":"signature_delta","signature":"opaque-signature"/);
   assert.match(responses.raw.output, /"type":"text_delta","text":"hello"/);
   assert.match(responses.raw.output, /"type":"tool_use","id":"call_1","name":"lookup"/);
   assert.match(responses.raw.output, /"stop_reason":"tool_use"/);
@@ -2171,18 +2296,54 @@ test("Chat and Responses streams convert to Anthropic Messages lifecycle", async
     messagesFrames
       .filter((event) => event.type === "content_block_start")
       .map((event) => [event.index, event.content_block.type]),
-    [[0, "text"], [1, "tool_use"], [2, "text"]]
+    [[0, "thinking"], [1, "text"], [2, "tool_use"], [3, "text"]]
   );
   assert.deepEqual(
     messagesFrames
       .filter((event) => event.type === "content_block_delta" && event.delta.type === "text_delta")
       .map((event) => [event.index, event.delta.text]),
-    [[0, "hello"], [2, " after"]]
+    [[1, "hello"], [3, " after"]]
   );
   assert.deepEqual(
     messagesFrames.filter((event) => event.type === "content_block_stop").map((event) => event.index),
-    [0, 1, 2]
+    [0, 1, 2, 3]
   );
+
+  const summaryOnlySource = encodeEvents([
+    { type: "response.created", response: { id: "resp_summary_only", model: "responses-model" } },
+    {
+      type: "response.reasoning_summary_text.delta",
+      item_id: "rs_summary_only",
+      output_index: 0,
+      summary_index: 0,
+      delta: "visible summary"
+    },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        id: "rs_summary_only",
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "visible summary" }]
+      }
+    },
+    {
+      type: "response.completed",
+      response: {
+        status: "completed",
+        model: "responses-model",
+        output: [{
+          id: "rs_summary_only",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "visible summary" }]
+        }]
+      }
+    }
+  ]);
+  const summaryOnly = await runProtocolShim("messages", "responses", summaryOnlySource);
+  assert.equal(summaryOnly.result.ok, true);
+  assert.match(summaryOnly.raw.output, /"type":"thinking_delta","thinking":"visible summary"/);
+  assert.doesNotMatch(summaryOnly.raw.output, /"type":"signature_delta"/);
 });
 
 test("streaming cache usage is projected without double counting", async () => {
@@ -2304,7 +2465,7 @@ test("protocol-shim provider errors are surfaced", async () => {
   assert.equal(raw.output, "");
 });
 
-test("permissive Responses reasoning emits keep-alive before later Chat output", async () => {
+test("Responses reasoning streams as Chat reasoning content before later output", async () => {
   const raw = new FakeReplyRaw();
   const chunks = encodeEvents([
     {
@@ -2312,12 +2473,13 @@ test("permissive Responses reasoning emits keep-alive before later Chat output",
       output_index: 0,
       item: { id: "rs_1", type: "reasoning", summary: [] }
     },
+    { type: "response.reasoning_summary_text.delta", item_id: "rs_1", output_index: 0, delta: "checked" },
     { type: "response.output_text.delta", delta: "answer" },
     {
       type: "response.completed",
       response: {
         status: "completed",
-        output: [{ id: "rs_1", type: "reasoning", summary: [] }]
+        output: [{ id: "rs_1", type: "reasoning", summary: [{ type: "summary_text", text: "checked" }], encrypted_content: "opaque" }]
       }
     }
   ]);
@@ -2328,9 +2490,6 @@ test("permissive Responses reasoning emits keep-alive before later Chat output",
       body: {
         getReader: () => ({
           async read() {
-            if (readIndex === 1) {
-              assert.match(raw.output, /^: protocol-shim keep-alive\n\n$/);
-            }
             return readIndex < chunks.length
               ? { done: false, value: chunks[readIndex++] }
               : { done: true };
@@ -2354,7 +2513,10 @@ test("permissive Responses reasoning emits keep-alive before later Chat output",
   });
 
   assert.equal(result.ok, true);
+  assert.equal(compatibilityIssues.length, 1);
   assert.equal(compatibilityIssues[0]?.type, "reasoning");
+  assert.match(compatibilityIssues[0]?.reason || "", /encrypted reasoning continuation/);
+  assert.match(raw.output, /"reasoning_content":"checked"/);
   assert.match(raw.output, /"content":"answer"/);
   assert.equal((raw.output.match(/data: \[DONE\]/g) || []).length, 1);
 });

@@ -294,7 +294,7 @@ Claude Code 和 Anthropic SDK 会发送版本、运行时和 Stainless 生成器
 - 原生 Responses 请求中的 `web_search_preview` 及带日期后缀的旧类型可规范化为 Microsoft Foundry Responses 使用的 `web_search`；只按最终上游 URL 是否为 Responses 协议决定是否可发送，不按客户端身份或静态模型 capability 增加门禁；
 - `stream_options` 仅在流式 Chat 或 Responses 且上游能够识别时保留。
 
-Chat web search 的路由提升逻辑只在 descriptor 声明 Responses interface 且最终可构造原生 Responses URL 时，把 Chat 请求提升到 Responses，并将 preview 工具名规范化为 `web_search`。该行为只提供协议兼容，不增加客户端专属门禁，也不预判具体供应商版本是否支持 Web Search；规范化后由真实上游接受或拒绝。
+Chat web search 的路由提升逻辑只在模型没有显式 route override、descriptor 声明 Responses interface 且最终可构造原生 Responses URL 时，把 Chat 请求提升到 Responses，并将 preview 工具名规范化为 `web_search`。模型的显式 route override 始终优先，例如 `* -> chat/completions` 不会被自动提升覆盖。该行为只提供协议兼容，不增加客户端专属门禁，也不预判具体供应商版本是否支持 Web Search；规范化后由真实上游接受或拒绝。
 
 ---
 
@@ -369,6 +369,7 @@ Chat web search 的路由提升逻辑只在 descriptor 声明 Responses interfac
 | tool message | `function_call_output` item |
 | `max_tokens` / `max_completion_tokens` | `max_output_tokens` |
 | `reasoning_effort` | `reasoning.effort` |
+| assistant `reasoning_content` | reasoning item 的 `summary_text` |
 | `response_format.json_object` | `text.format` JSON object |
 | `response_format.json_schema` | `text.format` JSON schema |
 | `serviceTier` | `service_tier` |
@@ -385,7 +386,7 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 - legacy message-level `function_call`；
 - 非 function 类型的 Chat tool call；
 - 音频或混合输出 modality；
-- assistant 的 `reasoning_content`、`refusal`、audio；
+- assistant 的 `refusal`、audio；
 - 带 citations、annotations、logprobs、cache metadata 的内容；
 - 无法在 Responses 中保持语义的 stop、penalty、seed、logit bias 等控制项。
 
@@ -401,10 +402,12 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 - `incomplete.reason = max_output_tokens` 转为 Chat `finish_reason = length`；
 - 存在 function call 时结束原因为 `tool_calls`；
 - 普通完成转为 `stop`。
+- reasoning item 中的 `summary_text` 拼接为 Chat `reasoning_content`。
 
 #### 必须拒绝的内容
 
-- reasoning、compaction、web search output；
+- 没有可见 summary 的 reasoning、compaction、web search output；
+- reasoning `encrypted_content` 无法进入 Chat；宽松策略可保留 summary 并记录 continuation state 损失，严格策略拒绝；
 - custom tool、MCP、computer、shell 等专用 item；
 - Tool Search call/output 和位置敏感的 `additional_tools`；
 - citations、annotations、logprobs；
@@ -451,11 +454,12 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 - function tool call 转为 `function_call` item；
 - Chat usage 转为 Responses usage；
 - `stop`、`length`、`tool_calls` 转为可表达的 completed 或 incomplete 状态。
+- assistant `reasoning_content` 转为 reasoning item 的 `summary_text`。
 
 #### 限制
 
 - 仅允许一个 choice；
-- 数组化 assistant output、audio、refusal、reasoning extension、复杂 logprobs 或供应商 finish reason 不应被静默简化；
+- 数组化 assistant output、audio、refusal、未知 reasoning extension、复杂 logprobs 或供应商 finish reason 不应被静默简化；
 - Chat 的 `content_filter` 不能伪装成 Responses 正常完成。
 
 ---
@@ -483,8 +487,8 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 
 - 图片 `detail`，因为 Messages 没有完全等价表达；
 - `response_format`；
-- `reasoning` 或 `reasoning_effort`；
-- audio、refusal、reasoning content；
+- audio、refusal；
+- 只有 `reasoning_effort` 可按目标 Messages profile 转成 effort 并启用 thinking；其他 reasoning 扩展拒绝；
 - 多 choice、best-of、seed、logprobs 和采样惩罚；
 - Chat `parallel_tool_calls`；
 - legacy `functions` / `function_call`；
@@ -503,7 +507,7 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 - `max_tokens` 转为 `length`；
 - `tool_use` 转为 `tool_calls`。
 
-存在一个有限例外：无 signature 的 thinking block 在特定兼容路径上可以映射为 Chat 的 `reasoning_content`。带 signature 的 thinking 和 `redacted_thinking` 仍必须拒绝，因为签名语义不能被重建。
+thinking 文本可映射为 Chat `reasoning_content`。signature 或 `redacted_thinking` 是独立的 continuation state，不能进入 Chat；宽松策略可输出可见 thinking 并记录 state 损失，严格策略拒绝。
 
 #### 必须拒绝的内容
 
@@ -668,8 +672,9 @@ Messages 的 `stop_sequences` 会作为 Responses `stop` 扩展字段保留并�
 | web search item | provider 扩展 | 支持 | provider 扩展 | 仅合适的原生路径；跨协议拒绝 |
 | structured output | `response_format` | `text.format` | 无通用等价 | Chat 与 Responses 间有限支持 |
 | reasoning effort | 支持扩展 | 支持 | thinking 不是同一语义 | Chat 与 Responses 间有限支持 |
-| reasoning item | 无完整等价 | 支持 | thinking 不是同一语义 | 跨协议拒绝 |
-| Anthropic thinking | 无完整等价 | 无完整等价 | 支持 | 通常拒绝；无签名到 Chat 有有限例外 |
+| 可见 reasoning 文本 | `reasoning_content` 扩展 | reasoning `summary_text` | thinking 文本 | 有限支持双向投影 |
+| reasoning continuation | 无完整等价 | `encrypted_content` | signature/redacted thinking | 仅 Responses/Messages 间按显式 loss policy 处理；Chat 无等价 |
+| Anthropic thinking | `reasoning_content` 扩展 | reasoning summary | 支持 | 仅可见文本有限转换，模式与预算不等价 |
 | thinking signature | 无等价 | 无等价 | 支持 | 跨协议拒绝 |
 | cache control | provider 扩展 | provider 状态 | 支持 | 跨协议拒绝 |
 | previous response/conversation | 无原生等价 | 支持 | 无原生等价 | 跨协议拒绝 |
@@ -743,7 +748,9 @@ Messages 的 `stop_sequences` 会作为 Responses `stop` 扩展字段保留并�
 - Anthropic thinking block：具有内容块、预算、模式和可能的 signature；
 - redacted thinking：不能反向构造的受保护内容。
 
-只有 Chat `reasoning_effort` 与 Responses `reasoning.effort` 属于可转换的有限控制交集。不能把 Anthropic thinking 当作 OpenAI reasoning item，也不能伪造 thinking signature。
+Chat `reasoning_effort`、Responses `reasoning.effort` 与目录声明的 Messages effort 属于有限控制交集。客户端显式请求 Messages thinking/effort 并路由到 Responses 时，代理会请求 `reasoning.summary="auto"` 和 `include: ["reasoning.encrypted_content"]`，以同时保留可见 summary 与可续传状态；上游仍可能只返回 summary、只返回 encrypted state，或两者均为空。
+
+输出侧只投影上游实际返回的可见内容：Chat `reasoning_content`、Responses `summary_text` 与 Messages thinking 文本可以互转。`encrypted_content`、thinking signature 和 redacted thinking 属于 continuation state，不得伪造；目标协议无法承载时必须按严格/宽松 loss policy 处理。
 
 ### 13.3 Metadata
 

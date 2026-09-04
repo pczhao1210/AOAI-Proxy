@@ -898,7 +898,7 @@ export async function proxyRequest({
   if (
     routeKey === "chat/completions"
     && routePlan.backendRouteKey === "chat/completions"
-    && routePlan.override?.type !== "path"
+    && !routePlan.override
     && findWebSearchParam(body)
     && supportsWebSearchRequest({
       upstream,

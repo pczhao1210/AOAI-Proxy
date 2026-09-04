@@ -12,6 +12,11 @@ const RESPONSES_SHIM_STREAM_LIFECYCLE_EVENTS = new Set([
   "response.failed",
   "response.output_text.delta",
   "response.output_text.done",
+  "response.reasoning_summary_part.added",
+  "response.reasoning_summary_part.done",
+  "response.reasoning_summary_text.delta",
+  "response.reasoning_summary_text.done",
+  "response.reasoning.done",
   "response.function_call_arguments.delta",
   "response.function_call_arguments.done",
   "error"
@@ -120,6 +125,26 @@ function ensureMessagesThinking(out, descriptor) {
   const defaultType = profile.default || "";
   if (parameter && defaultType && getValueAtPath(out, parameter) == null) {
     setValueAtPath(out, parameter, defaultType);
+  }
+}
+
+function requestsVisibleMessagesThinking(body) {
+  const thinkingType = typeof body?.thinking?.type === "string"
+    ? body.thinking.type.trim().toLowerCase()
+    : "";
+  return (
+    (thinkingType && thinkingType !== "disabled")
+    || (typeof body?.output_config?.effort === "string" && body.output_config.effort.trim())
+  );
+}
+
+function applyMessagesThinkingToChatReasoning(out, body, descriptor) {
+  if (!requestsVisibleMessagesThinking(body)) return;
+  const profile = getDescriptorProtocolProfile(descriptor, "chat/completions")?.reasoning;
+  const parameter = typeof profile?.parameter === "string" ? profile.parameter : "";
+  const defaultEffort = normalizeReasoningValue(profile?.default, profile || {});
+  if (parameter && defaultEffort && getValueAtPath(out, parameter) == null) {
+    setValueAtPath(out, parameter, defaultEffort);
   }
 }
 
@@ -569,12 +594,28 @@ function validateResponsesPayload(payload, context) {
     if (context.targetProtocol === "messages" && itemType === "reasoning") {
       const summary = Array.isArray(item.summary) ? item.summary : [];
       const validSummary = summary.every((part) => part?.type === "summary_text" && typeof part.text === "string");
-      if (typeof item.encrypted_content === "string" && validSummary) continue;
+      const validEncryptedContent = item.encrypted_content == null || typeof item.encrypted_content === "string";
+      if (validSummary && validEncryptedContent) continue;
       return createShimCompatibilityIssue({
         ...context,
         path: itemPath,
         type: itemType,
-        reason: "Anthropic thinking continuation requires encrypted_content and optional summary_text parts"
+        reason: validSummary
+          ? "encrypted reasoning continuation must be a string"
+          : "reasoning summaries must contain only summary_text parts"
+      });
+    }
+    if (context.targetProtocol === "chat/completions" && itemType === "reasoning") {
+      const summary = Array.isArray(item.summary) ? item.summary : [];
+      const validSummary = summary.every((part) => part?.type === "summary_text" && typeof part.text === "string");
+      if (validSummary && item.encrypted_content == null) continue;
+      return createShimCompatibilityIssue({
+        ...context,
+        path: itemPath,
+        type: itemType,
+        reason: validSummary
+          ? "encrypted reasoning continuation cannot be represented by Chat Completions"
+          : "reasoning summaries must contain only summary_text parts"
       });
     }
     if (context.phase === "request" && itemType === "function_call_output") {
@@ -1000,14 +1041,32 @@ function validateChatPayload(payload, context) {
         reason: "legacy Chat function calls cannot be converted losslessly"
       });
     }
-    if (message?.reasoning_content != null || message?.refusal != null || message?.audio != null) {
-      const field = message.reasoning_content != null ? "reasoning_content" : message.refusal != null ? "refusal" : "audio";
+    if (message?.refusal != null || message?.audio != null) {
+      const field = message.refusal != null ? "refusal" : "audio";
       return createShimCompatibilityIssue({
         ...context,
         path: `${basePath}.${field}`,
         type: field,
         reason: "structured assistant content is not preserved by the target protocol"
       });
+    }
+    if (message?.reasoning_content != null) {
+      if (typeof message.reasoning_content !== "string") {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${basePath}.reasoning_content`,
+          type: typeof message.reasoning_content,
+          reason: "Chat reasoning content must be a string"
+        });
+      }
+      if (context.phase === "request" && message.reasoning_content) {
+        return createShimCompatibilityIssue({
+          ...context,
+          path: `${basePath}.reasoning_content`,
+          type: "reasoning_content",
+          reason: "Chat reasoning history lacks the opaque continuation state required by the target protocol"
+        });
+      }
     }
     const contentIssue = validateChatContent(message?.content, context, `${basePath}.content`);
     if (contentIssue) return contentIssue;
@@ -1076,6 +1135,7 @@ export function getProtocolShimStreamCompatibilityIssue(event, {
   if (sourceProtocol === "responses") {
     const eventType = event.type;
     if (eventType === "response.output_item.added" || eventType === "response.output_item.done") {
+      if (eventType === "response.output_item.added" && event.item?.type === "reasoning") return null;
       return validateResponsesPayload({ output: [event.item] }, { ...context, phase: "response" });
     }
     if (eventType === "response.content_part.added" || eventType === "response.content_part.done") {
@@ -1173,7 +1233,7 @@ export function getProtocolShimStreamCompatibilityIssue(event, {
         reason: "legacy Chat function-call deltas cannot be converted losslessly"
       });
     }
-    for (const field of ["reasoning_content", "refusal", "audio"]) {
+    for (const field of ["refusal", "audio"]) {
       if (delta[field] != null) {
         return createShimCompatibilityIssue({
           ...context,
@@ -1189,6 +1249,14 @@ export function getProtocolShimStreamCompatibilityIssue(event, {
         path: `choices[${choiceIndex}].delta.content`,
         type: typeof delta.content,
         reason: "structured Chat stream content is not preserved by the target protocol"
+      });
+    }
+    if (delta.reasoning_content != null && typeof delta.reasoning_content !== "string") {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: `choices[${choiceIndex}].delta.reasoning_content`,
+        type: typeof delta.reasoning_content,
+        reason: "Chat reasoning content must be a string"
       });
     }
     if (choice?.logprobs != null) {
@@ -2300,6 +2368,7 @@ export function messagesToChatRequest(body, deployment, descriptor) {
 
   if (body?.stop_sequences != null) out.stop = body.stop_sequences;
   transferReasoning(out, body, "messages", "chat/completions", descriptor);
+  applyMessagesThinkingToChatReasoning(out, body, descriptor);
   delete out.system;
   delete out.stop_sequences;
   delete out.thinking;
@@ -2356,6 +2425,7 @@ export function chatToMessagesRequest(body, deployment, descriptor) {
 
 export function messagesToResponsesRequest(body, deployment, descriptor) {
   const out = { ...body, model: deployment };
+  const includeReasoningSummary = requestsVisibleMessagesThinking(body);
   const instructions = anthropicSystemToText(body?.system);
   if (instructions) out.instructions = instructions;
   else delete out.instructions;
@@ -2375,6 +2445,16 @@ export function messagesToResponsesRequest(body, deployment, descriptor) {
   if (typeof body?.max_tokens === "number") out.max_output_tokens = body.max_tokens;
   if (body?.stop_sequences != null) out.stop = body.stop_sequences;
   transferReasoning(out, body, "messages", "responses", descriptor);
+  if (includeReasoningSummary) {
+    out.reasoning = {
+      ...(out.reasoning && typeof out.reasoning === "object" ? out.reasoning : {}),
+      summary: out.reasoning?.summary || "auto"
+    };
+    out.include = [...new Set([
+      ...(Array.isArray(out.include) ? out.include : []),
+      "reasoning.encrypted_content"
+    ])];
+  }
 
   delete out.messages;
   delete out.system;
@@ -2488,7 +2568,13 @@ export function chatToResponsesRequest(body, deployment, descriptor) {
   delete out.max_tokens;
   delete out.max_completion_tokens;
 
-  transferReasoning(out, body, "chat/completions", "responses", descriptor);
+  const reasoningEffort = transferReasoning(out, body, "chat/completions", "responses", descriptor);
+  if (reasoningEffort) {
+    out.reasoning = {
+      ...(out.reasoning && typeof out.reasoning === "object" ? out.reasoning : {}),
+      summary: out.reasoning?.summary || "auto"
+    };
+  }
   delete out.reasoning_effort;
 
   const normalizedFormat = normalizeResponseFormatForResponses(out.response_format);
@@ -2570,16 +2656,27 @@ export function responsesToChatRequest(body, deployment, descriptor) {
   return out;
 }
 
+function extractResponsesOutputText(output) {
+  return output
+    .filter((item) => item?.type === "message")
+    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+    .map((content) => content?.text)
+    .filter((text) => typeof text === "string")
+    .join("");
+}
+
 export function mapResponsesJsonToChatCompletion(payload, modelId) {
   const created = Math.floor(Date.now() / 1000);
   const output = Array.isArray(payload?.output) ? payload.output : [];
-  const outputText = payload?.output_text
-    ?? output.filter((item) => item?.type === "message")
-      .flatMap((item) => Array.isArray(item.content) ? item.content : [])
-      .map((content) => content?.text)
-      .filter((text) => typeof text === "string")
-      .join("")
-    ?? "";
+  const reasoningContent = output
+    .filter((item) => item?.type === "reasoning")
+    .flatMap((item) => Array.isArray(item.summary) ? item.summary : [])
+    .filter((part) => part?.type === "summary_text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("");
+  const outputText = typeof payload?.output_text === "string" && payload.output_text
+    ? payload.output_text
+    : extractResponsesOutputText(output);
   const toolCalls = [];
   if (output.length > 0) {
     let index = 0;
@@ -2608,6 +2705,7 @@ export function mapResponsesJsonToChatCompletion(payload, modelId) {
         message: {
           role: "assistant",
           content: outputText,
+          ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
           tool_calls: toolCalls.length ? toolCalls : undefined
         },
         finish_reason: payload?.status === "incomplete" ? "length" : toolCalls.length ? "tool_calls" : "stop"
@@ -2633,6 +2731,13 @@ export function mapChatCompletionJsonToResponses(payload, modelId) {
   const text = message.content ?? choice.text ?? "";
   const responseId = payload?.id || `resp_${Math.floor(Date.now() / 1000)}`;
   const output = [];
+  if (typeof message.reasoning_content === "string" && message.reasoning_content) {
+    output.push({
+      id: `rs_${responseId}`,
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: message.reasoning_content }]
+    });
+  }
   if (typeof text === "string") {
     output.push({
       id: `msg_${responseId}`,
@@ -2752,6 +2857,9 @@ export function mapChatCompletionJsonToMessages(payload, modelId) {
   const choice = payload?.choices?.[0] || {};
   const message = choice.message || {};
   const content = [];
+  if (typeof message.reasoning_content === "string" && message.reasoning_content) {
+    content.push({ type: "thinking", thinking: message.reasoning_content });
+  }
   if (typeof message.content === "string" && message.content) {
     content.push({ type: "text", text: message.content });
   }
@@ -2917,6 +3025,13 @@ export function mapResponsesJsonToMessages(payload, modelId) {
         content.push({ type: "redacted_thinking", data: item.encrypted_content });
       }
     }
+  }
+  if (
+    !content.some((block) => block.type === "text" && block.text)
+    && typeof payload?.output_text === "string"
+    && payload.output_text
+  ) {
+    content.push({ type: "text", text: payload.output_text });
   }
 
   const inputTokens = payload?.usage?.input_tokens ?? payload?.usage?.prompt_tokens ?? 0;

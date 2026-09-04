@@ -675,6 +675,7 @@ export async function streamShim({
   let messagesUsage = null;
   let messagesStopReason = null;
   let messagesNextBlockIndex = 0;
+  let messagesThinkingBlock = null;
   let messagesTextBlock = null;
   const messagesToolBlocks = new Map();
   const messagesToolAliases = new Map();
@@ -1081,6 +1082,18 @@ export async function streamShim({
     });
     return messagesTextBlock;
   };
+  const ensureMessagesThinkingBlock = async () => {
+    if (messagesThinkingBlock?.open) return messagesThinkingBlock;
+    await ensureMessagesEnvelope();
+    messagesThinkingBlock = { index: messagesNextBlockIndex, open: true, text: "" };
+    messagesNextBlockIndex += 1;
+    await writeAnthropicSse(reply.raw, {
+      type: "content_block_start",
+      index: messagesThinkingBlock.index,
+      content_block: { type: "thinking", thinking: "", signature: "" }
+    });
+    return messagesThinkingBlock;
+  };
   const normalizeToolAliases = (aliases) => aliases
     .filter((alias) => alias !== undefined && alias !== null && alias !== "")
     .map(String);
@@ -1096,6 +1109,10 @@ export async function streamShim({
     const name = block.name || (force ? "tool" : "");
     if (!id || !name) return false;
     await ensureMessagesEnvelope();
+    if (messagesThinkingBlock?.open) {
+      await closeMessagesBlock(messagesThinkingBlock);
+      messagesThinkingBlock = null;
+    }
     if (backendRouteKey === "responses" && messagesTextBlock?.open) {
       await closeMessagesBlock(messagesTextBlock);
       messagesTextBlock = null;
@@ -1140,6 +1157,10 @@ export async function streamShim({
   const writeMessagesTextDelta = async (delta) => {
     if (typeof delta !== "string" || !delta) return;
     onContent?.(delta, "text");
+    if (messagesThinkingBlock?.open) {
+      await closeMessagesBlock(messagesThinkingBlock);
+      messagesThinkingBlock = null;
+    }
     if (backendRouteKey === "responses") {
       for (const block of messagesToolBlocks.values()) await closeMessagesBlock(block);
     }
@@ -1149,6 +1170,54 @@ export async function streamShim({
       index: block.index,
       delta: { type: "text_delta", text: delta }
     });
+  };
+  const writeMessagesThinkingDelta = async (delta) => {
+    if (typeof delta !== "string" || !delta) return;
+    onContent?.(delta, "reasoning");
+    if (messagesTextBlock?.open) {
+      await closeMessagesBlock(messagesTextBlock);
+      messagesTextBlock = null;
+    }
+    for (const block of messagesToolBlocks.values()) await closeMessagesBlock(block);
+    const block = await ensureMessagesThinkingBlock();
+    block.text += delta;
+    await writeAnthropicSse(reply.raw, {
+      type: "content_block_delta",
+      index: block.index,
+      delta: { type: "thinking_delta", thinking: delta }
+    });
+  };
+  const finishMessagesReasoningItem = async (item) => {
+    const summaryText = (Array.isArray(item?.summary) ? item.summary : [])
+      .filter((part) => part?.type === "summary_text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("");
+    if (summaryText && !messagesThinkingBlock?.text) {
+      await writeMessagesThinkingDelta(summaryText);
+    }
+    const encryptedContent = typeof item?.encrypted_content === "string" ? item.encrypted_content : "";
+    if (messagesThinkingBlock?.open) {
+      if (encryptedContent) {
+        await writeAnthropicSse(reply.raw, {
+          type: "content_block_delta",
+          index: messagesThinkingBlock.index,
+          delta: { type: "signature_delta", signature: encryptedContent }
+        });
+      }
+      await closeMessagesBlock(messagesThinkingBlock);
+      messagesThinkingBlock = null;
+      return;
+    }
+    if (!encryptedContent) return;
+    await ensureMessagesEnvelope();
+    const block = { index: messagesNextBlockIndex, open: true };
+    messagesNextBlockIndex += 1;
+    await writeAnthropicSse(reply.raw, {
+      type: "content_block_start",
+      index: block.index,
+      content_block: { type: "redacted_thinking", data: encryptedContent }
+    });
+    await closeMessagesBlock(block);
   };
   const flushMessagesToolArguments = async (block) => {
     if (!block.pendingArguments || !(await ensureMessagesToolStarted(block))) return;
@@ -1174,7 +1243,7 @@ export async function streamShim({
       await ensureMessagesToolStarted(block, true);
       await flushMessagesToolArguments(block);
     }
-    const openBlocks = [messagesTextBlock, ...messagesToolBlocks.values()]
+    const openBlocks = [messagesThinkingBlock, messagesTextBlock, ...messagesToolBlocks.values()]
       .filter((block) => block?.open)
       .sort((left, right) => left.index - right.index);
     for (const block of openBlocks) {
@@ -1552,9 +1621,13 @@ export async function streamShim({
             }
             if (evt?.type === "response.output_text.delta") {
               await writeMessagesTextDelta(evt?.delta ?? "");
+            } else if (evt?.type === "response.reasoning_summary_text.delta") {
+              await writeMessagesThinkingDelta(evt?.delta ?? "");
             } else if (evt?.type === "response.output_item.added" || evt?.type === "response.output_item.done") {
               const item = evt?.item;
-              if (item?.type === "function_call") {
+              if (evt.type === "response.output_item.done" && item?.type === "reasoning") {
+                await finishMessagesReasoningItem(item);
+              } else if (item?.type === "function_call") {
                 const aliases = [
                   item.id ? `item:${item.id}` : "",
                   item.call_id ? `call:${item.call_id}` : "",
@@ -1606,6 +1679,9 @@ export async function streamShim({
             maybeRecordUsage(evt.usage);
           }
           const choice = evt?.choices?.[0];
+          if (typeof choice?.delta?.reasoning_content === "string") {
+            await writeMessagesThinkingDelta(choice.delta.reasoning_content);
+          }
           if (typeof choice?.delta?.content === "string") {
             await writeMessagesTextDelta(choice.delta.content);
           }
@@ -1646,6 +1722,18 @@ export async function streamShim({
               model: resolvedModel,
               choices: [{ index: 0, delta: { content: delta }, finish_reason: null }]
             });
+          } else if (t === "response.reasoning_summary_text.delta") {
+            const delta = evt?.delta ?? "";
+            if (delta) {
+              onContent?.(delta, "reasoning");
+              await writeSse(reply.raw, {
+                id: streamId,
+                object: "chat.completion.chunk",
+                created,
+                model: resolvedModel,
+                choices: [{ index: 0, delta: { reasoning_content: delta }, finish_reason: null }]
+              });
+            }
           } else if (t === "response.output_item.added" || t === "response.output_item.done") {
             const item = evt?.item;
             if (item?.type === "function_call") {
@@ -1713,6 +1801,12 @@ export async function streamShim({
           if (evt?.usage) reverseUsage = evt.usage;
           await ensureReverseEnvelope();
           const choice = evt?.choices?.[0];
+          const reasoningDelta = choice?.delta?.reasoning_content;
+          if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
+            onContent?.(reasoningDelta, "reasoning");
+            const reasoningItem = await ensureReverseReasoningItem("chat");
+            await appendReverseReasoningSummary(reasoningItem, reasoningDelta);
+          }
           const choiceDelta = choice?.delta?.content;
           if (typeof choiceDelta === "string" && choiceDelta.length > 0) {
             onContent?.(choiceDelta, "text");

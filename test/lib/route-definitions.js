@@ -1605,7 +1605,9 @@ export const routeTests = [
           model: "gpt-5.6-luna",
           system: "Be concise.",
           messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-          max_tokens: 64
+          max_tokens: 64,
+          thinking: { type: "adaptive" },
+          output_config: { effort: "high" }
         }
       });
 
@@ -1618,6 +1620,8 @@ export const routeTests = [
       assert.equal(upstreamRequest.body?.instructions, "Be concise.");
       assert.equal(upstreamRequest.body?.input?.[0]?.content, "hello");
       assert.equal(upstreamRequest.body?.max_output_tokens, 64);
+      assert.deepEqual(upstreamRequest.body?.reasoning, { effort: "high", summary: "auto" });
+      assert.deepEqual(upstreamRequest.body?.include, ["reasoning.encrypted_content"]);
       assert.equal(upstreamRequest.headers?.["api-key"], "test-upstream-key");
       assert.equal(upstreamRequest.headers?.["x-api-key"], undefined);
       assert.equal(upstreamRequest.headers?.["anthropic-version"], undefined);
@@ -1764,6 +1768,8 @@ export const routeTests = [
           model: "gpt-5.6-luna",
           messages: [{ role: "user", content: "hello" }],
           max_tokens: 64,
+          thinking: { type: "adaptive" },
+          output_config: { effort: "high" },
           stream: true
         }
       });
@@ -1774,6 +1780,10 @@ export const routeTests = [
       assert.match(result.text, /"usage":\{"input_tokens":10,"output_tokens":6/);
       assert.match(result.text, /event: message_stop/);
       assert.doesNotMatch(result.text, /data: \[DONE\]/);
+      const upstreamRequest = ctx.getUpstreamRequest((item) => item.url.includes("/openai/v1/responses"));
+      ensure(upstreamRequest, "Expected streaming Messages request to use the Responses upstream");
+      assert.deepEqual(upstreamRequest.body?.reasoning, { effort: "high", summary: "auto" });
+      assert.deepEqual(upstreamRequest.body?.include, ["reasoning.encrypted_content"]);
     }
   },
   {
