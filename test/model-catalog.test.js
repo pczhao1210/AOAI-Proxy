@@ -75,7 +75,7 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
   const bundledDefinitions = listPricingDefinitions();
   const ids = new Set();
 
-  assert.equal(bundledDefinitions.length, 79);
+  assert.equal(bundledDefinitions.length, 82);
   for (const definition of bundledDefinitions) {
     assert.ok(definition.id, `${definition.fileName}: id is required`);
     assert.ok(!ids.has(definition.id.toLowerCase()), `${definition.fileName}: duplicate id ${definition.id}`);
@@ -146,6 +146,48 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
         `${definition.fileName}: image-generation capability requires an images/generations request profile`
       );
     }
+  }
+
+  for (const id of ["glm-5.3", "gpt-6-astra", "claude-fable-5-1"]) {
+    assert.ok(ids.has(id), `missing bundled Model Catalog definition ${id}`);
+  }
+});
+
+test("Azure Foundry model profiles preserve deployment IDs and pricing sources", () => {
+  const definitionsById = new Map(listPricingDefinitions().map((definition) => [definition.id, definition]));
+  const glm = definitionsById.get("glm-5.3");
+  const gpt6 = definitionsById.get("gpt-6-astra");
+  const fable = definitionsById.get("claude-fable-5-1");
+
+  assert.equal(glm.proxyTemplate.targetModel, "FW-GLM-5.3");
+  assert.deepEqual(glm.hostingModes, ["azure"]);
+  assert.equal(glm.pricing.sourceType, "fireworks-serverless");
+  assert.match(glm.sources.capabilities, /learn\.microsoft\.com\/azure\/foundry\/how-to\/fireworks/);
+  assert.equal(glm.sources.azurePricing, "https://prices.azure.com/api/retail/prices");
+
+  assert.equal(gpt6.modelVersion, "2026-09-03");
+  assert.equal(gpt6.pricing.sourceType, "azure-openai-global");
+  assert.ok(gpt6.protocolProfiles.responses.reasoning.levels.includes("none"));
+  assert.match(gpt6.sources.capabilities, /learn\.microsoft\.com\/azure\/foundry/);
+
+  assert.deepEqual(fable.hostingModes, ["anthropic"]);
+  assert.match(fable.sources.capabilities, /learn\.microsoft\.com\/azure\/foundry/);
+  assert.ok(fable.notes.some((note) => note.includes("Microsoft Foundry")));
+
+  const expectedGlobalPricing = {
+    "gpt-5.6-luna": [0.0002, 0.00002, 0.0012],
+    "gpt-5.6-sol": [0.005, 0.0005, 0.03],
+    "gpt-5.6-terra": [0.002, 0.0002, 0.012]
+  };
+  for (const [id, [inputPer1kTokens, cachedInputPer1kTokens, outputPer1kTokens]] of Object.entries(expectedGlobalPricing)) {
+    const definition = definitionsById.get(id);
+    assert.equal(definition.pricing.sourceType, "azure-openai-global", `${id}: Azure pricing source`);
+    assert.deepEqual(definition.pricingCatalogEntry, {
+      currency: "USD",
+      inputPer1kTokens,
+      cachedInputPer1kTokens,
+      outputPer1kTokens
+    }, `${id}: Azure Global Standard short-context pricing`);
   }
 });
 

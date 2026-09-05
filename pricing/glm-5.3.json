@@ -1,0 +1,85 @@
+{
+  "id": "glm-5.3",
+  "displayName": "GLM-5.3",
+  "provider": "fireworks-ai",
+  "family": "glm-5.3",
+  "modelVersion": null,
+  "status": "ga",
+  "hostingModes": [
+    "azure"
+  ],
+  "defaultHostingMode": "azure",
+  "interfacesByHostingMode": {
+    "azure": [
+      "chat/completions",
+      "responses"
+    ]
+  },
+  "interfaces": [
+    "chat/completions",
+    "responses"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "function-calling",
+    "json-output"
+  ],
+  "defaultInterface": "chat/completions",
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default": "max"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "fireworks-serverless",
+    "status": "published",
+    "inputPer1mTokens": 1.4,
+    "cachedInputPer1mTokens": 0.26,
+    "outputPer1mTokens": 4.4,
+    "inputPer1kTokens": 0.0014,
+    "cachedInputPer1kTokens": 0.00026,
+    "outputPer1kTokens": 0.0044
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.0014,
+    "cachedInputPer1kTokens": 0.00026,
+    "outputPer1kTokens": 0.0044
+  },
+  "proxyTemplate": {
+    "id": "glm-5.3",
+    "displayName": "GLM-5.3",
+    "targetModel": "FW-GLM-5.3",
+    "capabilities": [
+      "reasoning",
+      "function-calling",
+      "json-output"
+    ],
+    "pricingRef": "glm-5.3"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "pricing": "https://docs.fireworks.ai/serverless/pricing",
+    "azurePricing": "https://prices.azure.com/api/retail/prices"
+  },
+  "notes": [
+    "Microsoft Foundry exposes this Azure Fireworks catalog model as FW-GLM-5.3 through Chat Completions and Responses APIs.",
+    "Azure Retail Prices API did not expose a FW-GLM-5.3 meter when verified on 2026-09-05; use Fireworks Serverless standard pricing of USD 1.40 input, USD 0.26 cached input, and USD 4.40 output per 1M tokens until Azure publishes a meter."
+  ]
+}

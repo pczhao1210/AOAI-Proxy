@@ -46,7 +46,7 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "openai-official",
+    "sourceType": "azure-openai-global",
     "status": "published",
     "inputPer1mTokens": 2,
     "cachedInputPer1mTokens": 0.2,
@@ -79,8 +79,11 @@
     "pricingRef": "gpt-5.6-terra"
   },
   "sources": {
-    "capabilities": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
-    "reasoning": "https://developers.openai.com/api/docs/guides/reasoning",
-    "pricing": "https://developers.openai.com/api/docs/pricing"
-  }
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-56",
+    "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
+  },
+  "notes": [
+    "Azure Foundry Global Standard short-context pricing is used; Data Zone and long-context rates are not represented by the single profile."
+  ]
 }

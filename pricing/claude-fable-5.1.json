@@ -1,0 +1,93 @@
+{
+  "id": "claude-fable-5-1",
+  "displayName": "Claude Fable 5.1",
+  "provider": "anthropic",
+  "family": "claude-5",
+  "modelVersion": "2026-09-01",
+  "status": "ga",
+  "hostingModes": [
+    "anthropic"
+  ],
+  "defaultHostingMode": "anthropic",
+  "interfacesByHostingMode": {
+    "anthropic": [
+      "messages"
+    ]
+  },
+  "interfaces": [
+    "messages"
+  ],
+  "inputModalities": [
+    "text",
+    "image"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling"
+  ],
+  "protocolProfiles": {
+    "messages": {
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": [
+          "adaptive"
+        ],
+        "default": "adaptive",
+        "validation": "passthrough"
+      },
+      "reasoning": {
+        "parameter": "output_config.effort",
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "high",
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "anthropic-official",
+    "status": "published",
+    "inputPer1mTokens": 10,
+    "cachedInputPer1mTokens": 0.25,
+    "outputPer1mTokens": 50,
+    "inputPer1kTokens": 0.01,
+    "cachedInputPer1kTokens": 0.00025,
+    "outputPer1kTokens": 0.05
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.01,
+    "cachedInputPer1kTokens": 0.00025,
+    "outputPer1kTokens": 0.05
+  },
+  "proxyTemplate": {
+    "id": "claude-fable-5-1",
+    "displayName": "Claude Fable 5.1",
+    "targetModel": "claude-fable-5-1",
+    "capabilities": [
+      "reasoning",
+      "vision",
+      "function-calling"
+    ],
+    "pricingRef": "claude-fable-5-1"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  "notes": [
+    "The cached-input price records cache reads. Five-minute and one-hour cache writes cost USD 12.50 and USD 20 per 1M tokens, respectively.",
+    "Microsoft Foundry offers Claude Fable 5.1 in preview, hosted on Anthropic infrastructure through the Messages API."
+  ]
+}
