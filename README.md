@@ -526,7 +526,7 @@ Set `models[].hostingMode` to `azure` or `anthropic` when the matched Claude pri
 
 ### Claude Code
 
-The model endpoint negotiates Anthropic's model-list shape when the request contains `Anthropic-Version`, uses `format=anthropic` / `format=messages`, or has a Claude/Anthropic user agent. When Claude Code compatibility is enabled, a Claude Code User-Agent or `format=claude-code` returns only models explicitly marked for Claude Code that resolve to native Messages; generic Anthropic SDK discovery retains the broader accessible model list. Claude Code gateway model discovery can therefore be enabled:
+The model endpoint negotiates Anthropic's model-list shape when the request contains `Anthropic-Version`, uses `format=anthropic` / `format=messages`, or has a Claude/Anthropic user agent. When the Claude Code catalog is enabled, a Claude Code User-Agent or `format=claude-code` returns only models explicitly selected in the Harness settings that resolve to native Messages; generic Anthropic SDK discovery retains the broader accessible model list. An explicit `format` takes precedence over User-Agent. Requests for a disabled client catalog return `ClientCatalogDisabled` instead of falling back to another format. Claude Code gateway model discovery can therefore be enabled:
 
 ```bash
 export ANTHROPIC_BASE_URL="https://proxy.example.com"
@@ -535,9 +535,9 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 claude
 ```
 
-`compatibility.claudeCode.enabled` defaults to `true`. On Messages routes it safely forwards Claude/Anthropic and Stainless metadata header prefixes while continuing to block client credentials. Direct Anthropic upstreams preserve unknown `anthropic-beta` values in order for forward compatibility. Azure/Foundry upstreams continue to use the reviewed allowlist below; filtered values are recorded under the structured log event `proxy.anthropic_betas_filtered`.
+`compatibility.claudeCode.enabled` defaults to `true` and controls only publication of the Claude Code catalog. Messages header behavior is configured independently: `compatibility.anthropic.forwardSdkMetadataHeaders` safely forwards Claude/Anthropic and Stainless metadata prefixes while client credentials remain blocked, and `compatibility.anthropic.unknownBetaPolicy` controls whether direct Anthropic upstreams preserve unknown `anthropic-beta` values. Azure/Foundry upstreams use the reviewed allowlist; filtered values are recorded under `proxy.anthropic_betas_filtered`.
 
-Mark each production Claude Code model explicitly and keep it on native Messages. Config load/save fails when a marked model resolves to another backend protocol while compatibility is enabled:
+Select each production Claude Code model in the admin Harness tab and keep it on native Messages. Config load/save rejects a selected model whenever it is disabled, its upstream or public Messages route is disabled, or it no longer resolves to native Messages, even when catalog publication is disabled:
 
 ```json
 {
@@ -560,7 +560,7 @@ These settings are request compatibility controls, not protocol selectors. A pro
 
 ### Codex
 
-`compatibility.codex.enabled` also defaults to `true`. A `/v1/models` request from a Codex User-Agent, or one using `format=codex`, receives Codex's `{ "models": [...] }` catalog rather than the standard OpenAI list. The catalog includes only models marked for Codex that resolve natively to Responses:
+`compatibility.codex.enabled` also defaults to `true` and controls only publication of the Codex catalog. A `/v1/models` request using `format=codex`, carrying Codex's `client_version` query parameter, or coming from a Codex User-Agent receives Codex's `{ "models": [...] }` catalog rather than the standard OpenAI list. User-Agent detection is case-insensitive and based on normalized client keywords, so it does not depend on an exact header string, separator style, or client version. Explicit `format` takes precedence over the other signals. The catalog includes only models selected in the Harness settings that resolve natively to Responses and are not image generation/editing models:
 
 ```json
 {
@@ -568,14 +568,17 @@ These settings are request compatibility controls, not protocol selectors. A pro
   "routes": {},
   "codex": {
     "contextWindow": 128000,
-    "supportedReasoningEfforts": ["low", "medium", "high"]
+    "supportedReasoningEfforts": ["low", "medium", "high"],
+    "baseInstructions": "You are a coding agent working in the user's current workspace."
   }
 }
 ```
 
+Codex `0.153.2` requests `<base_url>/models?client_version=0.153.2` and requires each model entry to contain an instruction source. The proxy emits a concise default `base_instructions`; set `models[].codex.baseInstructions` to replace it with deployment-specific instructions. The query parameter selects only the response representation and never bypasses model access or Harness eligibility.
+
 Configure Codex with a custom provider whose `base_url` ends in `/v1`, `wire_api = "responses"`, and `supports_websockets = false`. Marked Codex models are rejected by config validation if their Responses entry resolves through Chat or Messages conversion. Dual-protocol models should leave the wildcard route empty so non-Codex Chat clients retain native Chat Completions.
 
-Streaming input accepts LF or CRLF SSE framing, multiple `data:` fields, and a terminal event without a trailing newline. A stream completes only after the source protocol supplies matching terminal evidence: Chat `[DONE]` or a final `finish_reason` at EOF, Responses `response.completed` or `response.incomplete`, and Anthropic `message_stop`. Responses `response.failed` and provider error events are terminal failures. With Codex compatibility disabled, the legacy Responses output-done EOF fallback remains available. Premature EOF is reported as `UPSTREAM_INCOMPLETE_STREAM` and is never turned into a successful target terminator.
+Streaming input accepts LF or CRLF SSE framing, multiple `data:` fields, and a terminal event without a trailing newline. A stream completes only after the source protocol supplies matching terminal evidence: Chat `[DONE]` or a final `finish_reason` at EOF, Responses `response.completed` or `response.incomplete`, and Anthropic `message_stop`. Responses `response.failed` and provider error events are terminal failures. The Responses rule is invariant and is not weakened when the Codex catalog is disabled. Premature EOF is reported as `UPSTREAM_INCOMPLETE_STREAM` and is never turned into a successful target terminator.
 
 Parallel tool calls retain their indexes and stable call IDs across protocol conversion. Consecutive Responses function calls become one Chat assistant tool-call turn, argument deltas are buffered until the tool identity is known, and tool controls are omitted when no valid tools remain. HTTP 200 payloads that carry a provider-level failed status remain failures rather than empty successful completions.
 

@@ -180,32 +180,116 @@ const CLIENT_COMPATIBILITY_PROTOCOLS = {
   codex: { label: "Codex", routeKey: "responses" }
 };
 
-function getClientCompatibilityIssues(config, model, upstream, descriptor) {
-  const issues = [];
-  for (const [clientName, protocol] of Object.entries(CLIENT_COMPATIBILITY_PROTOCOLS)) {
-    if (config?.compatibility?.[clientName]?.enabled === false) continue;
-    if (model?.clientCompatibility?.[clientName] !== true) continue;
-    if (!isPublicRouteEnabled(config, protocol.routeKey)) {
-      issues.push(buildStaticIssue(
-        model,
-        `model "${model.id}" is marked for ${protocol.label} but public route ${protocol.routeKey} is disabled`
-      ));
-      continue;
-    }
+function normalizeCapabilities(model, descriptor) {
+  const capabilities = Array.isArray(descriptor?.capabilities) && descriptor.capabilities.length > 0
+    ? descriptor.capabilities
+    : model?.capabilities;
+  return new Set(normalizeStringArray(capabilities).map((value) => value.toLowerCase().replaceAll("_", "-")));
+}
+
+function buildEligibilityReason(code, message) {
+  return { code, message };
+}
+
+export function getHarnessClientEligibility(config, model, clientName, snapshot, context = {}) {
+  const protocol = CLIENT_COMPATIBILITY_PROTOCOLS[clientName];
+  if (!protocol) {
+    throw new Error(`Unknown Harness client: ${clientName}`);
+  }
+
+  const reasons = [];
+  const descriptor = context.descriptor ?? resolveModelDescriptor(model, snapshot);
+  const upstream = context.upstream ?? findUpstream(config, model?.upstream);
+  if (isDisabledStatus(model?.status)) {
+    reasons.push(buildEligibilityReason(
+      "MODEL_DISABLED",
+      `model "${model?.id}" is marked for ${protocol.label} but the model is disabled`
+    ));
+  }
+  if (!descriptor?.catalogMatched) {
+    reasons.push(buildEligibilityReason(
+      "MODEL_CATALOG_NOT_FOUND",
+      `model "${model?.id}" is marked for ${protocol.label} but was not found in the Model Catalog`
+    ));
+  }
+  if (!upstream) {
+    reasons.push(buildEligibilityReason(
+      "UPSTREAM_NOT_FOUND",
+      `model "${model?.id}" is marked for ${protocol.label} but references an unknown upstream`
+    ));
+  } else if (isDisabledStatus(upstream.status)) {
+    reasons.push(buildEligibilityReason(
+      "UPSTREAM_DISABLED",
+      `model "${model?.id}" is marked for ${protocol.label} but upstream "${upstream.name}" is disabled`
+    ));
+  }
+  if (!isPublicRouteEnabled(config, protocol.routeKey)) {
+    reasons.push(buildEligibilityReason(
+      "PUBLIC_ROUTE_DISABLED",
+      `model "${model?.id}" is marked for ${protocol.label} but public route ${protocol.routeKey} is disabled`
+    ));
+  }
+  if (
+    clientName === "codex"
+    && ["image-generation", "image-editing"].some((capability) => normalizeCapabilities(model, descriptor).has(capability))
+  ) {
+    reasons.push(buildEligibilityReason(
+      "UNSUPPORTED_MODEL_CAPABILITY",
+      `model "${model?.id}" is marked for Codex but image generation and editing models are not supported`
+    ));
+  }
+
+  if (descriptor?.catalogMatched && upstream && !isDisabledStatus(upstream.status) && isPublicRouteEnabled(config, protocol.routeKey)) {
     try {
       const target = buildValidationTarget(model, upstream, protocol.routeKey, descriptor);
       if (target.backendRouteKey !== protocol.routeKey) {
-        issues.push(buildStaticIssue(
-          model,
-          `model "${model.id}" is marked for ${protocol.label} but ${protocol.routeKey} resolves to ${target.backendRouteKey}; native ${protocol.routeKey} is required`
+        reasons.push(buildEligibilityReason(
+          "NON_NATIVE_PROTOCOL",
+          `model "${model?.id}" is marked for ${protocol.label} but ${protocol.routeKey} resolves to ${target.backendRouteKey}; native ${protocol.routeKey} is required`
         ));
       }
     } catch (error) {
-      issues.push(buildStaticIssue(
-        model,
-        `model "${model.id}" is marked for ${protocol.label} but has no usable native ${protocol.routeKey} route: ${error?.message || "route resolution failed"}`
+      reasons.push(buildEligibilityReason(
+        "ROUTE_UNAVAILABLE",
+        `model "${model?.id}" is marked for ${protocol.label} but has no usable native ${protocol.routeKey} route: ${error?.message || "route resolution failed"}`
       ));
     }
+  }
+
+  return {
+    eligible: reasons.length === 0,
+    routeKey: protocol.routeKey,
+    reasons
+  };
+}
+
+export function getHarnessModelEligibility(config, snapshot) {
+  return (Array.isArray(config?.models) ? config.models : []).map((model) => ({
+    modelId: normalizeString(model?.id),
+    displayName: normalizeString(model?.displayName) || normalizeString(model?.id),
+    selected: {
+      claudeCode: model?.clientCompatibility?.claudeCode === true,
+      codex: model?.clientCompatibility?.codex === true
+    },
+    clients: {
+      claudeCode: getHarnessClientEligibility(config, model, "claudeCode", snapshot),
+      codex: getHarnessClientEligibility(config, model, "codex", snapshot)
+    }
+  }));
+}
+
+function getClientCompatibilityIssues(config, model, upstream, descriptor, snapshot) {
+  const issues = [];
+  for (const clientName of Object.keys(CLIENT_COMPATIBILITY_PROTOCOLS)) {
+    if (model?.clientCompatibility?.[clientName] !== true) continue;
+    const eligibility = getHarnessClientEligibility(
+      config,
+      model,
+      clientName,
+      snapshot,
+      { upstream, descriptor }
+    );
+    if (!eligibility.eligible) issues.push(buildStaticIssue(model, eligibility.reasons[0].message));
   }
   return issues;
 }
@@ -213,7 +297,18 @@ function getClientCompatibilityIssues(config, model, upstream, descriptor) {
 export function getConfiguredModelBindingIssues(config, snapshot) {
   const issues = [];
   for (const model of Array.isArray(config?.models) ? config.models : []) {
-    if (!model?.id || isDisabledStatus(model?.status)) continue;
+    if (!model?.id) continue;
+
+    if (isDisabledStatus(model?.status)) {
+      issues.push(...getClientCompatibilityIssues(
+        config,
+        model,
+        findUpstream(config, model.upstream),
+        resolveModelDescriptor(model, snapshot),
+        snapshot
+      ));
+      continue;
+    }
 
     const descriptor = resolveModelDescriptor(model.id, snapshot);
     if (!descriptor?.catalogMatched) {
@@ -253,7 +348,7 @@ export function getConfiguredModelBindingIssues(config, snapshot) {
       issues.push(buildStaticIssue(model, `model \"${model.id}\" is bound to disabled upstream \"${upstream.name}\"`));
     }
 
-    issues.push(...getClientCompatibilityIssues(config, model, upstream, descriptor));
+    issues.push(...getClientCompatibilityIssues(config, model, upstream, descriptor, snapshot));
 
     const definition = descriptor?.definition;
     const definitionProvider = normalizeProvider(definition?.provider);

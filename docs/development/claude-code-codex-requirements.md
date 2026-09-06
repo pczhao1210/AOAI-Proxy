@@ -20,7 +20,7 @@
 | --- | --- | --- |
 | Claude Code -> 原生 Messages | **核心兼容** | Claude Code `2.1.226` 的真实单轮流式请求已通过；动态 beta、SDK 元数据、模型映射、凭据隔离和原生 token counting 均已验证。高级工具/缓存/异常矩阵仍需扩展。 |
 | Claude Code -> Responses/Chat shim | **有限兼容** | 可转换基础文本和函数工具，但会丢失部分 Anthropic 特有字段、内容块和缓存/思考语义。 |
-| Codex -> 原生 Responses | **核心兼容** | Codex `0.147.0` 的专用模型目录、合法 Responses item 生命周期、顶层终态、文本输出和凭据隔离已通过真实 CLI 验证。原生 compact API 已覆盖，但该固定版本自定义 provider 是否自动调用尚未验证；WebSocket 和部分现代 item 仍未覆盖。 |
+| Codex -> 原生 Responses | **核心兼容** | Codex `0.153.2` 的版本化模型目录、目录缓存、合法 Responses item 生命周期、顶层终态、文本输出和凭据隔离已通过真实 CLI 验证。原生 compact API 已覆盖，但该固定版本自定义 provider 是否自动调用尚未验证；WebSocket 和部分现代 item 仍未覆盖。 |
 | Codex -> Messages/Chat shim | **有限兼容，不建议生产使用** | 不能保持完整 Responses item、会话连续性、内置工具及加密 reasoning 等语义。 |
 
 因此，对“是否能够满足这两个工具的请求和正常响应”的直接回答是：
@@ -61,7 +61,7 @@
 - 已提供 Codex 核心端点 `POST /v1/responses`。
 - 同时接受 `Authorization: Bearer <key>` 和 `x-api-key: <key>`，可以分别承接 Codex 和 Claude Code 常见鉴权方式。
 - 客户端凭据不会直接作为上游凭据复用；代理会按配置生成 Azure API Key、Bearer token 或其他上游鉴权头。
-- 已提供模型发现接口，并会按消费者权限过滤模型。它可以返回标准 OpenAI `data`、Anthropic `data`，也可根据 Codex User-Agent 或 `format=codex` 返回专用 `models` 目录。
+- 已提供模型发现接口，并会按消费者权限过滤模型。它可以返回标准 OpenAI `data`、Anthropic `data`，也可根据显式 `format=codex`、Codex `client_version` query 或 User-Agent 返回专用 `models` 目录。
 - Claude Code User-Agent 或 `format=claude-code` 只发现已标记且原生路由到 Messages 的模型；Codex 目录同样只发布已标记且原生路由到 Responses 的模型。模型 ID 必须唯一，避免目录与运行时解析分裂。
 
 ### 3.2 原生协议请求
@@ -82,7 +82,7 @@
 - 跨协议流可以生成目标协议所需的开始、内容、工具和完成事件。
 - 客户端断开时会中止上游请求；首字节前可按策略重试，流已经开始后不会重放，避免重复输出和重复工具调用。
 - 非流式成功响应在原生路径保持原协议 JSON；代理还会记录 usage，缺失时仅对内部计量做本地估算，不会把估算 usage 注入原响应。
-- 合法的 Responses item 生命周期经原生透传后，Codex `0.147.0` 能生成 `agent_message`、读取 usage 并正常完成 turn。
+- 合法的 Responses item 生命周期经原生透传后，Codex `0.153.2` 能生成 `agent_message`、读取 usage 并正常完成 turn。
 
 ### 3.4 基础 agentic 工具调用
 
@@ -119,7 +119,7 @@
 
 Claude Code 会随版本使用新的 `anthropic-beta` 值和新的 Anthropic/SDK 元数据头。官方网关原则是：除凭据等 hop-by-hop/敏感头外，网关应允许这些协议头前向兼容地传递，而不是要求每次发布都更新固定列表。
 
-`compatibility.claudeCode.enabled` 默认开启，并只在 Messages 路径扩展安全 header 前缀。凭据、hop-by-hop header 和显式 denylist 仍优先阻断。
+`compatibility.claudeCode.enabled` 默认开启，但只控制 Claude Code 专用目录发布。Messages 路径的安全元数据前缀由 `compatibility.anthropic.forwardSdkMetadataHeaders` 控制；凭据、hop-by-hop header 和显式 denylist 始终优先阻断。
 
 - 对直接 Anthropic upstream，未知 beta 会按原顺序透传并去重，适应后续 Claude Code 版本。
 - 对 Azure/Foundry Messages upstream，继续使用独立的静态 allowlist；被过滤值写入 `proxy.anthropic_betas_filtered` 结构化日志，不再静默丢弃。
@@ -135,9 +135,9 @@ Codex 自定义 provider 应明确设置 `wire_api = "responses"`。当前 Codex
 
 ### 4.4 Codex `/models` 不是标准 OpenAI 模型列表
 
-Codex `0.147.0` 在启用远端目录刷新时会请求 `<base_url>/models`，并按专用 `ModelsResponse` 解析。普通 `env_key` 自定义 provider 在干净状态下可能直接使用内置目录；该版本的远端刷新条件包括 Codex backend auth 或 command-backed provider auth。代理现已根据 Codex User-Agent 或 `format=codex` 返回顶层 `models` 和完整 `ModelInfo`，同时保留标准 OpenAI 与 Anthropic 模型列表格式。
+Codex `0.153.2` 在启用远端目录刷新时会请求 `<base_url>/models?client_version=0.153.2`，并严格按专用 `ModelsResponse { models }` 解析。普通 `env_key` 自定义 provider 在干净状态下可能直接使用内置目录；远端刷新条件包括 Codex backend auth 或 command-backed provider auth。代理按显式 `format`、非空 `client_version`、User-Agent 的顺序协商目录格式，同时保留标准 OpenAI 与 Anthropic 模型列表格式。UA 判断使用不区分大小写的客户端关键词，不绑定完整 header 文本或具体版本号。
 
-Codex 目录只暴露 `clientCompatibility.codex=true` 且原生路由到 Responses 的模型。默认 context window 为 128K；可通过 `models[].codex` 覆盖描述、context window、reasoning 档位和优先级。代理不会复制 Codex 内置 base instructions，避免客户端与服务端提示重复。
+Codex 目录只暴露 `clientCompatibility.codex=true` 且原生路由到 Responses 的模型。默认 context window 为 128K；可通过 `models[].codex` 覆盖描述、context window、reasoning 档位、优先级和 `baseInstructions`。Codex `0.153.2` 要求每个条目提供 `base_instructions` 或 `model_messages.instructions_template`；代理不会复制 Codex 内置提示，而是输出简短默认指令或管理员配置的 deployment 专属指令。
 
 ### 4.5 错误不是完全透明透传
 
@@ -199,7 +199,7 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 - `base_url` 应包含 `/v1`，Codex 会在其后请求 `/responses`。
 - `<responses-model-id>` 必须设置 `clientCompatibility.codex=true` 并原生路由到 `responses`。
 - 建议显式设置 `model`；代理 `/models` 已能返回 Codex 专用模型目录，不再需要额外 `model_catalog_json` 来规避解析告警。
-- 保持 `supports_websockets = false`。代理已提供原生 `/v1/responses/compact`，但 Codex `0.147.0` 的自定义 provider 没有独立 compact 能力开关；不要通过伪装 provider 名称或地址来强制启用未经真实 CLI 验证的远端 compact。
+- 保持 `supports_websockets = false`。代理已提供原生 `/v1/responses/compact`，但 Codex `0.153.2` 的自定义 provider 没有独立 compact 能力开关；不要通过伪装 provider 名称或地址来强制启用未经真实 CLI 验证的远端 compact。
 - 代理已负责首字节前重试，示例关闭 Codex 的 request/stream 重试，避免多层重试放大流量。若要在客户端恢复重试，必须先验证工具调用幂等性和总超时。
 
 ## 6. 实施状态与待办
@@ -210,7 +210,7 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 | --- | --- | --- | --- |
 | P0 核心协议兼容 | **已完成** | 固定版本原生文本流、header/beta、模型目录、路由门禁、严格终态和凭据隔离 | 无 P0 阻塞项 |
 | P1 常用高级能力 | **已完成** | token counting、Responses compact、严格 shim 门禁、参数 policy、可选原生错误透传 | 无 P1 实现阻塞项 |
-| 真实 CLI 扩展矩阵 | **部分完成** | Claude Code `2.1.226` 与 Codex `0.147.0` 单轮原生文本流 smoke | 多轮、普通/并行工具、thinking/reasoning、缓存、取消和错误矩阵 |
+| 真实 CLI 扩展矩阵 | **部分完成** | Claude Code `2.1.226` 与 Codex `0.153.2` 单轮原生文本流 smoke；Codex 目录缓存已验证 | 多轮、普通/并行工具、thinking/reasoning、取消和错误矩阵 |
 | 真实上游能力验证 | **部分完成** | 代理级 mock/contract 覆盖和官方协议依据 | 在实际 Anthropic/Azure/OpenAI deployment 验证 utility endpoint、参数 policy 与错误透传 |
 | P2 未来能力 | **待开始** | 已保留原生协议和配置扩展边界 | Responses WebSocket、能力探测/版本矩阵、自动发布门禁 |
 
@@ -229,7 +229,7 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 1. **真实 CLI agentic 闭环**：先补 Codex，再补 Claude Code 的多轮、普通函数工具和并行函数工具执行/回传。
 2. **真实 CLI 高级语义**：thinking/reasoning、prompt cache、客户端取消、429/5xx、流中错误和缺失终态。
 3. **真实上游验证**：对实际部署验证 `count_tokens`、`responses/compact`、参数保留/阻断 policy、原生错误透传及计量结果。
-4. **Codex 远端 compact**：确认 Codex `0.147.0` 是否自动调用端点，并验证压缩后续接和恢复语义。
+4. **Codex 远端 compact**：确认 Codex `0.153.2` 是否自动调用端点，并验证压缩后续接和恢复语义。
 5. **P2 实现**：Responses WebSocket、上游能力/版本探测，以及升级客户端或 API 版本时自动运行双 CLI smoke 的发布门禁。
 
 ### 6.4 当前非阻塞项
@@ -247,17 +247,17 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 
 2. **[已完成] 增加 Codex 专用模型目录响应**
    - 对 Codex `/models` 请求返回 `{ "models": [...] }` 和完整 `ModelInfo`，不能复用只有 ID 的标准 OpenAI 列表。
-   - 通过 User-Agent 或显式 `format=codex` query 选择方言，同时保留现有 OpenAI、Anthropic 列表。
+   - 通过显式 `format=codex`、Codex `client_version` query 或 User-Agent 选择方言，同时保留现有 OpenAI、Anthropic 列表。
    - 模型 metadata 必须来自代理配置和能力矩阵，并与实际 deployment 同步。
 
 3. **[核心已完成，扩展矩阵待完成] 扩展真实 CLI 契约测试**
-   - 已固定 Claude Code `2.1.226` 和 Codex `0.147.0`，并提供 `npm run test:cli:claude-code`、`npm run test:cli:codex`。
+   - 已固定 Claude Code `2.1.226` 和 Codex `0.153.2`，并提供 `npm run test:cli:claude-code`、`npm run test:cli:codex`。
    - 两条 smoke 均断言客户端输出、上游原生协议请求、SSE 生命周期、模型发现/header 和凭据隔离。
    - 尚需补齐真实 CLI 的多轮、普通/并行工具、长上下文、thinking/reasoning、缓存、客户端取消、429/5xx、流中错误和缺失终止事件矩阵；其中错误终态和取消已有代理级自动化覆盖。
 
 4. **[已完成] 收紧 Responses SSE 终止契约并修正测试夹具**
    - Responses 必须以 `response.completed`、`response.incomplete` 或 `response.failed` 之一结束；Messages 必须以 `message_stop` 或 `error` 结束。
-   - Codex 兼容开启时不再把 output done 当作顶层终态；关闭该开关时保留旧版兼容兜底。
+   - 所有 Responses 源流都要求顶层 `response.completed` 或 `response.incomplete`；目录开关不能放宽该协议不变量。
    - Responses mock 已补齐 `output_item.added`、content part、`output_item.done` 和 `response.completed`。
 
 5. **[已完成] 锁定原生路由并做启动校验**
@@ -278,7 +278,7 @@ P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单�
    - 对所有原生 Responses 模型开放，不要求模型标记 `clientCompatibility.codex=true`，避免把通用 Responses 能力绑定到单一客户端。
    - 优先使用 `upstreams[].routes["responses/compact"]`；缺省时仅从合法的原生 Responses URL 追加 `/compact`。Chat/Messages 后端明确返回 `ResponseCompactionNotSupported`，不会进入 shim。
    - 原样返回 `response.compaction`、加密 compaction item 和官方 usage；compaction usage 正常进入计量与成本记录。已覆盖显式路径、deployment 映射、凭据隔离、畸形响应、关闭路由和 no-shim 门禁。
-   - Microsoft Learn 已确认 Azure OpenAI `/openai/v1/responses/compact` 支持。当前只声明 API 可用；Codex `0.147.0` 自定义 provider 是否自动调用仍需长上下文真实 CLI 验证。
+   - Microsoft Learn 已确认 Azure OpenAI `/openai/v1/responses/compact` 支持。当前只声明 API 可用；Codex `0.153.2` 自定义 provider 是否自动调用仍需长上下文真实 CLI 验证。
 
 3. **[已完成] 扩展 Responses item 和 Anthropic content block 覆盖**
    - 原生 HTTP/JSON 与 SSE 路径继续透明保留未知 item、未知事件和 content block，不把客户端能力限制在代理已知集合内。
@@ -316,7 +316,7 @@ P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单�
 | 场景 | Claude Code / Messages | Codex / Responses | 当前自动化覆盖 |
 | --- | --- | --- | --- |
 | 非流式文本 | 应通过 | 应通过 | 有路由级覆盖 |
-| 流式文本及正常终止 | **Claude Code `2.1.226` 已通过** | **Codex `0.147.0` 已通过** | 有路由覆盖和双 CLI smoke |
+| 流式文本及正常终止 | **Claude Code `2.1.226` 已通过** | **Codex `0.153.2` 已通过** | 有路由覆盖和双 CLI smoke |
 | 普通函数工具闭环 | 应通过 | 应通过 | 有转换/流式基础覆盖，缺真实 CLI 闭环 |
 | thinking/reasoning | 原生应通过 | 原生应通过 | 有部分覆盖 |
 | prompt cache | 直接 Anthropic beta 可透传 | 原生字段可保留 | 缺真实缓存命中测试 |
@@ -327,14 +327,14 @@ P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单�
 | SSE 非正常 EOF | 基础检查已有 | 严格模式已拒绝 output done 假终态 | 有 passthrough/shim 错误测试，缺真实 CLI 错误矩阵 |
 | permissive shim 前导 reasoning | 不适用 | Chat 降级路径立即发送 SSE comment 保活 | 有分步 reader 单元测试和 route 级 HTTP 覆盖 |
 | WebSocket | 不适用 | 不支持 | 未覆盖 |
-| 真实 CLI | **`2.1.226` 基础文本流通过** | **`0.147.0` 基础文本流通过** | 两条固定版本 smoke 已固化 |
+| 真实 CLI | **`2.1.226` 基础文本流通过** | **`0.153.2` 基础文本流和目录缓存通过** | 两条固定版本 smoke 已固化 |
 
 ## 8. 本次验证结果
 
 - `npm run test:routes`：34/34 通过，覆盖原生 Messages、Messages token counting、原生 Responses、Responses compact、参数 policy、可选原生错误、严格 shim 门禁、协议转换、客户端专用模型目录、路由门禁、SSE 和错误帧。
 - `npm run test:unit`：103/103 通过，覆盖请求安全、utility URL 门禁、现代 item/content block 可表示性、参数保真、undici 网络错误分类、默认关闭的 SSE 错误透传、转换语义、严格且协议绑定的流终止、usage、取消、POSIX CLI 进程组升级清理和测试夹具失败清理；与路由套件合计 137 项代理级检查通过。
 - `npm run test:cli:claude-code`：Claude Code `2.1.226` 在本轮复核中再次通过原生 Messages stream；新 beta、Claude/Stainless 元数据、模型映射和上游凭据隔离均通过。
-- `npm run test:cli:codex`：Codex `0.147.0` 在隔离 `CODEX_HOME` 下通过 command-backed test auth 刷新并解析专用模型目录，再以生产式 `env_key` provider 验证合法 Responses item 生命周期，生成 `agent_message` 并正常退出。
+- `npm run test:cli:codex`：Codex `0.153.2` 在隔离 `CODEX_HOME` 下通过 command-backed test auth 请求带 `client_version` 的专用模型目录，完成解析并写入 `models_cache.json`，再以生产式 `env_key` provider 验证合法 Responses item 生命周期，生成 `agent_message` 并正常退出。
 - `npm run build:admin`：107 个模块成功构建；Settings 开关和模型兼容状态已进入生产静态资源。
 - Foundry beta 可观测性：路由测试确认 `unknown-beta` 被过滤，同时日志事件准确记录过滤值和 upstream 类型。
 - 2026-08-28：reasoning-first permissive Responses→Chat 流在读取后续块前已写出 `: protocol-shim keep-alive`；focused 与完整门禁均通过（103/103 单元、34/34 路由、管理端构建）。本次未复跑依赖外部 CLI/凭据的 Claude Code 与 Codex smoke；下一最小步骤是在部署候选镜像上复现同类请求并确认不再出现 `ERR_EMPTY_RESPONSE`。
@@ -363,4 +363,4 @@ P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单�
 
 最小可靠落地顺序是：将 Claude 模型标记并固定到原生 Messages，将 Codex 模型标记并固定到原生 Responses；在发布时运行两条固定版本 CLI smoke；随后补齐真实 CLI 的工具、thinking/reasoning、取消和错误矩阵。P1 的 `count_tokens`、`responses/compact`、严格 shim 门禁、参数 policy 与可选原生错误透传均已完成；Codex 自动触发 compact 和 WebSocket 再按实际需求推进。
 
-当前对外描述建议使用：**“支持 Claude Code `2.1.226` 和 Codex `0.147.0` 的核心 HTTP/SSE 工作流，要求使用已标记的原生协议模型；工具、缓存、压缩和 WebSocket 等高级能力仍按矩阵验证。”**
+当前对外描述建议使用：**“支持 Claude Code `2.1.226` 和 Codex `0.153.2` 的核心 HTTP/SSE 工作流，要求使用已标记的原生协议模型；Codex 模型目录与缓存已验证，工具、压缩和 WebSocket 等高级能力仍按矩阵验证。”**

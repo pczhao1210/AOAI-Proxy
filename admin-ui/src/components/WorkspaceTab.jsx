@@ -482,6 +482,12 @@ export default function WorkspaceTab({
               <Field label={t("field.anthropicBetaAllowlist", "Anthropic Beta Allowlist")}>
                 <input value={formatList(getValueByPath(config, "compatibility.anthropic.betaAllowlist"))} onChange={(event) => updateField("compatibility.anthropic.betaAllowlist", parseList(event.target.value))} />
               </Field>
+              <Field label={t("field.anthropicUnknownBetaPolicy", "Unknown Anthropic Beta Policy")}>
+                <select value={getValueByPath(config, "compatibility.anthropic.unknownBetaPolicy") || "allow-direct-anthropic"} onChange={(event) => updateField("compatibility.anthropic.unknownBetaPolicy", event.target.value)}>
+                  <option value="allow-direct-anthropic">{t("option.anthropicBetaDirect", "Allow for direct Anthropic upstreams")}</option>
+                  <option value="allowlist">{t("option.anthropicBetaAllowlist", "Require allowlist for every upstream")}</option>
+                </select>
+              </Field>
               <Field label={t("field.routeImagesAllowedFields", "Image Allowed Fields")}>
                 <input value={formatList(getValueByPath(config, "routing.routeProfiles.imageGenerations.allowedRequestFields"))} onChange={(event) => updateField("routing.routeProfiles.imageGenerations.allowedRequestFields", parseList(event.target.value))} />
               </Field>
@@ -496,10 +502,9 @@ export default function WorkspaceTab({
               <label><input type="checkbox" checked={getValueByPath(config, "routing.routeProfiles.chatCompletions.enabled") !== false} onChange={(event) => updateField("routing.routeProfiles.chatCompletions.enabled", event.target.checked)} /> {t("field.routeChatEnabled", "Enable chat/completions")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "routing.routeProfiles.responses.enabled") !== false} onChange={(event) => updateField("routing.routeProfiles.responses.enabled", event.target.checked)} /> {t("field.routeResponsesEnabled", "Enable responses")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "routing.routeProfiles.messages.enabled") !== false} onChange={(event) => updateField("routing.routeProfiles.messages.enabled", event.target.checked)} /> {t("field.routeMessagesEnabled", "Enable messages")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.claudeCode.enabled") !== false} onChange={(event) => updateField("compatibility.claudeCode.enabled", event.target.checked)} /> {t("field.claudeCodeCompatibilityEnabled", "Enable Claude Code compatibility")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.codex.enabled") !== false} onChange={(event) => updateField("compatibility.codex.enabled", event.target.checked)} /> {t("field.codexCompatibilityEnabled", "Enable Codex compatibility")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.protocolShim.rejectLossyRequests") === true} onChange={(event) => updateField("compatibility.protocolShim.rejectLossyRequests", event.target.checked)} /> {t("field.protocolShimRejectLossyRequests", "Reject lossy shim requests")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.protocolShim.rejectLossyResponses") === true} onChange={(event) => updateField("compatibility.protocolShim.rejectLossyResponses", event.target.checked)} /> {t("field.protocolShimRejectLossyResponses", "Reject lossy shim responses")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.forwardSdkMetadataHeaders") !== false} onChange={(event) => updateField("compatibility.anthropic.forwardSdkMetadataHeaders", event.target.checked)} /> {t("field.anthropicForwardSdkMetadata", "Forward Anthropic SDK metadata headers")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.betaAllowlistEnabled") !== false} onChange={(event) => updateField("compatibility.anthropic.betaAllowlistEnabled", event.target.checked)} /> {t("field.anthropicBetaAllowlistEnabled", "Filter Anthropic beta headers")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.normalizeManualThinkingToolChoice") !== false} onChange={(event) => updateField("compatibility.anthropic.normalizeManualThinkingToolChoice", event.target.checked)} /> {t("field.anthropicThinkingToolChoice", "Normalize manual thinking tool choice")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "compatibility.anthropic.sanitizeCacheControl") !== false} onChange={(event) => updateField("compatibility.anthropic.sanitizeCacheControl", event.target.checked)} /> {t("field.anthropicCacheControl", "Sanitize Anthropic cache controls")}</label>

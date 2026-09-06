@@ -94,10 +94,12 @@ function getForwardHeaderPolicy(config) {
 export function sanitizeIncomingHeaders(headers, config, options = {}) {
   const policy = getForwardHeaderPolicy(config);
   const allowPrefixes = normalizeHeaderList(options.allowPrefixes);
+  const denyPrefixes = normalizeHeaderList(options.denyPrefixes);
   const filtered = {};
   for (const [key, value] of Object.entries(headers)) {
     const normalizedKey = key.toLowerCase();
     if (isBlockedIncomingHeader(normalizedKey)) continue;
+    if (matchesAllowedHeaderPrefix(normalizedKey, denyPrefixes)) continue;
     if (policy.deny.has(normalizedKey)) continue;
     if (
       policy.mode === "allowlist"

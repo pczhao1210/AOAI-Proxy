@@ -29,50 +29,14 @@ function setModelWildcardRoute(next, modelIndex, value) {
   next.models[modelIndex].routes = routes;
 }
 
-function setModelClientCompatibility(next, modelIndex, clientName, enabled) {
-  const current = next.models?.[modelIndex]?.clientCompatibility;
-  next.models[modelIndex].clientCompatibility = {
-    ...(current && typeof current === "object" ? current : {}),
-    [clientName]: enabled
-  };
-}
-
-function inferRoutePathProtocol(value) {
-  if (typeof value !== "string" || !value.trim()) return "unknown";
-  const normalized = value.trim().toLowerCase().split(/[?#]/, 1)[0].replace(/\/+$/, "");
-  if (normalized.endsWith("/chat/completions")) return "chat/completions";
-  if (normalized.endsWith("/responses")) return "responses";
-  if (normalized.endsWith("/messages")) return "messages";
-  if (["chat/completions", "responses", "messages"].includes(normalized)) return normalized;
-  return "unknown";
-}
-
-function inferClientBackendRoute(model, upstreams, clientRoute) {
-  const configuredRoute = model?.routes?.[clientRoute] ?? model?.routes?.["*"];
-  const upstream = upstreams.find((item) => item?.name === model?.upstream);
-  if (typeof configuredRoute === "string" && configuredRoute.trim().startsWith("/")) {
-    return inferRoutePathProtocol(configuredRoute);
-  }
-  const backendRoute = typeof configuredRoute === "string" && configuredRoute.trim()
-    ? configuredRoute.trim()
-    : clientRoute;
-  if (!["chat/completions", "responses", "messages"].includes(backendRoute)) return backendRoute;
-  return inferRoutePathProtocol(upstream?.routes?.[backendRoute]);
-}
-
-function getClientCompatibilityMeta(t, model, upstreams) {
+function getClientCompatibilityMeta(t, model) {
   const clients = [
-    ["claudeCode", "Claude Code", "messages"],
-    ["codex", "Codex", "responses"]
+    ["claudeCode", "Claude Code"],
+    ["codex", "Codex"]
   ];
   return clients
     .filter(([clientName]) => model?.clientCompatibility?.[clientName] === true)
-    .map(([, label, routeKey]) => {
-      const nativeRoute = inferClientBackendRoute(model, upstreams, routeKey) === routeKey;
-      return `${label}: ${nativeRoute
-        ? t("routing.compatibility.native", "Native")
-        : t("routing.compatibility.shim", "Protocol conversion")}`;
-    })
+    .map(([, label]) => `${label}: ${t("routing.compatibility.catalogMember", "Catalog member")}`)
     .join(" · ");
 }
 
@@ -217,7 +181,7 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
           <div className="entity-grid">
             {filteredModels.map(({ item, index }) => {
               const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
-              const clientCompatibilityMeta = getClientCompatibilityMeta(t, item, upstreams);
+              const clientCompatibilityMeta = getClientCompatibilityMeta(t, item);
               const matchedDefinition = findPricingTemplateForModel(catalogDefinitions, item);
               const matchedTemplate = supportsPricingTemplate(matchedDefinition) ? matchedDefinition : null;
               const hostingModes = Array.isArray(matchedDefinition?.hostingModes) ? matchedDefinition.hostingModes : [];
@@ -314,10 +278,6 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                     syncUpstreamCapabilities(next, next.models[index].upstream);
                   })} /></Field>
                   <Field label={t("field.accessTags", "Access Tags")}><input value={formatList(item.accessTags)} onChange={(event) => updateConfig((next) => { next.models[index].accessTags = parseList(event.target.value); })} /></Field>
-                  <div className="checkbox-row">
-                    <label><input type="checkbox" checked={item.clientCompatibility?.claudeCode === true} onChange={(event) => updateConfig((next) => { setModelClientCompatibility(next, index, "claudeCode", event.target.checked); })} /> {t("routing.compatibility.claudeCodeModel", "Claude Code model")}</label>
-                    <label><input type="checkbox" checked={item.clientCompatibility?.codex === true} onChange={(event) => updateConfig((next) => { setModelClientCompatibility(next, index, "codex", event.target.checked); })} /> {t("routing.compatibility.codexModel", "Codex model")}</label>
-                  </div>
                 </EntityCard>
               );
             })}

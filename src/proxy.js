@@ -78,7 +78,8 @@ const TEXT_PROTOCOL_ROUTE_KEYS = new Set(["chat/completions", "responses", "mess
 const MESSAGES_COUNT_TOKENS_ROUTE_KEY = "messages/count_tokens";
 const RESPONSES_COMPACT_ROUTE_KEY = "responses/compact";
 const ANTHROPIC_REQUEST_HEADERS = new Set(["anthropic-version", "anthropic-beta"]);
-const CLAUDE_CODE_HEADER_PREFIXES = ["anthropic-", "x-anthropic-", "x-claude-", "x-stainless-"];
+const ANTHROPIC_SDK_METADATA_HEADER_PREFIXES = ["x-anthropic-", "x-claude-", "x-stainless-"];
+const ANTHROPIC_HEADER_PREFIXES = ["anthropic-", ...ANTHROPIC_SDK_METADATA_HEADER_PREFIXES];
 const VALID_ANTHROPIC_CACHE_TTLS = new Set(["5m", "1h"]);
 
 function anthropicCompatibility(config) {
@@ -89,8 +90,8 @@ function protocolShimCompatibility(config) {
   return config?.compatibility?.protocolShim || {};
 }
 
-function claudeCodeCompatibilityEnabled(config) {
-  return config?.compatibility?.claudeCode?.enabled !== false;
+function forwardAnthropicSdkMetadataHeaders(config) {
+  return anthropicCompatibility(config).forwardSdkMetadataHeaders !== false;
 }
 
 function isDirectAnthropicUpstream(upstream, targetUrl) {
@@ -244,7 +245,7 @@ function sanitizeToolControlsWithoutTools(body) {
 
 function applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl } = {}) {
   const policy = anthropicCompatibility(config);
-  const allowUnknownBetas = claudeCodeCompatibilityEnabled(config)
+  const allowUnknownBetas = policy.unknownBetaPolicy !== "allowlist"
     && isDirectAnthropicUpstream(upstream, targetUrl);
   const allowed = new Set(normalizeStringList(policy.betaAllowlist));
   const seen = new Set();
@@ -1540,10 +1541,12 @@ export async function proxyRequest({
       message: "proxy request started"
     });
 
+    const forwardSdkMetadata = backendRouteKey === "messages" && forwardAnthropicSdkMetadataHeaders(config);
     const headers = {
       ...sanitizeIncomingHeaders(req.headers, config, {
-        allowPrefixes: backendRouteKey === "messages" && claudeCodeCompatibilityEnabled(config)
-          ? CLAUDE_CODE_HEADER_PREFIXES
+        allowPrefixes: forwardSdkMetadata ? ANTHROPIC_HEADER_PREFIXES : [],
+        denyPrefixes: backendRouteKey === "messages" && !forwardSdkMetadata
+          ? ANTHROPIC_SDK_METADATA_HEADER_PREFIXES
           : []
       }),
       ...sanitizeConfiguredUpstreamHeaders(upstream.headersTemplate),
@@ -1811,7 +1814,6 @@ export async function proxyRequest({
             reply,
             modelId,
             backendRouteKey,
-            strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
             forwardProviderErrors: nativeErrorPassthrough,
             policy,
             onFirstChunk: () => {
@@ -1833,7 +1835,6 @@ export async function proxyRequest({
               && body.include.includes("reasoning.encrypted_content"),
             includeChatStreamUsage: routeKey === "chat/completions"
               && body?.stream_options?.include_usage === true,
-            strictResponsesCompletion: config?.compatibility?.codex?.enabled !== false,
             rejectLossyResponses: shimPolicy.rejectLossyResponses !== false,
             model,
             policy,

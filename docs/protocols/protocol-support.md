@@ -79,7 +79,7 @@
 - Chat 转 Messages 时，`stop` 映射为 `stop_sequences`，`top_p` 与 `top_k` 保留为同名控制字段；Messages 转 Chat 时执行反向 stop 映射。
 - Messages 的 `stop_sequences` 转 Responses 时映射为 `stop`。它是目标上游扩展兼容字段，不应被解释为所有 Responses 服务都原生支持；最终能力由真实上游判断。
 - Responses 转 Chat 时，`service_tier`、`verbosity`、`top_k` 等字段当前会作为顶层扩展字段继续传递；这不代表标准 Chat 语义与其等价，最终是否接受由字段策略和上游决定。
-- Responses 严格流终止由全局 Codex 兼容开关控制，默认影响所有 Responses 源流，而不是只根据单个请求是否来自 Codex 决定。
+- Responses 严格流终止是协议不变量：所有 Responses 源流都必须出现 `response.completed` 或 `response.incomplete`，不受目录开关或 User-Agent 影响。
 - `compatibility.protocolShim.rejectLossyRequests` 和 `rejectLossyResponses` 默认均为 `false`；兼容模式允许有损尽力转换并记录 `proxy.protocol_shim_lossy_conversion`，需要无损边界时可显式开启严格拒绝；后者同时控制 JSON 与 SSE 响应。
 - 配置版本 2 升级到版本 3 时，会删除 GPT-5.6 Luna/Sol/Terra 的精确旧模板 wildcard `{ "*": "responses" }`；其他显式路由覆盖仍必须通过匹配 Catalog 定义的 target allowlist。
 - Chat 跨协议流支持代理侧模拟 `stream_options.include_usage`；代理会在 `[DONE]` 前生成 Chat usage chunk，其他未知 stream option 仍按有损策略处理。
@@ -853,7 +853,7 @@ Responses 的 `response.failed` 和 provider error 是失败终态。Messages �
 - 缺失终态：`UPSTREAM_INCOMPLETE_STREAM`；
 - 不可转换事件：`unsupported_protocol_shim_stream`。
 
-全局 Codex 兼容开关默认开启，并使所有 Responses 源流都要求 `response.completed` 或 `response.incomplete`，不只影响由 Codex User-Agent 发起的请求。关闭该全局开关后，某些 output-done 事件加 EOF 可以作为旧兼容回退。无论哪种模式，都不能仅因连接关闭就认为 response 已完成。
+所有 Responses 源流都必须提供 `response.completed` 或 `response.incomplete`，不只影响由 Codex 发起的请求。Codex 目录发布开关不会改变这条协议终态规则；output-done 事件或连接关闭不能单独证明 response 已完成。
 
 ---
 
@@ -950,6 +950,8 @@ Anthropic cache read/create token 在投影到其他协议时可合并到输入 
 
 ## 18. 模型发现与格式协商
 
+显式 `format` 优先于 User-Agent。未知 `format` 返回 `UnsupportedModelCatalogFormat`；显式请求或客户端 User-Agent 命中已关闭的 Claude Code/Codex 目录时返回 `ClientCatalogDisabled`，不会静默回退成另一种目录格式。普通 Anthropic SDK 仍按 Anthropic 格式协商。
+
 ### 18.1 默认 OpenAI 模型目录
 
 普通 OpenAI SDK 或没有特殊信号的客户端访问 `/v1/models` 时，返回 OpenAI 风格：
@@ -975,7 +977,7 @@ Anthropic 目录使用 Anthropic 客户端可理解的模型对象形状。普�
 以下信号进入 Claude Code 协商：
 
 - `format=claude-code`；
-- User-Agent 明确表明 Claude Code。
+- User-Agent 中同时出现 `claude` 与 `code` / `cli` 关键词，或出现组合关键词 `claudecode` / `claudecli`。
 
 目录只能包含同时满足以下条件的模型：
 
@@ -988,12 +990,15 @@ Anthropic 目录使用 Anthropic 客户端可理解的模型对象形状。普�
 
 客户端识别只负责选择目录格式，不能把任意模型自动变成 Claude Code 兼容模型。
 
+管理端 Harness 页使用后端对当前未保存配置的路由解析结果生成候选列表。目录成员必须始终是当前可路由模型的子集；已选模型若因模型、上游或公共 route 被禁用而失效，配置保存会被拒绝。
+
 ### 18.4 Codex 模型目录
 
 以下信号进入 Codex 协商：
 
 - `format=codex`；
-- User-Agent 含 Codex 标识。
+- 非空 `client_version` query；
+- User-Agent 含独立的 `codex` 或 `codexcli` 关键词。
 
 返回 Codex 使用的 `{ "models": [...] }` 形状。目录只能包含：
 
@@ -1014,19 +1019,21 @@ Codex 模型元数据可包括：
 - 是否支持 web search；
 - 是否支持并行工具；
 - 是否使用 Responses lite。
+- 非空 `base_instructions`，或等价的 `model_messages.instructions_template` 指令来源。
 
-这些目录字段是客户端能力声明，不应替代请求阶段的实际上游能力校验。
+Codex `0.153.2` 严格反序列化顶层 `{ "models": [...] }`，并要求 `upgrade` 等无默认字段存在，同时要求每个模型提供上述指令来源。代理输出兼容的可空字段和简短默认指令；`models[].codex.baseInstructions` 可覆盖默认值。这些目录字段是客户端能力声明，不应替代请求阶段的实际上游能力校验。
 
 ### 18.5 格式协商优先原则
 
 建议采用以下优先级：
 
 1. 显式 `format` 查询参数；
-2. 明确的专用客户端 User-Agent；
-3. Anthropic 协议 header；
-4. 默认 OpenAI 格式。
+2. Codex `client_version` query；
+3. 明确的专用客户端 User-Agent；
+4. Anthropic 协议 header；
+5. 默认 OpenAI 格式。
 
-显式格式有利于测试和网关场景，User-Agent 只作为兼容信号，不能作为认证或授权依据。
+User-Agent 匹配不区分大小写，并按非字母数字字符拆分关键词；`-`、`_`、空格和任意版本后缀不会影响识别，也不会把 `mycodexproxy` 这类普通子串误判为 Codex。`client_version` 只要求非空，不绑定某个版本值。这些信号只选择目录表示，不能作为认证或授权依据，也不能绕过模型访问控制或 Harness 资格校验。
 
 ---
 
@@ -1168,7 +1175,7 @@ Codex 自定义 provider 应满足：
 
 ### 22.4 严格流终止
 
-Codex 客户端要求不能把连接 EOF 或只有 `output_item.done` 当作完整成功，必须看到 Responses 的明确终态。当前网关通过一个默认开启的全局 Codex 兼容开关实施这条规则，因此严格检查会作用于所有 Responses 源流，而不是按单个请求的 User-Agent 切换。当前会拒绝缺少完成事件或包含上游失败的流，但尚未额外验证完成事件之前必须出现 active output item；另一项目若把 item 生命周期完整性作为 Codex 契约，应补上这项状态机门禁。
+Codex 客户端要求不能把连接 EOF 或只有 `output_item.done` 当作完整成功，必须看到 Responses 的明确终态。网关把这项要求作为 Responses 协议不变量，对所有 Responses 源流实施，不依赖 Codex 目录开关或单个请求的 User-Agent。当前会拒绝缺少完成事件或包含上游失败的流，但尚未额外验证完成事件之前必须出现 active output item；另一项目若把 item 生命周期完整性作为 Codex 契约，应补上这项状态机门禁。
 
 ### 22.5 不支持 WebSocket 的含义
 

@@ -52,7 +52,7 @@ Codex CLI contract test:
 npm run test:cli:codex
 ```
 
-This test requires Codex `0.147.0` on `PATH` and uses a temporary workspace-local `CODEX_HOME`. It uses command-backed test auth to make `codex debug models` refresh and parse the remote catalog, then uses the production-style `env_key` provider for `codex exec`. It verifies the Responses item lifecycle, terminal event, agent message, and upstream credential isolation. Set `CODEX_EXPECTED_VERSION` to test another explicitly supported version.
+This test requires Codex `0.153.2` on `PATH` and uses a temporary workspace-local `CODEX_HOME`. It uses command-backed test auth to make `codex debug models` request the versioned remote catalog, parse it, and persist `models_cache.json`, then uses the production-style `env_key` provider for `codex exec`. It verifies the Responses item lifecycle, terminal event, agent message, and upstream credential isolation. Set `CODEX_EXPECTED_VERSION` to test another explicitly supported version.
 
 On POSIX systems, both CLI scripts terminate the full process group on timeout so package-manager or CLI descendants cannot keep CI pipes open. Windows currently terminates only the direct child process; run these pinned smoke tests in Linux CI when descendant cleanup is required.
 

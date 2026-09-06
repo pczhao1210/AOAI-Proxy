@@ -4,6 +4,7 @@ import {
   fetchApiKeySecret,
   fetchConfig,
   fetchDatabaseConfig,
+  fetchHarnessEligibility,
   fetchLogs,
   fetchPricingLibrary,
   fetchRuntime,
@@ -60,6 +61,7 @@ import {
 } from "./utils.js";
 
 const AdvancedTab = lazy(() => import("./components/AdvancedTab.jsx"));
+const HarnessTab = lazy(() => import("./components/HarnessTab.jsx"));
 const KeysTab = lazy(() => import("./components/KeysTab.jsx"));
 const OpsTab = lazy(() => import("./components/OpsTab.jsx"));
 const RoutingTab = lazy(() => import("./components/RoutingTab.jsx"));
@@ -115,6 +117,9 @@ export default function App() {
   const [pricingLibrary, setPricingLibrary] = useState([]);
   const [pricingLibraryStatus, setPricingLibraryStatus] = useState(null);
   const [modelValidationResult, setModelValidationResult] = useState(null);
+  const [harnessEligibility, setHarnessEligibility] = useState(null);
+  const [harnessEligibilityLoading, setHarnessEligibilityLoading] = useState(false);
+  const [harnessEligibilityError, setHarnessEligibilityError] = useState("");
   const [pricingSyncSource, setPricingSyncSource] = useState({ owner: "", repo: "", path: "pricing", ref: "" });
   const [databaseConfigForm, setDatabaseConfigForm] = useState(() => normalizeDatabaseConfigForm());
   const [databaseTestResult, setDatabaseTestResult] = useState(null);
@@ -157,6 +162,7 @@ export default function App() {
   const [templateImportPricing, setTemplateImportPricing] = useState(true);
   const loadRequestRef = useRef(0);
   const logsRequestRef = useRef(0);
+  const harnessEligibilityRequestRef = useRef(0);
   const sectionNavigationTargetRef = useRef(null);
 
   const dirty = useMemo(() => JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText]);
@@ -492,6 +498,35 @@ export default function App() {
     }, 5000);
     return () => clearInterval(interval);
   }, [activeTab, logFilters.autoRefresh, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit]);
+
+  useEffect(() => {
+    if (activeTab !== "harness" || !config) return undefined;
+    const requestId = harnessEligibilityRequestRef.current + 1;
+    harnessEligibilityRequestRef.current = requestId;
+    let cancelled = false;
+    setHarnessEligibilityLoading(true);
+    setHarnessEligibilityError("");
+    const timer = setTimeout(async () => {
+      try {
+        const result = await fetchHarnessEligibility(config);
+        if (!cancelled && requestId === harnessEligibilityRequestRef.current) {
+          setHarnessEligibility(result);
+        }
+      } catch (requestError) {
+        if (!cancelled && requestId === harnessEligibilityRequestRef.current) {
+          setHarnessEligibilityError(requestError.message || t("harness.loadFailed", "Failed to check model eligibility."));
+        }
+      } finally {
+        if (!cancelled && requestId === harnessEligibilityRequestRef.current) {
+          setHarnessEligibilityLoading(false);
+        }
+      }
+    }, 180);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [activeTab, config, t]);
 
   function updateConfig(mutator) {
     setConfig((current) => {
@@ -1074,7 +1109,8 @@ export default function App() {
       label: t("category.governance", "策略与规则"),
       tabs: [
         { id: "keys", label: t("tabs.keys", "Key 治理") },
-        { id: "routing", label: t("tabs.routing", "上游与模型") }
+        { id: "routing", label: t("tabs.routing", "上游与模型") },
+        { id: "harness", label: t("tabs.harness", "Harness") }
       ]
     },
     {
@@ -1102,6 +1138,10 @@ export default function App() {
     routing: [
       { id: "routing-upstreams", label: t("routing.nav.upstreams", "上游列表") },
       { id: "routing-models", label: t("routing.nav.models", "模型配置") }
+    ],
+    harness: [
+      { id: "harness-claude-code", label: t("harness.nav.claudeCode", "Claude Code") },
+      { id: "harness-codex", label: t("harness.nav.codex", "Codex") }
     ],
     ops: [
       { id: "ops-overview", label: t("ops.overview", "Operations Overview") },
@@ -1468,6 +1508,17 @@ export default function App() {
           addUpstream={addUpstream}
           addModel={addModel}
           addBlankModel={addBlankModel}
+          t={t}
+        />
+      ) : null}
+
+      {activeTab === "harness" && config ? (
+        <HarnessTab
+          config={config}
+          eligibility={harnessEligibility}
+          eligibilityLoading={harnessEligibilityLoading}
+          eligibilityError={harnessEligibilityError}
+          updateConfig={updateConfig}
           t={t}
         />
       ) : null}

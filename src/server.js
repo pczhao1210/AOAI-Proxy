@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { Transform } from "node:stream";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { getConfig, getPersistedConfig, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo, isDistributionFeatureEnabled } from "./config.js";
+import { getConfig, getPersistedConfig, prepareConfigPreview, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo, isDistributionFeatureEnabled } from "./config.js";
 import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { getStats } from "./stats.js";
@@ -14,8 +14,8 @@ import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnec
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, setLogConfig } from "./logs.js";
-import { getConfiguredModelBindingIssues, validateConfiguredModels } from "./model-validation.js";
-import { createModelCatalogSyncTransaction, getDescriptorProtocolProfile, resolveModelDescriptor } from "./model-catalog.js";
+import { getConfiguredModelBindingIssues, getHarnessClientEligibility, getHarnessModelEligibility, validateConfiguredModels } from "./model-validation.js";
+import { compileModelCatalog, createModelCatalogSyncTransaction, getDescriptorProtocolProfile, resolveModelDescriptor } from "./model-catalog.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
@@ -24,11 +24,6 @@ import { closeSharedPostgresPools } from "./postgres.js";
 import { redactConfigSecrets, restoreConfigSecrets } from "./admin-config.js";
 import { initializeLogAnalytics } from "./log-analytics-admin.js";
 import { getBuildInfo } from "./build-info.js";
-import {
-  findUpstream,
-  isPublicRouteEnabled,
-  resolveRoutePlan
-} from "./proxy/routing.js";
 
 const { LogController } = fastify;
 
@@ -234,26 +229,15 @@ function buildModelList(config, consumer) {
   };
 }
 
-function modelUsesNativeProtocol(config, model, routeKey) {
-  if (!isPublicRouteEnabled(config, routeKey)) return false;
-  const upstream = findUpstream(config, model?.upstream);
-  if (!upstream) {
-    return false;
-  }
-  const descriptor = resolveModelDescriptor(model?.id);
-  try {
-    return resolveRoutePlan({ routeKey, model, upstream, descriptor }).backendRouteKey === routeKey;
-  } catch {
-    return false;
-  }
-}
-
 function buildAnthropicModelList(config, consumer, { claudeCodeOnly = false } = {}) {
   const createdAt = new Date().toISOString();
   const data = filterModelsForConsumer(config.models, consumer)
     .filter((model) => (
       !claudeCodeOnly
-      || (model?.clientCompatibility?.claudeCode === true && modelUsesNativeProtocol(config, model, "messages"))
+      || (
+        model?.clientCompatibility?.claudeCode === true
+        && getHarnessClientEligibility(config, model, "claudeCode").eligible
+      )
     ))
     .map((model) => ({
       type: "model",
@@ -278,6 +262,12 @@ const CODEX_REASONING_DESCRIPTIONS = {
   max: "Maximum reasoning depth for the hardest problems"
 };
 
+const DEFAULT_CODEX_BASE_INSTRUCTIONS = [
+  "You are a coding agent working in the user's current workspace.",
+  "Follow the user's instructions, use the available tools when needed, and complete coding tasks accurately.",
+  "Respect repository instructions and preserve unrelated user changes."
+].join(" ");
+
 function normalizeCapabilitySet(model) {
   const descriptor = resolveModelDescriptor(model?.id);
   const capabilities = Array.isArray(descriptor?.capabilities) && descriptor.capabilities.length > 0
@@ -295,14 +285,7 @@ function modelUsesNativeResponses(config, model) {
   if (model?.clientCompatibility?.codex !== true) {
     return false;
   }
-  const capabilities = normalizeCapabilitySet(model);
-  if (
-    capabilities.has("image-generation")
-    || capabilities.has("image-editing")
-  ) {
-    return false;
-  }
-  return modelUsesNativeProtocol(config, model, "responses");
+  return getHarnessClientEligibility(config, model, "codex").eligible;
 }
 
 function normalizeReasoningLevels(values) {
@@ -342,6 +325,9 @@ function buildCodexModelInfo(model, index) {
   const supportsVision = capabilities.has("vision");
   const supportsWebSearch = capabilities.has("web-search");
   const codeOptimized = capabilities.has("code-optimized");
+  const configuredBaseInstructions = typeof model?.codex?.baseInstructions === "string"
+    ? model.codex.baseInstructions.trim()
+    : "";
 
   return {
     slug: model.id,
@@ -359,6 +345,8 @@ function buildCodexModelInfo(model, index) {
     additional_speed_tiers: [],
     service_tiers: [],
     availability_nux: null,
+    upgrade: null,
+    base_instructions: configuredBaseInstructions || DEFAULT_CODEX_BASE_INSTRUCTIONS,
     include_skills_usage_instructions: false,
     include_plugin_usage_instructions: false,
     include_apps_usage_instructions: false,
@@ -388,29 +376,71 @@ function buildCodexModelList(config, consumer) {
   };
 }
 
-function wantsCodexModelList(req, config) {
-  if (config?.compatibility?.codex?.enabled === false) return false;
-  const format = String(req.query?.format || "").trim().toLowerCase();
-  if (format) return ["codex", "codex_cli", "codex-cli"].includes(format);
-  return String(req.headers["user-agent"] || "").toLowerCase().includes("codex");
+const MODEL_CATALOG_FORMATS = new Map([
+  ["openai", "openai"],
+  ["standard", "openai"],
+  ["anthropic", "anthropic"],
+  ["messages", "anthropic"],
+  ["anthropic_messages", "anthropic"],
+  ["claude-code", "claudeCode"],
+  ["claude_code", "claudeCode"],
+  ["claude-cli", "claudeCode"],
+  ["codex", "codex"],
+  ["codex_cli", "codex"],
+  ["codex-cli", "codex"]
+]);
+
+function getUserAgentKeywords(value) {
+  return new Set(String(value || "").toLowerCase().match(/[a-z0-9]+/g) || []);
 }
 
-function wantsClaudeCodeModelList(req, config) {
-  if (config?.compatibility?.claudeCode?.enabled === false) return false;
-  const format = String(req.query?.format || "").trim().toLowerCase();
-  if (format) return ["claude-code", "claude_code", "claude-cli"].includes(format);
-  const userAgent = String(req.headers["user-agent"] || "").toLowerCase();
-  return userAgent.includes("claude-code")
-    || userAgent.includes("claude_cli")
-    || userAgent.includes("claude-cli");
+function resolveHarnessClientFromUserAgent(keywords) {
+  if (keywords.has("codex") || keywords.has("codexcli")) return "codex";
+  if (
+    keywords.has("claudecode")
+    || keywords.has("claudecli")
+    || (keywords.has("claude") && (keywords.has("code") || keywords.has("cli")))
+  ) {
+    return "claudeCode";
+  }
+  return "";
 }
 
-function wantsAnthropicModelList(req) {
+function resolveModelCatalogRequest(req, config) {
   const format = String(req.query?.format || "").trim().toLowerCase();
-  if (format) return ["anthropic", "messages", "anthropic_messages"].includes(format);
-  if (String(req.headers["anthropic-version"] || "").trim()) return true;
-  const userAgent = String(req.headers["user-agent"] || "").toLowerCase();
-  return userAgent.includes("claude") || userAgent.includes("anthropic");
+  if (format) {
+    const catalog = MODEL_CATALOG_FORMATS.get(format);
+    if (!catalog) return { catalog: "unsupported", format };
+    if (["claudeCode", "codex"].includes(catalog) && config?.compatibility?.[catalog]?.enabled === false) {
+      return { catalog: "disabled", client: catalog, format };
+    }
+    return { catalog, format };
+  }
+
+  const clientVersion = String(req.query?.client_version || "").trim();
+  if (clientVersion) {
+    return config?.compatibility?.codex?.enabled === false
+      ? { catalog: "disabled", client: "codex", clientVersion }
+      : { catalog: "codex", clientVersion };
+  }
+
+  const userAgentKeywords = getUserAgentKeywords(req.headers["user-agent"]);
+  const client = resolveHarnessClientFromUserAgent(userAgentKeywords);
+  if (client) {
+    return config?.compatibility?.[client]?.enabled === false
+      ? { catalog: "disabled", client }
+      : { catalog: client };
+  }
+  if (
+    String(req.headers["anthropic-version"] || "").trim()
+    || userAgentKeywords.has("claude")
+    || userAgentKeywords.has("claudecode")
+    || userAgentKeywords.has("claudecli")
+    || userAgentKeywords.has("anthropic")
+  ) {
+    return { catalog: "anthropic" };
+  }
+  return { catalog: "openai" };
 }
 
 function attachAuth(config) {
@@ -642,15 +672,41 @@ function rejectDisabledDistributionFeature(reply, feature) {
   });
 }
 
-app.get("/v1/models", async (req) => {
+app.get("/v1/models", async (req, reply) => {
   const config = getConfig();
-  if (wantsCodexModelList(req, config)) {
+  const requestedCatalog = resolveModelCatalogRequest(req, config);
+  if (requestedCatalog.catalog === "disabled") {
+    const clientLabel = requestedCatalog.client === "claudeCode" ? "Claude Code" : "Codex";
+    return reply.code(400).send({
+      error: {
+        type: "invalid_request_error",
+        code: "ClientCatalogDisabled",
+        message: `${clientLabel} model catalog is disabled`,
+        param: requestedCatalog.format
+          ? "format"
+          : requestedCatalog.clientVersion
+            ? "client_version"
+            : null
+      }
+    });
+  }
+  if (requestedCatalog.catalog === "unsupported") {
+    return reply.code(400).send({
+      error: {
+        type: "invalid_request_error",
+        code: "UnsupportedModelCatalogFormat",
+        message: `Unsupported model catalog format: ${requestedCatalog.format}`,
+        param: "format"
+      }
+    });
+  }
+  if (requestedCatalog.catalog === "codex") {
     return buildCodexModelList(config, req.proxyAccess?.consumer);
   }
-  if (wantsClaudeCodeModelList(req, config)) {
+  if (requestedCatalog.catalog === "claudeCode") {
     return buildAnthropicModelList(config, req.proxyAccess?.consumer, { claudeCodeOnly: true });
   }
-  return wantsAnthropicModelList(req)
+  return requestedCatalog.catalog === "anthropic"
     ? buildAnthropicModelList(config, req.proxyAccess?.consumer)
     : buildModelList(config, req.proxyAccess?.consumer);
 });
@@ -882,6 +938,31 @@ app.post("/admin/api/models/validate", async (req, reply) => {
       status: 502
     });
     reply.code(502).send({ ok: false, error: error.message || "Model validation failed" });
+  }
+});
+
+app.post("/admin/api/harness/eligibility", async (req, reply) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  try {
+    const sourceConfig = body.config && typeof body.config === "object"
+      ? restoreConfigSecrets(body.config, getPersistedConfig())
+      : getPersistedConfig();
+    const config = prepareConfigPreview(sourceConfig);
+    const snapshot = compileModelCatalog(config);
+    reply.send({
+      ok: true,
+      catalogs: {
+        claudeCode: { enabled: config?.compatibility?.claudeCode?.enabled !== false },
+        codex: { enabled: config?.compatibility?.codex?.enabled !== false }
+      },
+      items: getHarnessModelEligibility(config, snapshot)
+    });
+  } catch (error) {
+    logAdminApiError("admin.harness_eligibility_failed", error, {
+      route: "/admin/api/harness/eligibility",
+      status: 400
+    });
+    reply.code(400).send({ ok: false, error: error.message || "Harness eligibility failed" });
   }
 });
 

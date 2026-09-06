@@ -1466,6 +1466,20 @@ th {
     padding: 0.45rem;
   }
 
+  .mobile-page-nav {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+
+  .mobile-page-nav select {
+    width: 100%;
+  }
+
+  .panel,
+  .accordion-section {
+    scroll-margin-top: 240px;
+  }
+
   .header-actions {
     display: contents;
   }

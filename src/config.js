@@ -403,6 +403,8 @@ const DEFAULTS = {
       rejectLossyResponses: false
     },
     anthropic: {
+      forwardSdkMetadataHeaders: true,
+      unknownBetaPolicy: "allow-direct-anthropic",
       betaAllowlistEnabled: true,
       betaAllowlist: [
         "fine-grained-tool-streaming-2025-05-14",
@@ -1471,6 +1473,19 @@ function validateConfig(cfg) {
         throw new Error(`compatibility.protocolShim.${field} must be a boolean`);
       }
     }
+    const anthropic = cfg.compatibility.anthropic;
+    if (anthropic != null && (typeof anthropic !== "object" || Array.isArray(anthropic))) {
+      throw new Error("compatibility.anthropic must be an object");
+    }
+    if (anthropic?.forwardSdkMetadataHeaders != null && typeof anthropic.forwardSdkMetadataHeaders !== "boolean") {
+      throw new Error("compatibility.anthropic.forwardSdkMetadataHeaders must be a boolean");
+    }
+    if (
+      anthropic?.unknownBetaPolicy != null
+      && !["allow-direct-anthropic", "allowlist"].includes(anthropic.unknownBetaPolicy)
+    ) {
+      throw new Error("compatibility.anthropic.unknownBetaPolicy must be allow-direct-anthropic or allowlist");
+    }
   }
   if (cfg.persistence != null) {
     if (typeof cfg.persistence !== "object") {
@@ -1936,6 +1951,17 @@ export function getPersistedConfig() {
     throw new Error("Configuration not loaded yet");
   }
   return cloneConfig(persistedConfig);
+}
+
+export function prepareConfigPreview(nextConfig) {
+  const normalized = preserveDistributionManagedFields(
+    preserveEnvironmentManagedFields(
+      normalizeConfig(nextConfig, { applyEnvironment: false }),
+      persistedConfig
+    ),
+    persistedConfig
+  );
+  return applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)));
 }
 
 export async function saveConfig(nextConfig) {

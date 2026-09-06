@@ -4,7 +4,7 @@ import path from "node:path";
 import { createTestContext } from "../lib/harness.js";
 import { runProcess } from "./run-process.js";
 
-const EXPECTED_VERSION = process.env.CODEX_EXPECTED_VERSION || "0.147.0";
+const EXPECTED_VERSION = process.env.CODEX_EXPECTED_VERSION || "0.153.2";
 const PROCESS_TIMEOUT_MS = 30000;
 
 function parseJsonLines(value) {
@@ -71,6 +71,11 @@ try {
   assert.ok(Array.isArray(catalogModels), "Codex did not render a model catalog array");
   assert.ok(catalogModels.some((model) => model.slug === "gpt-5.6-luna"));
   assert.equal(catalogModels.some((model) => model.slug === "gpt-5-mini"), false);
+  const modelsCache = JSON.parse(
+    await fs.readFile(path.join(codexHome, "models_cache.json"), "utf8")
+  );
+  assert.equal(modelsCache.client_version, EXPECTED_VERSION);
+  assert.ok(modelsCache.models?.some((model) => model.slug === "gpt-5.6-luna"));
 
   const result = await runProcess("codex", [
     "exec",
@@ -122,6 +127,8 @@ try {
   assert.equal(responseRequest.headers?.["api-key"], "test-upstream-key");
   assert.equal(accessLogs.status, 200, accessLogs.text);
   assert.ok(modelCatalogRequest, "Codex did not request the proxy model catalog");
+  const modelCatalogUrl = new URL(modelCatalogRequest.fields.url, ctx.baseUrl);
+  assert.equal(modelCatalogUrl.searchParams.get("client_version"), EXPECTED_VERSION);
   assert.doesNotMatch(
     result.stderr,
     /missing field models|OutputTextDelta without active item|stream closed before response\.completed/i
@@ -131,6 +138,7 @@ try {
     codexVersion: EXPECTED_VERSION,
     agentMessage: agentMessage.item.text,
     modelCatalogParsed: catalogModels.some((model) => model.slug === "gpt-5.6-luna"),
+    modelCatalogCached: true,
     responsesLifecycleParsed: true,
     upstreamCredentialIsolation: true
   }, null, 2)}\n`);

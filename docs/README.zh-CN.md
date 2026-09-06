@@ -508,7 +508,7 @@ Microsoft Foundry 的 Claude deployment 应配置上游路由 `messages: "/anthr
 
 ### Claude Code
 
-当请求包含 `Anthropic-Version`、使用 `format=anthropic/messages`，或 User-Agent 含 Claude/Anthropic 时，模型端点会返回 Anthropic Models 格式。Claude Code 兼容开启时，Claude Code User-Agent 或 `format=claude-code` 只返回显式标记且原生解析到 Messages 的模型；普通 Anthropic SDK 发现仍保留更广的可访问模型列表。因此可以开启 Claude Code 的网关模型发现：
+当请求包含 `Anthropic-Version`、使用 `format=anthropic/messages`，或 User-Agent 含 Claude/Anthropic 时，模型端点会返回 Anthropic Models 格式。Claude Code 目录开启时，Claude Code User-Agent 或 `format=claude-code` 只返回在 Harness 设置中选中且原生解析到 Messages 的模型；普通 Anthropic SDK 发现仍保留更广的可访问模型列表。显式 `format` 优先于 User-Agent；请求已关闭的客户端目录会返回 `ClientCatalogDisabled`，不会回退为其他目录格式。因此可以开启 Claude Code 的网关模型发现：
 
 ```bash
 export ANTHROPIC_BASE_URL="https://proxy.example.com"
@@ -517,9 +517,9 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 claude
 ```
 
-`compatibility.claudeCode.enabled` 默认开启。在 Messages 路由上，它会安全转发 Claude/Anthropic 与 Stainless 元数据 header 前缀，同时继续阻断客户端凭据。直接 Anthropic 上游会按原顺序保留未知 `anthropic-beta`，以适应后续 Claude Code 版本；Azure/Foundry 上游继续使用下方已审查 allowlist，并通过结构化日志事件 `proxy.anthropic_betas_filtered` 记录被过滤值。
+`compatibility.claudeCode.enabled` 默认开启，但只控制 Claude Code 目录是否发布。Messages header 行为由独立策略控制：`compatibility.anthropic.forwardSdkMetadataHeaders` 安全转发 Claude/Anthropic 与 Stainless 元数据前缀，同时继续阻断客户端凭据；`compatibility.anthropic.unknownBetaPolicy` 控制直连 Anthropic 上游是否保留未知 `anthropic-beta`。Azure/Foundry 上游使用已审查 allowlist，并通过结构化日志事件 `proxy.anthropic_betas_filtered` 记录被过滤值。
 
-用于 Claude Code 的生产模型必须显式标记并保持原生 Messages 路由。兼容开关开启时，若标记模型解析到其他后端协议，配置加载或保存会失败：
+用于 Claude Code 的生产模型必须在管理端 Harness 页中选择并保持原生 Messages 路由。若已选模型、上游或公共 Messages route 被禁用，或最终不再解析为原生 Messages，配置加载或保存都会失败，即使目录发布开关已关闭：
 
 ```json
 {
@@ -542,7 +542,7 @@ claude
 
 ### Codex
 
-`compatibility.codex.enabled` 也默认开启。来自 Codex User-Agent，或带 `format=codex` 的 `/v1/models` 请求会收到 Codex 专用 `{ "models": [...] }` 目录，而不是标准 OpenAI 列表。目录只包含已标记且原生解析到 Responses 的模型：
+`compatibility.codex.enabled` 也默认开启，并且只控制 Codex 目录是否发布。带 `format=codex`、Codex `client_version` query，或来自 Codex User-Agent 的 `/v1/models` 请求会收到 Codex 专用 `{ "models": [...] }` 目录，而不是标准 OpenAI 列表。User-Agent 会先按非字母数字分隔符拆成不区分大小写的客户端关键词，因此不依赖完整 header 文本、分隔符风格或具体版本；显式 `format` 的优先级最高。目录只包含在 Harness 设置中选中、原生解析到 Responses 且不是图片生成/编辑类型的模型：
 
 ```json
 {
@@ -550,14 +550,17 @@ claude
   "routes": {},
   "codex": {
     "contextWindow": 128000,
-    "supportedReasoningEfforts": ["low", "medium", "high"]
+    "supportedReasoningEfforts": ["low", "medium", "high"],
+    "baseInstructions": "You are a coding agent working in the user's current workspace."
   }
 }
 ```
 
+Codex `0.153.2` 会请求 `<base_url>/models?client_version=0.153.2`，并要求每个模型条目提供指令来源。代理会输出简短的默认 `base_instructions`；可用 `models[].codex.baseInstructions` 替换为 deployment 专属指令。该 query 只选择响应表示，不会绕过模型访问控制或 Harness 资格校验。
+
 Codex 自定义 provider 的 `base_url` 应以 `/v1` 结尾，并设置 `wire_api = "responses"`、`supports_websockets = false`。若标记模型的 Responses 入口解析到 Chat 或 Messages 转换路径，配置校验会拒绝该配置。双协议模型应保持 wildcard route 为空，使非 Codex Chat 客户端继续使用原生 Chat Completions。
 
-流输入支持 LF/CRLF、多条 `data:` 字段和末尾无换行的终态事件。只有源协议提供匹配的终态证据才视为完整：Chat 使用 `[DONE]` 或 EOF 前的最终 `finish_reason`，Responses 使用 `response.completed` 或 `response.incomplete`，Anthropic 必须有 `message_stop`；Responses `response.failed` 和 provider error 事件属于失败终态。关闭 Codex 兼容后，旧版 Responses output-done EOF 兜底仍可使用。提前 EOF 会返回 `UPSTREAM_INCOMPLETE_STREAM`，不会伪造成目标协议成功终止。
+流输入支持 LF/CRLF、多条 `data:` 字段和末尾无换行的终态事件。只有源协议提供匹配的终态证据才视为完整：Chat 使用 `[DONE]` 或 EOF 前的最终 `finish_reason`，Responses 使用 `response.completed` 或 `response.incomplete`，Anthropic 必须有 `message_stop`；Responses `response.failed` 和 provider error 事件属于失败终态。Responses 规则是协议不变量，不会因 Codex 目录关闭而放宽。提前 EOF 会返回 `UPSTREAM_INCOMPLETE_STREAM`，不会伪造成目标协议成功终止。
 
 并行工具调用在跨协议转换时保留 index 和稳定 call ID。连续 Responses function call 会合并成一个 Chat assistant 工具调用轮次；参数 delta 会等工具 identity 确定后再输出；当最终没有有效工具时会移除工具控制字段。HTTP 200 中携带 provider failed 状态的 payload 仍按失败处理，不会包装成空的成功响应。
 

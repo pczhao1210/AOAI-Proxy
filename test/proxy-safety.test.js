@@ -2502,7 +2502,6 @@ test("Responses reasoning streams as Chat reasoning content before later output"
     modelId: "test-model",
     routeKey: "chat/completions",
     backendRouteKey: "responses",
-    strictResponsesCompletion: true,
     rejectLossyResponses: false,
     model: {},
     policy: STREAM_POLICY,
@@ -2697,7 +2696,7 @@ test("passthrough parses a terminal event without trailing EOL", async () => {
   assert.equal(raw.output, source.toString("utf8"));
 });
 
-test("Responses passthrough accepts output done evidence at EOF", async () => {
+test("Responses passthrough rejects output done evidence at EOF", async () => {
   const source = Buffer.from(
     `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n`
       + `event: response.output_text.done\ndata: ${JSON.stringify({ type: "response.output_text.done", text: "ok" })}\n\n`
@@ -2717,11 +2716,12 @@ test("Responses passthrough accepts output done evidence at EOF", async () => {
     onModel() {}
   });
 
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
   assert.equal(raw.output, source.toString("utf8"));
 });
 
-test("strict Responses passthrough rejects output done evidence at EOF", async () => {
+test("Responses passthrough rejects output done evidence at EOF when requested explicitly", async () => {
   const source = encodeEvents([
     { type: "response.output_text.delta", delta: "partial" },
     { type: "response.output_text.done", text: "partial" },
@@ -2735,7 +2735,6 @@ test("strict Responses passthrough rejects output done evidence at EOF", async (
     upstreamResponse: { body: { getReader: () => createReader(source) } },
     reply: { raw: new FakeReplyRaw() },
     backendRouteKey: "responses",
-    strictResponsesCompletion: true,
     policy: STREAM_POLICY,
     onFirstChunk() {},
     onUsage() {},
@@ -2766,7 +2765,6 @@ test("passthrough rejects completion markers from another backend protocol", asy
       upstreamResponse: { body: { getReader: () => createReader(source) } },
       reply: { raw: new FakeReplyRaw() },
       backendRouteKey,
-      strictResponsesCompletion: true,
       policy: STREAM_POLICY,
       onFirstChunk() {},
       onUsage() {},
@@ -2805,7 +2803,7 @@ test("shim accepts Chat finish_reason as terminal evidence at EOF", async () => 
   assert.match(converted.raw.output, /event: message_stop/);
 });
 
-test("shim accepts Responses output done as terminal evidence at EOF", async () => {
+test("shim rejects Responses output done as terminal evidence at EOF", async () => {
   const source = encodeEvents([
     { type: "response.output_text.delta", delta: "complete" },
     { type: "response.output_text.done", text: "complete" },
@@ -2817,12 +2815,13 @@ test("shim accepts Responses output done as terminal evidence at EOF", async () 
   ]);
   const converted = await runProtocolShim("chat/completions", "responses", source);
 
-  assert.equal(converted.result.ok, true);
+  assert.equal(converted.result.ok, false);
+  assert.equal(converted.result.error?.code, "UPSTREAM_INCOMPLETE_STREAM");
   assert.match(converted.raw.output, /"content":"complete"/);
-  assert.equal((converted.raw.output.match(/data: \[DONE\]/g) || []).length, 1);
+  assert.equal((converted.raw.output.match(/data: \[DONE\]/g) || []).length, 0);
 });
 
-test("strict Responses shim rejects output done evidence at EOF", async () => {
+test("Responses shim rejects output done evidence at EOF when requested explicitly", async () => {
   const source = encodeEvents([
     { type: "response.output_text.delta", delta: "partial" },
     { type: "response.output_text.done", text: "partial" },
@@ -2839,7 +2838,6 @@ test("strict Responses shim rejects output done evidence at EOF", async () => {
     modelId: "test-model",
     routeKey: "chat/completions",
     backendRouteKey: "responses",
-    strictResponsesCompletion: true,
     model: {},
     policy: STREAM_POLICY,
     onFirstChunk() {},

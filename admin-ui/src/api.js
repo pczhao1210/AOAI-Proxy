@@ -112,6 +112,14 @@ export async function validateConfiguredModels(payload = {}) {
   }));
 }
 
+export async function fetchHarnessEligibility(config) {
+  return readJson(await adminFetch("/harness/eligibility", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config })
+  }));
+}
+
 export async function syncPricingLibrary(source = {}) {
   return readJson(await adminFetch("/pricing-library/sync", {
     method: "POST",

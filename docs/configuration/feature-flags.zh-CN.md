@@ -92,16 +92,18 @@
 
 | 配置项 | 默认值 | 功能 | 入口与生效方式 |
 | --- | --- | --- | --- |
-| `compatibility.claudeCode.enabled` | `true` | 启用 Claude Code 模型发现与相关兼容行为；不会关闭基础 Messages 路由。 | Workspace；热 |
-| `compatibility.codex.enabled` | `true` | 启用 Codex 模型发现及 Responses 严格流完整性行为；不会关闭基础 Responses 路由。 | Workspace；热 |
+| `compatibility.claudeCode.enabled` | `true` | 发布 Claude Code 专用模型目录；不会关闭基础 Messages 路由，也不控制 Anthropic header/beta 策略。 | Harness；热 |
+| `compatibility.codex.enabled` | `true` | 发布 Codex 专用模型目录；不会关闭基础 Responses 路由，也不改变 Responses 终态校验。 | Harness；热 |
 | `compatibility.protocolShim.rejectLossyRequests` | `false` | 默认尽力转换并记录 warning；开启后，跨协议请求无法无损表示时返回 400。 | Workspace；热 |
 | `compatibility.protocolShim.rejectLossyResponses` | `false` | 默认尽力转换并记录 warning；开启后，JSON 或 SSE 响应无法无损表示时拒绝/终止转换。 | Workspace；热 |
+| `compatibility.anthropic.forwardSdkMetadataHeaders` | `true` | 在 Messages 路径转发安全的 `anthropic-*`、`x-anthropic-*`、`x-claude-*`、`x-stainless-*` 元数据；凭据类 header 始终阻断。 | Workspace；热 |
+| `compatibility.anthropic.unknownBetaPolicy` | `allow-direct-anthropic` | `allow-direct-anthropic` 仅对直连 Anthropic 上游保留未知 beta；`allowlist` 对所有上游执行白名单。 | Workspace；热 |
 | `compatibility.anthropic.betaAllowlistEnabled` | `true` | 对 Azure/Foundry Messages 上游过滤未审核的 `anthropic-beta`；直接 Anthropic 上游保留未知值。 | Workspace；热 |
 | `compatibility.anthropic.normalizeManualThinkingToolChoice` | `true` | 修正 manual thinking 与强制工具选择的不兼容组合。 | Workspace；热 |
 | `compatibility.anthropic.sanitizeCacheControl` | `true` | 清理目标 Messages 实现不支持的 `cache_control` 位置或属性。 | Workspace；热 |
 | `compatibility.anthropic.validateThinkingByModel` | `true` | 按模型元数据校验 Claude thinking type 与 effort。 | Workspace；热 |
-| `models[*].clientCompatibility.claudeCode` | `false` | 将模型纳入 Claude Code 专用发现和原生 Messages 配置校验；不是访问控制。 | Routing；热 |
-| `models[*].clientCompatibility.codex` | `false` | 将模型纳入 Codex 专用发现和原生 Responses 配置校验；不是访问控制。 | Routing；热 |
+| `models[*].clientCompatibility.claudeCode` | `false` | 将模型纳入 Claude Code 专用目录；模型必须启用、上游可用、公共 Messages 开启且最终原生路由到 Messages。不是访问控制。 | Harness；热 |
+| `models[*].clientCompatibility.codex` | `false` | 将模型纳入 Codex 专用目录；模型必须启用、上游可用、公共 Responses 开启、最终原生路由到 Responses，且不是图片生成/编辑模型。不是访问控制。 | Harness；热 |
 
 ## 固定安全不变量
 
@@ -110,6 +112,8 @@
 | 配置项 | 固定值 | 行为 |
 | --- | --- | --- |
 | `proxy.retries.retryBeforeFirstChunkOnly` | `true` | 代理只允许在响应输出开始前重试。设置为 `false` 会导致配置校验失败，以防止流式响应或有副作用请求被不安全地重放。 |
+
+Responses 源流始终必须出现顶层 `response.completed` 或 `response.incomplete`；`output_item.done`、其他局部 done 事件或 EOF 不能替代协议终态，此行为不受 Codex 目录开关控制。
 
 ## 兼容别名与旧字段
 

@@ -125,6 +125,22 @@ export const routeTests = [
       assert.equal(result.json?.last_id, result.json.data.at(-1).id);
       assert.deepEqual(result.json.data.map((model) => model.id), ["claude-native"]);
 
+      for (const userAgent of [
+        "Claude-Code/latest",
+        "anthropic-ai/Claude_CLI preview",
+        "Claude Code nightly"
+      ]) {
+        const variantResult = await ctx.publicRequest("/v1/models", {
+          headers: { "user-agent": userAgent }
+        });
+        assert.equal(variantResult.status, 200, `${userAgent}: ${variantResult.text}`);
+        assert.deepEqual(
+          variantResult.json?.data?.map((model) => model.id),
+          ["claude-native"],
+          `Expected Claude Code catalog for User-Agent: ${userAgent}`
+        );
+      }
+
       const genericResult = await ctx.publicRequest("/v1/models", {
         headers: {
           "anthropic-version": "2023-06-01",
@@ -146,6 +162,12 @@ export const routeTests = [
       assert.equal(explicitFormatResult.json?.models, undefined);
       assert.deepEqual(explicitFormatResult.json?.data?.map((model) => model.id), ["claude-native"]);
 
+      const unsupportedFormat = await ctx.publicRequest("/v1/models?format=unknown", {
+        headers: { "user-agent": "codex_cli_rs/0.147.0" }
+      });
+      assert.equal(unsupportedFormat.status, 400, unsupportedFormat.text);
+      assert.equal(unsupportedFormat.json?.error?.code, "UnsupportedModelCatalogFormat");
+
       const config = await ctx.readConfigFile();
       config.compatibility = {
         ...(config.compatibility || {}),
@@ -157,10 +179,13 @@ export const routeTests = [
         json: config
       });
       assert.equal(disabledConfig.status, 200, disabledConfig.text);
-      const disabledResult = await ctx.publicRequest("/v1/models?format=claude-code");
-      assert.equal(disabledResult.status, 200, disabledResult.text);
-      assert.equal(disabledResult.json?.object, "list");
-      ensure(Array.isArray(disabledResult.json?.data), "Expected standard model data with Claude Code compatibility disabled");
+      for (const disabledResult of [
+        await ctx.publicRequest("/v1/models?format=claude-code"),
+        await ctx.publicRequest("/v1/models", { headers: { "user-agent": "claude-code/1.0" } })
+      ]) {
+        assert.equal(disabledResult.status, 400, disabledResult.text);
+        assert.equal(disabledResult.json?.error?.code, "ClientCatalogDisabled");
+      }
     }
   },
   {
@@ -183,11 +208,46 @@ export const routeTests = [
       assert.deepEqual(codexModel.supported_reasoning_levels.map((item) => item.effort), ["none", "low", "medium", "high", "xhigh", "max"]);
       assert.equal(codexModel.support_verbosity, false);
       assert.equal(codexModel.use_responses_lite, false);
+      assert.equal(codexModel.upgrade, null);
+      assert.equal(typeof codexModel.base_instructions, "string");
+      assert.ok(codexModel.base_instructions.length > 0);
       assert.ok(result.json.models.some((model) => model.slug === "model-router"));
       assert.equal(result.json.models.some((model) => model.slug === "gpt-5-mini"), false);
       assert.equal(result.json.models.some((model) => model.slug === "claude-sonnet-4-6"), false);
       assert.equal(result.json.models.some((model) => model.slug === "chat-only"), false);
       assert.equal(result.json.models.some((model) => model.slug === "gpt-image-1.5"), false);
+
+      for (const userAgent of [
+        "codex_cli_rs/dev",
+        "OpenAI-Codex nightly",
+        "Codex CLI preview"
+      ]) {
+        const variantResult = await ctx.publicRequest("/v1/models", {
+          headers: { "user-agent": userAgent }
+        });
+        assert.equal(variantResult.status, 200, `${userAgent}: ${variantResult.text}`);
+        assert.ok(
+          variantResult.json?.models?.some((model) => model.slug === "gpt-5.6-luna"),
+          `Expected Codex catalog for User-Agent: ${userAgent}`
+        );
+      }
+
+      const substringOnlyResult = await ctx.publicRequest("/v1/models", {
+        headers: { "user-agent": "mycodexproxy/latest" }
+      });
+      assert.equal(substringOnlyResult.status, 200, substringOnlyResult.text);
+      assert.equal(substringOnlyResult.json?.object, "list");
+
+      const clientVersionResult = await ctx.publicRequest("/v1/models?client_version=future-preview");
+      assert.equal(clientVersionResult.status, 200, clientVersionResult.text);
+      assert.equal(clientVersionResult.json?.object, undefined);
+      assert.equal(clientVersionResult.json?.data, undefined);
+      assert.ok(clientVersionResult.json?.models?.some((model) => model.slug === "gpt-5.6-luna"));
+
+      const explicitOpenAiResult = await ctx.publicRequest("/v1/models?client_version=0.153.2&format=openai");
+      assert.equal(explicitOpenAiResult.status, 200, explicitOpenAiResult.text);
+      assert.equal(explicitOpenAiResult.json?.object, "list");
+      ensure(Array.isArray(explicitOpenAiResult.json?.data), "Expected explicit OpenAI format to override client_version");
 
       const staleCapabilityConfig = await ctx.readConfigFile();
       const staleCapabilityModel = staleCapabilityConfig.models.find((model) => model.id === "gpt-5.6-luna");
@@ -239,12 +299,62 @@ export const routeTests = [
         json: config
       });
       assert.equal(disabledConfig.status, 200, disabledConfig.text);
-      const disabledResult = await ctx.publicRequest("/v1/models", {
-        headers: { "user-agent": "codex_cli_rs/0.147.0" }
+      for (const disabledResult of [
+        await ctx.publicRequest("/v1/models?format=codex"),
+        await ctx.publicRequest("/v1/models?client_version=0.153.2"),
+        await ctx.publicRequest("/v1/models", { headers: { "user-agent": "codex_cli_rs/0.147.0" } })
+      ]) {
+        assert.equal(disabledResult.status, 400, disabledResult.text);
+        assert.equal(disabledResult.json?.error?.code, "ClientCatalogDisabled");
+      }
+    }
+  },
+  {
+    id: "harness-model-eligibility",
+    description: "Harness catalogs only accept currently routable native models",
+    async run(ctx) {
+      const config = await ctx.readConfigFile();
+      const preview = await ctx.adminRequest("/admin/api/harness/eligibility", {
+        method: "POST",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: { config }
       });
-      assert.equal(disabledResult.status, 200, disabledResult.text);
-      assert.equal(disabledResult.json?.object, "list");
-      ensure(Array.isArray(disabledResult.json?.data), "Expected standard model data with Codex compatibility disabled");
+      assert.equal(preview.status, 200, preview.text);
+      const nativeClaude = preview.json?.items?.find((item) => item.modelId === "claude-native");
+      const nativeCodex = preview.json?.items?.find((item) => item.modelId === "gpt-5.6-luna");
+      const imageModel = preview.json?.items?.find((item) => item.modelId === "gpt-image-1.5");
+      assert.equal(nativeClaude?.clients?.claudeCode?.eligible, true);
+      assert.equal(nativeCodex?.clients?.codex?.eligible, true);
+      assert.equal(imageModel?.clients?.codex?.eligible, false);
+      assert.ok(imageModel.clients.codex.reasons.some((reason) => reason.code === "UNSUPPORTED_MODEL_CAPABILITY"));
+
+      const codexModel = config.models.find((model) => model.id === "gpt-5.6-luna");
+      ensure(codexModel, "Expected native Responses model");
+      codexModel.routes = { "*": "chat/completions" };
+      const draftPreview = await ctx.adminRequest("/admin/api/harness/eligibility", {
+        method: "POST",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: { config }
+      });
+      assert.equal(draftPreview.status, 200, draftPreview.text);
+      const draftCodex = draftPreview.json?.items?.find((item) => item.modelId === "gpt-5.6-luna");
+      assert.equal(draftCodex?.clients?.codex?.eligible, false);
+      assert.ok(draftCodex.clients.codex.reasons.some((reason) => reason.code === "NON_NATIVE_PROTOCOL"));
+      const persistedAfterPreview = await ctx.readConfigFile();
+      assert.deepEqual(
+        persistedAfterPreview.models.find((model) => model.id === "gpt-5.6-luna")?.routes,
+        {}
+      );
+
+      codexModel.routes = {};
+      codexModel.status = "disabled";
+      const disabledSelection = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(disabledSelection.status, 400, disabledSelection.text);
+      assert.match(disabledSelection.json?.error || "", /marked for Codex.*model is disabled/);
     }
   },
   {
@@ -357,12 +467,14 @@ export const routeTests = [
         ...(config.compatibility || {}),
         codex: { enabled: false }
       };
+      codexModel.routes = { "*": "chat/completions" };
       const disabledCodex = await ctx.adminRequest("/admin/api/config", {
         method: "PUT",
         headers: { "x-aoai-admin-csrf": "1" },
         json: config
       });
-      assert.equal(disabledCodex.status, 200, disabledCodex.text);
+      assert.equal(disabledCodex.status, 400, disabledCodex.text);
+      assert.match(disabledCodex.json?.error || "", /marked for Codex.*native responses is required/);
 
       config.compatibility.codex.enabled = true;
       codexModel.routes = {};
@@ -867,6 +979,9 @@ export const routeTests = [
 
       const disabledConfig = await ctx.readConfigFile();
       disabledConfig.compatibility.codex.enabled = false;
+      for (const model of disabledConfig.models) {
+        if (model.clientCompatibility) model.clientCompatibility.codex = false;
+      }
       disabledConfig.routing.routeProfiles.responses.enabled = false;
       const savedDisabledConfig = await ctx.adminRequest("/admin/api/config", {
         method: "PUT",
@@ -1333,9 +1448,43 @@ export const routeTests = [
       assert.equal(disabledResult.status, 200, disabledResult.text);
       const disabledRequest = ctx.getUpstreamRequest((item) => item.url.includes("/anthropic/v1/messages"));
       ensure(disabledRequest, "Expected native Anthropic request with compatibility disabled");
-      assert.equal(disabledRequest.headers?.["anthropic-beta"], undefined);
-      assert.equal(disabledRequest.headers?.["x-claude-code-session-id"], undefined);
-      assert.equal(disabledRequest.headers?.["x-stainless-package-version"], undefined);
+      assert.equal(disabledRequest.headers?.["anthropic-beta"], "future-beta-2026-08-10");
+      assert.equal(disabledRequest.headers?.["x-claude-code-session-id"], "session_456");
+      assert.equal(disabledRequest.headers?.["x-stainless-package-version"], "1.2.4");
+
+      config.compatibility.anthropic = {
+        ...(config.compatibility.anthropic || {}),
+        forwardSdkMetadataHeaders: false,
+        unknownBetaPolicy: "allowlist"
+      };
+      config.proxy.forwardHeaders.mode = "denylist";
+      const restrictedPolicyConfig = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: config
+      });
+      assert.equal(restrictedPolicyConfig.status, 200, restrictedPolicyConfig.text);
+
+      ctx.clearUpstreamRequests();
+      const restrictedResult = await ctx.publicRequest("/v1/messages", {
+        method: "POST",
+        headers: {
+          "anthropic-beta": "future-beta-2026-08-10",
+          "x-claude-code-session-id": "session_789",
+          "x-stainless-package-version": "1.2.5"
+        },
+        json: {
+          model: "claude-native",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "hello" }]
+        }
+      });
+      assert.equal(restrictedResult.status, 200, restrictedResult.text);
+      const restrictedRequest = ctx.getUpstreamRequest((item) => item.url.includes("/anthropic/v1/messages"));
+      ensure(restrictedRequest, "Expected native Anthropic request with restricted policy");
+      assert.equal(restrictedRequest.headers?.["anthropic-beta"], undefined);
+      assert.equal(restrictedRequest.headers?.["x-claude-code-session-id"], undefined);
+      assert.equal(restrictedRequest.headers?.["x-stainless-package-version"], undefined);
     }
   },
   {
@@ -2783,6 +2932,9 @@ export const routeTests = [
 
       const disabledConfig = await ctx.readConfigFile();
       disabledConfig.compatibility.claudeCode.enabled = false;
+      for (const model of disabledConfig.models) {
+        if (model.clientCompatibility) model.clientCompatibility.claudeCode = false;
+      }
       disabledConfig.routing.routeProfiles.messages.enabled = false;
       const savedDisabledConfig = await ctx.adminRequest("/admin/api/config", {
         method: "PUT",

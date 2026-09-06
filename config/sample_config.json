@@ -264,6 +264,8 @@
       "rejectLossyResponses": false
     },
     "anthropic": {
+      "forwardSdkMetadataHeaders": true,
+      "unknownBetaPolicy": "allow-direct-anthropic",
       "betaAllowlistEnabled": true,
       "betaAllowlist": [
         "fine-grained-tool-streaming-2025-05-14",

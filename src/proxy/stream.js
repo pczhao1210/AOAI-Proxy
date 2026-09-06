@@ -387,7 +387,6 @@ export async function streamPassthrough({
   reply,
   modelId,
   backendRouteKey = "",
-  strictResponsesCompletion = false,
   forwardProviderErrors = false,
   policy,
   onFirstChunk,
@@ -410,7 +409,6 @@ export async function streamPassthrough({
   let providerError = null;
   let terminalMarkerSeen = false;
   let chatFinishReasonSeen = false;
-  let responsesTerminalOutputSeen = false;
   let clientDisconnected = false;
 
   const processPayload = (payload) => {
@@ -452,20 +450,6 @@ export async function streamPassthrough({
       && (event?.type === "response.completed" || event?.type === "response.incomplete")
     ) {
       terminalMarkerSeen = true;
-    }
-    if (
-      backendRouteKey === "responses"
-      && [
-        "response.output_text.done",
-        "response.refusal.done",
-        "response.output_item.done",
-        "response.function_call_arguments.done",
-        "response.reasoning_summary_part.done",
-        "response.reasoning_summary_text.done",
-        "response.reasoning.done"
-      ].includes(event?.type)
-    ) {
-      responsesTerminalOutputSeen = true;
     }
     if ((!backendRouteKey || backendRouteKey === "messages") && event?.type === "message_stop") {
       terminalMarkerSeen = true;
@@ -597,7 +581,6 @@ export async function streamPassthrough({
   if (
     !terminalMarkerSeen
     && !(backendRouteKey === "chat/completions" && chatFinishReasonSeen)
-    && !(backendRouteKey === "responses" && responsesTerminalOutputSeen && !strictResponsesCompletion)
   ) {
     return {
       ok: false,
@@ -620,7 +603,6 @@ export async function streamShim({
   backendRouteKey,
   includeReasoningEncryptedContent = false,
   includeChatStreamUsage = false,
-  strictResponsesCompletion = false,
   rejectLossyResponses = true,
   model,
   policy,
@@ -645,7 +627,6 @@ export async function streamShim({
   const sourceSseParser = createSseDataParser();
   let providerError = null;
   let sourceTerminalSeen = false;
-  let responsesTerminalOutputSeen = false;
   let terminalFrameWritten = false;
   let clientDisconnected = false;
   const created = Math.floor(Date.now() / 1000);
@@ -1378,20 +1359,6 @@ export async function streamShim({
           onCompatibilityIssue?.(shimEventIssue);
           await writeSseKeepAlive(reply.raw);
         }
-        if (
-          backendRouteKey === "responses"
-          && [
-            "response.output_text.done",
-            "response.refusal.done",
-            "response.output_item.done",
-            "response.function_call_arguments.done",
-            "response.reasoning_summary_part.done",
-            "response.reasoning_summary_text.done",
-            "response.reasoning.done"
-          ].includes(evt?.type)
-        ) {
-          responsesTerminalOutputSeen = true;
-        }
         if (backendRouteKey === "messages") {
           const eventType = evt?.type;
           if (eventType === "error" || evt?.error) {
@@ -1851,11 +1818,6 @@ export async function streamShim({
           flushUsage();
           if (routeKey === "messages") await finishMessagesStream();
           else if (routeKey === "responses") await finishResponsesStream();
-        } else if (backendRouteKey === "responses" && responsesTerminalOutputSeen && !strictResponsesCompletion) {
-          sourceTerminalSeen = true;
-          flushUsage();
-          if (routeKey === "messages") await finishMessagesStream();
-          else if (routeKey === "chat/completions") await finishChatCompletionStream();
         }
       }
       if (sourceTerminalSeen || reachedEof) break;
