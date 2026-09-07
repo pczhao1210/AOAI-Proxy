@@ -339,6 +339,12 @@ export async function fetchOnceWithConnectTimeout({
   }
 }
 
+export function shouldRetryUpstream(policy, attempt, { status, classified, downstreamStarted = false } = {}) {
+  if (downstreamStarted || attempt >= Math.max(1, policy.maxRetries + 1)) return false;
+  if (status != null) return policy.retryStatuses.has(status);
+  return !!classified?.retryable && policy.classifyNetworkErrorsAsRetryable !== false;
+}
+
 export async function fetchWithRetry({
   targetUrl,
   headers,
@@ -372,7 +378,7 @@ export async function fetchWithRetry({
         detail = await readTextWithTimeout(upstreamResponse, policy.requestTimeoutMs, 1024 * 1024, signal);
       } catch (readError) {
         const readFailure = classifyFetchError(readError);
-        if (attempt < maxAttempts && readFailure.retryable && policy.classifyNetworkErrorsAsRetryable !== false) {
+        if (shouldRetryUpstream(policy, attempt, { classified: readFailure })) {
           const backoffMs = computeBackoffMs(policy, attempt);
           log.warn({ ...logMeta, attempt, backoffMs, errorCode: readFailure.code, detail: readFailure.detail }, "upstream retry on HTTP error body read failure");
           try {
@@ -391,8 +397,8 @@ export async function fetchWithRetry({
           attempt
         };
       }
-      const retryableStatus = policy.retryStatuses.has(upstreamResponse.status);
-      if (attempt < maxAttempts && retryableStatus) {
+      const retryable = shouldRetryUpstream(policy, attempt, { status: upstreamResponse.status });
+      if (retryable) {
         const backoffMs = computeBackoffMs(policy, attempt);
         log.warn({ ...logMeta, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "upstream retry on HTTP status");
         try {
@@ -405,7 +411,7 @@ export async function fetchWithRetry({
       }
       return {
         ok: false,
-        classified: { ...classified, retryable: retryableStatus && attempt < maxAttempts },
+        classified: { ...classified, retryable },
         hasUpstreamHttpResponse: true,
         upstreamStatus: upstreamResponse.status,
         upstreamContentType,
@@ -415,8 +421,8 @@ export async function fetchWithRetry({
       };
     } catch (error) {
       const classified = classifyFetchError(error);
-      const retryableNetworkError = classified.retryable && policy.classifyNetworkErrorsAsRetryable !== false;
-      if (attempt < maxAttempts && retryableNetworkError) {
+      const retryable = shouldRetryUpstream(policy, attempt, { classified });
+      if (retryable) {
         const backoffMs = computeBackoffMs(policy, attempt);
         log.warn({ ...logMeta, attempt, backoffMs, errorCode: classified.code, detail: classified.detail }, "upstream retry on fetch error");
         try {
@@ -429,7 +435,7 @@ export async function fetchWithRetry({
       }
       return {
         ok: false,
-        classified: { ...classified, retryable: retryableNetworkError && attempt < maxAttempts },
+        classified: { ...classified, retryable },
         detail: classified.detail,
         upstreamStatus: classified.status,
         attempt
@@ -470,7 +476,7 @@ export async function readTextWithTimeout(response, timeoutMs, maxBytes = 0, sig
       if (done) break;
       totalBytes += value.byteLength;
       if (maxBytes > 0 && totalBytes > maxBytes) {
-        await reader.cancel("response-too-large").catch(() => {});
+        reader.cancel("response-too-large").catch(() => {});
         throw markErrorWithCode(
           new Error(`Upstream response exceeds ${maxBytes} bytes`),
           "UPSTREAM_RESPONSE_TOO_LARGE"
@@ -500,62 +506,5 @@ export async function readTextWithTimeout(response, timeoutMs, maxBytes = 0, sig
 }
 
 export async function parseJsonWithTimeout(response, timeoutMs, maxBytes = 0, signal) {
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw markErrorWithCode(new Error("response body unavailable"), "UPSTREAM_FETCH_FAILED");
-  }
-  let timedOut = false;
-  let clientDisconnected = false;
-  let totalBytes = 0;
-  const chunks = [];
-  const timerId = setTimeout(() => {
-    timedOut = true;
-    reader.cancel("request-timeout").catch(() => {});
-  }, timeoutMs);
-  const abortFromClient = () => {
-    clientDisconnected = true;
-    reader.cancel("client-disconnected").catch(() => {});
-  };
-  if (signal?.aborted) abortFromClient();
-  else signal?.addEventListener("abort", abortFromClient, { once: true });
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      totalBytes += value.byteLength;
-      if (maxBytes > 0 && totalBytes > maxBytes) {
-        await reader.cancel("response-too-large").catch(() => {});
-        throw markErrorWithCode(
-          new Error(`Upstream response exceeds ${maxBytes} bytes`),
-          "UPSTREAM_RESPONSE_TOO_LARGE"
-        );
-      }
-      chunks.push(Buffer.from(value));
-    }
-    if (clientDisconnected) {
-      throw markErrorWithCode(new Error("client disconnected"), "CLIENT_DISCONNECTED");
-    }
-    if (timedOut) {
-      throw markErrorWithCode(
-        new Error(`request timeout after ${timeoutMs}ms`),
-        "UPSTREAM_REQUEST_TIMEOUT"
-      );
-    }
-    return JSON.parse(Buffer.concat(chunks, totalBytes).toString("utf8"));
-  } catch (error) {
-    if (clientDisconnected && error?.code !== "CLIENT_DISCONNECTED") {
-      throw markErrorWithCode(error, "CLIENT_DISCONNECTED", "client disconnected");
-    }
-    if (timedOut && error?.code !== "UPSTREAM_REQUEST_TIMEOUT") {
-      throw markErrorWithCode(
-        error,
-        "UPSTREAM_REQUEST_TIMEOUT",
-        `request timeout after ${timeoutMs}ms`
-      );
-    }
-    throw error;
-  } finally {
-    clearTimeout(timerId);
-    signal?.removeEventListener("abort", abortFromClient);
-  }
+  return JSON.parse(await readTextWithTimeout(response, timeoutMs, maxBytes, signal));
 }

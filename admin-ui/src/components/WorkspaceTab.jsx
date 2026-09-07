@@ -63,6 +63,7 @@ export default function WorkspaceTab({
   const compatibilityExportEnabled = getValueByPath(config, "persistence.compatibilityExport.enabled") !== false;
   const logAnalyticsEnabled = getValueByPath(config, "observability.logAnalytics.enabled") === true;
   const compressionEnabled = getValueByPath(config, "media.inputCompression.enabled") === true;
+  const compressionMode = getValueByPath(config, "media.inputCompression.mode") || "legacy";
   const remoteImagesEnabled = getValueByPath(config, "media.remoteImages.allow") === true;
   const generationEnabled = getValueByPath(config, "media.generation.enabled") === true;
   const contentMode = getValueByPath(config, "observability.logs.messageContentMode") || "summary";
@@ -403,7 +404,14 @@ export default function WorkspaceTab({
 
           <AccordionSection id="workspace-media" title={t("workspace.media.title", "Media Policy")} desc={t("workspace.media.desc", "Control input compression, remote images, inline images, and image generation defaults.") } group="workspace-sections">
             <div className="form-grid">
-              {compressionEnabled ? <><Field label={t("field.mediaMaxLongSide", "Max Long Side px")}>
+              {compressionEnabled ? <Field label={t("field.mediaCompressionMode", "Compression Mode")}>
+                <select value={compressionMode} onChange={(event) => updateField("media.inputCompression.mode", event.target.value)}>
+                  <option value="legacy">{t("option.mediaLegacy", "Legacy")}</option>
+                  <option value="preserve">{t("option.mediaPreserve", "Preserve Original")}</option>
+                  <option value="adaptive">{t("option.mediaAdaptive", "Adaptive JPEG")}</option>
+                </select>
+              </Field> : null}
+              {compressionEnabled && compressionMode !== "preserve" ? <><Field label={t("field.mediaMaxLongSide", "Max Long Side px")}>
                 <input type="number" value={getValueByPath(config, "media.inputCompression.maxLongSidePx") || 0} onChange={(event) => updateField("media.inputCompression.maxLongSidePx", asNumber(event.target.value))} />
               </Field>
               <Field label={t("field.mediaQuality", "Quality")}>
@@ -412,12 +420,24 @@ export default function WorkspaceTab({
               <Field label={t("field.mediaMinQuality", "Min Quality")}>
                 <input type="number" step="0.05" min="0" max="1" value={getValueByPath(config, "media.inputCompression.minQuality") || 0} onChange={(event) => updateField("media.inputCompression.minQuality", Number(event.target.value || 0))} />
               </Field>
-              <Field label={t("field.mediaOutputFormat", "Output Format")}>
+              {compressionMode === "legacy" ? <Field label={t("field.mediaOutputFormat", "Output Format")}>
                 <select value={getValueByPath(config, "media.inputCompression.outputFormat") || "jpeg"} onChange={(event) => updateField("media.inputCompression.outputFormat", event.target.value)}>
                   <option value="jpeg">{t("option.jpeg", "jpeg")}</option>
                   <option value="webp">{t("option.webp", "webp")}</option>
                 </select>
-              </Field></> : null}
+              </Field> : null}</> : null}
+              {compressionEnabled && compressionMode === "adaptive" ? [
+                ["minBytes", "field.mediaMinBytes", "Minimum Input Bytes", 262144, 0, undefined, 1],
+                ["minSavingsRatio", "field.mediaMinSavings", "Minimum Savings Ratio", 0.1, 0, 1, 0.05],
+                ["maxPixels", "field.mediaMaxPixels", "Decode Pixel Limit", 40000000, 1, 268402689, 1],
+                ["maxConcurrent", "field.mediaMaxConcurrent", "Concurrent Encoders", 2, 1, 32, 1],
+                ["maxQueue", "field.mediaMaxQueue", "Queue Capacity", 8, 0, 256, 1],
+                ["timeoutMs", "field.mediaTimeout", "Preparation Budget ms", 5000, 1, 60000, 1]
+              ].map(([field, label, fallback, defaultValue, min, max, step]) => (
+                <Field key={field} label={t(label, fallback)}>
+                  <input type="number" min={min} max={max} step={step} value={getValueByPath(config, `media.inputCompression.${field}`) ?? defaultValue} onChange={(event) => updateField(`media.inputCompression.${field}`, asNumber(event.target.value))} />
+                </Field>
+              )) : null}
               {remoteImagesEnabled ? <><Field label={t("field.remoteImagesMaxMb", "Remote Download Limit MB")}>
                 <input type="number" value={getValueByPath(config, "media.remoteImages.maxDownloadSizeMb") || 0} onChange={(event) => updateField("media.remoteImages.maxDownloadSizeMb", asNumber(event.target.value))} />
               </Field>
@@ -432,6 +452,12 @@ export default function WorkspaceTab({
               </Field></> : null}
               <Field label={t("field.inlineImagesMaxBase64", "Inline Max Base64 Bytes")}>
                 <input type="number" value={getValueByPath(config, "media.inlineImages.maxBase64Bytes") || 0} onChange={(event) => updateField("media.inlineImages.maxBase64Bytes", asNumber(event.target.value))} />
+              </Field>
+              <Field label={t("field.inlineImagesMaxCount", "Image Count Limit (0 = unlimited)")}>
+                <input type="number" min="0" step="1" value={getValueByPath(config, "media.inlineImages.maxImages") ?? 0} onChange={(event) => updateField("media.inlineImages.maxImages", asNumber(event.target.value))} />
+              </Field>
+              <Field label={t("field.inlineImagesMaxTotal", "Total Inline Bytes (0 = unlimited)")}>
+                <input type="number" min="0" step="1" value={getValueByPath(config, "media.inlineImages.maxTotalBytes") ?? 0} onChange={(event) => updateField("media.inlineImages.maxTotalBytes", asNumber(event.target.value))} />
               </Field>
               <Field label={t("field.inlineImagesPreview", "Inline Log Preview Chars")}>
                 <input type="number" value={getValueByPath(config, "media.inlineImages.logPreviewChars") || 0} onChange={(event) => updateField("media.inlineImages.logPreviewChars", asNumber(event.target.value))} />

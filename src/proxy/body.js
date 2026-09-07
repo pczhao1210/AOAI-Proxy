@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import { optimizeInlineImage } from "./image-optimizer.js";
 
 const HARD_BLOCKED_HEADERS = new Set([
   "authorization",
@@ -443,6 +444,8 @@ function getProtocolImageInputs(payload, routeKey) {
         inputs.push({ owner: part, key: "image_url", base64: false });
       } else if (typeof part.image_url?.url === "string") {
         inputs.push({ owner: part.image_url, key: "url", base64: false });
+      } else if (routeKey === "responses" && typeof part.file_id === "string") {
+        inputs.push({ owner: part, key: "file_id", opaque: true });
       }
     }
   };
@@ -460,13 +463,26 @@ function getProtocolImageInputs(payload, routeKey) {
 export function validateImageInputs(payload, config, routeKey) {
   const remotePolicy = resolveRemoteImagePolicy(config);
   const inlinePolicy = resolveInlineImagePolicy(config);
+  const { maxImages = 0, maxTotalBytes = 0 } = config?.media?.inlineImages || {};
+  let imageCount = 0;
+  let totalBytes = 0;
   for (const input of getProtocolImageInputs(payload, routeKey) || []) {
+    imageCount += 1;
+    if (maxImages > 0 && imageCount > maxImages) {
+      throw createPolicyError("IMAGE_COUNT_LIMIT_EXCEEDED", `Image count exceeds ${maxImages}`);
+    }
+    if (input.opaque) continue;
     const value = input.owner[input.key];
     const dataUrl = !input.base64 && value.match(/^data:image\/[a-zA-Z0-9.+-]+;base64,([\s\S]*)$/);
     if (input.base64 || dataUrl) {
       const encoded = input.base64 ? value : dataUrl[1];
-      if (Buffer.byteLength(encoded.replace(/\s/g, ""), "base64") > inlinePolicy.maxBase64Bytes) {
+      const bytes = Buffer.byteLength(encoded.replace(/\s/g, ""), "base64");
+      if (bytes > inlinePolicy.maxBase64Bytes) {
         throw createPolicyError("INLINE_IMAGE_TOO_LARGE", `Inline image payload exceeds ${inlinePolicy.maxBase64Bytes} bytes`);
+      }
+      totalBytes += bytes;
+      if (maxTotalBytes > 0 && totalBytes > maxTotalBytes) {
+        throw createPolicyError("INLINE_IMAGES_TOTAL_TOO_LARGE", `Inline image payloads exceed ${maxTotalBytes} bytes in total`);
       }
     } else {
       validateRemoteImageUrl(value, remotePolicy);
@@ -474,16 +490,58 @@ export function validateImageInputs(payload, config, routeKey) {
   }
 }
 
-export async function maybeCompressImages(payload, config, routeKey) {
+export async function maybeCompressImages(payload, config, routeKey, context = {}) {
   const options = resolveImageCompression(config);
   options.inlinePolicy = resolveInlineImagePolicy(config);
   options.remotePolicy = resolveRemoteImagePolicy(config);
   const inputs = getProtocolImageInputs(payload, routeKey);
   if (inputs) {
     validateImageInputs(payload, config, routeKey);
+    const settings = config?.media?.inputCompression || {};
+    if (options.enabled && settings.mode === "adaptive") {
+      const cache = new Map();
+      const deadline = performance.now() + (settings.timeoutMs ?? 5000);
+      for (const input of inputs) {
+        if (context.signal?.aborted) {
+          throw Object.assign(new Error("client disconnected"), { code: "CLIENT_DISCONNECTED", status: 499 });
+        }
+        if (input.opaque) continue;
+        const original = input.owner[input.key];
+        const match = !input.base64 && original.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]*)$/);
+        const mime = input.base64 ? input.owner.media_type : match?.[1];
+        if (mime !== "image/jpeg") {
+          context.onImage?.({ reason: mime ? "preserve_format" : "remote_passthrough" });
+          continue;
+        }
+        const encoded = (input.base64 ? original : match[2]).replace(/\s/g, "");
+        const inputBytes = Buffer.byteLength(encoded, "base64");
+        const remainingMs = deadline - performance.now();
+        if (inputBytes < (settings.minBytes ?? 256 * 1024) || remainingMs <= 0) {
+          context.onImage?.({ reason: remainingMs <= 0 ? "timeout" : "below_threshold", inputBytes, outputBytes: inputBytes });
+          continue;
+        }
+        if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 === 1) {
+          context.onImage?.({ reason: "invalid_encoding", inputBytes, outputBytes: inputBytes });
+          continue;
+        }
+        let optimized = cache.get(encoded);
+        if (!optimized) {
+          optimized = await optimizeInlineImage(Buffer.from(encoded, "base64"), settings, { signal: context.signal, remainingMs });
+          cache.set(encoded, optimized);
+          const { buffer, ...metadata } = optimized;
+          context.onImage?.(metadata);
+        }
+        if (optimized.reason !== "optimized") continue;
+        const output = optimized.buffer.toString("base64");
+        input.owner[input.key] = input.base64 ? output : `data:image/jpeg;base64,${output}`;
+      }
+      return payload;
+    }
+    if (settings.mode === "preserve") return payload;
     if (routeKey === "messages" || !options.enabled) return payload;
     const cache = new Map();
     for (const input of inputs) {
+      if (input.opaque) continue;
       const value = input.owner[input.key];
       if (isDataUrlImage(value)) {
         input.owner[input.key] = await compressDataUrl(value, options, cache);
@@ -491,6 +549,7 @@ export async function maybeCompressImages(payload, config, routeKey) {
     }
     return payload;
   }
+  if (["adaptive", "preserve"].includes(config?.media?.inputCompression?.mode)) return payload;
   if (!hasCompressibleImage(payload)) {
     return payload;
   }

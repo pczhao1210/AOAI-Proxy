@@ -46,6 +46,7 @@ import {
   resolveUpstreamPolicy,
   sleep,
   computeBackoffMs,
+  shouldRetryUpstream,
   classifyHttpStatus,
   classifyFetchError,
   buildErrorBody,
@@ -1266,10 +1267,13 @@ export async function proxyRequest({
     delete nextBody.stream_options;
   }
 
+  const adaptiveImageOptimization = config?.media?.inputCompression?.enabled === true
+    && config.media.inputCompression.mode === "adaptive";
   if (nextBody && typeof nextBody === "object") {
     try {
       validateImageInputs(body, config, protocolRouteKey);
-      nextBody = await maybeCompressImages(nextBody, config, backendRouteKey);
+      if (adaptiveImageOptimization) validateImageInputs(nextBody, config, backendRouteKey);
+      else nextBody = await maybeCompressImages(nextBody, config, backendRouteKey);
     } catch (error) {
       log.error({
         source: "proxy",
@@ -1301,8 +1305,8 @@ export async function proxyRequest({
     mode: resolveLogContentMode(config),
     maxPayloadBytes: config?.observability?.logs?.maxPayloadLogBytes
   };
-  const requestContentSnapshot = buildContentLogSnapshot(nextBody, { ...contentLogOptions, kind: "requestBody" });
-  const requestLogFields = buildContentSnapshotFields("request", requestContentSnapshot);
+  let requestContentSnapshot = adaptiveImageOptimization ? null : buildContentLogSnapshot(nextBody, { ...contentLogOptions, kind: "requestBody" });
+  let requestLogFields = adaptiveImageOptimization ? {} : buildContentSnapshotFields("request", requestContentSnapshot);
   const streamContentCollector = createStreamContentCollector(contentLogOptions.maxPayloadBytes);
 
   markTiming(timing, "requestPreparedAt");
@@ -1517,6 +1521,32 @@ export async function proxyRequest({
   };
 
   try {
+    if (adaptiveImageOptimization) {
+      try {
+        nextBody = await maybeCompressImages(nextBody, config, backendRouteKey, {
+          signal: upstreamAbortController.signal,
+          onImage: (metadata) => emitInfoLog({
+            ...requestContext,
+            modelId,
+            routeKey,
+            backendRouteKey,
+            event: "proxy.image_optimization",
+            ...metadata,
+            message: "image optimization decision"
+          })
+        });
+        if (upstreamAbortController.signal.aborted) return;
+      } catch (error) {
+        if (error?.code === "CLIENT_DISCONNECTED") {
+          finishTiming({ status: 499, outcome: "client_disconnected", errorCode: error.code, source: "proxy" });
+          return;
+        }
+        throw error;
+      }
+      requestContentSnapshot = buildContentLogSnapshot(nextBody, { ...contentLogOptions, kind: "requestBody" });
+      requestLogFields = buildContentSnapshotFields("request", requestContentSnapshot);
+      markTiming(timing, "requestPreparedAt");
+    }
     recordRequest(model.id, consumer);
     recordRuntimeRequest(config, {
       occurredAt: new Date().toISOString(),
@@ -1644,8 +1674,7 @@ export async function proxyRequest({
             finishTiming({ status: 499, outcome: "client_disconnected", errorCode: classified.code, source: "client" });
             return;
           }
-          const retryableNetworkError = classified.retryable && policy.classifyNetworkErrorsAsRetryable !== false;
-          if (attempt < maxAttempts && retryableNetworkError) {
+          if (shouldRetryUpstream(policy, attempt, { classified })) {
             const backoffMs = computeBackoffMs(policy, attempt);
             log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream fetch retry");
             try {
@@ -1710,7 +1739,7 @@ export async function proxyRequest({
               finishTiming({ status: 499, outcome: "client_disconnected", errorCode: readFailure.code, source: "client" });
               return;
             }
-            if (attempt < maxAttempts && readFailure.retryable && policy.classifyNetworkErrorsAsRetryable !== false) {
+            if (shouldRetryUpstream(policy, attempt, { classified: readFailure })) {
               const backoffMs = computeBackoffMs(policy, attempt);
               log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: readFailure.code }, "stream retry on HTTP error body read failure");
               try {
@@ -1728,8 +1757,8 @@ export async function proxyRequest({
             detail = readFailure.detail;
           }
           const classified = classifyHttpStatus(upstreamResponse.status);
-          const retryableStatus = policy.retryStatuses.has(upstreamResponse.status);
-          if (attempt < maxAttempts && retryableStatus) {
+          const retryable = shouldRetryUpstream(policy, attempt, { status: upstreamResponse.status });
+          if (retryable) {
             const backoffMs = computeBackoffMs(policy, attempt);
             log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "stream upstream retry on status");
             try {
@@ -1781,7 +1810,7 @@ export async function proxyRequest({
             return;
           }
           const errBody = buildErrorBody({
-            classified: { ...classified, retryable: retryableStatus && attempt < maxAttempts },
+            classified: { ...classified, retryable },
             requestId,
             detail,
             upstreamStatus: upstreamResponse.status
@@ -1971,10 +2000,10 @@ export async function proxyRequest({
           });
           return;
         }
-        const canRetry = streamResult.beforeFirstChunk
-          && classified.retryable
-          && policy.classifyNetworkErrorsAsRetryable !== false
-          && attempt < maxAttempts;
+        const canRetry = shouldRetryUpstream(policy, attempt, {
+          classified,
+          downstreamStarted: !streamResult.beforeFirstChunk
+        });
         if (canRetry) {
           const backoffMs = computeBackoffMs(policy, attempt);
           log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: classified.code }, "stream retry before first chunk");

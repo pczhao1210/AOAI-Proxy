@@ -66,13 +66,40 @@ HTTP 状态码重试只依据最终解析出的 `statuses` 列表；显式空列
 
 | 配置项 | 默认值 | 功能 | 入口与生效方式 |
 | --- | --- | --- | --- |
-| `media.inputCompression.enabled` | `false` | 压缩请求中的内联图片。 | Workspace；热 |
+| `media.inputCompression.enabled` | `false` | 启用所选内联图片处理模式；`preserve` 始终保留原图。 | Workspace；热 |
 | `media.inputCompression.progressive` | `false` | JPEG 输出使用 progressive 编码；仅在压缩启用且输出为 JPEG 时有效。 | Workspace；热 |
 | `media.inputCompression.useMozJpeg` | `true` | JPEG 输出优先使用 mozjpeg 编码参数。 | Workspace；热 |
 | `media.remoteImages.allow` | `false` | 允许向上游透传远程图片 URL，并检查 `allowedHosts`；代理不下载图片，也不验证远端文件的 MIME、大小或像素。 | Workspace；热 |
 | `media.generation.enabled` | `true` | 启用图片生成能力；还需要对应 route profile 开启。 | Workspace；热 |
 
-文本协议的图片策略只检查正式图片内容块，覆盖 Chat、Responses、Messages 及支持的工具结果图片，不递归处理同名业务字段。关闭压缩仍执行远程 URL 策略和 `media.inlineImages.maxBase64Bytes` 限制；内联上限按解码后字节计算。合法 Messages 图片保留原字节和 MIME，本轮未启用新的 Messages 压缩或自适应压缩策略。
+文本协议的图片策略只检查正式图片内容块，覆盖 Chat、Responses、Messages 及支持的工具结果图片，不递归处理同名业务字段。关闭压缩仍执行远程 URL 策略和内联字节限制；字节上限按解码后大小计算，在分配图片 Buffer 前校验。`legacy` 模式下合法 Messages 图片仍保留原字节和 MIME；只有显式启用 `adaptive` 才会尝试优化 Messages 的 JPEG。
+
+#### 输入图片模式与资源预算
+
+| 配置 | 默认值 | 行为 |
+| --- | --- | --- |
+| `media.inputCompression.mode` | `legacy` | `legacy` 保持既有行为；`preserve` 不重编码；`adaptive` 仅尝试优化文本协议内联 JPEG。默认仍为关闭压缩。 |
+| `media.inputCompression.minBytes` | `262144` | 自适应模式的单图字节门槛；小图在解码前跳过。 |
+| `media.inputCompression.minSavingsRatio` | `0.1` | 输出至少节省 10% 才采用；输出变大或收益不足时保留原字节。 |
+| `media.inputCompression.maxPixels` | `40000000` | 自适应解码像素上限；超限则保留原图交给上游，不作为本地协议拒绝理由。 |
+| `media.inputCompression.maxConcurrent` | `2` | 每进程并发编码上限，范围 1–32；取消后底层工作未完成时仍占名额。 |
+| `media.inputCompression.maxQueue` | `8` | 每进程待处理队列上限，范围 0–256；0 表示不排队，队列满则保留原图。 |
+| `media.inputCompression.timeoutMs` | `5000` | 单请求自适应图片准备预算，包含排队，范围 1–60000 ms；预算耗尽后保留剩余原图。 |
+| `media.inlineImages.maxImages` | `0` | 正式图片块数量预算，计入 URL、内联和 Responses `file_id`；0 不设新增上限。 |
+| `media.inlineImages.maxTotalBytes` | `0` | 单请求全部内联图片累计字节预算，重复出现也计入；0 不设新增上限。 |
+
+自适应模式不下载 URL、不处理图片生成/编辑与 mask，不改变 `detail`、内容顺序或文件 ID。
+PNG、WebP、GIF 等非 JPEG 原样保留，不判断截图是否适合有损编码；已经是 JPEG 的文字截图也可能被重编码，OCR 场景建议使用 `preserve`。
+JPEG 处理应用 EXIF 方向、等比缩放且不放大、不裁切，转换到 sRGB 并嵌入 ICC；输出仍是 JPEG，忽略旧版 `outputFormat` 选项。
+实际质量取 `quality`、`minQuality` 与保守下限 `0.6` 的最大值。编码失败或输入不可解码时保留原图；不会把优化失败伪装为上游成功。
+数量或字节预算属于管理员显式策略，超限返回 400，且不访问上游。远程内容大小不在本地累计字节预算内。
+
+自适应编码在治理准入后执行；客户端断开会取消排队、停止后续优化并阻止继续上传。
+正在进行的原生编码不保证瞬时中断，Sharp 的执行时限按秒取整，但未结束的工作始终计入并发名额。
+请求内重复 JPEG 复用结果，不建立跨请求图片缓存。`proxy.image_optimization` 日志只记录原因、字节、尺寸和耗时，不含图像内容或媒体 URL；实际输出还受日志级别/开关控制。
+这些新资源参数只约束 `adaptive`，不会追溯改变 `legacy` 编码路径。字节节省不代表视觉 token 节省或识别质量不变。
+
+可复现样例与合成基线见 [图片基线](../development/image-optimization-baseline.md)。真实照片/OCR 质量和部署负载仍须单独验收后再启用。
 
 ### 日志、Log Analytics 与 Runtime Store
 

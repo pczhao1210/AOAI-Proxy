@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { sanitizeIncomingHeaders } from "../src/proxy/body.js";
-import { fetchWithRetry, resolveUpstreamPolicy } from "../src/proxy/reliability.js";
+import { fetchWithRetry, resolveUpstreamPolicy, shouldRetryUpstream } from "../src/proxy/reliability.js";
 import { withTestContext } from "./lib/harness.js";
 
 test("empty incoming header allowlists only preserve explicit protocol prefixes", () => {
@@ -38,6 +38,22 @@ test("explicit retry status lists override HTTP classifications and defaults", a
       assert.equal(attempts, scenario.expectedAttempts);
       assert.equal(result.upstreamStatus, scenario.status);
     });
+  }
+});
+
+test("shared retry decisions preserve budgets, explicit statuses and downstream output boundaries", () => {
+  const policy = resolveUpstreamPolicy({ proxy: { retries: { maxRetries: 1, statuses: [429] } } });
+  const networkFailure = { code: "UPSTREAM_FETCH_FAILED", retryable: true };
+  assert.equal(shouldRetryUpstream(policy, 1, { status: 429 }), true);
+  assert.equal(shouldRetryUpstream(policy, 1, { status: 503, classified: networkFailure }), false);
+  assert.equal(shouldRetryUpstream({ ...policy, retryStatuses: new Set() }, 1, { status: 429 }), false);
+  assert.equal(shouldRetryUpstream(policy, 1, { classified: networkFailure }), true);
+  assert.equal(shouldRetryUpstream({ ...policy, classifyNetworkErrorsAsRetryable: false }, 1, { classified: networkFailure }), false);
+  assert.equal(shouldRetryUpstream(policy, 1, { classified: { code: "CLIENT_DISCONNECTED", retryable: false } }), false);
+  for (const reason of [{ status: 429 }, { classified: networkFailure }]) {
+    assert.equal(shouldRetryUpstream(policy, 2, reason), false);
+    assert.equal(shouldRetryUpstream({ ...policy, maxRetries: 0 }, 1, reason), false);
+    assert.equal(shouldRetryUpstream(policy, 1, { ...reason, downstreamStarted: true }), false);
   }
 });
 

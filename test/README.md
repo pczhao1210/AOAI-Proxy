@@ -14,12 +14,29 @@ node --test test/stream-backpressure.test.js
 node --test test/governance-pricing.test.js
 node --test test/request-policy.test.js
 node --test test/admin-runtime-loader.test.js
+node --test test/response-reader.test.js
+node --test test/usage-accounting.test.js
+node --test test/image-optimization.test.js test/image-work-queue.test.js test/image-config.test.js test/image-routes.test.js
 ```
+
+Optional synthetic image CPU/RSS and preparation-latency baseline:
+
+```bash
+node test/benchmark-images.js
+```
+
+See [image baseline](../docs/development/image-optimization-baseline.md) for measurements,
+fixture limitations, and real-image/OCR release gates. This does not call a real upstream.
 
 The media and request-policy files also use the disposable route harness to verify
 upstream request counts and native request/error contracts. The backpressure suite
 covers all nine text-protocol directions. See the [optimization plan](../docs/development/optimization-plan.md)
 for milestone evidence, browser checks, and deferred work.
+
+Response-reader tests freeze UTF-8, byte limits, timeout/cancellation and JSON parse errors, including
+stalled upstream cancellation cleanup. Usage-accounting tests compare governance with every statistics
+bucket while preserving the original protocol usage object. Request-policy tests also cover the shared
+retry decision and the downstream-output boundary.
 
 Included scripts:
 

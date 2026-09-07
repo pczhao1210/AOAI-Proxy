@@ -231,6 +231,13 @@ const DEFAULTS = {
   media: {
     inputCompression: {
       enabled: false,
+      mode: "legacy",
+      minBytes: 256 * 1024,
+      minSavingsRatio: 0.1,
+      maxPixels: 40_000_000,
+      maxConcurrent: 2,
+      maxQueue: 8,
+      timeoutMs: 5000,
       maxLongSidePx: 1600,
       quality: 0.85,
       outputFormat: "jpeg",
@@ -247,6 +254,8 @@ const DEFAULTS = {
     },
     inlineImages: {
       maxBase64Bytes: 20 * 1024 * 1024,
+      maxImages: 0,
+      maxTotalBytes: 0,
       redactInLogs: true,
       logPreviewChars: 64
     },
@@ -1298,6 +1307,36 @@ function validateConfig(cfg) {
     if (typeof cfg.media !== "object") {
       throw new Error("media must be an object");
     }
+    if (cfg.media.inputCompression != null) {
+      const compression = cfg.media.inputCompression;
+      if (typeof compression !== "object" || Array.isArray(compression)) {
+        throw new Error("media.inputCompression must be an object");
+      }
+      if (!["legacy", "preserve", "adaptive"].includes(compression.mode)) {
+        throw new Error("media.inputCompression.mode must be legacy, preserve or adaptive");
+      }
+      for (const field of ["enabled", "progressive", "useMozJpeg"]) {
+        if (typeof compression[field] !== "boolean") throw new Error(`media.inputCompression.${field} must be a boolean`);
+      }
+      for (const [field, minimum, maximum] of [
+        ["minBytes", 0, Number.MAX_SAFE_INTEGER], ["maxPixels", 1, 268402689],
+        ["maxConcurrent", 1, 32], ["maxQueue", 0, 256], ["timeoutMs", 1, 60000],
+        ["maxLongSidePx", 1, 65535]
+      ]) {
+        if (!Number.isInteger(compression[field]) || compression[field] < minimum || compression[field] > maximum) {
+          throw new Error(`media.inputCompression.${field} must be an integer between ${minimum} and ${maximum}`);
+        }
+      }
+      for (const field of ["quality", "minQuality", "minSavingsRatio"]) {
+        const value = compression[field];
+        if (!Number.isFinite(value) || value < 0 || value > 1 || (field !== "minSavingsRatio" && value === 0)) {
+          throw new Error(`media.inputCompression.${field} must be ${field === "minSavingsRatio" ? "between 0 and 1" : "greater than 0 and at most 1"}`);
+        }
+      }
+      if (!["jpeg", "webp"].includes(compression.outputFormat)) {
+        throw new Error("media.inputCompression.outputFormat must be jpeg or webp");
+      }
+    }
     if (cfg.media.remoteImages != null) {
       const remoteImages = cfg.media.remoteImages;
       if (typeof remoteImages !== "object") {
@@ -1323,6 +1362,11 @@ function validateConfig(cfg) {
       }
       if (inlineImages.maxBase64Bytes != null && (!Number.isInteger(inlineImages.maxBase64Bytes) || inlineImages.maxBase64Bytes <= 0)) {
         throw new Error("media.inlineImages.maxBase64Bytes must be a positive integer");
+      }
+      for (const field of ["maxImages", "maxTotalBytes"]) {
+        if (inlineImages[field] != null && (!Number.isSafeInteger(inlineImages[field]) || inlineImages[field] < 0)) {
+          throw new Error(`media.inlineImages.${field} must be a non-negative safe integer`);
+        }
       }
       if (inlineImages.logPreviewChars != null && (!Number.isInteger(inlineImages.logPreviewChars) || inlineImages.logPreviewChars < 0)) {
         throw new Error("media.inlineImages.logPreviewChars must be a non-negative integer");

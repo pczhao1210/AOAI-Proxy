@@ -125,6 +125,13 @@
   "media": {
     "inputCompression": {
       "enabled": false,
+      "mode": "legacy",
+      "minBytes": 262144,
+      "minSavingsRatio": 0.1,
+      "maxPixels": 40000000,
+      "maxConcurrent": 2,
+      "maxQueue": 8,
+      "timeoutMs": 5000,
       "maxLongSidePx": 1600,
       "quality": 0.85,
       "outputFormat": "jpeg",
@@ -137,7 +144,9 @@
       "allowedHosts": []
     },
     "inlineImages": {
-      "maxBase64Bytes": 20971520
+      "maxBase64Bytes": 20971520,
+      "maxImages": 0,
+      "maxTotalBytes": 0
     },
     "generation": {
       "enabled": true,

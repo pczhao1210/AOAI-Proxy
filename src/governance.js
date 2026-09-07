@@ -2,6 +2,7 @@ import { appendStructuredLog } from "./logs.js";
 import { resolveModelDescriptor } from "./model-catalog.js";
 import { findPricingDefinitionForModel } from "./pricing-library.js";
 import { hydrateGovernanceRuntime, recordRuntimeBlocked, recordRuntimeWarning } from "./runtime-store.js";
+import { getUsageTotals } from "./usage.js";
 
 const governanceState = {
   perKey: new Map()
@@ -214,30 +215,6 @@ function resetBudgetWindowIfNeeded(runtime, settings, now) {
   if (!runtime.budgetWindow || runtime.budgetWindow.key !== nextKey) {
     runtime.budgetWindow = buildBudgetWindow(settings, now);
   }
-}
-
-function getUsageTotals(usage) {
-  const promptBase = toNonNegativeInteger(usage?.prompt_tokens ?? usage?.input_tokens, 0);
-  const cacheReadTokens = toNonNegativeInteger(usage?.cache_read_input_tokens, 0);
-  const cacheCreationTokens = toNonNegativeInteger(usage?.cache_creation_input_tokens, 0);
-  const promptTokens = usage?.prompt_tokens == null && usage?.input_tokens != null
-    ? promptBase + cacheReadTokens + cacheCreationTokens
-    : promptBase;
-  const completionTokens = toNonNegativeInteger(usage?.completion_tokens ?? usage?.output_tokens, 0);
-  const totalTokens = toNonNegativeInteger(usage?.total_tokens ?? usage?.total, promptTokens + completionTokens);
-  const cachedTokens = toNonNegativeInteger(
-    usage?.prompt_tokens_details?.cached_tokens
-      ?? usage?.input_tokens_details?.cached_tokens
-      ?? usage?.cached_tokens
-      ?? cacheReadTokens,
-    0
-  );
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens,
-    cachedTokens
-  };
 }
 
 function normalizePricingEntry(entry, defaultCurrency) {

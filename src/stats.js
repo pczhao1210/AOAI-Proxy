@@ -1,3 +1,5 @@
+import { getUsageTotals } from "./usage.js";
+
 const stats = {
   startedAt: new Date().toISOString(),
   totals: {
@@ -110,19 +112,7 @@ export function recordError(model, context = {}) {
 
 export function recordUsage(model, usage, context = {}) {
   if (!usage) return;
-  const cacheRead = usage.cache_read_input_tokens || 0;
-  const cacheCreation = usage.cache_creation_input_tokens || 0;
-  const promptBase = usage.prompt_tokens ?? usage.input_tokens ?? 0;
-  const prompt = usage.prompt_tokens == null && usage.input_tokens != null
-    ? promptBase + cacheRead + cacheCreation
-    : promptBase;
-  const completion = usage.completion_tokens || usage.output_tokens || 0;
-  const total = usage.total_tokens || usage.total || prompt + completion;
-  const cached = usage.prompt_tokens_details?.cached_tokens
-    ?? usage.input_tokens_details?.cached_tokens
-    ?? usage.cached_tokens
-    ?? cacheRead
-    ?? 0;
+  const { promptTokens: prompt, completionTokens: completion, totalTokens: total, cachedTokens: cached } = getUsageTotals(usage);
   stats.totals.promptTokens += prompt;
   stats.totals.completionTokens += completion;
   stats.totals.totalTokens += total;
