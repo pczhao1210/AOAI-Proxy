@@ -16,7 +16,7 @@
 | 1 | Media policy coverage, stalled downstream stream cancellation, Model Router pricing | Complete |
 | 2 | Header allowlists, retry status policy, stale admin statistics responses | Complete |
 | 3 | Opt-in adaptive image optimization, resource budgets, UI and observability | Engineering gates complete; real-image/load acceptance pending before production enablement |
-| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Core deduplication and regression gates complete; orchestration/UI decomposition pending |
+| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Core deduplication and upstream-header extraction verified; further orchestration/UI decomposition pending |
 | 5 | Optional remote image fetching with a separate security design | Deferred; requires an explicit need |
 
 ## Validation Evidence
@@ -68,6 +68,15 @@
     and `git diff --check` passed. This slice changed backend logic/tests only, so frontend build/browser checks
     were not rerun; the recorded phase 3 checks still apply to the unchanged admin sources. Runtime config/data were not edited.
 
+- Header extraction: `src/proxy/upstream-headers.js` owns assembly and beta filtering; authentication
+    acquisition, final protocol resolution, logging and HTTP/SSE execution stay in their existing modules.
+    The pre/post extraction baseline passed 45 focused tests plus two Anthropic route contracts.
+- All 24 direct-module/HTTP header checks passed, including Bearer auth, immutability, correlation
+    toggle/fallback, SDK blocking, version fallback, beta case/order and direct-provider/host boundaries.
+- Final header-extraction gates: 285 unit/integration tests and all 42 route contracts passed; editor
+    diagnostics and `git diff --check` passed. No frontend changes were made in this slice, so frontend
+    build/browser checks were not rerun. Runtime configuration and persistent data were not edited.
+
 ## Phase 4 Slices
 
 | Slice | Status | Verification |
@@ -75,9 +84,11 @@
 | Shared response reading | Complete | 11 reader cases plus existing body/header/retry cancellation contracts |
 | Pure retry decisions | Complete | Native JSON/SSE status policies, retry exhaustion, network policy and downstream-output boundary |
 | Internal usage normalization | Complete | Protocol/cache counters, zero/string/invalid inputs, all statistics buckets and unchanged pricing |
-| Request orchestration and admin module decomposition | Pending | Split one independently testable responsibility at a time; preserve directional and UI contracts |
+| Upstream header assembly | Complete | Nine JSON/SSE directions and direct-module boundaries frozen; 285 tests and 42 routes pass |
+| Remaining request orchestration and admin module decomposition | Pending | Split one independently testable responsibility at a time; preserve directional and UI contracts |
 
 ## Remaining Gates
+
 
 - Phases 0-2 are frozen with focused regressions, zero-upstream media rejection assertions, full unit/route validation, and browser ordering checks.
 - Real upstream, CLI client and real PostgreSQL checks have not been run; use their documented prerequisites.
@@ -86,9 +97,10 @@
 
 ## Next Smallest Step
 
-Extract a bounded request-orchestration responsibility, starting with upstream-header assembly and
-exact credential/metadata assertions; leave the
-JSON/SSE execution loops and directional converters independent. Admin decomposition remains a later slice.
+Extract the media-policy form from `admin-ui/src/components/WorkspaceTab.jsx`, first freezing its mode
+visibility, numeric zero values and saved configuration paths. Preserve the existing layout and controls.
+Leave JSON/SSE execution loops and directional converters independent; further request-orchestration
+decomposition remains a later slice.
 Real-photo/OCR acceptance and deployment-sized load tests remain required before recommending adaptive enablement.
 Keep existing compression defaults and remote URL passthrough unchanged. Synthetic photographic
 texture is a repeatable codec stress fixture, not evidence of real-model visual/OCR accuracy.

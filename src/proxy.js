@@ -16,8 +16,6 @@ import {
   hasUsableUpstreamBaseUrl
 } from "./proxy/routing.js";
 import {
-  sanitizeIncomingHeaders,
-  sanitizeConfiguredUpstreamHeaders,
   getStreamFlag,
   sanitizeRequestBody,
   extractProxyRequestControls,
@@ -25,6 +23,7 @@ import {
   maybeCompressImages
 } from "./proxy/body.js";
 import { prepareImageGenerationRequest } from "./proxy/image-adapter.js";
+import { buildUpstreamHeaders } from "./proxy/upstream-headers.js";
 import {
   chatToMessagesRequest,
   chatToResponsesRequest,
@@ -73,15 +72,12 @@ import {
   recordGovernanceUsage
 } from "./governance.js";
 import { getRequestNetworkContext } from "./request-network.js";
-import { buildCorrelationHeaders, getRequestContext } from "./request-context.js";
+import { getRequestContext } from "./request-context.js";
 
 const DEFAULT_MAX_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
 const TEXT_PROTOCOL_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
 const MESSAGES_COUNT_TOKENS_ROUTE_KEY = "messages/count_tokens";
 const RESPONSES_COMPACT_ROUTE_KEY = "responses/compact";
-const ANTHROPIC_REQUEST_HEADERS = new Set(["anthropic-version", "anthropic-beta"]);
-const ANTHROPIC_SDK_METADATA_HEADER_PREFIXES = ["x-anthropic-", "x-claude-", "x-stainless-"];
-const ANTHROPIC_HEADER_PREFIXES = ["anthropic-", ...ANTHROPIC_SDK_METADATA_HEADER_PREFIXES];
 const VALID_ANTHROPIC_CACHE_TTLS = new Set(["5m", "1h"]);
 
 function anthropicCompatibility(config) {
@@ -90,21 +86,6 @@ function anthropicCompatibility(config) {
 
 function protocolShimCompatibility(config) {
   return config?.compatibility?.protocolShim || {};
-}
-
-function forwardAnthropicSdkMetadataHeaders(config) {
-  return anthropicCompatibility(config).forwardSdkMetadataHeaders !== false;
-}
-
-function isDirectAnthropicUpstream(upstream, targetUrl) {
-  const provider = String(upstream?.provider || "").trim().toLowerCase();
-  if (["anthropic", "anthropic-api"].includes(provider)) return true;
-  try {
-    const hostname = new URL(targetUrl).hostname.toLowerCase();
-    return hostname === "api.anthropic.com" || hostname.endsWith(".anthropic.com");
-  } catch {
-    return false;
-  }
 }
 
 function isSupportedAnthropicCacheLocation(path) {
@@ -243,33 +224,6 @@ function sanitizeToolControlsWithoutTools(body) {
   delete body.tool_choice;
   delete body.parallel_tool_calls;
   delete body.function_call;
-}
-
-function applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl } = {}) {
-  const policy = anthropicCompatibility(config);
-  const allowUnknownBetas = policy.unknownBetaPolicy !== "allowlist"
-    && isDirectAnthropicUpstream(upstream, targetUrl);
-  const allowed = new Set(normalizeStringList(policy.betaAllowlist));
-  const seen = new Set();
-  const accepted = [];
-  const filtered = [];
-  for (const headerName of Object.keys(headers)) {
-    if (headerName.toLowerCase() !== "anthropic-beta") continue;
-    const values = String(headers[headerName] || "").split(",");
-    delete headers[headerName];
-    for (const rawValue of values) {
-      const value = rawValue.trim();
-      if (!value || seen.has(value)) continue;
-      seen.add(value);
-      if (!allowUnknownBetas && policy.betaAllowlistEnabled !== false && !allowed.has(value)) {
-        filtered.push(value);
-        continue;
-      }
-      accepted.push(value);
-    }
-  }
-  if (accepted.length) headers["anthropic-beta"] = accepted.join(",");
-  return filtered;
 }
 
 function emitInfoLog(payload) {
@@ -1573,45 +1527,23 @@ export async function proxyRequest({
       message: "proxy request started"
     });
 
-    const forwardSdkMetadata = backendRouteKey === "messages" && forwardAnthropicSdkMetadataHeaders(config);
-    const headers = {
-      ...sanitizeIncomingHeaders(req.headers, config, {
-        allowPrefixes: forwardSdkMetadata ? ANTHROPIC_HEADER_PREFIXES : [],
-        denyPrefixes: backendRouteKey === "messages" && !forwardSdkMetadata
-          ? ANTHROPIC_SDK_METADATA_HEADER_PREFIXES
-          : []
-      }),
-      ...sanitizeConfiguredUpstreamHeaders(upstream.headersTemplate),
-      "content-type": "application/json",
-      ...(backendRouteKey === "messages"
-        ? { "anthropic-version": String(req.headers["anthropic-version"] || "2023-06-01").trim() || "2023-06-01" }
-        : {}),
-      ...upstreamAuthHeaders,
-      ...(config?.proxy?.forwardHeaders?.addRequestIdHeader === false ? {} : buildCorrelationHeaders(requestContext))
-    };
-    if (backendRouteKey !== "messages") {
-      for (const headerName of Object.keys(headers)) {
-        if (ANTHROPIC_REQUEST_HEADERS.has(headerName.toLowerCase())) {
-          delete headers[headerName];
-        }
-      }
-    } else {
-      const filteredBetas = applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl });
-      if (filteredBetas.length > 0) {
-        emitInfoLog({
-          ...requestContext,
-          ...requestLogFields,
-          modelId,
-          event: "proxy.anthropic_betas_filtered",
-          routeKey,
-          backendRouteKey,
-          upstreamName: `upstream:${upstream.name || "unknown"}`,
-          upstreamProvider: `provider:${upstream.provider || "unknown"}`,
-          filteredBetas: JSON.stringify(filteredBetas),
-          filteredBetaCount: filteredBetas.length,
-          message: "unsupported Anthropic beta values filtered for upstream"
-        });
-      }
+    const { headers, filteredBetas } = buildUpstreamHeaders({
+      incomingHeaders: req.headers, config, backendRouteKey, upstream, targetUrl, upstreamAuthHeaders, requestContext
+    });
+    if (filteredBetas.length > 0) {
+      emitInfoLog({
+        ...requestContext,
+        ...requestLogFields,
+        modelId,
+        event: "proxy.anthropic_betas_filtered",
+        routeKey,
+        backendRouteKey,
+        upstreamName: `upstream:${upstream.name || "unknown"}`,
+        upstreamProvider: `provider:${upstream.provider || "unknown"}`,
+        filteredBetas: JSON.stringify(filteredBetas),
+        filteredBetaCount: filteredBetas.length,
+        message: "unsupported Anthropic beta values filtered for upstream"
+      });
     }
     const bodyText = JSON.stringify(nextBody);
     const maxRequestBodyBytes = getPositiveByteLimit(config?.proxy?.guards?.maxRequestBodyBytes);

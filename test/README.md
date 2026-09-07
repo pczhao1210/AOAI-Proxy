@@ -16,6 +16,7 @@ node --test test/request-policy.test.js
 node --test test/admin-runtime-loader.test.js
 node --test test/response-reader.test.js
 node --test test/usage-accounting.test.js
+node --test test/upstream-headers.test.js
 node --test test/image-optimization.test.js test/image-work-queue.test.js test/image-config.test.js test/image-routes.test.js
 ```
 
@@ -37,6 +38,10 @@ Response-reader tests freeze UTF-8, byte limits, timeout/cancellation and JSON p
 stalled upstream cancellation cleanup. Usage-accounting tests compare governance with every statistics
 bucket while preserving the original protocol usage object. Request-policy tests also cover the shared
 retry decision and the downstream-output boundary.
+
+Upstream-header tests freeze assembly precedence, credential isolation, correlation settings, SDK metadata
+and beta filtering. Direct tests ensure inputs are not mutated; HTTP tests cover all nine Chat/Responses/
+Messages directions in JSON and SSE, including final URLs and unchanged beta-filter audit events.
 
 Included scripts:
 
