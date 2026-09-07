@@ -16,7 +16,7 @@
 | 1 | Media policy coverage, stalled downstream stream cancellation, Model Router pricing | Complete |
 | 2 | Header allowlists, retry status policy, stale admin statistics responses | Complete |
 | 3 | Opt-in adaptive image optimization, resource budgets, UI and observability | Engineering gates complete; real-image/load acceptance pending before production enablement |
-| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Core/header and media form slices verified; further decomposition pending |
+| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Core/header, media form and dependency maintenance slices verified; further decomposition pending |
 | 5 | Optional remote image fetching with a separate security design | Deferred; requires an explicit need |
 
 ## Validation Evidence
@@ -102,23 +102,43 @@
 | Internal usage normalization | Complete | Protocol/cache counters, zero/string/invalid inputs, all statistics buckets and unchanged pricing |
 | Upstream header assembly | Complete | Nine JSON/SSE directions and direct-module boundaries frozen; 285 tests and 42 routes pass |
 | Admin media-policy form | Complete | Five pre/post contracts, 290 tests, 42 routes, production build and bilingual desktop/mobile save/layout checks pass |
+| Dependency security maintenance | Complete | Zero audit findings after npm ci; 55 pre/post checks, 290 tests, 42 routes and unchanged production build pass |
 | Remaining request orchestration and admin module decomposition | Pending | Split one independently testable responsibility at a time; preserve directional and UI contracts |
+
+## Dependency Maintenance Evidence
+
+- The 2026-09-07 audit baseline reported Fastify (moderate), PostCSS and nanoid (high).
+    Fastify is a runtime dependency. PostCSS and nanoid are the Vite build dependency chain;
+    no direct application imports were found. This distinction does not make vulnerable versions safe.
+- The current Fastify initializer does not enable its `trustProxy` hop-count option, and no root-primitive
+    body schemas are registered. Application forwarding trust remains in `getRequestNetworkContext`;
+    the dependency update does not change that explicit policy or add request rejection rules.
+- The manifest now requires Fastify `^5.12.1`, covering both reported fixes. Compatible resolution locked
+    Fastify 5.12.3, PostCSS 8.5.28 and nanoid 3.3.18. Only the required process-warning 5.0.0 -> 5.1.0
+    also changed; no packages were added or removed, no overrides or new direct dependencies were introduced.
+- `npm audit` reports zero vulnerabilities. Root and admin Vite resolution both use the updated build
+    dependencies. All 55 request-policy/header/media-form checks and the request-body-limit route passed
+    before and after upgrading. Manifest/lockfile diagnostics passed.
+- Final gates passed after clean `npm ci`: zero audit findings, production build, 290 unit/integration
+    tests and all 42 route contracts. Generated admin assets are byte-identical to the committed baseline,
+    so browser layout/save checks were not rerun; the prior bilingual desktop/mobile evidence remains applicable.
+    Manifest/lockfile diagnostics and the final diff check passed. No application source, runtime configuration
+    or persistent data was changed. Real upstream, CLI, database and real-image/load checks were not run.
 
 ## Remaining Gates
 
 
 - Phases 0-2 are frozen with focused regressions, zero-upstream media rejection assertions, full unit/route validation, and browser ordering checks.
-- Dependency audit: three existing package findings remain open; assess affected usage and remediate in a separate bounded maintenance slice.
+- Dependency audit findings and maintenance regression gates are cleared as of 2026-09-07; this is not a guarantee against undisclosed vulnerabilities.
 - Real upstream, CLI client and real PostgreSQL checks have not been run; use their documented prerequisites.
 - Real-photo/OCR quality, production-load memory and real-client disconnect timing remain unverified;
     only synthetic codec cost and unit cancellation semantics have been measured. Adaptive stays opt-in.
 
 ## Next Smallest Step
 
-Triage the Fastify, PostCSS and nanoid audit findings before the next structural extraction. Establish
-affected usage and the smallest dependency update, then verify its focused contract plus build/unit/route gates.
-After that maintenance slice, the next UI candidate is the routing-policy form in `WorkspaceTab`, using
-the component test setup to freeze field paths and controls before extraction. Keep existing UI layout intact.
+Extract the routing-policy form in `WorkspaceTab`, first using the existing component test setup to freeze
+field paths, list parsing, policy selections and conditional controls. Keep the section anchor/group, UI layout
+and configuration save orchestration intact; do not change backend routing or protocol policy semantics.
 Leave JSON/SSE execution loops and directional converters independent; further request-orchestration
 decomposition remains a later slice.
 Real-photo/OCR acceptance and deployment-sized load tests remain required before recommending adaptive enablement.
