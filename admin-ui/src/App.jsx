@@ -22,6 +22,7 @@ import {
 } from "./api.js";
 import { StatCard, Modal } from "./components/ui.jsx";
 import { useI18n } from "./i18n.jsx";
+import { createRuntimeLoader } from "./runtime-loader.js";
 import toast from "react-hot-toast";
 import {
   applyCompressionPresetToConfig,
@@ -153,6 +154,7 @@ export default function App() {
   const [showModelTemplateModal, setShowModelTemplateModal] = useState(false);
   const [activeSectionId, setActiveSectionId] = useState("");
   const [runtimeFilters, setRuntimeFilters] = useState(DEFAULT_RUNTIME_FILTERS);
+  const [runtimeLoader] = useState(() => createRuntimeLoader({ fetchRuntime, fetchStats, initialFilters: DEFAULT_RUNTIME_FILTERS }));
   const [modelTemplateSearch, setModelTemplateSearch] = useState("");
   const [selectedPricingTemplateId, setSelectedPricingTemplateId] = useState("");
   const [templateUpstreamMode, setTemplateUpstreamMode] = useState("existing");
@@ -304,12 +306,18 @@ export default function App() {
     }
   }
 
-  async function refreshRuntimeAndStats(filters = runtimeFilters) {
-    const [runtimeJson, statsJson] = await Promise.all([fetchRuntime(), fetchStats(filters)]);
-    startTransition(() => {
-      setRuntime(runtimeJson.runtime || null);
-      setStats(statsJson || null);
-    });
+  async function refreshRuntimeAndStats() {
+    const request = runtimeLoader.start();
+    try {
+      const [runtimeJson, statsJson] = await Promise.all([request.runtime, request.stats]);
+      if (!request.isCurrent()) return;
+      startTransition(() => {
+        setRuntime(runtimeJson.runtime || null);
+        setStats(statsJson || null);
+      });
+    } catch (loadError) {
+      if (request.isCurrent()) throw loadError;
+    }
   }
 
   function applyLoadedConfig(configJson) {
@@ -324,7 +332,7 @@ export default function App() {
     setLogAnalyticsInitializationResult(null);
   }
 
-  async function loadSecondaryData(requestId, filters = runtimeFilters, options = {}) {
+  async function loadSecondaryData(requestId, options = {}) {
     const { notifyOnError = false } = options;
     const loadPricing = async () => {
       try {
@@ -335,9 +343,10 @@ export default function App() {
         return { items: await loadBundledPricingLibrary() };
       }
     };
+    const runtimeRequest = runtimeLoader.start();
     const [runtimeResult, statsResult, caddyResult, pricingResult] = await Promise.allSettled([
-      fetchRuntime(),
-      fetchStats(filters),
+      runtimeRequest.runtime,
+      runtimeRequest.stats,
       fetchCaddyStatus(),
       loadPricing()
     ]);
@@ -348,16 +357,17 @@ export default function App() {
 
     const errors = [];
     startTransition(() => {
-      if (runtimeResult.status === "fulfilled") {
-        setRuntime(runtimeResult.value.runtime || null);
-      } else {
-        errors.push(runtimeResult.reason);
-      }
-
-      if (statsResult.status === "fulfilled") {
-        setStats(statsResult.value || null);
-      } else {
-        errors.push(statsResult.reason);
+      if (runtimeRequest.isCurrent()) {
+        if (runtimeResult.status === "fulfilled") {
+          setRuntime(runtimeResult.value.runtime || null);
+        } else {
+          errors.push(runtimeResult.reason);
+        }
+        if (statsResult.status === "fulfilled") {
+          setStats(statsResult.value || null);
+        } else {
+          errors.push(statsResult.reason);
+        }
       }
 
       if (caddyResult.status === "fulfilled") {
@@ -399,7 +409,7 @@ export default function App() {
       }
       applyLoadedConfig(configJson);
       setMessage(mode === "reload" ? t("messages.reloaded", "Configuration reloaded from persistent store.") : t("messages.loaded", "Configuration loaded."));
-      void loadSecondaryData(requestId, runtimeFilters, { notifyOnError: mode === "reload" });
+      void loadSecondaryData(requestId, { notifyOnError: mode === "reload" });
     } catch (loadError) {
       if (requestId !== loadRequestRef.current) {
         return;
@@ -413,13 +423,10 @@ export default function App() {
   }
 
   async function handleRuntimeFilterChange(patch) {
-    const nextFilters = {
-      ...runtimeFilters,
-      ...patch
-    };
+    const nextFilters = runtimeLoader.updateFilters(patch);
     setRuntimeFilters(nextFilters);
     try {
-      await refreshRuntimeAndStats(nextFilters);
+      await refreshRuntimeAndStats();
     } catch (loadError) {
       setError(loadError.message || t("messages.loadFailed", "Load failed."));
     }
@@ -432,7 +439,7 @@ export default function App() {
       startTransition(() => {
         setRuntime(result.runtime || null);
       });
-      await refreshRuntimeAndStats(runtimeFilters);
+      await refreshRuntimeAndStats();
       setMessage(t("messages.runtimeSyncSuccess", "Runtime sync completed."));
     } catch (syncError) {
       setError(syncError.message || t("messages.runtimeSyncFailed", "Runtime sync failed."));
@@ -578,7 +585,7 @@ export default function App() {
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
     applyLoadedConfig(saved);
-    void loadSecondaryData(requestId, runtimeFilters, { notifyOnError: true });
+    void loadSecondaryData(requestId, { notifyOnError: true });
     setMessage(successMessage);
   }
 

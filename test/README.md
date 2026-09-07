@@ -6,6 +6,21 @@ Reliability tests cover PostgreSQL pool error handling and server shutdown behav
 npm run test:unit
 ```
 
+Focused reliability and policy regressions:
+
+```bash
+node --test test/media-policy.test.js
+node --test test/stream-backpressure.test.js
+node --test test/governance-pricing.test.js
+node --test test/request-policy.test.js
+node --test test/admin-runtime-loader.test.js
+```
+
+The media and request-policy files also use the disposable route harness to verify
+upstream request counts and native request/error contracts. The backpressure suite
+covers all nine text-protocol directions. See the [optimization plan](../docs/development/optimization-plan.md)
+for milestone evidence, browser checks, and deferred work.
+
 Included scripts:
 
 - `test/routes/chat-completion.js`

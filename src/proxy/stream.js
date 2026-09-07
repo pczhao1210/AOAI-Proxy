@@ -163,7 +163,8 @@ function createClientDisconnectedError() {
   return markErrorWithCode(new Error("client disconnected"), "CLIENT_DISCONNECTED");
 }
 
-async function writeWithBackpressure(replyRaw, data) {
+async function writeWithBackpressure(replyRaw, data, signal) {
+  if (signal?.aborted) throw signal.reason;
   if (replyRaw.destroyed || replyRaw.writableEnded) {
     throw createClientDisconnectedError();
   }
@@ -175,6 +176,7 @@ async function writeWithBackpressure(replyRaw, data) {
       replyRaw.removeListener?.("drain", onDrain);
       replyRaw.removeListener?.("close", onClose);
       replyRaw.removeListener?.("error", onError);
+      signal?.removeEventListener("abort", onAbort);
     };
     const onDrain = () => {
       cleanup();
@@ -188,30 +190,49 @@ async function writeWithBackpressure(replyRaw, data) {
       cleanup();
       reject(error);
     };
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason);
+      replyRaw.destroy?.();
+    };
     replyRaw.once("drain", onDrain);
     replyRaw.once("close", onClose);
     replyRaw.once("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }
 
-async function writeSse(replyRaw, dataObj) {
-  await writeWithBackpressure(replyRaw, `data: ${JSON.stringify(dataObj)}\n\n`);
+function createStreamCancellation(replyRaw, reader, onClientDisconnect) {
+  const controller = new AbortController();
+  const cancel = (reason, code, message) => {
+    if (controller.signal.aborted) return;
+    controller.abort(markErrorWithCode(new Error(message), code));
+    reader.cancel(reason).catch(() => {});
+  };
+  const onClose = () => {
+    if (replyRaw.writableEnded || controller.signal.aborted) return;
+    onClientDisconnect();
+    cancel("client-disconnected", "CLIENT_DISCONNECTED", "client disconnected");
+  };
+  replyRaw.once?.("close", onClose);
+  return {
+    signal: controller.signal,
+    cancel,
+    cleanup() { replyRaw.removeListener?.("close", onClose); }
+  };
 }
 
-async function writeAnthropicSse(replyRaw, event) {
-  await writeWithBackpressure(
-    replyRaw,
-    `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
-  );
+function createSseWriters(signal) {
+  return {
+    writeSse: (replyRaw, dataObj) => writeWithBackpressure(replyRaw, `data: ${JSON.stringify(dataObj)}\n\n`, signal),
+    writeAnthropicSse: (replyRaw, event) => writeWithBackpressure(replyRaw, `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`, signal),
+    writeSseDone: (replyRaw) => writeWithBackpressure(replyRaw, "data: [DONE]\n\n", signal),
+    writeSseKeepAlive: (replyRaw) => writeWithBackpressure(replyRaw, ": protocol-shim keep-alive\n\n", signal)
+  };
 }
 
-async function writeSseDone(replyRaw) {
-  await writeWithBackpressure(replyRaw, "data: [DONE]\n\n");
-}
-
-async function writeSseKeepAlive(replyRaw) {
-  await writeWithBackpressure(replyRaw, ": protocol-shim keep-alive\n\n");
-}
+const { writeSse, writeAnthropicSse, writeSseDone } = createSseWriters();
 
 function emitOutputDeltas(json, onContent) {
   if (typeof onContent !== "function") return;
@@ -410,6 +431,7 @@ export async function streamPassthrough({
   let terminalMarkerSeen = false;
   let chatFinishReasonSeen = false;
   let clientDisconnected = false;
+  const cancellation = createStreamCancellation(reply.raw, reader, () => { clientDisconnected = true; });
 
   const processPayload = (payload) => {
     if (!payload) return;
@@ -458,13 +480,6 @@ export async function streamPassthrough({
       chatFinishReasonSeen = true;
     }
   };
-  if (typeof reply.raw.once === "function") {
-    reply.raw.once("close", () => {
-      if (reply.raw.writableEnded) return;
-      clientDisconnected = true;
-      reader.cancel("client-disconnected").catch(() => {});
-    });
-  }
   const clearIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
@@ -477,19 +492,19 @@ export async function streamPassthrough({
     clearIdle();
     idleTimer = setTimeout(() => {
       idleTimedOut = true;
-      reader.cancel("idle-timeout").catch(() => {});
+      cancellation.cancel("idle-timeout", "UPSTREAM_IDLE_TIMEOUT", `idle timeout after ${policy.idleTimeoutMs}ms`);
     }, policy.idleTimeoutMs);
   };
   const firstByteTimer = setTimeout(() => {
     if (!firstChunkSeen) {
       firstByteTimedOut = true;
-      reader.cancel("first-byte-timeout").catch(() => {});
+      cancellation.cancel("first-byte-timeout", "UPSTREAM_FIRST_BYTE_TIMEOUT", `first byte timeout after ${policy.firstByteTimeoutMs}ms`);
     }
   }, policy.firstByteTimeoutMs);
   if (policy.maxStreamDurationMs > 0) {
     maxDurationTimer = setTimeout(() => {
       maxDurationTimedOut = true;
-      reader.cancel("max-stream-duration").catch(() => {});
+      cancellation.cancel("max-stream-duration", "UPSTREAM_MAX_STREAM_DURATION", `stream exceeded max duration after ${policy.maxStreamDurationMs}ms`);
     }, policy.maxStreamDurationMs);
   }
 
@@ -508,7 +523,7 @@ export async function streamPassthrough({
         if (providerError || terminalMarkerSeen) break;
         processPayload(event.payload);
         if (!providerError || forwardProviderErrors) {
-          await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId));
+          await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);
         }
       }
       if (sseParser.bufferedLength > MAX_SSE_BUFFER_CHARS) {
@@ -524,7 +539,7 @@ export async function streamPassthrough({
         if (providerError || terminalMarkerSeen) break;
         processPayload(event.payload);
         if (!providerError || forwardProviderErrors) {
-          await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId));
+          await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);
         }
       }
     }
@@ -532,11 +547,13 @@ export async function streamPassthrough({
     clearTimeout(firstByteTimer);
     clearIdle();
     clearMaxDuration();
+    cancellation.cleanup();
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
   }
   clearTimeout(firstByteTimer);
   clearIdle();
   clearMaxDuration();
+  cancellation.cleanup();
   if (clientDisconnected) {
     return {
       ok: false,
@@ -629,6 +646,8 @@ export async function streamShim({
   let sourceTerminalSeen = false;
   let terminalFrameWritten = false;
   let clientDisconnected = false;
+  const cancellation = createStreamCancellation(reply.raw, reader, () => { clientDisconnected = true; });
+  const { writeSse, writeAnthropicSse, writeSseDone, writeSseKeepAlive } = createSseWriters(cancellation.signal);
   const created = Math.floor(Date.now() / 1000);
   const streamId = `chatcmpl_${created}`;
   const toolCallMap = new Map();
@@ -1242,13 +1261,6 @@ export async function streamShim({
     await writeAnthropicSse(reply.raw, { type: "message_stop" });
     messagesCompleted = true;
   };
-  if (typeof reply.raw.once === "function") {
-    reply.raw.once("close", () => {
-      if (reply.raw.writableEnded) return;
-      clientDisconnected = true;
-      reader.cancel("client-disconnected").catch(() => {});
-    });
-  }
   const clearIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
@@ -1261,19 +1273,19 @@ export async function streamShim({
     clearIdle();
     idleTimer = setTimeout(() => {
       idleTimedOut = true;
-      reader.cancel("idle-timeout").catch(() => {});
+      cancellation.cancel("idle-timeout", "UPSTREAM_IDLE_TIMEOUT", `idle timeout after ${policy.idleTimeoutMs}ms`);
     }, policy.idleTimeoutMs);
   };
   const firstByteTimer = setTimeout(() => {
     if (!firstChunkSeen) {
       firstByteTimedOut = true;
-      reader.cancel("first-byte-timeout").catch(() => {});
+      cancellation.cancel("first-byte-timeout", "UPSTREAM_FIRST_BYTE_TIMEOUT", `first byte timeout after ${policy.firstByteTimeoutMs}ms`);
     }
   }, policy.firstByteTimeoutMs);
   if (policy.maxStreamDurationMs > 0) {
     maxDurationTimer = setTimeout(() => {
       maxDurationTimedOut = true;
-      reader.cancel("max-stream-duration").catch(() => {});
+      cancellation.cancel("max-stream-duration", "UPSTREAM_MAX_STREAM_DURATION", `stream exceeded max duration after ${policy.maxStreamDurationMs}ms`);
     }, policy.maxStreamDurationMs);
   }
 
@@ -1826,11 +1838,13 @@ export async function streamShim({
     clearTimeout(firstByteTimer);
     clearIdle();
     clearMaxDuration();
+    cancellation.cleanup();
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
   }
   clearTimeout(firstByteTimer);
   clearIdle();
   clearMaxDuration();
+  cancellation.cleanup();
   if (clientDisconnected) {
     return {
       ok: false,

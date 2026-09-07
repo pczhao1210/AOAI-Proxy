@@ -25,7 +25,7 @@ function pickInteger(...values) {
 
 function resolveRetryStatuses(...values) {
   for (const value of values) {
-    if (Array.isArray(value) && value.length) {
+    if (Array.isArray(value)) {
       return value.filter((item) => Number.isInteger(item));
     }
   }
@@ -391,7 +391,7 @@ export async function fetchWithRetry({
           attempt
         };
       }
-      const retryableStatus = policy.retryStatuses.has(upstreamResponse.status) || classified.retryable;
+      const retryableStatus = policy.retryStatuses.has(upstreamResponse.status);
       if (attempt < maxAttempts && retryableStatus) {
         const backoffMs = computeBackoffMs(policy, attempt);
         log.warn({ ...logMeta, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "upstream retry on HTTP status");

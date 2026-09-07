@@ -285,6 +285,7 @@ function resolvePricingModel(config, model, actualModelName) {
   }
 
   const configuredModels = Array.isArray(config?.models) ? config.models : [];
+  const modelRouterRequest = isModelRouterRequest(model);
   const catalog = config?.access?.pricingCatalog && typeof config.access.pricingCatalog === "object"
     ? config.access.pricingCatalog
     : null;
@@ -299,17 +300,18 @@ function resolvePricingModel(config, model, actualModelName) {
     }
     if (catalog && catalog[candidate]) {
       return {
-        model: {
-          ...model,
-          pricingRef: candidate
-        },
+        model: modelRouterRequest
+          ? { id: candidate, pricingRef: candidate }
+          : { ...model, pricingRef: candidate },
         actualModelName: candidate
       };
     }
   }
 
   return {
-    model,
+    model: modelRouterRequest
+      ? { id: candidates.at(-1), pricingRef: candidates.at(-1) }
+      : model,
     actualModelName: candidates[0]
   };
 }
@@ -395,7 +397,7 @@ function estimateUsageCost(config, model, usage, actualModelName, descriptor = n
     ? actualModelCostCurrency
     : (modelRouterCostAmount > 0 ? modelRouterCostCurrency : defaultCurrency);
   return {
-    configured: amount > 0,
+    configured: modelRouterRequest ? !!(modelRouterSource && actualSource) : amount > 0,
     amount,
     currency,
     source: [modelRouterSource ? `model-router:${modelRouterSource}` : "", actualSource ? `actual:${actualSource}` : ""]

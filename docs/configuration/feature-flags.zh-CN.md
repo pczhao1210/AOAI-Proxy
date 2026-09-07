@@ -46,6 +46,10 @@
 | `models[*].requestPolicy.dropUnsupportedParams` | `false` | 模型级参数策略命中时丢弃字段，而不是拒绝请求。 | JSON；热 |
 | `upstreams[*].requestPolicy.dropUnsupportedParams` | `false` | 上游级参数策略命中时丢弃字段，而不是拒绝请求。 | JSON；热 |
 
+请求头白名单模式下，`proxy.forwardHeaders.allow: []` 不放行普通客户端 header；明确允许的协议元数据仍按既有规则处理，凭据硬过滤始终优先。代理自身生成的上游认证和请求关联 header 不受此空列表影响。
+
+HTTP 状态码重试只依据最终解析出的 `statuses` 列表；显式空列表表示不按 HTTP 状态码重试。未配置时沿用默认列表，模型或上游的显式覆盖仍按原有优先级生效。网络错误重试另受 `classifyNetworkErrorsAsRetryable` 和最大重试次数控制，已向客户端输出后不重试。
+
 ### 路由与错误透传
 
 `<route>` 可取 `chatCompletions`、`responses`、`messages`、`imageGenerations`。
@@ -65,8 +69,10 @@
 | `media.inputCompression.enabled` | `false` | 压缩请求中的内联图片。 | Workspace；热 |
 | `media.inputCompression.progressive` | `false` | JPEG 输出使用 progressive 编码；仅在压缩启用且输出为 JPEG 时有效。 | Workspace；热 |
 | `media.inputCompression.useMozJpeg` | `true` | JPEG 输出优先使用 mozjpeg 编码参数。 | Workspace；热 |
-| `media.remoteImages.allow` | `false` | 允许代理下载请求中引用的远程图片；仍受 MIME、host、大小和超时限制。 | Workspace；热 |
+| `media.remoteImages.allow` | `false` | 允许向上游透传远程图片 URL，并检查 `allowedHosts`；代理不下载图片，也不验证远端文件的 MIME、大小或像素。 | Workspace；热 |
 | `media.generation.enabled` | `true` | 启用图片生成能力；还需要对应 route profile 开启。 | Workspace；热 |
+
+文本协议的图片策略只检查正式图片内容块，覆盖 Chat、Responses、Messages 及支持的工具结果图片，不递归处理同名业务字段。关闭压缩仍执行远程 URL 策略和 `media.inlineImages.maxBase64Bytes` 限制；内联上限按解码后字节计算。合法 Messages 图片保留原字节和 MIME，本轮未启用新的 Messages 压缩或自适应压缩策略。
 
 ### 日志、Log Analytics 与 Runtime Store
 

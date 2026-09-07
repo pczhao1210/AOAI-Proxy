@@ -103,7 +103,6 @@ export function sanitizeIncomingHeaders(headers, config, options = {}) {
     if (policy.deny.has(normalizedKey)) continue;
     if (
       policy.mode === "allowlist"
-      && policy.allow.size > 0
       && !policy.allow.has(normalizedKey)
       && !matchesAllowedHeaderPrefix(normalizedKey, allowPrefixes)
     ) continue;
@@ -419,10 +418,79 @@ function hasCompressibleImage(value) {
   return false;
 }
 
+function getProtocolImageInputs(payload, routeKey) {
+  if (!["chat/completions", "responses", "messages"].includes(routeKey)) return null;
+  const inputs = [];
+  const visitContent = (content) => {
+    if (!Array.isArray(content)) return;
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      if (routeKey === "messages") {
+        if (part.type === "tool_result") {
+          visitContent(part.content);
+        } else if (part.type === "image" && part.source) {
+          if (part.source.type === "base64" && typeof part.source.data === "string") {
+            inputs.push({ owner: part.source, key: "data", base64: true });
+          } else if (part.source.type === "url" && typeof part.source.url === "string") {
+            inputs.push({ owner: part.source, key: "url", base64: false });
+          }
+        }
+        continue;
+      }
+      const imageType = routeKey === "responses" ? "input_image" : "image_url";
+      if (part.type !== imageType) continue;
+      if (typeof part.image_url === "string") {
+        inputs.push({ owner: part, key: "image_url", base64: false });
+      } else if (typeof part.image_url?.url === "string") {
+        inputs.push({ owner: part.image_url, key: "url", base64: false });
+      }
+    }
+  };
+  const items = routeKey === "responses" ? payload?.input : payload?.messages;
+  for (const item of Array.isArray(items) ? items : []) {
+    if (routeKey === "responses" && item?.type === "function_call_output") {
+      visitContent(item.output);
+    } else if (routeKey !== "responses" || !item?.type || item.type === "message") {
+      visitContent(item?.content);
+    }
+  }
+  return inputs;
+}
+
+export function validateImageInputs(payload, config, routeKey) {
+  const remotePolicy = resolveRemoteImagePolicy(config);
+  const inlinePolicy = resolveInlineImagePolicy(config);
+  for (const input of getProtocolImageInputs(payload, routeKey) || []) {
+    const value = input.owner[input.key];
+    const dataUrl = !input.base64 && value.match(/^data:image\/[a-zA-Z0-9.+-]+;base64,([\s\S]*)$/);
+    if (input.base64 || dataUrl) {
+      const encoded = input.base64 ? value : dataUrl[1];
+      if (Buffer.byteLength(encoded.replace(/\s/g, ""), "base64") > inlinePolicy.maxBase64Bytes) {
+        throw createPolicyError("INLINE_IMAGE_TOO_LARGE", `Inline image payload exceeds ${inlinePolicy.maxBase64Bytes} bytes`);
+      }
+    } else {
+      validateRemoteImageUrl(value, remotePolicy);
+    }
+  }
+}
+
 export async function maybeCompressImages(payload, config, routeKey) {
   const options = resolveImageCompression(config);
   options.inlinePolicy = resolveInlineImagePolicy(config);
   options.remotePolicy = resolveRemoteImagePolicy(config);
+  const inputs = getProtocolImageInputs(payload, routeKey);
+  if (inputs) {
+    validateImageInputs(payload, config, routeKey);
+    if (routeKey === "messages" || !options.enabled) return payload;
+    const cache = new Map();
+    for (const input of inputs) {
+      const value = input.owner[input.key];
+      if (isDataUrlImage(value)) {
+        input.owner[input.key] = await compressDataUrl(value, options, cache);
+      }
+    }
+    return payload;
+  }
   if (!hasCompressibleImage(payload)) {
     return payload;
   }

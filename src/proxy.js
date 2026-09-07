@@ -21,6 +21,7 @@ import {
   getStreamFlag,
   sanitizeRequestBody,
   extractProxyRequestControls,
+  validateImageInputs,
   maybeCompressImages
 } from "./proxy/body.js";
 import { prepareImageGenerationRequest } from "./proxy/image-adapter.js";
@@ -1267,7 +1268,8 @@ export async function proxyRequest({
 
   if (nextBody && typeof nextBody === "object") {
     try {
-      nextBody = await maybeCompressImages(nextBody, config, protocolRouteKey);
+      validateImageInputs(body, config, protocolRouteKey);
+      nextBody = await maybeCompressImages(nextBody, config, backendRouteKey);
     } catch (error) {
       log.error({
         source: "proxy",
@@ -1726,7 +1728,7 @@ export async function proxyRequest({
             detail = readFailure.detail;
           }
           const classified = classifyHttpStatus(upstreamResponse.status);
-          const retryableStatus = policy.retryStatuses.has(upstreamResponse.status) || classified.retryable;
+          const retryableStatus = policy.retryStatuses.has(upstreamResponse.status);
           if (attempt < maxAttempts && retryableStatus) {
             const backoffMs = computeBackoffMs(policy, attempt);
             log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "stream upstream retry on status");
@@ -2005,13 +2007,15 @@ export async function proxyRequest({
           type: providerError?.type,
           param: providerError?.param
         });
-        if (!streamingStarted) {
-          reply.code(classified.status || 502).send(errBody);
-        } else if (!streamResult.providerErrorForwarded) {
-          await writeSseError(reply.raw, errBody, routeKey);
-          reply.raw.end();
-        } else {
-          reply.raw.end();
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+          if (!streamingStarted) {
+            reply.code(classified.status || 502).send(errBody);
+          } else if (!streamResult.providerErrorForwarded) {
+            await writeSseError(reply.raw, errBody, routeKey);
+            reply.raw.end();
+          } else {
+            reply.raw.end();
+          }
         }
         deferPostResponse(() => finalizeStreamObservation(
           providerError ? "provider_error_before_usage" : "stream_interrupted_before_usage"
