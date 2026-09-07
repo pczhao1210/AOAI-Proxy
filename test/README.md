@@ -13,8 +13,11 @@ node --test test/media-policy.test.js
 node --test test/stream-backpressure.test.js
 node --test test/governance-pricing.test.js
 node --test test/request-policy.test.js
+node --test test/request-body-policy.test.js test/anthropic-body-policy.test.js
 node --test test/admin-runtime-loader.test.js
 node --test test/admin-media-form.test.js
+node --test test/admin-routing-form.test.js
+node --test test/admin-log-content.test.js
 node --test test/response-reader.test.js
 node --test test/usage-accounting.test.js
 node --test test/upstream-headers.test.js
@@ -35,11 +38,25 @@ upstream request counts and native request/error contracts. The backpressure sui
 covers all nine text-protocol directions. See the [optimization plan](../docs/development/optimization-plan.md)
 for milestone evidence, browser checks, and deferred work.
 
-The admin media form contract uses React Testing Library, jsdom and the existing Vite JSX transform
-under `node:test`. Install development dependencies with `npm ci`; no browser, backend or credentials
-are required. It renders `WorkspaceTab` and freezes media mode visibility, numeric zeros, hidden settings,
-list parsing and exact configuration update paths with controlled-input state feedback. Real-browser
-layout, translations and the review/save HTTP workflow remain separate browser checks.
+The admin media, routing and log-content contracts share `test/lib/admin-workspace-form.js`, using React Testing
+Library, jsdom and the existing Vite JSX transform under `node:test`. Install development dependencies
+with `npm ci`; no browser, backend or credentials are required. They render `WorkspaceTab` and freeze
+media mode visibility, numeric zeros, hidden settings, list parsing and exact configuration update paths
+with controlled-input state feedback. Routing tests additionally freeze beta options, boolean defaults,
+control order and editable policy fields when routes are disabled. Real-browser layout, translations and
+the review/save HTTP workflow remain separate browser checks.
+
+Log-content tests mock the confirmation prompt, checking that cancellation writes neither configuration
+path, confirmed full mode writes both paths, and leaving full mode does not prompt. They never enable
+full logging in the running proxy or call a remote logging service.
+
+`src/proxy/request-policy.js` owns configured field filtering, empty-tool controls and image-generation
+policy; `src/proxy/anthropic-policy.js` owns Messages thinking/effort and cache-control decisions.
+The body-policy suites freeze their mutation/error contracts and explicit administrator boundaries.
+The existing parameter/tool/image routes and Messages compatibility routes check their integration;
+`test/upstream-headers.test.js` also freezes nine JSON/SSE upstream requests after policy application.
+`src/proxy.js` still decides when to apply policies and retains JSON/SSE execution, error dispatch and
+governance orchestration. The directional converters and stream state machines are unchanged.
 
 Response-reader tests freeze UTF-8, byte limits, timeout/cancellation and JSON parse errors, including
 stalled upstream cancellation cleanup. Usage-accounting tests compare governance with every statistics

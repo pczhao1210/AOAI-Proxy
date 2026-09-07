@@ -8,6 +8,18 @@
 - Do not enable remote image downloading or change existing compression defaults.
 - Follow each substantive change with its narrowest executable regression check.
 
+## Implementation Closeout
+
+- User instruction on 2026-09-07: finish remaining implementation, but defer final validation.
+    Continue focused pre/post-edit checks; do not rerun the complete acceptance batch in this work period.
+- The remaining phase 4 scope is finite: logging-content confirmation/synchronization, generic request
+    policy decisions, and Messages-specific body compatibility decisions. Close these named responsibilities,
+    regenerate deliverable admin assets and update documentation, then stop at the final validation gate.
+- Keep JSON/SSE execution loops, directional converters, persistence and initialization diagnostics in their
+    existing ownership boundaries. Further file-size-only refactors are not prerequisites for this plan.
+- Phase 5 remains explicitly deferred. Remote fetching and adaptive production enablement are not authorized
+    by this implementation closeout; real-image/load work belongs to the final acceptance gates below.
+
 ## Milestones
 
 | Phase | Work | Status |
@@ -16,7 +28,7 @@
 | 1 | Media policy coverage, stalled downstream stream cancellation, Model Router pricing | Complete |
 | 2 | Header allowlists, retry status policy, stale admin statistics responses | Complete |
 | 3 | Opt-in adaptive image optimization, resource budgets, UI and observability | Engineering gates complete; real-image/load acceptance pending before production enablement |
-| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Core/header, media form and dependency maintenance slices verified; further decomposition pending |
+| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Implementation complete; closeout focused checks pass, final acceptance deferred by request |
 | 5 | Optional remote image fetching with a separate security design | Deferred; requires an explicit need |
 
 ## Validation Evidence
@@ -102,8 +114,62 @@
 | Internal usage normalization | Complete | Protocol/cache counters, zero/string/invalid inputs, all statistics buckets and unchanged pricing |
 | Upstream header assembly | Complete | Nine JSON/SSE directions and direct-module boundaries frozen; 285 tests and 42 routes pass |
 | Admin media-policy form | Complete | Five pre/post contracts, 290 tests, 42 routes, production build and bilingual desktop/mobile save/layout checks pass |
+| Admin routing-policy form | Complete | Seven pre/post routing contracts, 297 tests, 42 routes, build and bilingual desktop/mobile navigation/save checks pass |
 | Dependency security maintenance | Complete | Zero audit findings after npm ci; 55 pre/post checks, 290 tests, 42 routes and unchanged production build pass |
-| Remaining request orchestration and admin module decomposition | Pending | Split one independently testable responsibility at a time; preserve directional and UI contracts |
+| Logging content mode | Implemented; final acceptance deferred | Five pre/post confirmation/synchronization checks and all 17 neighboring form checks pass |
+| Generic request policy decisions | Implemented; final acceptance deferred | Six module checks, 26 policy checks and parameter/tool/image routes pass; invocation order unchanged |
+| Messages body compatibility decisions | Implemented; final acceptance deferred | Seven module checks, three pre/post compatibility routes and 24 nine-direction/header checks pass |
+
+## Logging Content Evidence
+
+- `LogContentModeField` owns the existing summary/full control and confirmation. Its position, translation
+    keys, confirmation text and both update paths/order are unchanged; initialization diagnostics stay in place.
+- Five focused tests passed before and after extraction: defaults/options, canceled full mode, confirmed full
+    mode with disabled remote sink, exit without confirmation and full-mode reentry. All 17 media/routing/log
+    component checks and editor diagnostics pass. No logging runtime defaults or data were changed.
+- Final browser/save and full repository acceptance are deferred per the user's closeout instruction.
+
+## Request Policy Evidence
+
+- `src/proxy/request-policy.js` owns the original parameter filtering, route-profile key mapping,
+    empty-tool control cleanup and image-generation policy. Invocation order, mutation rules, errors and
+    explicit administrator drop/reject behavior are unchanged. Six direct module regressions pass.
+- The 26 existing policy tests and parameter/tool routes passed before/after extraction; both image
+    generation routes also passed. Empty allowlists remain unrestricted here, and the public model field
+    remains exempt from field filtering. No capability-based rejection was added.
+- `src/proxy/anthropic-policy.js` owns the original Messages thinking/effort and cache-control decisions.
+    Seven direct regressions cover explicit model/deployment precedence, effort aliases, upstream authority
+    over catalog suggestions, disabled policy flags, manual thinking controls and signed/redacted state.
+- The three Messages/Claude compatibility routes passed before and after extraction. All 24 header/directional
+    checks pass, including the nine client/upstream JSON/SSE combinations and recorded URL/body/header behavior.
+- `src/proxy.js` still controls routing, policy order, governance, JSON/SSE execution and error dispatch.
+    No retries, cancellation rules, directional converters, stream state machines or runtime defaults changed.
+- Implementation and delivery documentation are complete. `npm run build` passed and regenerated
+    `public/admin-app/` from the final admin sources. Touched-file editor diagnostics and `git diff --check`
+    reported no errors; runtime configuration and data were not changed.
+- Full repository/browser/real-service validation remains deferred, not implicitly passed. Historical
+    whole-suite results above do not cover the final combined worktree.
+
+## Routing Form Evidence
+
+- `RoutingPolicySection` now owns the `workspace-routing` accordion with only `config`, `updateField`
+    and `t` props. Section ID/group, placement after media, field order, defaults and save orchestration
+    are unchanged. Backend routing and protocol policy code were not modified.
+- Seven routing contracts passed before and after extraction: five list paths, beta policy options,
+    eleven boolean paths/defaults, polling numeric zeros and disabled-route field preservation.
+    This section has no conditional field hiding: disabled routes and beta filtering retain editable settings.
+- The media suite's Vite/jsdom lifecycle and controlled-input renderer moved to a shared test helper;
+    all five existing media contracts pass alongside the routing suite. No dependencies were added.
+- Final gates passed: production build, 297 unit/integration tests and all 42 route contracts. Editor
+    diagnostics and `git diff --check` passed. The build regenerated `public/admin-app/`; the preceding
+    dependency maintenance changes were preserved, and no runtime configuration/data was edited.
+- Browser checks passed in English and Chinese at 1440x1000 and 390x844: no horizontal overflow,
+    desktop anchors and mobile select navigation preserve accordion grouping, and disabled routes retain
+    editable policy fields. Screenshots were checked on desktop/mobile. Two intercepted config PUTs through
+    the review/save modal preserved all routing/compatibility paths, booleans, numeric zero, ordered/case-sensitive
+    lists and empty beta allowlists, without changing unrelated media settings.
+- Browser APIs used fixtures only. Real upstream, CLI, database and real-image/load checks were not run
+    for this UI-only extraction; their documented acceptance gates remain open.
 
 ## Dependency Maintenance Evidence
 
@@ -136,12 +202,25 @@
 
 ## Next Smallest Step
 
-Extract the routing-policy form in `WorkspaceTab`, first using the existing component test setup to freeze
-field paths, list parsing, policy selections and conditional controls. Keep the section anchor/group, UI layout
-and configuration save orchestration intact; do not change backend routing or protocol policy semantics.
-Leave JSON/SSE execution loops and directional converters independent; further request-orchestration
-decomposition remains a later slice.
+When final validation is authorized, execute the checklist below, starting with the final lockfile
+installation and audit. There are no remaining implementation or artifact-generation tasks within the
+agreed scope. Do not start remote fetching or additional structural slices.
 Real-photo/OCR acceptance and deployment-sized load tests remain required before recommending adaptive enablement.
 Keep existing compression defaults and remote URL passthrough unchanged. Synthetic photographic
 texture is a repeatable codec stress fixture, not evidence of real-model visual/OCR accuracy.
-Structural deduplication remains phase 4, not part of this image milestone.
+Structural deduplication is complete in phase 4; it does not satisfy image quality or load acceptance.
+
+## Final Validation Checklist
+
+Deferred by user request for the final combined worktree. Prior slice results above are historical evidence,
+not a substitute for this acceptance batch.
+
+- [ ] Run `npm ci` and `npm audit` against the final lockfile.
+- [ ] Run `npm run build`, `npm run test:unit` and `npm run test:routes`; review diagnostics and the final diff.
+- [ ] In English and Chinese at desktop/mobile widths, check workspace section navigation, media/routing
+    controls and review/save JSON paths and types with isolated fixture APIs. Check full-log cancellation,
+    confirmation, exit and reentry, preserving both local and remote content-mode fields.
+- [ ] Run documented Claude Code, Codex and real PostgreSQL checks when prerequisites are available.
+- [ ] Run documented real-upstream JSON/SSE and client-disconnect checks with authorized credentials and models.
+- [ ] Complete real-photo/OCR quality and deployment-sized CPU/RSS/queue/load acceptance before recommending
+    adaptive enablement. Keep it opt-in until that evidence exists.

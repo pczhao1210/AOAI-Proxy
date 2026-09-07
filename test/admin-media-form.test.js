@@ -1,47 +1,8 @@
 import assert from "node:assert/strict";
-import test, { after, afterEach, before } from "node:test";
-import { fileURLToPath } from "node:url";
-import { createServer } from "vite";
-import { JSDOM } from "jsdom";
-import { setValueByPath } from "../admin-ui/src/utils.js";
+import test from "node:test";
+import { fireEvent, renderWorkspace, setupWorkspaceFormTests } from "./lib/admin-workspace-form.js";
 
-let vite;
-let dom;
-let React;
-let WorkspaceTab;
-let render;
-let fireEvent;
-let within;
-let cleanup;
-const originalGlobals = new Map();
-
-before(async () => {
-  dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
-  for (const name of ["window", "document", "navigator", "HTMLElement", "HTMLDetailsElement", "Node", "MutationObserver"]) {
-    originalGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
-  }
-  React = await import("react");
-  ({ render, fireEvent, within, cleanup } = await import("@testing-library/react/pure.js"));
-  vite = await createServer({
-    configFile: fileURLToPath(new URL("../admin-ui/vite.config.js", import.meta.url)),
-    root: fileURLToPath(new URL("..", import.meta.url)),
-    resolve: { dedupe: ["react", "react-dom"] },
-    server: { middlewareMode: true, watch: null, ws: false },
-    appType: "custom"
-  });
-  ({ default: WorkspaceTab } = await vite.ssrLoadModule("/admin-ui/src/components/WorkspaceTab.jsx"));
-});
-
-afterEach(() => cleanup?.());
-after(async () => {
-  await vite?.close();
-  dom?.window.close();
-  for (const [name, descriptor] of originalGlobals) {
-    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-    else delete globalThis[name];
-  }
-});
+setupWorkspaceFormTests();
 
 function mediaConfig({ enabled = true, mode = "adaptive", remote = false, generation = false } = {}) {
   return { media: {
@@ -54,25 +15,6 @@ function mediaConfig({ enabled = true, mode = "adaptive", remote = false, genera
     inlineImages: { maxBase64Bytes: 20971520, maxImages: 0, maxTotalBytes: 0, logPreviewChars: 0, redactInLogs: true },
     generation: { enabled: generation, defaultModel: "image-model", maxImages: 4 }
   } };
-}
-
-function renderWorkspace(config) {
-  const changes = [];
-  let currentConfig = config;
-  const updateConfig = next => {
-    currentConfig = next;
-    view.rerender(React.createElement(WorkspaceTab, { ...props, config: currentConfig }));
-  };
-  const props = { config, updateField: (path, value) => {
-    changes.push([path, value]);
-    const next = structuredClone(currentConfig);
-    setValueByPath(next, path, value);
-    updateConfig(next);
-  }, t: (_key, fallback) => fallback };
-  const view = render(React.createElement(WorkspaceTab, props));
-  const section = view.container.querySelector("#workspace-media");
-  section.open = true;
-  return { ...view, section, fields: within(section), changes, updateConfig };
 }
 
 test("media form keeps its navigation anchor, accordion group and four mode states", () => {

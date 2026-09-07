@@ -2,7 +2,7 @@ import { getUpstreamAuthHeaders } from "./auth.js";
 import { appendStructuredLog, buildContentLogSnapshot, resolveLogContentMode } from "./logs.js";
 import { recordError, recordRequest, recordUsage } from "./stats.js";
 import { recordRuntimeError, recordRuntimeRequest, recordRuntimeUsage } from "./runtime-store.js";
-import { getDescriptorProtocolProfile, resolveModelDescriptor } from "./model-catalog.js";
+import { resolveModelDescriptor } from "./model-catalog.js";
 import {
   findUpstream,
   findModel,
@@ -24,6 +24,13 @@ import {
 } from "./proxy/body.js";
 import { prepareImageGenerationRequest } from "./proxy/image-adapter.js";
 import { buildUpstreamHeaders } from "./proxy/upstream-headers.js";
+import { applyAnthropicBodyCompatibility } from "./proxy/anthropic-policy.js";
+import {
+  normalizeRouteProfileKey,
+  applyConfiguredRequestPolicy,
+  sanitizeToolControlsWithoutTools,
+  validateImageGenerationPolicy
+} from "./proxy/request-policy.js";
 import {
   chatToMessagesRequest,
   chatToResponsesRequest,
@@ -78,152 +85,8 @@ const DEFAULT_MAX_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
 const TEXT_PROTOCOL_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
 const MESSAGES_COUNT_TOKENS_ROUTE_KEY = "messages/count_tokens";
 const RESPONSES_COMPACT_ROUTE_KEY = "responses/compact";
-const VALID_ANTHROPIC_CACHE_TTLS = new Set(["5m", "1h"]);
-
-function anthropicCompatibility(config) {
-  return config?.compatibility?.anthropic || {};
-}
-
 function protocolShimCompatibility(config) {
   return config?.compatibility?.protocolShim || {};
-}
-
-function isSupportedAnthropicCacheLocation(path) {
-  if (path.length === 0) return true;
-  if (path.length === 2 && path[0] === "tools" && Number.isInteger(path[1])) return true;
-  if (path.length === 2 && path[0] === "system" && Number.isInteger(path[1])) return true;
-  return path.length === 4
-    && path[0] === "messages"
-    && Number.isInteger(path[1])
-    && path[2] === "content"
-    && Number.isInteger(path[3]);
-}
-
-function sanitizeAnthropicCacheControls(value, path = []) {
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => sanitizeAnthropicCacheControls(item, [...path, index]));
-    return;
-  }
-  if (!value || typeof value !== "object") return;
-
-  const currentType = typeof value.type === "string" ? value.type : "";
-  if ("cache_control" in value) {
-    const cacheControl = value.cache_control;
-    const ttl = typeof cacheControl?.ttl === "string" ? cacheControl.ttl : "";
-    if (
-      !isSupportedAnthropicCacheLocation(path)
-      || currentType === "thinking"
-      || currentType === "redacted_thinking"
-      || (currentType === "text" && !String(value.text || ""))
-      || !cacheControl
-      || typeof cacheControl !== "object"
-      || Array.isArray(cacheControl)
-      || cacheControl.type !== "ephemeral"
-      || (ttl && !VALID_ANTHROPIC_CACHE_TTLS.has(ttl))
-    ) {
-      delete value.cache_control;
-    } else {
-      value.cache_control = {
-        type: "ephemeral",
-        ...(ttl ? { ttl } : {})
-      };
-    }
-  }
-
-  for (const [key, child] of Object.entries(value)) {
-    if (key !== "cache_control") sanitizeAnthropicCacheControls(child, [...path, key]);
-  }
-}
-
-function resolveConfiguredAnthropicModelValues(config, profileName, modelId, model) {
-  const profiles = anthropicCompatibility(config)[profileName];
-  if (!profiles || typeof profiles !== "object") return null;
-  for (const candidate of [modelId, model?.targetModel, model?.id, model?.pricingRef]) {
-    const modelName = String(candidate || "").trim().toLowerCase();
-    const values = profiles[modelName];
-    if (Array.isArray(values) && values.length > 0) return values;
-  }
-  return null;
-}
-
-function resolveAnthropicModelPolicy(config, profileName, modelId, model, descriptor) {
-  const configuredValues = resolveConfiguredAnthropicModelValues(config, profileName, modelId, model);
-  const catalogProfile = getDescriptorProtocolProfile(descriptor, "messages");
-  const catalogPolicy = profileName === "thinkingTypesByModel"
-    ? catalogProfile?.thinking
-    : catalogProfile?.reasoning;
-  return {
-    values: configuredValues || catalogPolicy?.types || catalogPolicy?.levels || null,
-    aliases: catalogPolicy?.aliases || {},
-    validation: configuredValues ? "strict" : catalogPolicy?.validation || "passthrough"
-  };
-}
-
-function applyAnthropicBodyCompatibility(body, config, modelId, model, descriptor) {
-  if (!body || typeof body !== "object") return null;
-  const policy = anthropicCompatibility(config);
-  const thinkingType = typeof body.thinking?.type === "string"
-    ? body.thinking.type.trim()
-    : "";
-  if (thinkingType && policy.validateThinkingByModel !== false) {
-    const thinkingPolicy = resolveAnthropicModelPolicy(
-      config,
-      "thinkingTypesByModel",
-      modelId,
-      model,
-      descriptor
-    );
-    if (thinkingPolicy.validation === "strict" && thinkingPolicy.values && !thinkingPolicy.values.includes(thinkingType)) {
-      return {
-        param: "thinking.type",
-        message: `thinking.type=${thinkingType} is not supported by ${modelId}; use ${thinkingPolicy.values.join(" or ")}`
-      };
-    }
-  }
-  const effort = typeof body.output_config?.effort === "string"
-    ? body.output_config.effort.trim().toLowerCase()
-    : "";
-  if (effort && policy.validateThinkingByModel !== false) {
-    const effortPolicy = resolveAnthropicModelPolicy(
-      config,
-      "effortLevelsByModel",
-      modelId,
-      model,
-      descriptor
-    );
-    const normalizedEffort = effortPolicy.aliases[effort] || effort;
-    if (effortPolicy.validation === "strict" && effortPolicy.values && !effortPolicy.values.includes(normalizedEffort)) {
-      return {
-        param: "output_config.effort",
-        message: `output_config.effort=${effort} is not supported by ${modelId}; use ${effortPolicy.values.join(" or ")}`
-      };
-    }
-    body.output_config.effort = normalizedEffort;
-  }
-  if (policy.normalizeManualThinkingToolChoice !== false && body.thinking?.type === "enabled") {
-    const choiceType = body.tool_choice?.type;
-    if (choiceType === "any" || choiceType === "tool") {
-      body.tool_choice = {
-        ...body.tool_choice,
-        type: "auto"
-      };
-      delete body.tool_choice.name;
-    }
-  }
-  if (policy.sanitizeCacheControl !== false) {
-    sanitizeAnthropicCacheControls(body);
-  }
-  return null;
-}
-
-function sanitizeToolControlsWithoutTools(body) {
-  if (!body || typeof body !== "object") return;
-  const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
-  const hasLegacyFunctions = Array.isArray(body.functions) && body.functions.length > 0;
-  if (hasTools || hasLegacyFunctions) return;
-  delete body.tool_choice;
-  delete body.parallel_tool_calls;
-  delete body.function_call;
 }
 
 function emitInfoLog(payload) {
@@ -377,62 +240,8 @@ function emitTimingLog({
   });
 }
 
-function normalizeRouteProfileKey(routeKey) {
-  if (routeKey === "chat/completions") return "chatCompletions";
-  if (routeKey === "images/generations") return "imageGenerations";
-  return routeKey;
-}
-
-function normalizeStringList(value) {
-  return Array.isArray(value)
-    ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
-    : [];
-}
-
 function getPositiveByteLimit(value) {
   return Number.isInteger(value) && value > 0 ? value : 0;
-}
-
-function isAllowedByAllNonEmptyLists(fieldName, lists) {
-  for (const list of lists) {
-    if (list.size > 0 && !list.has(fieldName)) return false;
-  }
-  return true;
-}
-
-function applyConfiguredRequestPolicy(body, { config, routeKey, model, upstream }) {
-  if (!body || typeof body !== "object") return null;
-  const routeProfile = config?.routing?.routeProfiles?.[normalizeRouteProfileKey(routeKey)] || {};
-  const routeAllowed = new Set(normalizeStringList(routeProfile.allowedRequestFields));
-  const modelPolicy = model?.requestPolicy || {};
-  const modelAllowed = new Set(normalizeStringList(modelPolicy.allowedParams));
-  const modelBlocked = new Set(normalizeStringList(modelPolicy.blockedParams));
-  const upstreamPolicy = upstream?.requestPolicy || {};
-  const upstreamAllowed = new Set(normalizeStringList(upstreamPolicy.allowedParams));
-  const upstreamBlocked = new Set(normalizeStringList(upstreamPolicy.blockedParams));
-  const dropUnsupported = modelPolicy.dropUnsupportedParams === true
-    || upstreamPolicy.dropUnsupportedParams === true
-    || config?.proxy?.guards?.dropUnsupportedOpenAiParams === true;
-  const rejectedFields = [];
-
-  for (const fieldName of Object.keys(body)) {
-    if (fieldName === "model") continue;
-    const blocked = modelBlocked.has(fieldName) || upstreamBlocked.has(fieldName);
-    const allowed = isAllowedByAllNonEmptyLists(fieldName, [routeAllowed, modelAllowed, upstreamAllowed]);
-    if (!blocked && allowed) continue;
-    if (dropUnsupported) {
-      delete body[fieldName];
-      continue;
-    }
-    rejectedFields.push(fieldName);
-  }
-
-  if (!rejectedFields.length) return null;
-  return {
-    param: rejectedFields[0],
-    fields: rejectedFields,
-    message: `Unsupported request field${rejectedFields.length > 1 ? "s" : ""}: ${rejectedFields.join(", ")}`
-  };
 }
 
 function sendNativeErrorResponse(reply, { status, payload, contentType, retryAfter, requestId }) {
@@ -444,26 +253,6 @@ function sendNativeErrorResponse(reply, { status, payload, contentType, retryAft
     reply.header("retry-after", retryAfter);
   }
   reply.code(status).send(payload);
-}
-
-function validateImageGenerationPolicy(body, config) {
-  const generation = config?.media?.generation || {};
-  const maxImages = Number.isInteger(generation.maxImages) && generation.maxImages > 0
-    ? generation.maxImages
-    : 4;
-  const imageCount = body?.n == null ? 1 : Number(body.n);
-  if (!Number.isInteger(imageCount) || imageCount <= 0 || imageCount > maxImages) {
-    return { param: "n", message: `n must be an integer between 1 and ${maxImages}` };
-  }
-  const allowedSizes = normalizeStringList(generation.allowedSizes);
-  if (allowedSizes.length && body?.size != null && !allowedSizes.includes(String(body.size))) {
-    return { param: "size", message: `size must be one of: ${allowedSizes.join(", ")}` };
-  }
-  const allowedQualityModes = normalizeStringList(generation.allowedQualityModes);
-  if (allowedQualityModes.length && body?.quality != null && !allowedQualityModes.includes(String(body.quality))) {
-    return { param: "quality", message: `quality must be one of: ${allowedQualityModes.join(", ")}` };
-  }
-  return null;
 }
 
 function buildContentSnapshotFields(prefix, snapshot) {
