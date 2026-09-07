@@ -14,6 +14,7 @@ node --test test/stream-backpressure.test.js
 node --test test/governance-pricing.test.js
 node --test test/request-policy.test.js
 node --test test/admin-runtime-loader.test.js
+node --test test/admin-media-form.test.js
 node --test test/response-reader.test.js
 node --test test/usage-accounting.test.js
 node --test test/upstream-headers.test.js
@@ -33,6 +34,12 @@ The media and request-policy files also use the disposable route harness to veri
 upstream request counts and native request/error contracts. The backpressure suite
 covers all nine text-protocol directions. See the [optimization plan](../docs/development/optimization-plan.md)
 for milestone evidence, browser checks, and deferred work.
+
+The admin media form contract uses React Testing Library, jsdom and the existing Vite JSX transform
+under `node:test`. Install development dependencies with `npm ci`; no browser, backend or credentials
+are required. It renders `WorkspaceTab` and freezes media mode visibility, numeric zeros, hidden settings,
+list parsing and exact configuration update paths with controlled-input state feedback. Real-browser
+layout, translations and the review/save HTTP workflow remain separate browser checks.
 
 Response-reader tests freeze UTF-8, byte limits, timeout/cancellation and JSON parse errors, including
 stalled upstream cancellation cleanup. Usage-accounting tests compare governance with every statistics

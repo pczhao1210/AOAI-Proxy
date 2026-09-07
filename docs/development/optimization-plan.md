@@ -16,7 +16,7 @@
 | 1 | Media policy coverage, stalled downstream stream cancellation, Model Router pricing | Complete |
 | 2 | Header allowlists, retry status policy, stale admin statistics responses | Complete |
 | 3 | Opt-in adaptive image optimization, resource budgets, UI and observability | Engineering gates complete; real-image/load acceptance pending before production enablement |
-| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Core deduplication and upstream-header extraction verified; further orchestration/UI decomposition pending |
+| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Core/header and media form slices verified; further decomposition pending |
 | 5 | Optional remote image fetching with a separate security design | Deferred; requires an explicit need |
 
 ## Validation Evidence
@@ -77,6 +77,22 @@
     diagnostics and `git diff --check` passed. No frontend changes were made in this slice, so frontend
     build/browser checks were not rerun. Runtime configuration and persistent data were not edited.
 
+- Media form extraction: five component contracts passed on the original `WorkspaceTab` and after
+    extraction to `MediaPolicySection`. They freeze four mode states, section anchor/group, numeric zeros,
+    list parsing, boolean update paths and hidden-setting preservation. The test fixture uses the same
+    path setter as the application and feeds changes back into controlled inputs.
+- React Testing Library and jsdom are development-only dependencies; Vite loads JSX for `node:test`.
+    Editor diagnostics passed. Final gates passed: production build, 290 unit/integration tests and all
+    42 route contracts. The build regenerated `public/admin-app/`; runtime configuration/data were not edited.
+- Media browser checks passed at 1440x1000 and 390x844 with English and Chinese labels, no horizontal
+    overflow, and mobile section navigation/accordion grouping intact. Two intercepted config PUTs through
+    the review/save modal preserved numeric zeros, boolean/list values, exact paths and hidden legacy settings.
+    Browser checks used fixture APIs only, not a live backend. Real upstream/CLI/database and real-image/load
+    checks were not rerun for this UI-only extraction and remain deferred as documented below.
+- Dependency audit reports three vulnerable packages: Fastify (moderate), PostCSS and nanoid (high).
+    Their versions were not changed. The new test dependencies require an lru-cache patch update from
+    11.5.0 to 11.5.2. No automatic audit remediation was applied in this component-extraction slice.
+
 ## Phase 4 Slices
 
 | Slice | Status | Verification |
@@ -85,20 +101,24 @@
 | Pure retry decisions | Complete | Native JSON/SSE status policies, retry exhaustion, network policy and downstream-output boundary |
 | Internal usage normalization | Complete | Protocol/cache counters, zero/string/invalid inputs, all statistics buckets and unchanged pricing |
 | Upstream header assembly | Complete | Nine JSON/SSE directions and direct-module boundaries frozen; 285 tests and 42 routes pass |
+| Admin media-policy form | Complete | Five pre/post contracts, 290 tests, 42 routes, production build and bilingual desktop/mobile save/layout checks pass |
 | Remaining request orchestration and admin module decomposition | Pending | Split one independently testable responsibility at a time; preserve directional and UI contracts |
 
 ## Remaining Gates
 
 
 - Phases 0-2 are frozen with focused regressions, zero-upstream media rejection assertions, full unit/route validation, and browser ordering checks.
+- Dependency audit: three existing package findings remain open; assess affected usage and remediate in a separate bounded maintenance slice.
 - Real upstream, CLI client and real PostgreSQL checks have not been run; use their documented prerequisites.
 - Real-photo/OCR quality, production-load memory and real-client disconnect timing remain unverified;
     only synthetic codec cost and unit cancellation semantics have been measured. Adaptive stays opt-in.
 
 ## Next Smallest Step
 
-Extract the media-policy form from `admin-ui/src/components/WorkspaceTab.jsx`, first freezing its mode
-visibility, numeric zero values and saved configuration paths. Preserve the existing layout and controls.
+Triage the Fastify, PostCSS and nanoid audit findings before the next structural extraction. Establish
+affected usage and the smallest dependency update, then verify its focused contract plus build/unit/route gates.
+After that maintenance slice, the next UI candidate is the routing-policy form in `WorkspaceTab`, using
+the component test setup to freeze field paths and controls before extraction. Keep existing UI layout intact.
 Leave JSON/SSE execution loops and directional converters independent; further request-orchestration
 decomposition remains a later slice.
 Real-photo/OCR acceptance and deployment-sized load tests remain required before recommending adaptive enablement.
