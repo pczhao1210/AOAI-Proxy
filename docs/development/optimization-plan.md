@@ -28,7 +28,7 @@
 | 1 | Media policy coverage, stalled downstream stream cancellation, Model Router pricing | Complete |
 | 2 | Header allowlists, retry status policy, stale admin statistics responses | Complete |
 | 3 | Opt-in adaptive image optimization, resource budgets, UI and observability | Engineering gates complete; real-image/load acceptance pending before production enablement |
-| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Implementation complete; closeout focused checks pass, final acceptance deferred by request |
+| 4 | Deduplicate body readers, retry decisions and usage normalization; split large modules | Complete; final local unit/route/build/audit, isolated CLI and browser acceptance pass |
 | 5 | Optional remote image fetching with a separate security design | Deferred; requires an explicit need |
 
 ## Validation Evidence
@@ -116,9 +116,9 @@
 | Admin media-policy form | Complete | Five pre/post contracts, 290 tests, 42 routes, production build and bilingual desktop/mobile save/layout checks pass |
 | Admin routing-policy form | Complete | Seven pre/post routing contracts, 297 tests, 42 routes, build and bilingual desktop/mobile navigation/save checks pass |
 | Dependency security maintenance | Complete | Zero audit findings after npm ci; 55 pre/post checks, 290 tests, 42 routes and unchanged production build pass |
-| Logging content mode | Implemented; final acceptance deferred | Five pre/post confirmation/synchronization checks and all 17 neighboring form checks pass |
-| Generic request policy decisions | Implemented; final acceptance deferred | Six module checks, 26 policy checks and parameter/tool/image routes pass; invocation order unchanged |
-| Messages body compatibility decisions | Implemented; final acceptance deferred | Seven module checks, three pre/post compatibility routes and 24 nine-direction/header checks pass |
+| Logging content mode | Complete | Five direct checks, final 315-test suite and bilingual desktop/mobile confirmation/save acceptance pass |
+| Generic request policy decisions | Complete | Six module checks, 26 policy checks and final 315-test/42-route batch pass; invocation order unchanged |
+| Messages body compatibility decisions | Complete | Seven module checks, compatibility/header contracts and final unit/route/CLI batch pass |
 
 ## Logging Content Evidence
 
@@ -127,7 +127,8 @@
 - Five focused tests passed before and after extraction: defaults/options, canceled full mode, confirmed full
     mode with disabled remote sink, exit without confirmation and full-mode reentry. All 17 media/routing/log
     component checks and editor diagnostics pass. No logging runtime defaults or data were changed.
-- Final browser/save and full repository acceptance are deferred per the user's closeout instruction.
+- Browser/save and full repository acceptance were deferred during implementation closeout, then passed
+    after final validation was authorized; see the final batch below.
 
 ## Request Policy Evidence
 
@@ -147,8 +148,8 @@
 - Implementation and delivery documentation are complete. `npm run build` passed and regenerated
     `public/admin-app/` from the final admin sources. Touched-file editor diagnostics and `git diff --check`
     reported no errors; runtime configuration and data were not changed.
-- Full repository/browser/real-service validation remains deferred, not implicitly passed. Historical
-    whole-suite results above do not cover the final combined worktree.
+- Full repository/browser validation subsequently passed for the final combined baseline; see the final
+    batch below. Real-service validation remains unverified and is not implied by local passing results.
 
 ## Routing Form Evidence
 
@@ -196,15 +197,19 @@
 
 - Phases 0-2 are frozen with focused regressions, zero-upstream media rejection assertions, full unit/route validation, and browser ordering checks.
 - Dependency audit findings and maintenance regression gates are cleared as of 2026-09-07; this is not a guarantee against undisclosed vulnerabilities.
-- Real upstream, CLI client and real PostgreSQL checks have not been run; use their documented prerequisites.
+- Isolated Claude Code and Codex client contracts passed in final acceptance. Real upstream and real
+    PostgreSQL checks remain unrun because authorized test endpoints/credentials and an isolated database
+    connection are not configured. No live PostgreSQL container or host client is available.
 - Real-photo/OCR quality, production-load memory and real-client disconnect timing remain unverified;
     only synthetic codec cost and unit cancellation semantics have been measured. Adaptive stays opt-in.
 
 ## Next Smallest Step
 
-When final validation is authorized, execute the checklist below, starting with the final lockfile
-installation and audit. There are no remaining implementation or artifact-generation tasks within the
-agreed scope. Do not start remote fetching or additional structural slices.
+Local final acceptance is complete. Configure authorized real-upstream test environment variables privately
+in the terminal, then run the documented real protocol matrix preflight before paid/model calls. An isolated
+PostgreSQL test connection is separately required for live persistence acceptance. There are no remaining
+implementation or artifact-generation tasks within the agreed scope. Do not start remote fetching or
+additional structural slices.
 Real-photo/OCR acceptance and deployment-sized load tests remain required before recommending adaptive enablement.
 Keep existing compression defaults and remote URL passthrough unchanged. Synthetic photographic
 texture is a repeatable codec stress fixture, not evidence of real-model visual/OCR accuracy.
@@ -212,15 +217,46 @@ Structural deduplication is complete in phase 4; it does not satisfy image quali
 
 ## Final Validation Checklist
 
-Deferred by user request for the final combined worktree. Prior slice results above are historical evidence,
-not a substitute for this acceptance batch.
+Final validation was authorized on 2026-09-07 after implementation closeout. The batch started from a clean
+`aoai-nextgen` worktree at `8f61205`. Prior slice results above remain historical evidence, separate from this batch.
 
-- [ ] Run `npm ci` and `npm audit` against the final lockfile.
-- [ ] Run `npm run build`, `npm run test:unit` and `npm run test:routes`; review diagnostics and the final diff.
-- [ ] In English and Chinese at desktop/mobile widths, check workspace section navigation, media/routing
+- [x] Run `npm ci` and `npm audit` against the final lockfile: clean installation passed, zero vulnerabilities.
+- [x] Run `npm run build`, `npm run test:unit` and `npm run test:routes`: build passed, 315 tests passed with
+    zero failures/skips, and all 42 route contracts passed.
+- [x] Review final editor diagnostics and diff: no workspace diagnostics or whitespace errors; the rebuilt
+    production assets are unchanged. Only this plan was modified, not application sources or runtime state.
+- [x] In English and Chinese at desktop/mobile widths, check workspace section navigation, media/routing
     controls and review/save JSON paths and types with isolated fixture APIs. Check full-log cancellation,
     confirmation, exit and reentry, preserving both local and remote content-mode fields.
-- [ ] Run documented Claude Code, Codex and real PostgreSQL checks when prerequisites are available.
+- [x] Run isolated CLI contracts: Claude Code 2.1.226 and Codex 0.153.2 passed, including native stream
+    parsing, metadata/beta forwarding, model mapping/catalog caching and upstream credential isolation.
+- [ ] Run real PostgreSQL checks with an isolated database. No test connection variables or host PostgreSQL
+      client tools or running PostgreSQL containers are available; passing unit tests do not prove live persistence.
 - [ ] Run documented real-upstream JSON/SSE and client-disconnect checks with authorized credentials and models.
+      All documented `AOAI_PROXY_REAL_*` and required `AOAI_PROXY_MATRIX_*` connection/auth variables checked
+      were absent. No real model request was sent and no existing runtime credentials were read.
 - [ ] Complete real-photo/OCR quality and deployment-sized CPU/RSS/queue/load acceptance before recommending
     adaptive enablement. Keep it opt-in until that evidence exists.
+
+## Final Browser And Image Evidence
+
+- The freshly built production bundle was served by a temporary loopback-only preview. Every admin API
+    request was intercepted by fixture handlers; configuration PUTs never reached the running proxy.
+- English and Chinese at 1440x1000 and 390x844 passed logging, media and routing workflows. Twelve verified
+    saves comprise eight full/summary logging saves and four combined media/routing saves. Twelve native
+    confirmation prompts matched cancellation, acceptance and reentry expectations; leaving full did not prompt.
+- Saved payloads preserve both content-mode fields, disabled remote logging, numeric zeros, ordered/case-sensitive
+    lists, empty beta allowlists, all routing switches, hidden compression/remote settings and unrelated config.
+    Disabled routes retain editable policy controls; legacy/preserve/adaptive field visibility remains correct.
+- Final DOM checks assert the actual viewport dimensions, section navigation, no horizontal document overflow
+    and no out-of-viewport controls for all three sections in all four combinations. No browser runtime errors
+    were captured. Embedded screenshots were inspected, but the editor screenshot tool clips to its panel and
+    resets viewport emulation; a complete full-width desktop screenshot was not archived. A distinct-size reset
+    restored emulation before the final geometry assertions. No application changes were needed.
+- `node test/benchmark-images.js` passed all preservation assertions: 15 mode/fixture combinations, 12 samples
+    each. Adaptive PNG/transparent PNG/GIF remained byte-identical; synthetic JPEG savings were 92.94% and
+    rotated JPEG savings 92.93%. Adaptive p95 was 62.94 ms / 79.24 ms respectively; per-12-sample CPU totals
+    were 702.92 ms / 846.04 ms. Process RSS started at 86.72 MiB and peaked at 120.17 MiB.
+- Benchmark environment: Node 24.16.0, Sharp 0.35.4, Linux x64, Xeon E5-2673 v4. This is a sequential synthetic
+    preparation benchmark, not production load or visual/OCR accuracy evidence. Compression defaults and
+    remote URL behavior remain unchanged; phase 5 remains deferred.
