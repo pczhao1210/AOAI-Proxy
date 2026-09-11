@@ -110,6 +110,27 @@ export function recordError(model, context = {}) {
   getKeyStats(resolveKeyId(context)).errors += 1;
 }
 
+export function recordMediaUsage(model, usage, context = {}) {
+  for (const bucket of [stats.totals, getModelStats(model), getKeyStats(resolveKeyId(context))]) {
+    bucket.media ||= { requests: 0, observedRequests: 0, unknownUsageRequests: 0, unknownCostRequests: 0,
+      counters: {}, estimatedCostAmount: null };
+    bucket.media.requests += 1;
+    if (usage?.usageStatus === "observed") bucket.media.observedRequests += 1;
+    else bucket.media.unknownUsageRequests += 1;
+    if (usage?.costStatus !== "priced") bucket.media.unknownCostRequests += 1;
+    bucket.media.costAmounts ||= {};
+    for (const [currency, amount] of Object.entries(usage?.knownCostAmounts || {})) {
+      if (Number.isFinite(amount) && amount >= 0) bucket.media.costAmounts[currency] = (bucket.media.costAmounts[currency] ?? 0) + amount;
+    }
+    const currencies = Object.keys(bucket.media.costAmounts);
+    bucket.media.estimatedCostAmount = bucket.media.unknownCostRequests === 0 && currencies.length === 1 ? bucket.media.costAmounts[currencies[0]] : null;
+    bucket.media.currency = currencies.length === 1 ? currencies[0] : null;
+    for (const [name, value] of Object.entries(usage?.counters || {})) {
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) bucket.media.counters[name] = (bucket.media.counters[name] ?? 0) + value;
+    }
+  }
+}
+
 export function recordUsage(model, usage, context = {}) {
   if (!usage) return;
   const { promptTokens: prompt, completionTokens: completion, totalTokens: total, cachedTokens: cached } = getUsageTotals(usage);

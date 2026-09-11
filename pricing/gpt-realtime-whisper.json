@@ -29,6 +29,13 @@
     "realtimeAudioDurationPerSecond": 0.00028
   },
   "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "gpt-realtime-whisper",
+    "targetModel": "gpt-realtime-whisper",
+    "pricingRef": "gpt-realtime-whisper",
+    "capabilities": ["realtime", "transcription", "speech-to-text", "streaming"],
+    "routes": { "realtime/transcription_sessions": "realtime/transcription_sessions" }
+  },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-whisper",
     "pricing": "https://developers.openai.com/api/docs/pricing"

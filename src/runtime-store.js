@@ -1090,6 +1090,20 @@ export function recordRuntimeUsage(config, fields = {}) {
   }));
 }
 
+export function recordRuntimeMediaUsage(config, fields = {}) {
+  const settings = resolveRuntimeStoreSettings(config);
+  const media = fields.mediaUsage || {};
+  enqueueRuntimeEvent(settings, buildEventRow("usage", {
+    ...fields,
+    payload: { source: "media", usageSource: "upstream", media: {
+      counters: media.counters || {}, usageStatus: media.usageStatus || "unknown", costStatus: media.costStatus || "unknown",
+      estimatedCostAmount: media.estimatedCostAmount ?? null, currency: media.currency || null,
+      knownCostAmounts: media.knownCostAmounts || {}, unknownCostItems: media.unknownCostItems || 0,
+      unknownUsageItems: media.unknownUsageItems || 0, pricingSources: media.pricingSources || []
+    } }
+  }));
+}
+
 function numeric(value) {
   return Number(value) || 0;
 }
@@ -1581,6 +1595,47 @@ async function queryFilteredRecentSignals(settings, filters, eventType, limit = 
   }));
 }
 
+async function queryMediaAggregates(settings, filters) {
+  const pool = getRuntimeStorePool(settings);
+  const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
+  const filter = buildEventFilterParts(filters);
+  const result = await pool.query(`
+    WITH media_events AS (
+      SELECT model_id, key_id, payload->'media' AS media
+      FROM ${schemaName}.${eventsTableName}
+      WHERE event_type = 'usage' AND payload->>'source' = 'media'
+      ${filter.clauses.length ? `AND ${filter.clauses.join(" AND ")}` : ""}
+    ), scoped AS (
+      SELECT 'total' AS scope_type, '' AS scope_key, media FROM media_events
+      UNION ALL SELECT 'model', model_id, media FROM media_events
+      UNION ALL SELECT 'key', key_id, media FROM media_events
+    ), counts AS (
+      SELECT scope_type, scope_key, COUNT(*) AS requests,
+        COUNT(*) FILTER (WHERE media->>'usageStatus' = 'observed') AS observed_requests,
+        COUNT(*) FILTER (WHERE media->>'usageStatus' IS DISTINCT FROM 'observed') AS unknown_usage_requests,
+        COUNT(*) FILTER (WHERE media->>'costStatus' IS DISTINCT FROM 'priced') AS unknown_cost_requests
+      FROM scoped GROUP BY scope_type, scope_key
+    ), counter_sums AS (
+      SELECT scope_type, scope_key, counter.key, SUM(counter.value::numeric) AS value
+      FROM scoped CROSS JOIN LATERAL jsonb_each_text(COALESCE(media->'counters', '{}'::jsonb)) counter
+      GROUP BY scope_type, scope_key, counter.key
+    ), counters AS (
+      SELECT scope_type, scope_key, jsonb_object_agg(key, value) AS values
+      FROM counter_sums GROUP BY scope_type, scope_key
+    ), cost_sums AS (
+      SELECT scope_type, scope_key, cost.key, SUM(cost.value::numeric) AS value
+      FROM scoped CROSS JOIN LATERAL jsonb_each_text(COALESCE(media->'knownCostAmounts', '{}'::jsonb)) cost
+      GROUP BY scope_type, scope_key, cost.key
+    ), costs AS (
+      SELECT scope_type, scope_key, jsonb_object_agg(key, value) AS values
+      FROM cost_sums GROUP BY scope_type, scope_key
+    )
+    SELECT counts.*, counters.values AS counters, costs.values AS cost_amounts
+    FROM counts LEFT JOIN counters USING (scope_type, scope_key) LEFT JOIN costs USING (scope_type, scope_key)
+  `, filter.values);
+  return result.rows;
+}
+
 export async function getRuntimeStatsSnapshot(config, fallbackStats = null, options = {}) {
   const settings = resolveRuntimeStoreSettings(config);
   if (!settings.configured) {
@@ -1607,7 +1662,8 @@ export async function getRuntimeStatsSnapshot(config, fallbackStats = null, opti
       blockedReasons,
       warningEvents,
       recentBlocked,
-      recentWarnings
+      recentWarnings,
+      mediaRows
     ] = await Promise.all([
       useFilteredQueryPath ? queryFilteredTotals(settings, filters) : queryTotals(settings),
       useFilteredQueryPath ? queryFilteredPerModel(settings, filters) : queryPerModel(settings),
@@ -1619,7 +1675,8 @@ export async function getRuntimeStatsSnapshot(config, fallbackStats = null, opti
       useFilteredQueryPath ? queryFilteredTopSignalScopes(settings, filters, "blocked", "blocked_reason", 10) : queryTopSignalScopes(settings, "blocked_reason", "blocked_count", 10),
       useFilteredQueryPath ? queryFilteredTopSignalScopes(settings, filters, "warning", "signal_name", 10) : queryTopSignalScopes(settings, "warning_event", "warning_count", 10),
       useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "blocked", 12) : queryRecentSignals(settings, "blocked", 12),
-      useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "warning", 12) : queryRecentSignals(settings, "warning", 12)
+      useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "warning", 12) : queryRecentSignals(settings, "warning", 12),
+      queryMediaAggregates(settings, filters)
     ]);
 
     const snapshot = {
@@ -1665,6 +1722,19 @@ export async function getRuntimeStatsSnapshot(config, fallbackStats = null, opti
 
     for (const row of perKeyRows) {
       snapshot.perKey[row.key_id] = buildAggregateNode(row);
+    }
+
+    for (const row of mediaRows) {
+      const costAmounts = asPlainObject(row.cost_amounts);
+      const currencies = Object.keys(costAmounts);
+      const bucket = row.scope_type === "total" ? snapshot.totals
+        : row.scope_type === "model" ? (snapshot.perModel[row.scope_key] ||= { ...buildAggregateNode({}), actualModels: {} })
+          : (snapshot.perKey[row.scope_key] ||= buildAggregateNode({}));
+      bucket.media = { requests: numeric(row.requests), observedRequests: numeric(row.observed_requests),
+        unknownUsageRequests: numeric(row.unknown_usage_requests), unknownCostRequests: numeric(row.unknown_cost_requests),
+        counters: asPlainObject(row.counters), costAmounts,
+        estimatedCostAmount: numeric(row.unknown_cost_requests) === 0 && currencies.length === 1 ? costAmounts[currencies[0]] : null,
+        currency: currencies.length === 1 ? currencies[0] : null, detailRetentionDays: settings.detailRetentionDays };
     }
 
     return snapshot;
@@ -1730,7 +1800,9 @@ export async function hydrateGovernanceRuntime(config, keyId, rateWindowStartedA
       ),
       budget_requests AS (
         SELECT
-          COUNT(*) FILTER (WHERE event_type = 'usage') AS budget_requests
+          COUNT(*) FILTER (WHERE event_type = 'usage') AS budget_requests,
+          COUNT(*) FILTER (WHERE event_type = 'usage' AND payload->>'source' = 'media'
+            AND payload->'media'->>'costStatus' IS DISTINCT FROM 'priced') AS budget_media_unknown_cost_requests
         FROM ${schemaName}.${eventsTableName}
         WHERE key_id = $1 AND occurred_at >= $3::timestamptz
       )
@@ -1748,6 +1820,7 @@ export async function hydrateGovernanceRuntime(config, keyId, rateWindowStartedA
         rate_window.rate_cached_tokens,
         rate_window.rate_blocked_requests,
         budget_requests.budget_requests,
+        budget_requests.budget_media_unknown_cost_requests,
         budget_window.budget_prompt_tokens,
         budget_window.budget_completion_tokens,
         budget_window.budget_total_tokens,

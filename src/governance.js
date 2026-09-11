@@ -149,6 +149,7 @@ async function hydrateRuntimeStateIfNeeded(config, consumer, runtime, rateLimitS
         runtime.rateWindow.cachedTokens = toNonNegativeInteger(persisted.rate_cached_tokens, runtime.rateWindow.cachedTokens);
         runtime.rateWindow.blockedRequests = toNonNegativeInteger(persisted.rate_blocked_requests, runtime.rateWindow.blockedRequests);
         runtime.budgetWindow.requests = toNonNegativeInteger(persisted.budget_requests, runtime.budgetWindow.requests);
+        runtime.budgetWindow.mediaUnknownCostRequests = toNonNegativeInteger(persisted.budget_media_unknown_cost_requests, runtime.budgetWindow.mediaUnknownCostRequests || 0);
         runtime.budgetWindow.promptTokens = toNonNegativeInteger(persisted.budget_prompt_tokens, runtime.budgetWindow.promptTokens);
         runtime.budgetWindow.completionTokens = toNonNegativeInteger(persisted.budget_completion_tokens, runtime.budgetWindow.completionTokens);
         runtime.budgetWindow.totalTokens = toNonNegativeInteger(persisted.budget_total_tokens, runtime.budgetWindow.totalTokens);
@@ -195,7 +196,7 @@ function getBudgetSettings(config, apiKey) {
   return {
     enabled: defaults.enabled === true || limitAmount > 0,
     limitAmount,
-    currency: String(override.currency || defaults.defaultCurrency || "USD"),
+    currency: "USD",
     windowType: String(override.windowType || defaults.defaultWindowType || "monthly"),
     softLimitRatio: Math.min(1, Math.max(0, toFiniteNumber(override.softLimitRatio ?? defaults.softLimitRatio, 0.8))),
     hardLimitAction: String(override.hardLimitAction || defaults.hardLimitAction || "block")
@@ -226,7 +227,7 @@ function normalizePricingEntry(entry, defaultCurrency) {
     return null;
   }
   return {
-    currency: String(entry.currency || defaultCurrency || "USD"),
+    currency: "USD",
     inputPer1kTokens,
     outputPer1kTokens,
     cachedInputPer1kTokens
@@ -294,7 +295,7 @@ function resolvePricingModel(config, model, actualModelName) {
 }
 
 function resolvePricing(config, model, descriptor = null) {
-  const defaultCurrency = config?.access?.budgets?.defaultCurrency || "USD";
+  const defaultCurrency = "USD";
   const directPricing = normalizePricingEntry(model?.pricing, defaultCurrency);
   if (directPricing) {
     return { pricing: directPricing, source: "model.pricing" };
@@ -329,7 +330,7 @@ function isModelRouterRequest(model) {
 
 function estimateUsageCost(config, model, usage, actualModelName, descriptor = null) {
   const totals = getUsageTotals(usage);
-  const defaultCurrency = config?.access?.budgets?.defaultCurrency || "USD";
+  const defaultCurrency = "USD";
   const modelRouterRequest = isModelRouterRequest(model);
   const pricingModelResolution = resolvePricingModel(config, model, actualModelName);
   const actualModelResolved = pricingModelResolution.actualModelName
@@ -506,6 +507,16 @@ export function checkConsumerModelAccess(consumer, model) {
   };
 }
 
+export function checkUnmeteredRequestAccess(config, consumer) {
+  const rateLimit = getRateLimitSettings(config, consumer?.apiKey);
+  const budget = getBudgetSettings(config, consumer?.apiKey);
+  if (rateLimit.tpm > 0 || (budget.enabled && budget.limitAmount > 0)) {
+    return { ok: false, status: 403, code: "MEDIA_METERING_REQUIRED",
+      message: "This key requires token or cost metering that is unavailable for this media request" };
+  }
+  return { ok: true };
+}
+
 export async function acquireRequestGovernance(config, consumer, model, now = Date.now(), requestInfo = {}) {
   if (!consumer?.keyId) {
     return { ok: true, lease: { release() {} } };
@@ -622,12 +633,33 @@ export function noteGovernanceError(consumer) {
   runtime.totalErrors += 1;
 }
 
+export function recordGovernanceMediaUsage(config, consumer, usage, now = Date.now()) {
+  const budgetSettings = getBudgetSettings(config, consumer?.apiKey);
+  const totals = getUsageTotals({ input_tokens: usage.counters?.inputTokens, output_tokens: usage.counters?.outputTokens,
+    total_tokens: usage.counters?.totalTokens, cached_tokens: usage.counters?.cachedTokens });
+  const amount = Object.values(usage.knownCostAmounts || {}).reduce((total, value) =>
+    total + (Number.isFinite(value) && value >= 0 ? value : 0), 0);
+  const result = { ...totals, amount: Number.isFinite(amount) && amount >= 0 ? amount : 0, currency: budgetSettings.currency };
+  if (!consumer?.keyId) return result;
+  const runtime = ensureKeyRuntime(consumer.keyId);
+  resetRateWindowIfNeeded(runtime, getRateLimitSettings(config, consumer.apiKey), now);
+  resetBudgetWindowIfNeeded(runtime, budgetSettings, now);
+  runtime.lastSeenAt = toIsoString(now);
+  for (const window of [runtime.rateWindow, runtime.budgetWindow]) {
+    for (const field of ["promptTokens", "completionTokens", "totalTokens", "cachedTokens"]) window[field] += totals[field];
+  }
+  runtime.budgetWindow.requests += 1;
+  runtime.budgetWindow.spentAmount += result.amount;
+  runtime.budgetWindow.mediaUnknownCostRequests = (runtime.budgetWindow.mediaUnknownCostRequests || 0) + (usage.costStatus === "priced" ? 0 : 1);
+  return result;
+}
+
 export function recordGovernanceUsage(config, consumer, model, usage, now = Date.now(), actualModelName = "", metadata = {}) {
   if (!consumer?.keyId || !usage) {
     return {
       configured: false,
       amount: 0,
-      currency: config?.access?.budgets?.defaultCurrency || "USD",
+      currency: "USD",
       source: "",
       actualModelName: String(actualModelName || ""),
       ...getUsageTotals(usage)

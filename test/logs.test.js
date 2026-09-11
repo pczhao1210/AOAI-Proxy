@@ -173,6 +173,19 @@ test("content snapshots omit raw Base64 and Base64URL values without explicit b6
   assert.doesNotMatch(snapshot.bodyJson, /QUJDREVGRw==/);
 });
 
+test("content snapshots never retain opaque encrypted reasoning state", () => {
+  configureLogs({ messageContentMode: "full", redactApiKeyInfo: false });
+  const message = { role: "assistant", content: "Visible answer", reasoning: { encrypted_content: "opaque reasoning probe!" } };
+  const original = structuredClone(message);
+  for (const mode of ["summary", "full"]) {
+    const snapshot = buildContentLogSnapshot({ messages: [message] }, { mode, previewChars: 4096 });
+    assert.doesNotMatch(JSON.stringify(snapshot), /opaque reasoning probe/);
+    assert.match(snapshot.preview, /Visible answer/);
+    assert.match(snapshot.preview, /\[REDACTED\]/);
+  }
+  assert.deepEqual(message, original);
+});
+
 test("content snapshots do not decode or omit ordinary long text as Base64", () => {
   configureLogs();
   const content = "x".repeat(1024 * 1024);

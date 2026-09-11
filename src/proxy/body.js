@@ -155,6 +155,11 @@ function pruneMeaningless(value, options = {}) {
     return changed ? out : value;
   }
   if (typeof value === "object") {
+    if (
+      options.preserveEncryptedMessages
+      && value.role === "assistant"
+      && typeof value.reasoning?.encrypted_content === "string"
+    ) return value;
     let changed = false;
     const out = {};
     for (const [k, v] of Object.entries(value)) {

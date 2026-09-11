@@ -123,6 +123,39 @@
     }
   },
   "media": {
+    "http": {
+      "enabled": false,
+      "maxUploadBytes": 26214400,
+      "maxResponseBytes": 104857600,
+      "maxFiles": 10,
+      "maxFields": 64,
+      "maxFieldBytes": 65536,
+      "maxConcurrentUploads": 4,
+      "maxBufferedUploadBytes": 314572800,
+      "uploadTimeoutMs": 60000
+    },
+    "realtime": {
+      "enabled": false,
+      "maxConnections": 100,
+      "maxMessageBytes": 8388608,
+      "maxBufferedBytes": 16777216,
+      "handshakeTimeoutMs": 10000,
+      "initialConfigTimeoutMs": 10000,
+      "maxInitialConfigBytes": 65536,
+      "idleTimeoutMs": 60000,
+      "maxSessionMs": 3600000,
+      "heartbeatMs": 30000
+    },
+    "webrtc": {
+      "enabled": false,
+      "allowClientSecrets": false,
+      "maxCalls": 100,
+      "maxSetupBytes": 262144,
+      "maxResponseBytes": 262144,
+      "setupTimeoutMs": 15000,
+      "callTtlMs": 3600000,
+      "clientSecretTtlSeconds": 60
+    },
     "inputCompression": {
       "enabled": false,
       "mode": "legacy",

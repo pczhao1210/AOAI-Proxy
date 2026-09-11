@@ -125,6 +125,7 @@ const SENSITIVE_FIELD_KEYS = new Set([
   "secret",
   "credential",
   "subscriptionkey",
+  "encryptedcontent",
   "sastoken"
 ]);
 

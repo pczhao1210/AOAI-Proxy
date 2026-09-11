@@ -22,7 +22,44 @@ node --test test/response-reader.test.js
 node --test test/usage-accounting.test.js
 node --test test/upstream-headers.test.js
 node --test test/image-optimization.test.js test/image-work-queue.test.js test/image-config.test.js test/image-routes.test.js
+node --test test/mai-routes.test.js test/media-http.test.js test/azure-speech.test.js
+node --test test/realtime.test.js test/webrtc.test.js
 ```
+
+MAI/media tests freeze provider-specific URLs, authentication, multipart file/field fidelity, SSML,
+binary/text/SSE errors and terminal events. Realtime/WebRTC tests use local mock upstreams and
+disposable proxies to cover upgrades, bounded first configuration, model mapping, call ownership,
+provider-specific SDP setup, credential export, expiration and lease cleanup. Usage-accounting tests
+cover explicit zeros, cumulative deltas, duplicate terminals, channel/cache rates, duration/character
+units, provider price isolation and known/unknown currency totals. Media form tests cover independent
+transport gates, limits, client-secret confirmation and known/unknown cost labels.
+
+Optional local integration gates (never point these at production):
+
+```bash
+RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger node --test test/runtime-store.test.js
+REALTIME_CADDY_TEST_IMAGE=LOCAL_IMAGE_WITH_CADDY node --test --test-name-pattern='generated Caddy' test/realtime.test.js
+```
+
+The database gate requires an explicitly supplied disposable loopback PostgreSQL connection, creates
+and drops its own schema, and verifies known/unknown event persistence, rollups, connection-pool
+recreation, governance restoration and key/time-filtered media statistics. The default unit suite
+does not register this gate without the variable. The Caddy gate requires Linux Docker host networking
+and a local image with `caddy`; it feeds the generated config through stdin with the admin endpoint
+disabled, starts a disposable container, and verifies HTTP audio bytes, large WS messages and idle
+closure through the actual reverse proxy. It does not exercise public TLS, production networking,
+slow-consumer saturation through Caddy or real audio. Direct WS slow-consumer/shutdown checks remain
+in the ordinary realtime suite. Neither optional gate uses the running service's config.
+
+These tests never establish real audio or provider acceptance. Live MAI/OpenAI/Azure verification
+requires separately authorized deployments, endpoint versions/regions, credentials, legal small audio/image
+fixtures, cost limits and an isolated proxy. Verify API key and endpoint-specific Entra authentication
+independently. WebRTC additionally needs HTTPS/localhost, microphone permission, actual tracks/data
+channels and confirmed provider hangup. Verify WS upgrade/idle/backpressure through the generated
+Caddy/container chain separately; do not edit a running Caddyfile to make mock tests pass. Azure
+specialized transcription/translation control needs its own evidence, not inference from general realtime.
+The text `test:real:matrix`, CLI tests and synthetic latency checks do not replace this media matrix.
+Current milestones and unrun gates are tracked in the [MAI/voice plan](../docs/development/mai-voice-realtime-plan.md).
 
 Optional synthetic image CPU/RSS and preparation-latency baseline:
 

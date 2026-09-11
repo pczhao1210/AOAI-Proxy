@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fireEvent, renderWorkspace, setupWorkspaceFormTests } from "./lib/admin-workspace-form.js";
+import { formatEstimatedCost } from "../admin-ui/src/utils.js";
 
 setupWorkspaceFormTests();
+
+test("media cost labels show the settled USD subtotal once and preserve unknown usage", () => {
+  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0 }), "0.0000 USD");
+  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0.006, media: { costAmounts: { USD: 0.006 }, unknownCostRequests: 0 } }), "0.0060 USD");
+  const stats = { estimatedCostAmount: 0.008, estimatedCostCurrency: "EUR", media: { costAmounts: { USD: 0.008 }, unknownCostRequests: 1 } };
+  assert.equal(formatEstimatedCost(stats), "0.0080 USD + Unknown");
+  assert.equal(formatEstimatedCost(stats, () => "unpriced"), "0.0080 USD + unpriced");
+});
 
 function mediaConfig({ enabled = true, mode = "adaptive", remote = false, generation = false } = {}) {
   return { media: {
@@ -36,7 +45,7 @@ test("media form keeps its navigation anchor, accordion group and four mode stat
       ["Output Format", scenario.output], ["Minimum Input Bytes", scenario.adaptive]
     ]) assert.equal(!!view.fields.queryByLabelText(label, { exact: true }), present, `${scenario.mode}: ${label}`);
     assert.ok(view.fields.getByLabelText("Inline Max Base64 Bytes"));
-    assert.equal(view.section.querySelectorAll('input[type="checkbox"]').length, 6);
+    assert.equal(view.section.querySelectorAll('input[type="checkbox"]').length, 9);
   }
   assert.deepEqual(view.changes, []);
 });
@@ -114,11 +123,36 @@ test("media switches retain their exact boolean configuration paths", () => {
     ["Prefer mozjpeg", "media.inputCompression.useMozJpeg"],
     ["Allow Remote Images", "media.remoteImages.allow"],
     ["Redact Inline Image Logs", "media.inlineImages.redactInLogs"],
-    ["Enable Image Generation Route", "media.generation.enabled"]
+    ["Enable Image Generation Route", "media.generation.enabled"],
+    ["Enable HTTP Audio and Image Edits", "media.http.enabled"],
+    ["Enable Realtime WebSocket", "media.realtime.enabled"],
+    ["Enable WebRTC Setup and Control", "media.webrtc.enabled"]
   ]) {
     const checkbox = view.fields.getByLabelText(label, { exact: true });
     const expected = !checkbox.checked;
     fireEvent.click(checkbox);
     assert.deepEqual(view.changes.at(-1), [path, expected]);
   }
+});
+
+test("audio transport limits retain hidden settings and require confirmation for provider credential export", context => {
+  const config = mediaConfig({ enabled: false });
+  config.media.http = { enabled: false, maxUploadBytes: 4096 };
+  config.media.realtime = { enabled: true, idleTimeoutMs: 90000 };
+  config.media.webrtc = { enabled: true, allowClientSecrets: false };
+  const view = renderWorkspace(config);
+  assert.equal(view.fields.queryByLabelText("HTTP Upload Limit Bytes"), null);
+  assert.equal(view.fields.getByLabelText("Realtime Idle Timeout ms").value, "90000");
+  assert.equal(view.fields.getByLabelText("Client Secret TTL Seconds").value, "60");
+  fireEvent.change(view.fields.getByLabelText("Realtime Idle Timeout ms"), { target: { value: "60000" } });
+  assert.deepEqual(view.changes.at(-1), ["media.realtime.idleTimeoutMs", 60000]);
+  const confirm = context.mock.method(window, "confirm", () => false);
+  const before = view.changes.length;
+  fireEvent.click(view.fields.getByLabelText("Export Upstream Client Secrets"));
+  assert.equal(view.changes.length, before);
+  confirm.mock.mockImplementation(() => true);
+  fireEvent.click(view.fields.getByLabelText("Export Upstream Client Secrets"));
+  assert.deepEqual(view.changes.at(-1), ["media.webrtc.allowClientSecrets", true]);
+  fireEvent.click(view.fields.getByLabelText("Enable HTTP Audio and Image Edits"));
+  assert.equal(view.fields.getByLabelText("HTTP Upload Limit Bytes").value, "4096");
 });

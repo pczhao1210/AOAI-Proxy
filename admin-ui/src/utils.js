@@ -1,5 +1,11 @@
 export const REDACTED_SECRET_VALUE = "__AOAI_PROXY_REDACTED__";
 
+export function formatEstimatedCost(stats = {}, t = (_key, fallback) => fallback) {
+  const parts = [`${Number(stats.estimatedCostAmount || 0).toFixed(4)} USD`];
+  if (stats.media?.unknownCostRequests > 0) parts.push(t("runtime.costUnknown", "Unknown"));
+  return parts.join(" + ");
+}
+
 export const DEFAULT_KEY_TEMPLATE = {
   id: "",
   displayName: "",
@@ -52,7 +58,12 @@ export const DEFAULT_UPSTREAM_TEMPLATE = {
     "messages/count_tokens": "/anthropic/v1/messages/count_tokens",
     "images/generations": "/openai/v1/images/generations",
     "openai-image": "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview",
-    "blackforest-image": "/providers/blackforestlabs/v1/{deployment}?api-version=preview"
+    "blackforest-image": "/providers/blackforestlabs/v1/{deployment}?api-version=preview",
+    "mai-image": "/mai/v1/images/generations",
+    "mai-image-edits": "/mai/v1/images/edits",
+    "mai-chat": "/mai/v1/chat/completions",
+    "azure-speech-tts": "/cognitiveservices/v1",
+    "azure-speech-transcribe": "/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
   }
 };
 
@@ -182,7 +193,11 @@ export function buildUpstreamFromPricingTemplate(definition, upstreamName) {
     ...cloneJson(DEFAULT_UPSTREAM_TEMPLATE),
     name: upstreamName,
     provider: definition?.provider || DEFAULT_UPSTREAM_TEMPLATE.provider,
-    capabilities: normalizeStringArray(definition?.upstreamTemplate?.capabilities || definition?.capabilities)
+    capabilities: normalizeStringArray(definition?.upstreamTemplate?.capabilities || definition?.capabilities),
+    routes: {
+      ...cloneJson(DEFAULT_UPSTREAM_TEMPLATE.routes),
+      ...cloneJson(asPlainObject(definition?.upstreamTemplate?.routes))
+    }
   };
 }
 

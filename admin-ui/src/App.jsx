@@ -46,6 +46,7 @@ import {
   ensureUniqueName,
   formatDateTime,
   formatBytes,
+  formatEstimatedCost,
   getSuggestedModelRouteValues,
   getPayloadEditorNote,
   getLogDetails,
@@ -1091,7 +1092,7 @@ export default function App() {
     return {
       requests: totals.requests || 0,
       errors: totals.errors || 0,
-      cost: `${Number(totals.estimatedCostAmount || 0).toFixed(4)} ${totals.estimatedCostCurrency || "USD"}`,
+      cost: formatEstimatedCost(totals, t),
       blocked,
       persistence: runtime?.persistence?.activeMode || runtime?.persistence?.mode || "file",
       logging: statusLabel(
@@ -1100,7 +1101,7 @@ export default function App() {
       ),
       caddy: caddyStatus?.state || (config?.server?.caddy?.enabled ? "unknown" : "disabled")
     };
-  }, [runtime, stats, governanceKeys, caddyStatus, config?.server?.caddy?.enabled]);
+  }, [runtime, stats, governanceKeys, caddyStatus, config?.server?.caddy?.enabled, t]);
 
   const categories = [
     {

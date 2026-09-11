@@ -7,7 +7,7 @@
   "status": "preview",
   "hostingModes": ["azure"],
   "defaultHostingMode": "azure",
-  "interfaces": ["images/generations"],
+  "interfaces": ["images/generations", "images/edits"],
   "inputModalities": ["text", "image"],
   "outputModalities": ["image"],
   "capabilities": ["vision", "image-generation", "image-editing"],
@@ -37,7 +37,8 @@
     "capabilities": ["vision", "image-generation", "image-editing"],
     "pricingRef": "mai-image-2.6",
     "routes": {
-      "*": "openai-image"
+      "*": "mai-image",
+      "images/edits": "mai-image-edits"
     }
   },
   "sources": {
@@ -46,9 +47,9 @@
   },
   "notes": [
     "Microsoft Foundry Global Standard public preview with text-to-image generation and image editing, improved text rendering, portraits and commercial imagery.",
-    "Configure the upstream images/generations route as /mai/v1/images/generations on the Foundry resource endpoint. The default /openai/v1/images/generations route is not the MAI endpoint. Set targetModel to the actual deployment name.",
+    "The mai-image route defaults to /mai/v1/images/generations on the Foundry services endpoint. Set targetModel to the actual deployment name; explicit upstream route and host overrides remain available.",
     "Generation uses width and height; the profile expands explicit WIDTHxHEIGHT size values. Native auto_aspect_ratio and web_grounding parameters are preserved for upstream handling.",
-    "The upstream returns base64 PNG data. Native image edits require multipart requests to /mai/v1/images/edits and are not exposed by this proxy template.",
+    "The upstream returns base64 PNG data. Native image edits use multipart requests through mai-image-edits at /mai/v1/images/edits, enabled by media.http.enabled. Generation size expansion is not applied to edits.",
     "Exact model-specific pricing has not been verified as of 2026-09-11. pricingCatalogEntry remains null to avoid inventing token-based image charges."
   ]
 }

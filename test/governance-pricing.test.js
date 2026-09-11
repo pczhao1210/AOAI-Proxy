@@ -57,3 +57,14 @@ test("direct models retain their configured pricing overrides", () => {
   assert.equal(cost.actualModelCostAmount, 3);
   assert.equal(cost.modelRouterCostAmount, 0);
 });
+
+test("text and router rates are USD units without rewriting legacy currency metadata", () => {
+  const router = { ...ROUTER, pricing: { currency: "EUR", inputPer1kTokens: 2 } };
+  const access = { budgets: { enabled: false, defaultCurrency: "CNY" },
+    pricingCatalog: { custom: { currency: "usd", inputPer1kTokens: 0.003, outputPer1kTokens: 0.004 } } };
+  const before = structuredClone({ router, access });
+  const cost = calculateCost([router], "custom", access);
+  assert.equal(cost.amount, 2.007);
+  assert.equal(cost.currency, "USD");
+  assert.deepEqual({ router, access }, before);
+});

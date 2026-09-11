@@ -228,7 +228,7 @@ export async function warmBearerToken(scope) {
 
 export async function getUpstreamAuthHeaders(scope, options = {}) {
   const upstreamAuth = normalizeUpstreamAuth(options.auth);
-  const apiKeyHeader = options.apiKeyHeader === "x-api-key" ? "x-api-key" : "api-key";
+  const apiKeyHeader = ["x-api-key", "ocp-apim-subscription-key"].includes(options.apiKeyHeader) ? options.apiKeyHeader : "api-key";
   if (upstreamAuth?.mode === "apiKey") {
     return {
       [apiKeyHeader]: requireApiKey(upstreamAuth, "upstream.auth.apiKey")

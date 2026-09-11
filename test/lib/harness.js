@@ -37,7 +37,7 @@ async function readRequestBody(req) {
   for await (const chunk of req) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 function jsonResponse(res, statusCode, body, headers = {}) {
@@ -50,12 +50,13 @@ function jsonResponse(res, statusCode, body, headers = {}) {
   res.end(payload);
 }
 
-function createMockUpstreamServer() {
+function createMockUpstreamServer(upstreamHandler = null) {
   const requests = [];
   const acceptedApiKeys = new Set([UPSTREAM_API_KEY]);
   const sockets = new Set();
   const server = http.createServer(async (req, res) => {
-    const bodyText = await readRequestBody(req);
+    const rawBody = await readRequestBody(req);
+    const bodyText = rawBody.toString("utf8");
     let body = null;
     try {
       body = bodyText ? JSON.parse(bodyText) : null;
@@ -67,6 +68,7 @@ function createMockUpstreamServer() {
       method: req.method,
       url: req.url || "",
       headers: req.headers,
+      rawBody,
       body
     });
 
@@ -74,11 +76,15 @@ function createMockUpstreamServer() {
     const pathname = url.pathname;
     const receivedApiKey = pathname.endsWith("/messages") || pathname.endsWith("/messages/count_tokens")
       ? req.headers["x-api-key"]
-      : req.headers["api-key"];
+      : pathname.endsWith("/cognitiveservices/v1") || pathname.endsWith("/speechtotext/transcriptions:transcribe")
+        ? req.headers["ocp-apim-subscription-key"]
+        : req.headers["api-key"] || req.headers.authorization?.replace(/^Bearer /, "");
     if (!acceptedApiKeys.has(receivedApiKey)) {
       jsonResponse(res, 401, { error: { message: "missing upstream api-key" } });
       return;
     }
+
+    if (upstreamHandler && await upstreamHandler({ req, res, body, rawBody })) return;
 
     if (JSON.stringify(body).includes("trigger native HTTP error")) {
       jsonResponse(res, 429, {
@@ -922,7 +928,8 @@ export async function createTestContext({
   logLevel = "error",
   proxyArgs = ["src/server.js"],
   startupTimeoutMs = DEFAULT_TIMEOUT_MS,
-  tempPrefix = "aoai-proxy-route-test-"
+  tempPrefix = "aoai-proxy-route-test-",
+  upstreamHandler = null
 } = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), tempPrefix));
   let upstream;
@@ -934,7 +941,7 @@ export async function createTestContext({
     const configPath = path.join(tempDir, "config.json");
     const proxyBaseUrl = `http://${HOST}:${proxyPort}`;
 
-    upstream = createMockUpstreamServer();
+    upstream = createMockUpstreamServer(upstreamHandler);
     upstream.server.listen(upstreamPort, HOST);
     await once(upstream.server, "listening");
 
@@ -986,6 +993,7 @@ export async function createTestContext({
       json,
       body,
       duplex,
+      signal,
       redirect = "follow"
     } = options;
     const response = await fetch(`${proxyBaseUrl}${routePath}`, {
@@ -996,9 +1004,11 @@ export async function createTestContext({
       },
       body: json !== undefined ? JSON.stringify(json) : body,
       ...(duplex ? { duplex } : {}),
+      signal,
       redirect
     });
-    const text = await response.text();
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const text = bytes.toString("utf8");
     let parsed = null;
     try {
       parsed = text ? JSON.parse(text) : null;
@@ -1009,6 +1019,7 @@ export async function createTestContext({
       response,
       status: response.status,
       headers: response.headers,
+      bytes,
       text,
       json: parsed
     };

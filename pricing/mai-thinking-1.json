@@ -1,0 +1,45 @@
+{
+  "id": "mai-thinking-1",
+  "displayName": "MAI-Thinking-1",
+  "provider": "microsoft",
+  "family": "mai-thinking",
+  "modelVersion": "2026-06-01",
+  "status": "preview",
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
+  "inputModalities": ["text"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "tool-calling"],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": { "configurable": false },
+      "request": { "transport": "any" }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "sourceType": "azure-official",
+    "status": "unavailable"
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "mai-thinking-1",
+    "displayName": "MAI-Thinking-1",
+    "targetModel": "MAI-Thinking-1",
+    "capabilities": ["reasoning", "tool-calling"],
+    "pricingRef": "mai-thinking-1",
+    "routes": { "*": "mai-chat" }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-mai-thinking",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/"
+  },
+  "notes": [
+    "Microsoft Foundry Global Standard preview. Native Chat JSON and SSE use /mai/v1/chat/completions on the services.ai.azure.com endpoint; targetModel is the deployment name.",
+    "Use max_completion_tokens. Set reasoning_display to encrypted to receive opaque reasoning.encrypted_content, then return the complete assistant message unchanged on subsequent turns. Never decode, log or display the encrypted state.",
+    "Streaming terminates with [DONE]. An output safety block can emit a terminal SafetyBlockedError event before [DONE]. Tool calls can use finish_reason stop; inspect the message tool_calls field.",
+    "Exact model-specific pricing has not been verified as of 2026-09-11. pricingCatalogEntry remains null."
+  ]
+}

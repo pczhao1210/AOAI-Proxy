@@ -23,6 +23,7 @@ import {
   maybeCompressImages
 } from "./proxy/body.js";
 import { prepareImageGenerationRequest } from "./proxy/image-adapter.js";
+import { proxyMediaRequest } from "./proxy/media.js";
 import { buildUpstreamHeaders } from "./proxy/upstream-headers.js";
 import { applyAnthropicBodyCompatibility } from "./proxy/anthropic-policy.js";
 import {
@@ -429,6 +430,7 @@ export async function proxyRequest({
     : req.body || {};
   let body = sanitizeRequestBody(rawBody, {
     preserveNull: protocolRouteKey === "responses",
+    preserveEncryptedMessages: protocolRouteKey === "chat/completions",
     sanitizeMeaninglessValues: config?.proxy?.guards?.sanitizeMeaninglessValues !== false
   });
   let requestOverrides = {};
@@ -508,7 +510,7 @@ export async function proxyRequest({
     ? { ...body, model: modelId }
     : {
       ...(routeProfile.defaultParams && typeof routeProfile.defaultParams === "object" ? routeProfile.defaultParams : {}),
-      ...(model.defaultParams && typeof model.defaultParams === "object" ? model.defaultParams : {}),
+      ...(routeKey !== "responses" || !modelDescriptor?.proxyAdapters?.responses ? model.defaultParams : {}),
       ...body,
       model: modelId
     };
@@ -564,6 +566,11 @@ export async function proxyRequest({
       message: modelAccess.message
     });
     return;
+  }
+  if (routeKey === "responses" && modelDescriptor?.proxyAdapters?.responses) {
+    const responsesAdapter = modelDescriptor.proxyAdapters.responses;
+    return proxyMediaRequest({ config, routeKey: responsesAdapter === "azure-speech-synthesize" ? "audio/speech" : "audio/transcriptions", req, reply,
+      responsesAdapter, requestBody: body, requestOverrides });
   }
   const upstream = findUpstream(config, model.upstream);
   if (!upstream) {
@@ -1567,6 +1574,7 @@ export async function proxyRequest({
             modelId,
             backendRouteKey,
             forwardProviderErrors: nativeErrorPassthrough,
+            awaitSafetyErrorDone: new URL(targetUrl).pathname.replace(/\/+$/, "").endsWith("/mai/v1/chat/completions"),
             policy,
             onFirstChunk: () => {
               markTiming(timing, "firstChunkAt");

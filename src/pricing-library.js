@@ -18,7 +18,12 @@ const DEFAULT_UPSTREAM_ROUTES = {
   "chat/completions": "/openai/v1/chat/completions",
   responses: "/openai/v1/responses",
   messages: "/anthropic/v1/messages",
-  "images/generations": "/openai/v1/images/generations"
+  "images/generations": "/openai/v1/images/generations",
+  "mai-image": "/mai/v1/images/generations",
+  "mai-image-edits": "/mai/v1/images/edits",
+  "mai-chat": "/mai/v1/chat/completions",
+  "azure-speech-tts": "/cognitiveservices/v1",
+  "azure-speech-transcribe": "/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
 };
 
 let pricingDefinitionsCache = null;
@@ -322,6 +327,7 @@ function normalizePricingDefinition(rawDefinition) {
     defaultHostingMode: String(definition.defaultHostingMode || "").trim().toLowerCase(),
     defaultInterface: String(definition.defaultInterface || "").trim().toLowerCase(),
     interfacesByHostingMode,
+    proxyAdapters: definition.proxyAdapters ?? {},
     protocolProfiles: normalizeProtocolProfiles(definition.protocolProfiles, interfaces, interfacesByHostingMode),
     inputModalities: normalizeStringArray(definition.inputModalities),
     outputModalities: normalizeStringArray(definition.outputModalities),
@@ -338,7 +344,19 @@ function normalizePricingDefinition(rawDefinition) {
     upstreamTemplate: {
       provider: String(definition.provider || "azure-openai"),
       capabilities: normalizeStringArray(definition.capabilities),
-      routes: cloneJson(DEFAULT_UPSTREAM_ROUTES)
+      routes: {
+        ...cloneJson(DEFAULT_UPSTREAM_ROUTES),
+        ...(["openai", "azure-openai"].includes(definition.provider) ? {
+          realtime: `${definition.provider === "openai" ? "" : "/openai"}/v1/realtime`,
+          "realtime/transcription_sessions": `${definition.provider === "openai" ? "" : "/openai"}/v1/realtime?intent=transcription`,
+          "realtime/translations": `${definition.provider === "openai" ? "" : "/openai"}/v1/realtime/translations`
+        } : {}),
+        ...(definition.provider === "openai" ? {
+          "audio/speech": "/v1/audio/speech",
+          "audio/transcriptions": "/v1/audio/transcriptions",
+          "audio/translations": "/v1/audio/translations"
+        } : {})
+      }
     }
   };
   if (hasPricingCatalogEntry) {

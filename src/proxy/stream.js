@@ -51,7 +51,7 @@ function createSseDataParser() {
   };
 }
 
-function createRawSseParser() {
+export function createRawSseParser() {
   let buffer = Buffer.alloc(0);
   const lfDelimiter = Buffer.from("\n\n");
   const crlfDelimiter = Buffer.from("\r\n\r\n");
@@ -409,6 +409,7 @@ export async function streamPassthrough({
   modelId,
   backendRouteKey = "",
   forwardProviderErrors = false,
+  awaitSafetyErrorDone = false,
   policy,
   onFirstChunk,
   onUsage,
@@ -429,6 +430,8 @@ export async function streamPassthrough({
   const sseParser = createRawSseParser();
   let providerError = null;
   let terminalMarkerSeen = false;
+  let awaitingErrorTerminal = false;
+  const reachedTerminal = () => terminalMarkerSeen || (providerError && !awaitingErrorTerminal);
   let chatFinishReasonSeen = false;
   let clientDisconnected = false;
   const cancellation = createStreamCancellation(reply.raw, reader, () => { clientDisconnected = true; });
@@ -465,6 +468,8 @@ export async function streamPassthrough({
 
     if (event?.type === "error" || event?.type === "response.failed" || (event?.error && typeof event.error === "object")) {
       providerError = buildProviderStreamError(event);
+      awaitingErrorTerminal = awaitSafetyErrorDone && forwardProviderErrors
+        && backendRouteKey === "chat/completions" && event?.error?.type === "SafetyBlockedError";
       return;
     }
     if (
@@ -520,7 +525,7 @@ export async function streamPassthrough({
       }
       resetIdle();
       for (const event of sseParser.feed(value)) {
-        if (providerError || terminalMarkerSeen) break;
+        if (reachedTerminal()) break;
         processPayload(event.payload);
         if (!providerError || forwardProviderErrors) {
           await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);
@@ -529,14 +534,14 @@ export async function streamPassthrough({
       if (sseParser.bufferedLength > MAX_SSE_BUFFER_CHARS) {
         throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
       }
-      if (providerError || terminalMarkerSeen) {
+      if (reachedTerminal()) {
         await reader.cancel(providerError ? "provider-error" : "terminal-event").catch(() => {});
         break;
       }
     }
-    if (!providerError && !terminalMarkerSeen) {
+    if (!reachedTerminal()) {
       for (const event of sseParser.finish()) {
-        if (providerError || terminalMarkerSeen) break;
+        if (reachedTerminal()) break;
         processPayload(event.payload);
         if (!providerError || forwardProviderErrors) {
           await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);

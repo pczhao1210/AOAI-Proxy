@@ -30,6 +30,13 @@
     "realtimeAudioDurationPerSecond": 0.00057
   },
   "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "gpt-realtime-translate",
+    "targetModel": "gpt-realtime-translate",
+    "pricingRef": "gpt-realtime-translate",
+    "capabilities": ["realtime", "translation", "speech-to-speech", "streaming"],
+    "routes": { "realtime/translations": "realtime/translations" }
+  },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-translate",
     "pricing": "https://developers.openai.com/api/docs/pricing"

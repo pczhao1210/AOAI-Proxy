@@ -5,6 +5,38 @@ function asNumber(value) {
   return Number(value || 0);
 }
 
+const transportFields = {
+  http: [
+    ["maxUploadBytes", "HTTP Upload Limit Bytes", 26214400],
+    ["maxResponseBytes", "HTTP Response Limit Bytes", 104857600],
+    ["maxFiles", "HTTP File Count", 10],
+    ["maxFields", "HTTP Field Count", 64],
+    ["maxFieldBytes", "HTTP Field Limit Bytes", 65536],
+    ["maxConcurrentUploads", "HTTP Concurrent Uploads", 4],
+    ["maxBufferedUploadBytes", "HTTP Upload Pool Bytes", 314572800],
+    ["uploadTimeoutMs", "HTTP Upload Timeout ms", 60000]
+  ],
+  realtime: [
+    ["maxConnections", "Realtime Connection Limit", 100],
+    ["maxMessageBytes", "Realtime Message Limit Bytes", 8388608],
+    ["maxBufferedBytes", "Realtime Send Buffer Bytes", 16777216],
+    ["handshakeTimeoutMs", "Realtime Handshake Timeout ms", 10000],
+    ["initialConfigTimeoutMs", "Realtime Initial Config Timeout ms", 10000],
+    ["maxInitialConfigBytes", "Realtime Initial Config Bytes", 65536],
+    ["idleTimeoutMs", "Realtime Idle Timeout ms", 60000],
+    ["maxSessionMs", "Realtime Session Limit ms", 3600000],
+    ["heartbeatMs", "Realtime Heartbeat Interval ms", 30000]
+  ],
+  webrtc: [
+    ["maxCalls", "WebRTC Call Limit", 100],
+    ["maxSetupBytes", "WebRTC Setup Limit Bytes", 262144],
+    ["maxResponseBytes", "WebRTC Response Limit Bytes", 262144],
+    ["setupTimeoutMs", "WebRTC Setup Timeout ms", 15000],
+    ["callTtlMs", "WebRTC Call TTL ms", 3600000],
+    ["clientSecretTtlSeconds", "Client Secret TTL Seconds", 60]
+  ]
+};
+
 export default function MediaPolicySection({ config, updateField, t }) {
   const compressionEnabled = getValueByPath(config, "media.inputCompression.enabled") === true;
   const compressionMode = getValueByPath(config, "media.inputCompression.mode") || "legacy";
@@ -14,6 +46,12 @@ export default function MediaPolicySection({ config, updateField, t }) {
   return (
     <AccordionSection id="workspace-media" title={t("workspace.media.title", "Media Policy")} desc={t("workspace.media.desc", "Control input compression, remote images, inline images, and image generation defaults.") } group="workspace-sections">
       <div className="form-grid">
+        {Object.entries(transportFields).flatMap(([transport, fields]) => getValueByPath(config, `media.${transport}.enabled`) === true
+          ? fields.map(([field, label, defaultValue]) => <Field key={`${transport}.${field}`} label={t(`mediaLimit.${transport}.${field}`, label)}>
+            <input type="number" min={field === "clientSecretTtlSeconds" ? 10 : 1} max={field === "clientSecretTtlSeconds" ? 7200 : 2147483647}
+              step="1" value={getValueByPath(config, `media.${transport}.${field}`) ?? defaultValue}
+              onChange={(event) => updateField(`media.${transport}.${field}`, asNumber(event.target.value))} />
+          </Field>) : [])}
         {compressionEnabled ? <Field label={t("field.mediaCompressionMode", "Compression Mode")}>
           <select value={compressionMode} onChange={(event) => updateField("media.inputCompression.mode", event.target.value)}>
             <option value="legacy">{t("option.mediaLegacy", "Legacy")}</option>
@@ -95,6 +133,13 @@ export default function MediaPolicySection({ config, updateField, t }) {
         </Field></> : null}
       </div>
       <div className="checkbox-row">
+        <label><input type="checkbox" checked={getValueByPath(config, "media.http.enabled") === true} onChange={(event) => updateField("media.http.enabled", event.target.checked)} /> {t("field.mediaHttpEnabled", "Enable HTTP Audio and Image Edits")}</label>
+        <label><input type="checkbox" checked={getValueByPath(config, "media.realtime.enabled") === true} onChange={(event) => updateField("media.realtime.enabled", event.target.checked)} /> {t("field.mediaRealtimeEnabled", "Enable Realtime WebSocket")}</label>
+        <label><input type="checkbox" checked={getValueByPath(config, "media.webrtc.enabled") === true} onChange={(event) => updateField("media.webrtc.enabled", event.target.checked)} /> {t("field.mediaWebRtcEnabled", "Enable WebRTC Setup and Control")}</label>
+        {getValueByPath(config, "media.webrtc.enabled") === true ? <label><input type="checkbox" checked={getValueByPath(config, "media.webrtc.allowClientSecrets") === true} onChange={(event) => {
+          if (event.target.checked && !window.confirm(t("confirm.mediaClientSecrets", "Exported provider credentials can create multiple sessions and bypass proxy controls. Expiration does not end active sessions. Continue?"))) return;
+          updateField("media.webrtc.allowClientSecrets", event.target.checked);
+        }} /> {t("field.mediaClientSecrets", "Export Upstream Client Secrets")}</label> : null}
         <label><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.enabled") === true} onChange={(event) => updateField("media.inputCompression.enabled", event.target.checked)} /> {t("field.mediaCompressionEnabled", "Enable Input Compression")}</label>
         <label><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.progressive") === true} onChange={(event) => updateField("media.inputCompression.progressive", event.target.checked)} /> {t("field.mediaProgressive", "Progressive")}</label>
         <label><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.useMozJpeg") === true} onChange={(event) => updateField("media.inputCompression.useMozJpeg", event.target.checked)} /> {t("field.mediaMozJpeg", "Prefer mozjpeg")}</label>

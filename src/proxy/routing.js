@@ -3,7 +3,7 @@ import { getDescriptorRouteTargets } from "../model-catalog.js";
 
 const upstreamIndexCache = new WeakMap();
 const modelIndexCache = new WeakMap();
-const IMAGE_ROUTE_KEY_ALIASES = new Set(["openai-image", "blackforest-image"]);
+const IMAGE_ROUTE_KEY_ALIASES = new Set(["openai-image", "blackforest-image", "mai-image"]);
 const KNOWN_BACKEND_ROUTE_KEYS = new Set([
   "chat/completions",
   "responses",
@@ -13,6 +13,8 @@ const KNOWN_BACKEND_ROUTE_KEYS = new Set([
 const LEGACY_OPENAI_IMAGE_ROUTE = "/openai/v1/images/generations";
 const DEFAULT_OPENAI_IMAGE_ROUTE = "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview";
 const DEFAULT_BLACKFOREST_IMAGE_ROUTE = "/providers/blackforestlabs/v1/{deployment}?api-version=preview";
+const DEFAULT_MAI_IMAGE_ROUTE = "/mai/v1/images/generations";
+const DEFAULT_MAI_CHAT_ROUTE = "/mai/v1/chat/completions";
 const AZURE_OPENAI_HOST_SUFFIX = ".openai.azure.com";
 const AZURE_FOUNDRY_HOST_SUFFIX = ".services.ai.azure.com";
 const TEXT_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
@@ -74,6 +76,10 @@ function resolveRouteDeploymentSegment(routeKey, deployment, model = null, descr
 }
 
 export function normalizeBackendRouteKey(routeKey) {
+  if (routeKey === "azure-speech-tts") return "audio/speech";
+  if (routeKey === "azure-speech-transcribe") return "audio/transcriptions";
+  if (routeKey === "mai-image-edits") return "images/edits";
+  if (routeKey === "mai-chat") return "chat/completions";
   return IMAGE_ROUTE_KEY_ALIASES.has(routeKey) ? "images/generations" : routeKey;
 }
 
@@ -89,6 +95,29 @@ export function isPublicRouteEnabled(config, routeKey) {
 
 export function resolveEffectiveRouteKey(routeKey, model, upstream, override = null, descriptor = null) {
   const requestedRouteKey = override?.type === "routeKey" ? override.value : routeKey;
+  const definition = resolveModelDefinition(model, descriptor);
+  if (
+    routeKey === "images/edits"
+    && definition?.proxyTemplate?.routes?.["images/edits"] === "mai-image-edits"
+    && ["images/edits", "openai-image", "mai-image"].includes(requestedRouteKey)
+    && !(override && requestedRouteKey === "images/edits" && upstream?.routes?.["images/edits"])
+  ) return "mai-image-edits";
+  const catalogRoute = normalizeLower(
+    definition?.proxyTemplate?.routes?.[normalizeBackendRouteKey(requestedRouteKey)]
+      || definition?.proxyTemplate?.routes?.["*"]
+  );
+  if (!override && catalogRoute === "mai-chat" && requestedRouteKey === "chat/completions") return "mai-chat";
+  if (!override && ["azure-speech-tts", "azure-speech-transcribe"].includes(catalogRoute)
+    && !upstream?.routes?.[requestedRouteKey]) return catalogRoute;
+  if (catalogRoute === "mai-image" && normalizeBackendRouteKey(requestedRouteKey) === "images/generations") {
+    const legacyRoute = upstream?.routes?.["openai-image"];
+    if (
+      requestedRouteKey === "openai-image"
+      && legacyRoute
+      && ![LEGACY_OPENAI_IMAGE_ROUTE, DEFAULT_OPENAI_IMAGE_ROUTE].includes(legacyRoute)
+    ) return requestedRouteKey;
+    return "mai-image";
+  }
   if (requestedRouteKey !== "images/generations") {
     if (override || !TEXT_ROUTE_KEYS.has(requestedRouteKey)) return requestedRouteKey;
     const definition = resolveModelDefinition(model, descriptor);
@@ -111,14 +140,9 @@ export function resolveEffectiveRouteKey(routeKey, model, upstream, override = n
     return requestedRouteKey;
   }
 
-  const definition = resolveModelDefinition(model, descriptor);
   const requestTransport = normalizeLower(
     descriptor?.protocolProfiles?.["images/generations"]?.request?.transport
       || definition?.protocolProfiles?.["images/generations"]?.request?.transport
-  );
-  const catalogRoute = normalizeLower(
-    definition?.proxyTemplate?.routes?.["images/generations"]
-      || definition?.proxyTemplate?.routes?.["*"]
   );
   if (
     requestTransport === "blackforest-provider"
@@ -159,11 +183,12 @@ function shouldUseFoundryServicesHost({ upstream, routeKey = "", routePath = "",
   const explicitHostType = normalizeLower(upstream?.hostType);
   if (explicitHostType === "services") return true;
   if (explicitHostType === "openai") return false;
+  const routeText = normalizeLower(routePath || upstream?.routes?.[routeKey]);
+  if (["mai-image", "mai-image-edits", "mai-chat"].includes(routeKey) || routeText.startsWith("/mai/")) return true;
   if (routeKey === "messages") return true;
   if (routeKey === "blackforest-image") return true;
   if (routeKey === "openai-image") return false;
 
-  const routeText = normalizeLower(routePath || upstream?.routes?.[routeKey]);
   if (routeText.includes("/providers/") || routeText.includes("/anthropic/")) {
     return true;
   }
@@ -211,6 +236,17 @@ export function hasUsableUpstreamBaseUrl(upstream, options = {}) {
 
 function resolveRouteTemplate(upstream, routeKey) {
   const route = upstream.routes?.[routeKey];
+  if (!route && routeKey === "azure-speech-tts") return "/cognitiveservices/v1";
+  if (!route && routeKey === "azure-speech-transcribe") return "/speechtotext/transcriptions:transcribe?api-version=2025-10-15";
+  if (!route && routeKey === "mai-image-edits") {
+    return "/mai/v1/images/edits";
+  }
+  if (!route && routeKey === "mai-chat") {
+    return DEFAULT_MAI_CHAT_ROUTE;
+  }
+  if (!route && routeKey === "mai-image") {
+    return DEFAULT_MAI_IMAGE_ROUTE;
+  }
   if (!route && routeKey === "openai-image") {
     return DEFAULT_OPENAI_IMAGE_ROUTE;
   }
@@ -296,6 +332,8 @@ export function inferBackendRouteKey(routeKey, override, routeInterfaces = []) {
   if (override?.type === "routeKey") return normalizeBackendRouteKey(override.value);
   if (override?.type === "path") {
     const p = override.value.toLowerCase().split(/[?#]/, 1)[0].replace(/\/+$/, "");
+    if (p.endsWith("/realtime") && routeKey === "realtime/transcription_sessions"
+      && new URL(override.value, "http://proxy").searchParams.get("intent") === "transcription") return "realtime/transcription_sessions";
     const interfaceCandidates = [...new Set([
       ...routeInterfaces,
       normalizeBackendRouteKey(routeKey)
@@ -308,6 +346,8 @@ export function inferBackendRouteKey(routeKey, override, routeInterfaces = []) {
     if (p.endsWith("/messages")) return "messages";
     if (p.endsWith("/chat/completions")) return "chat/completions";
     if (p.endsWith("/images/generations")) return "images/generations";
+    if (p.endsWith("/cognitiveservices/v1")) return "audio/speech";
+    if (p.endsWith("/speechtotext/transcriptions:transcribe")) return "audio/transcriptions";
     if (p.includes("/providers/blackforestlabs/")) return "images/generations";
     return "unknown";
   }

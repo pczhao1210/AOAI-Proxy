@@ -133,6 +133,7 @@ function resolveRouteTargets(definition, interfaces) {
     const normalized = normalizeRouteIdentifier(target);
     if (normalized) targets.add(normalized);
   }
+  if (targets.has("mai-image")) targets.add("openai-image");
   return [...targets].sort();
 }
 
@@ -171,6 +172,18 @@ function resolveDefaultInterface(definition, interfaces) {
   return interfaces[0] || "";
 }
 
+function validateProxyAdapters(definition, interfaces = definition?.interfaces || []) {
+  const adapters = definition?.proxyAdapters ?? {};
+  if (typeof adapters !== "object" || Array.isArray(adapters)) throw new Error("Model Catalog proxyAdapters must be an object");
+  const targets = { "azure-speech-transcribe": "audio/transcriptions", "azure-speech-synthesize": "audio/speech" };
+  for (const [protocol, adapter] of Object.entries(adapters)) {
+    if (protocol !== "responses" || !Object.hasOwn(targets, adapter) || !interfaces.includes(targets[adapter])) {
+      throw new Error("Model Catalog proxyAdapters requires a registered adapter and its native interface");
+    }
+  }
+  return adapters;
+}
+
 function compileDescriptor(model, definition, upstream, knownRouteInterfaces) {
   const interfaces = resolveInterfaces(model, definition);
   const routeTargets = resolveRouteTargets(definition, interfaces);
@@ -187,6 +200,7 @@ function compileDescriptor(model, definition, upstream, knownRouteInterfaces) {
     provider: String(definition?.provider || upstream?.provider || ""),
     hostingMode: normalizeKey(model.hostingMode || definition?.defaultHostingMode),
     interfaces: Object.freeze(interfaces),
+    proxyAdapters: freezeJson(cloneJson(validateProxyAdapters(definition, interfaces))),
     knownRouteInterfaces,
     routeTargets: Object.freeze(routeTargets),
     defaultInterface: resolveDefaultInterface(definition, interfaces),
@@ -217,6 +231,7 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
     ? definitions.map((definition) => freezeJson(cloneJson(definition)))
     : [];
   const indexes = indexDefinitions(normalizedDefinitions);
+  for (const definition of normalizedDefinitions) validateProxyAdapters(definition);
   const upstreamsByName = new Map(
     (config?.upstreams || []).filter((upstream) => upstream?.name).map((upstream) => [upstream.name, upstream])
   );

@@ -467,6 +467,10 @@ az managedapp create \
 
 ## 协议路由
 
+新增的独立音频、图片编辑、原生 MAI Speech、Realtime WebSocket 和 WebRTC 建连/控制均需显式启用；MAI Image/Thinking 使用专用 Foundry 路径。配置默认值见 [媒体开关与限额](configuration/feature-flags.zh-CN.md#音频与实时连接限额)，格式、认证、所有权和验收边界见 [媒体协议说明](protocols/protocol-support.md#25-mai音频与实时传输)。
+
+WebRTC 媒体及 data channel 直连 provider；凭证导出另需管理员 opt-in。调用绑定只保存在进程内，要求单实例或亲和，不保证重启恢复。完整 usage 和受支持价格可生成并记录已知费用；缺失或不完整时保留 `unknown/partial`，不记作免费。见[媒体计价](../pricing/README.md#media-usage-pricing)。事后入账不等于硬限额，带 TPM/预算约束的 key 仍前置拒绝。本地验收通过不等于真实 provider、浏览器音轨、账单或部署验收。
+
 代理提供三种文本生成协议：
 
 - `POST /v1/chat/completions`

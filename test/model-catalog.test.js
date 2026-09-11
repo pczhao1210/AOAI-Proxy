@@ -14,6 +14,8 @@ import { listPricingDefinitions } from "../src/pricing-library.js";
 import { prepareImageGenerationRequest } from "../src/proxy/image-adapter.js";
 import { resolveEffectiveRouteKey, resolveRoutePlan } from "../src/proxy/routing.js";
 import { chatToResponsesRequest, responsesToMessagesRequest } from "../src/proxy/shim.js";
+import { buildModelFromPricingTemplate, buildUpstreamFromPricingTemplate } from "../admin-ui/src/utils.js";
+import { resolveRealtimeBinding } from "../src/proxy/realtime-policy.js";
 
 const config = {
   upstreams: [{
@@ -76,7 +78,7 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
   const bundledDefinitions = listPricingDefinitions();
   const ids = new Set();
 
-  assert.equal(bundledDefinitions.length, 86);
+  assert.equal(bundledDefinitions.length, 91);
   for (const definition of bundledDefinitions) {
     assert.ok(definition.id, `${definition.fileName}: id is required`);
     assert.ok(!ids.has(definition.id.toLowerCase()), `${definition.fileName}: duplicate id ${definition.id}`);
@@ -104,7 +106,14 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
       "chat/completions",
       "responses",
       "messages",
-      "images/generations"
+      "images/generations",
+      "images/edits",
+      "audio/speech",
+      "audio/transcriptions",
+      "audio/translations",
+      "realtime",
+      "realtime/transcription_sessions",
+      "realtime/translations"
     ].includes(protocol));
     assert.equal(
       definition.supportsProxyTemplate,
@@ -170,7 +179,8 @@ test("new image model cards preserve deployment identities and native request pa
     const isMai = id.startsWith("mai-");
     assert.equal(definition.proxyTemplate.targetModel, targetModel);
     assert.equal(definition.proxyTemplate.pricingRef, id);
-    assert.deepEqual(definition.proxyTemplate.routes, { "*": "openai-image" });
+    assert.deepEqual(definition.proxyTemplate.routes, isMai
+      ? { "*": "mai-image", "images/edits": "mai-image-edits" } : { "*": "openai-image" });
     assert.equal(definition.modelVersion, modelVersion);
     assert.equal(definition.status, status);
     assert.equal(definition.pricing.status, "unavailable");
@@ -202,6 +212,37 @@ test("new image model cards preserve deployment identities and native request pa
     }
     assert.deepEqual(prepared, expectedBody, id);
     assert.deepEqual(body, originalBody, `${id}: caller body must not be mutated`);
+  }
+});
+
+test("MAI image route plans use the Foundry provider endpoint", () => {
+  const bundledDefinitions = listPricingDefinitions();
+  for (const pricingRef of ["mai-image-2.6", "mai-image-2.6-flash"]) {
+    const definition = bundledDefinitions.find((entry) => entry.id === pricingRef);
+    const model = {
+      ...definition.proxyTemplate,
+      id: `public-${pricingRef}`,
+      targetModel: "my-image-deployment",
+      upstream: "azure"
+    };
+    const upstream = {
+      ...config.upstreams[0],
+      routes: {
+        ...config.upstreams[0].routes,
+        "openai-image": "/openai/deployments/{deployment}/images/generations?api-version=2025-04-01-preview"
+      }
+    };
+    const snapshot = compileModelCatalog({ upstreams: [upstream], models: [model] }, bundledDefinitions);
+    const descriptor = resolveModelDescriptor(model.id, snapshot);
+    const plan = resolveRoutePlan({ routeKey: "images/generations", model, upstream, descriptor });
+    assert.equal(plan.backendRouteKey, "images/generations");
+    assert.equal(plan.targetUrl, "https://example.services.ai.azure.com/mai/v1/images/generations");
+    assert.deepEqual(prepareImageGenerationRequest({
+      body: { model: model.targetModel, prompt: "A poster", size: "1024x1024", web_grounding: true },
+      model,
+      descriptor,
+      ...plan
+    }), { model: model.targetModel, prompt: "A poster", width: 1024, height: 1024, web_grounding: true });
   }
 });
 
@@ -243,6 +284,106 @@ test("Azure Foundry model profiles preserve deployment IDs and pricing sources",
   }
 });
 
+test("MAI routing preserves legacy bindings and explicit upstream overrides", () => {
+  const bundledDefinitions = listPricingDefinitions();
+  const definition = bundledDefinitions.find((entry) => entry.id === "mai-image-2.6");
+  for (const scenario of [
+    { routes: {}, expected: "https://example.services.ai.azure.com/mai/v1/images/generations" },
+    { routes: { "openai-image": "/openai/v1/images/generations" }, expected: "https://example.services.ai.azure.com/mai/v1/images/generations" },
+    { routes: { "openai-image": "/mai/v1/images/generations?custom=1" }, expected: "https://example.services.ai.azure.com/mai/v1/images/generations?custom=1" },
+    { routes: { "mai-image": "/custom/images/generations" }, expected: "https://example.services.ai.azure.com/custom/images/generations" },
+    { routes: {}, hostType: "openai", expected: "https://example.openai.azure.com/mai/v1/images/generations" },
+    { routes: {}, baseUrl: "https://gateway.example/", expected: "https://gateway.example/mai/v1/images/generations" }
+  ]) {
+    const model = { ...definition.proxyTemplate, upstream: "azure", routes: { "*": "openai-image" } };
+    const upstream = { ...config.upstreams[0], ...scenario };
+    const snapshot = compileModelCatalog({ upstreams: [upstream], models: [model] }, bundledDefinitions);
+    const descriptor = resolveModelDescriptor(model.id, snapshot);
+    assert.equal(resolveRoutePlan({ routeKey: "images/generations", model, upstream, descriptor }).targetUrl, scenario.expected);
+    assert.deepEqual(getConfiguredModelBindingIssues({ upstreams: [upstream], models: [model] }, snapshot), []);
+  }
+});
+
+test("MAI pricing templates produce dedicated upstream and model routes", () => {
+  for (const definition of listPricingDefinitions().filter((entry) => entry.id.startsWith("mai-image-"))) {
+    const upstream = buildUpstreamFromPricingTemplate(definition, "mai");
+    const model = buildModelFromPricingTemplate(definition, "mai", { models: [] });
+    assert.equal(upstream.routes["mai-image"], "/mai/v1/images/generations");
+    assert.equal(model.routes["*"], "mai-image");
+    assert.equal(upstream.routes["chat/completions"], "/openai/v1/chat/completions");
+  }
+});
+
+test("MAI Thinking templates and default route use the native Foundry Chat endpoint", () => {
+  const bundledDefinitions = listPricingDefinitions();
+  const definition = bundledDefinitions.find((entry) => entry.id === "mai-thinking-1");
+  assert.ok(definition, "MAI Thinking must have a bundled model card");
+  assert.deepEqual(definition.interfaces, ["chat/completions"]);
+  const template = buildUpstreamFromPricingTemplate(definition, "mai");
+  assert.equal(template.routes["mai-chat"], "/mai/v1/chat/completions");
+  for (const routes of [definition.proxyTemplate.routes, {}]) {
+    const model = { ...definition.proxyTemplate, upstream: "azure", targetModel: "reasoning-deployment", routes };
+    const upstream = config.upstreams[0];
+    const snapshot = compileModelCatalog({ upstreams: [upstream], models: [model] }, bundledDefinitions);
+    const descriptor = resolveModelDescriptor(model.id, snapshot);
+    const plan = resolveRoutePlan({ routeKey: "chat/completions", model, upstream, descriptor });
+    assert.equal(plan.targetUrl, "https://example.services.ai.azure.com/mai/v1/chat/completions");
+    assert.equal(plan.backendRouteKey, "chat/completions");
+    const explicit = resolveRoutePlan({ routeKey: "chat/completions", model: { ...model, routes: { "*": "chat/completions" } }, upstream, descriptor });
+    assert.equal(explicit.targetUrl, "https://example.openai.azure.com/openai/v1/chat/completions");
+  }
+});
+
+test("MAI Speech templates select native paths without OpenAI deployment routing", () => {
+  const bundledDefinitions = listPricingDefinitions();
+  for (const id of ["mai-voice-2", "mai-voice-2-flash", "mai-transcribe-2"]) {
+    const definition = bundledDefinitions.find(entry => entry.id === id);
+    const routeKey = definition.interfaces[0];
+    const expectedPath = routeKey === "audio/speech" ? "/cognitiveservices/v1"
+      : "/speechtotext/transcriptions:transcribe?api-version=2025-10-15";
+    const template = buildUpstreamFromPricingTemplate(definition, "speech");
+    assert.equal(template.routes[definition.proxyTemplate.routes[routeKey]], expectedPath);
+    for (const routes of [definition.proxyTemplate.routes, {}]) {
+      const model = { ...definition.proxyTemplate, upstream: "speech", routes };
+      const upstream = { ...template, name: "speech", baseUrl: "https://resource.cognitiveservices.azure.com", routes: {} };
+      const snapshot = compileModelCatalog({ upstreams: [upstream], models: [model] }, bundledDefinitions);
+      const descriptor = resolveModelDescriptor(model.id, snapshot);
+      const plan = resolveRoutePlan({ routeKey, model, upstream, descriptor });
+      assert.equal(plan.targetUrl, `https://resource.cognitiveservices.azure.com${expectedPath}`);
+      assert.equal(plan.backendRouteKey, routeKey);
+      assert.deepEqual(descriptor.proxyAdapters, { responses: routeKey === "audio/speech" ? "azure-speech-synthesize" : "azure-speech-transcribe" });
+      assert.equal(descriptor.interfaces.includes("responses"), false);
+      assert.equal(definition.pricingCatalogEntry, null);
+    }
+  }
+});
+
+test("Realtime templates bind OpenAI native paths and retain explicit Azure GA overrides", () => {
+  const definitions = listPricingDefinitions();
+  for (const [id, routeKey, pathname] of [
+    ["gpt-realtime-2", "realtime", "/v1/realtime"],
+    ["gpt-realtime-whisper", "realtime/transcription_sessions", "/v1/realtime"],
+    ["gpt-realtime-translate", "realtime/translations", "/v1/realtime/translations"]
+  ]) {
+    const definition = definitions.find(item => item.id === id);
+    const upstream = buildUpstreamFromPricingTemplate(definition, "voice-provider");
+    upstream.baseUrl = "https://api.openai.com";
+    const model = buildModelFromPricingTemplate(definition, upstream.name, { models: [] });
+    model.id = `public-${id}`;
+    model.targetModel = "deployment";
+    const config = { upstreams: [upstream], models: [model] };
+    installModelCatalogSnapshot(compileModelCatalog(config, definitions));
+    const transcription = routeKey === "realtime/transcription_sessions";
+    const binding = resolveRealtimeBinding(config, {}, model.id, routeKey, transcription);
+    assert.equal(binding.targetUrl.toString(), `wss://api.openai.com${pathname}?${transcription ? "intent=transcription" : "model=deployment"}`);
+    upstream.provider = "azure-openai";
+    upstream.baseUrl = "https://example.openai.azure.com";
+    upstream.routes[routeKey] = `/openai${pathname}${transcription ? "?intent=transcription" : ""}`;
+    const azure = resolveRealtimeBinding(config, {}, model.id, routeKey, transcription);
+    assert.equal(azure.targetUrl.toString(), `wss://example.openai.azure.com/openai${pathname}?${transcription ? "intent=transcription" : "model=deployment"}`);
+  }
+});
+
 test("Model Catalog compiler resolves exact model facts and protocol defaults", () => {
   const snapshot = compileModelCatalog(config, definitions);
   installModelCatalogSnapshot(snapshot);
@@ -260,6 +401,16 @@ test("Model Catalog compiler resolves exact model facts and protocol defaults", 
   assert.equal(getDescriptorProtocolProfile(unknown, "responses"), getDefaultProtocolProfile("responses"));
   assert.ok(snapshot.generation > 0);
   assert.equal(snapshot.modelCount, 2);
+});
+
+test("invalid proxy adapters cannot activate a catalog or masquerade as native interfaces", () => {
+  const snapshot = installModelCatalogSnapshot(compileModelCatalog(config, definitions));
+  const transaction = createModelCatalogSyncTransaction(() => config, getConfiguredModelBindingIssues);
+  for (const proxyAdapters of [[], "speech", { responses: "https://external.example" }, { messages: "azure-speech-transcribe" },
+    { responses: "azure-speech-transcribe" }, { responses: "azure-speech-synthesize" }]) {
+    assert.throws(() => transaction.prepare([{ ...definitions[0], proxyAdapters }]), /proxyAdapters/);
+    assert.equal(resolveModelDescriptor("public-gpt"), resolveModelDescriptor("public-gpt", snapshot));
+  }
 });
 
 test("Model Catalog compiler rejects ambiguous aliases", () => {

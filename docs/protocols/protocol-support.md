@@ -47,7 +47,17 @@
 | `POST /v1/responses/compact` | OpenAI Responses | 服务端上下文压缩 | 必须路由到原生 Responses |
 | `POST /v1/messages` | Anthropic Messages | Claude 消息生成 | 可路由到 Messages、Chat 或 Responses |
 | `POST /v1/messages/count_tokens` | Anthropic Messages | 精确输入 token 计数 | 必须路由到原生 Messages |
-| `POST /v1/images/generations` | OpenAI Images | 文生图 | 路由到 GPT Image 或 Black Forest Labs 类图片上游 |
+| `POST /v1/images/generations` | OpenAI Images | 文生图 | GPT Image、MAI Image 或 Black Forest Labs 类上游 |
+| `POST /v1/images/edits` | OpenAI Images multipart | 文件图片编辑 | 原生 edits，包括 MAI；需开启 HTTP 媒体 |
+| `POST /v1/audio/speech` | OpenAI Audio JSON | 独立语音合成 | 原生 Audio 或显式 MAI Speech 适配 |
+| `POST /v1/audio/transcriptions`、`/v1/audio/translations` | OpenAI Audio multipart | 文件转写、翻译 | 原生端点；MAI 仅同步转写适配 |
+| `POST /v1/providers/azure-speech/{model}/speech`、`/transcriptions` | Azure Speech | 原生 SSML、原生转写 | 路径使用授权公开模型；原生内容保留 |
+| WebSocket `/v1/realtime` | Realtime | 对话或 `intent=transcription` 转写 | 原生 WebSocket，无跨协议 shim |
+| WebSocket `/v1/realtime/translations` | Realtime Translation | 独立实时翻译会话 | 原生翻译端点与终态 |
+| `POST /v1/realtime/calls`、`/v1/realtime/translations/calls` | multipart SDP + session | 服务端代建 WebRTC | 返回原生 SDP 与代理 Location；媒体直连 provider |
+| `POST /v1/realtime/client_secrets`、`/v1/realtime/translations/client_secrets` | Realtime JSON | 导出短期上游凭证 | 独立管理员 opt-in，默认关闭 |
+| WebSocket `/v1/realtime?call_id=...`、`/v1/realtime/translations?call_id=...` | Realtime sideband | 已登记调用的观察/控制 | 同一 key 所有权及创建时上游绑定 |
+| `POST /v1/realtime/calls/{call_id}/hangup`、`/v1/realtime/translations/calls/{call_id}/hangup` | Realtime Control | 挂断已登记调用 | provider 挂断确认后释放调用租约 |
 
 健康检查、版本信息和管理接口不属于模型协议面，本文不展开。
 
@@ -84,6 +94,116 @@
 - 配置版本 2 升级到版本 3 时，会删除 GPT-5.6 Luna/Sol/Terra 的精确旧模板 wildcard `{ "*": "responses" }`；其他显式路由覆盖仍必须通过匹配 Catalog 定义的 target allowlist。
 - Chat 跨协议流支持代理侧模拟 `stream_options.include_usage`；代理会在 `[DONE]` 前生成 Chat usage chunk，其他未知 stream option 仍按有损策略处理。
 - 跨协议 SSE 当前只解释 `data:` 内容；`event`、`id`、`retry` 等字段只会在原生流的原始 frame 中被保留，不参与 shim 状态机。
+
+---
+
+### 2.5 MAI、音频与实时传输
+
+这些新增传输已有本地 mock 契约，但不等于 provider、SDK、浏览器音轨或部署验收。HTTP 媒体、WebSocket、WebRTC 与凭证导出分别默认关闭；限额和开关见 [配置指南](../configuration/feature-flags.zh-CN.md#音频与实时连接限额)。两种 distribution profile 均可启用，不要求新增数据库。
+
+#### 上游绑定与认证
+
+| 能力 | 上游路径及绑定 | 当前边界 |
+| --- | --- | --- |
+| MAI Image / Thinking | `https://{resource}.services.ai.azure.com/mai/v1/images/generations`、`/images/edits`、`/chat/completions`；别名 `mai-image`、`mai-image-edits`、`mai-chat` | 模型映射为 deployment；Thinking 原生 Chat 保留整个含 `reasoning.encrypted_content` 的消息及空值，日志强制脱敏 |
+| MAI Voice | 显式 Speech `baseUrl` + `/cognitiveservices/v1`，别名 `azure-speech-tts` | `Ocp-Apim-Subscription-Key`；voice 例如 `en-US-Harper:MAI-Voice-2`，必须属于授权模型 |
+| MAI Transcribe | 显式 Speech `baseUrl` + `/speechtotext/transcriptions:transcribe?api-version=2025-10-15`，别名 `azure-speech-transcribe` | `audio` 文件 + JSON 字符串 `definition`；`enhancedMode.enabled=true`，model 必须匹配授权目标 |
+| OpenAI Audio | `https://api.openai.com/v1/audio/{speech,transcriptions,translations}` | 上游 Bearer；文件翻译使用支持该接口的模型，例如 Whisper，不能靠转写加 LLM 模拟 |
+| Azure OpenAI Audio | 显式 `/openai/deployments/{deployment}/audio/{operation}?api-version=...` | 转写/翻译有 `2024-10-21` GA 文档；speech 需逐版本验证，不能宣称 `/openai/v1/audio/speech` 已获 GA 验收 |
+| OpenAI Realtime | `/v1/realtime`、`/v1/realtime/translations` | 上游 Bearer；不默认注入 `OpenAI-Beta` |
+| Azure OpenAI Realtime | `/openai/v1/realtime`、`/openai/v1/realtime/translations` | 部署模型与 OpenAI 官方模型名独立；api-key 或 Realtime Entra scope `https://ai.azure.com/.default` |
+
+配置步骤：从模型模板建立上游及公开模型绑定；设置真实 `upstreams[].baseUrl`、独立上游认证与必要的 `upstreams[].routes`；客户端只发送公开模型 ID；最后开启所需传输。Speech 必须填写实际区域/资源 endpoint，不能从 MAI Foundry endpoint 推导 `/mai/v1/audio/*`。入站凭据与上游凭据隔离，不能通过 headersTemplate 填入 Speech 订阅密钥绕过认证配置。
+
+Azure API 版本、区域、部署、Speech Entra 认证以及专用转写/翻译 WebRTC control 仍需分别验证。不自动迁移已弃用的 Azure Realtime preview URL，也不因 provider 猜测建立全局字段拒绝表。
+
+#### HTTP 媒体契约
+
+multipart 保留文件字节、名称、MIME、字段重复顺序以及 JSON 字符串精度；允许文件在 `model` 前，但重复 model 属于授权歧义，调用上游前拒绝。代理不转码、不重采样、不自动分片长文件。响应按真实 Content-Type 保留二进制、JSON、文本/SRT/VTT 或原生 SSE；chunked audio 不等于 SSE，也不要求 `stream=true`。
+
+TTS/转写 SSE 分别观察 `speech.audio.done`、`transcript.text.done` 或 provider error；缺少成功终态不当作完整响应。断开取消上游；响应超限或输出后失败中止传输，不往音频追加 JSON，不重试不可重放的媒体请求。
+
+MAI Voice 兼容入口把 `input` 当纯文本安全编码成 SSML；不把 `alloy` 猜成 Azure voice。已映射 `mp3`、`wav`、`pcm` 输出格式，不做本地转码。原生入口接收 `application/ssml+xml` 和 `X-Microsoft-OutputFormat`，验证每个 voice、拒绝外部实体后保留 SSML。MAI 转写兼容入口只映射同步 `json`/`text`，不伪造时间戳、SSE 或翻译；原生入口保留完整 definition/结果。无法映射的兼容字段使用现有 strict/loss 策略。
+
+<a id="responses-speech-profile"></a>
+#### Responses Speech 代理适配
+
+MAI-Transcribe-2、MAI-Voice-2 和 MAI-Voice-2-Flash 可通过 `POST /v1/responses` 调用。模型卡的 `proxyAdapters.responses` 显式选择转写或合成操作；原生 `interfaces` 不增加 Responses。不是按 `mai-*` 名字猜测，也不调用第二个 LLM、MCP 或通用 Agent。Foundry Tools 中的 Speech 能力不会自动变成 OpenAI 内置工具，代理直接调用已配置的 Speech REST endpoint。Thinking、Image 和原生音频入口保持不变。
+
+配置示例是合并到现有配置的片段；真实区域、资源 endpoint 和订阅密钥须来自自己的 Speech 资源，入站 key 另行授权公开模型。不要将上游密钥放入客户端或 headersTemplate：
+
+```json
+{
+    "media": { "http": { "enabled": true } },
+    "upstreams": [{
+        "name": "mai-speech", "provider": "microsoft",
+        "baseUrl": "https://RESOURCE.cognitiveservices.azure.com",
+        "auth": { "mode": "apiKey", "apiKey": "SPEECH_RESOURCE_KEY" },
+        "routes": {
+            "audio/transcriptions": "/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
+        }
+    }],
+    "models": [{
+        "id": "mai-transcribe", "targetModel": "MAI-Transcribe-2",
+        "pricingRef": "mai-transcribe-2", "hostingMode": "azure", "upstream": "mai-speech",
+        "routes": { "audio/transcriptions": "azure-speech-transcribe" }
+    }]
+}
+```
+
+Voice 从 `mai-voice-2` 或 `mai-voice-2-flash` 模板建立独立绑定，设置实际 TTS endpoint（例如资源提供的 `https://REGION.tts.speech.microsoft.com`）、Speech 认证及 `audio/speech -> azure-speech-tts`，目标路径为 `/cognitiveservices/v1`。可在模型 `defaultParams.voice` 设置完整 voice 名称，例如 `en-US-Harper:MAI-Voice-2`；请求覆盖仍需匹配同一个授权模型。缺少真实 MAI 单价时保留未知费用，不填假价格。
+
+转写请求包含一个 user 消息及一个 `input_file`。下面的 `BASE64_AUDIO` 必须替换为真实文件的标准 base64；也可直接使用不带 data URL 前缀的 base64。仅接受 WAV、MP3、FLAC 文件名，不下载 `file_url`、不解析 `file_id`、不读客户端本地路径：
+
+```json
+{
+    "model": "mai-transcribe", "store": false,
+    "aoai_speech": { "language": "zh" },
+    "input": [{ "role": "user", "content": [{
+        "type": "input_file", "filename": "clip.wav",
+        "file_data": "data:audio/wav;base64,BASE64_AUDIO"
+    }] }]
+}
+```
+
+`aoai_speech.language` 映射为 `definition.locales`；模型固定映射为 `enhancedMode.enabled=true` 和授权目标 `enhancedMode.model`。成功返回 `object=response`、公开模型名、`status=completed`、`store=false` 和一个 assistant `output_text` 消息，文本来自真实 Speech 结果。不伪造 token usage 或时间戳；真实时长只进入内部计价。完整 diarization/timestamps/options 应使用原生 Speech 入口。
+
+Voice 请求可使用字符串，或单个 user 消息的有序 `input_text` 块，按原顺序直接连接，不解析自然语言指令：
+
+```json
+{
+    "model": "mai-voice", "input": "Read this text aloud.",
+    "aoai_speech": { "voice": "en-US-Harper:MAI-Voice-2", "response_format": "mp3" }
+}
+```
+
+输出为已经执行完成的 `function_call`（name=`mai_speech_synthesize`）和共享 `call_id` 的 `function_call_output`，两项均为 `completed`。结果的 `output` 数组中包含 `input_file`、`filename=speech.mp3` 与音频 `file_data` data URL；支持 `mp3`（默认）、`wav`、`pcm`，没有本地转码。它不是等待客户端执行的工具调用，也不是 `output_audio`；客户端不得重放合成操作。可这样取回原始字节：
+
+```js
+const result = response.output.find(item => item.type === "function_call_output");
+const file = result.output.find(item => item.type === "input_file");
+const audioBytes = Buffer.from(file.file_data.slice(file.file_data.indexOf(",") + 1), "base64");
+```
+
+首次版本仅同步 JSON：`stream`、`store`、`background` 省略或 false；非空指令、历史/系统消息、`previous_response_id`、`conversation`、reasoning 状态、输出 token 限制、客户端工具执行要求和结构化输出不能无损表示，调用上游前拒绝。非核心字段沿用定向 strict/loss 策略并记录 `proxy.protocol_shim_lossy_conversion`。`aoai_speech` 由适配器消费，不作为扩展字段透传上游。上游内容/格式错误保持其状态和错误 body，不包装为 completed。
+
+调用受 HTTP 媒体开关、Responses/物理路由策略、模型授权、共享缓冲、取消和超时控制；每个请求只有一次媒体准入和结算，内部 `routeKey=responses`、`backendRouteKey=audio/speech` 或 `audio/transcriptions`。限额见[配置指南](../configuration/feature-flags.zh-CN.md#音频与实时连接限额)。本地 wire 契约不代表所有 SDK 能解析或所有客户端能播放文件结果；真实 Speech/Entra、定价、格式和客户端播放需独立验收。
+
+#### WebSocket 与 WebRTC 生命周期
+
+WS 入站使用服务端 Bearer/key 认证，不使用含长期密钥的浏览器 subprotocol。对话、翻译用 `?model={publicModel}`；转写用 `?intent=transcription&model={publicModel}`，发送上游时删除 model query，并在配置事件的 `session.audio.input.transcription.model` 中映射部署。也接受无 query model 的转写：先完成身份/连接准入，101 后在有界期限内接收首个配置、授权模型，再连上游。先等待 `session.created` 的客户端必须用带 model 的形式；代理不伪造该事件。
+
+未知事件原样透传，只有必要的模型字段局部替换，不重序列化音频或无关数值。配置不能切换到未授权模型/其他上游。`response.done`、转写 item completed、翻译 `session.closed` 分别观察；一次 response 完成不是整个连接完成。101 后不重连、不重放；存在消息、缓冲、空闲和最长会话边界。
+
+WebRTC 推荐由应用后端调用代理 calls，multipart 字段为 `sdp` 和 JSON 字符串 `session`。普通对话 `session.model` 使用公开 ID；转写设置 `session.type=transcription` 及 `session.audio.input.transcription.model`；翻译使用独立 translations 路径。OpenAI 普通调用透传 multipart；Azure 和翻译先由代理申请内部短期凭证，再发送 SDP，该内部凭证不会返回浏览器。只接受可信上游 Location，返回代理路径，并把 opaque call ID 绑定到当前 key 和创建时上游。
+
+媒体及 data channel 直连 provider；sideband 不等于逐事件内联拦截。sideband 随 WebRTC 开关启用，仍受 WS 连接和消息限额约束。关闭 sideband 不结束 call，未知/其他 key 的 ID 不开放控制。所有权是进程内 TTL 状态：要求单实例/亲和，reload 不改既有上游，重启不保证恢复。到期尝试 hangup；未获确认保留容量，所有者可以重试。关闭功能开关并不代替主动挂断。
+
+媒体计价只使用上游提供的通道/缓存 token、时长或字符，保留原生 usage 和显式零，不从音频字节或转写文本猜计数。重复 ID 去重，累计快照只计增量；主模型与辅助转写按各自绑定及价格快照计算。单价和预算数字统一按 USD 单位维护，旧币种标签不影响金额相加，配置字段仍可编辑；不做汇率转换或历史回填。完整计数和价格可得到 `priced`；不完整或缺价总额保持 `null`，已知 USD 小计单独保存，详见[媒体计价](../../pricing/README.md#media-usage-pricing)。
+
+HTTP/WS/WebRTC 结束时共享治理、统计和 runtime store 入账；sideband 不另计一笔。WebRTC 未观察到完整终态时，即使 hangup 成功也不宣称完整计价。数据库重建可恢复已结算的已知金额和保留期内的媒体摘要；不保存原始媒体、转写或 SDP，也不承诺活动会话崩溃恢复及 provider 级恰好一次账单。事后计价不解决硬限额，带 TPM/预算 key 仍前置拒绝。WebRTC 另拒绝模型白名单 key，导出凭证还拒绝并发受限 key。导出的凭证可能多次建会话和改配置，TTL 不结束已有会话；外部创建的 call 不能自行向代理登记。
+
+不在此范围：GPT-Live、SIP/电话、自定义声音创建、媒体中继、实时跨协议转换、跨实例恢复与精确媒体账单。验证命令、真实上游前置条件见 [测试指南](../../test/README.md)；阶段证据见 [实施计划](../development/mai-voice-realtime-plan.md)。
 
 ---
 

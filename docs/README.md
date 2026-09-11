@@ -15,6 +15,7 @@ This directory contains the project documentation and deployment guides.
 ## Protocols
 
 - Chat / Responses / Messages 兼容性与 $3 \times 3$ 路由矩阵: [protocols/protocol-support.md](protocols/protocol-support.md)
+- MAI、音频、Realtime / WebRTC 原生端点与限制: [协议说明](protocols/protocol-support.md#25-mai音频与实时传输)；[实施与验收状态](development/mai-voice-realtime-plan.md)
 
 ## Configuration Reference
 

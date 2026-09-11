@@ -1,0 +1,27 @@
+{
+  "id": "whisper-1",
+  "displayName": "Whisper",
+  "provider": "openai",
+  "family": "whisper",
+  "status": "ga",
+  "interfaces": ["audio/transcriptions", "audio/translations"],
+  "inputModalities": ["audio"],
+  "outputModalities": ["text"],
+  "capabilities": ["speech-to-text", "transcription", "translation"],
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "minute",
+    "sourceType": "openai-official",
+    "status": "published",
+    "perMinute": 0.006
+  },
+  "pricingCatalogEntry": null,
+  "sources": {
+    "capabilities": "https://developers.openai.com/api/docs/models/whisper-1",
+    "pricing": "https://developers.openai.com/api/docs/models/whisper-1"
+  },
+  "notes": [
+    "Native file transcription and translation use multipart requests. Response format and timestamps are passed to the upstream; the proxy does not transcode input audio.",
+    "OpenAI pricing is per minute, not per token. This card does not assume the same price or availability on Azure OpenAI."
+  ]
+}

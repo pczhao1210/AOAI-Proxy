@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { AccordionSection, Section, StatCard } from "./ui.jsx";
+import { formatEstimatedCost } from "../utils.js";
 
 function formatMoney(amount, currency = "USD", digits = 4) {
   return `${Number(amount || 0).toFixed(digits)} ${currency || "USD"}`;
@@ -441,7 +442,7 @@ export default function RuntimeTab({
                     <td>{perKey.requests || runtimeEntry.totalRequests || 0}</td>
                     <td>{perKey.errors || runtimeEntry.totalErrors || 0}</td>
                     <td>{perKey.totalTokens || runtimeEntry.rateWindow?.totalTokens || 0}</td>
-                    <td>{formatMoney(perKey.estimatedCostAmount || budgetWindow.spentAmount || 0, perKey.estimatedCostCurrency || entry.budget?.currency || "USD")}</td>
+                    <td>{formatEstimatedCost({ ...perKey, estimatedCostAmount: perKey.estimatedCostAmount ?? budgetWindow.spentAmount ?? 0, estimatedCostCurrency: perKey.estimatedCostCurrency || entry.budget?.currency || "USD" }, t)}</td>
                     <td>{runtimeEntry.currentConcurrent || 0}</td>
                     <td>{`rpm ${entry.rateLimit?.rpm || "-"} / tpm ${entry.rateLimit?.tpm || "-"} / con ${entry.rateLimit?.concurrency || "-"}`}</td>
                     <td>{budgetText}</td>
@@ -515,7 +516,7 @@ export default function RuntimeTab({
                       <td>{modelStat.cachedTokens || 0}</td>
                       <td>{modelStat.completionTokens || 0}</td>
                       <td>{modelStat.totalTokens || 0}</td>
-                      <td>{formatMoney(modelStat.estimatedCostAmount || 0, modelStat.estimatedCostCurrency || "USD")}</td>
+                      <td>{formatEstimatedCost(modelStat, t)}</td>
                     </tr>
                     {expanded && actualModels.length ? (
                       <tr className="model-breakdown-row">

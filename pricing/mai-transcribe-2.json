@@ -1,0 +1,35 @@
+{
+  "id": "mai-transcribe-2",
+  "displayName": "MAI-Transcribe-2",
+  "provider": "microsoft",
+  "family": "mai-transcribe",
+  "status": "preview",
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["audio/transcriptions"],
+  "defaultInterface": "audio/transcriptions",
+  "proxyAdapters": { "responses": "azure-speech-transcribe" },
+  "inputModalities": ["audio"],
+  "outputModalities": ["text"],
+  "capabilities": ["speech-to-text", "transcription", "speaker-diarization"],
+  "pricing": { "currency": "USD", "sourceType": "azure-official", "status": "unavailable" },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "mai-transcribe-2",
+    "displayName": "MAI-Transcribe-2",
+    "targetModel": "MAI-Transcribe-2",
+    "capabilities": ["speech-to-text", "transcription", "speaker-diarization"],
+    "pricingRef": "mai-transcribe-2",
+    "routes": { "audio/transcriptions": "azure-speech-transcribe" }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/ai-services/speech-service/mai-transcribe",
+    "pricing": "https://azure.microsoft.com/pricing/details/cognitive-services/speech-services/"
+  },
+  "notes": [
+    "Use an explicit Speech resource baseUrl such as https://RESOURCE.cognitiveservices.azure.com and enable media.http.enabled. This is not /mai/v1/audio/transcriptions.",
+    "Standard audio/transcriptions maps file to audio, language to locales and model to definition.enhancedMode. Only synchronous json/text results are mapped; no translation, fabricated timing, transcoding or file splitting.",
+    "Native /v1/providers/azure-speech/{publicModel}/transcriptions accepts audio and a JSON definition with enhancedMode.enabled=true and enhancedMode.model=MAI-Transcribe-2. It preserves native diarization, timestamps and extension fields/results.",
+    "Subscription-key authentication and mock wire contracts are covered. Live provider, Entra authentication and exact pricing have not been verified. pricingCatalogEntry remains null."
+  ]
+}

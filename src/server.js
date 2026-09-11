@@ -8,6 +8,12 @@ import fastifyStatic from "@fastify/static";
 import { getConfig, getPersistedConfig, prepareConfigPreview, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo, isDistributionFeatureEnabled } from "./config.js";
 import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
+import { proxyMediaRequest } from "./proxy/media.js";
+import { installRealtimeProxy } from "./proxy/realtime.js";
+import { createRealtimeCallRegistry } from "./proxy/realtime-calls.js";
+import { registerWebRtcRoutes } from "./proxy/webrtc.js";
+import multipart from "@fastify/multipart";
+import { getMediaHttpLimits } from "./proxy/media-body.js";
 import { getStats } from "./stats.js";
 import { flushRuntimeEvents, getRuntimeStatsSnapshot } from "./runtime-store.js";
 import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
@@ -48,6 +54,9 @@ const app = fastify({
   bodyLimit,
   rewriteUrl: (req) => rewriteAdminUrl(req.url)
 });
+
+const realtimeCalls = createRealtimeCallRegistry({ log: app.log });
+const realtimeProxy = installRealtimeProxy({ server: app.server, getConfig, extractApiKey, log: app.log, callRegistry: realtimeCalls });
 
 function normalizeAdminPath(adminPath) {
   const text = typeof adminPath === "string" ? adminPath.trim() : "";
@@ -532,6 +541,8 @@ function shutdown(reason, exitCode) {
       process.exit(1);
     }, timeoutMs);
 
+    realtimeProxy.close();
+    await realtimeCalls.close();
     const httpResults = await Promise.allSettled([app.close()]);
     const resourceResults = await Promise.allSettled([
       drainRuntimeState(),
@@ -583,6 +594,7 @@ app.addHook("preParsing", async (req, reply, payload) => {
   const config = getConfig();
   const rawUrl = req.raw?.url || req.url;
   if (isAdminRoute(rawUrl, config.server.adminPath)) return payload;
+  if (req.routeOptions.config.httpMediaUpload) return payload;
 
   const configuredLimit = getPositiveInteger(config?.proxy?.guards?.maxRequestBodyBytes);
   if (!configuredLimit || configuredLimit >= bodyLimit) return payload;
@@ -740,6 +752,35 @@ app.post("/v1/images/generations", async (req, reply) => {
   const config = getConfig();
   await proxyRequest({ config, routeKey: "images/generations", req, reply });
 });
+
+await app.register(async mediaApp => {
+  await mediaApp.register(multipart);
+  mediaApp.addContentTypeParser("application/ssml+xml", { parseAs: "string" }, (req, body, done) => done(null, body));
+  mediaApp.addHook("onRequest", async (req, reply) => {
+    const config = getConfig();
+    const consumerResult = resolveApiConsumer(config, extractApiKey(config, req.headers));
+    if (!consumerResult.ok) return reply.code(consumerResult.status || 401).send({ error: consumerResult.error || "Unauthorized" });
+    if (!getMediaHttpLimits(config).enabled) return reply.code(404).send({ error: "MEDIA_HTTP_DISABLED" });
+  });
+  mediaApp.addHook("preParsing", async (req, reply, payload) => {
+    if (!req.routeOptions.config.httpMediaUpload) return payload;
+    const limit = getMediaHttpLimits(getConfig()).maxUploadBytes;
+    if (Number(req.headers["content-length"]) > limit) throw createPayloadTooLargeError(limit);
+    return limitRequestBodyStream(payload, limit);
+  });
+  for (const routeKey of ["audio/speech", "audio/transcriptions", "audio/translations", "images/edits"]) {
+    mediaApp.post(`/v1/${routeKey}`, { config: { httpMediaUpload: routeKey !== "audio/speech" } }, async (req, reply) => {
+      await proxyMediaRequest({ config: getConfig(), routeKey, req, reply });
+    });
+  }
+  for (const operation of ["speech", "transcriptions"]) {
+    mediaApp.post(`/v1/providers/azure-speech/:model/${operation}`, { config: { httpMediaUpload: operation === "transcriptions" } }, async (req, reply) => {
+      await proxyMediaRequest({ config: getConfig(), routeKey: `audio/${operation}`, req, reply, nativeSpeech: true });
+    });
+  }
+});
+
+await registerWebRtcRoutes(app, { getConfig, extractApiKey, callRegistry: realtimeCalls, limitRequestBodyStream });
 
 app.get("/admin/api/config", async () => {
   const config = getConfig();

@@ -10,6 +10,9 @@ import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummar
 import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from "./pricing-library.js";
 import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
 import { isSupportedPersistenceMode } from "./persistence-mode.js";
+import { DEFAULT_MEDIA_HTTP } from "./proxy/media-body.js";
+import { DEFAULT_REALTIME } from "./proxy/realtime-policy.js";
+import { DEFAULT_WEBRTC } from "./proxy/realtime-calls.js";
 
 const CURRENT_CONFIG_VERSION = 3;
 const DISTRIBUTION_PROFILES = new Set(["minimum", "nextgen"]);
@@ -229,6 +232,9 @@ const DEFAULTS = {
     }
   },
   media: {
+    http: { ...DEFAULT_MEDIA_HTTP },
+    realtime: { ...DEFAULT_REALTIME },
+    webrtc: { ...DEFAULT_WEBRTC },
     inputCompression: {
       enabled: false,
       mode: "legacy",
@@ -1306,6 +1312,42 @@ function validateConfig(cfg) {
   if (cfg.media != null) {
     if (typeof cfg.media !== "object") {
       throw new Error("media must be an object");
+    }
+    if (cfg.media.http != null) {
+      const http = cfg.media.http;
+      if (typeof http !== "object" || Array.isArray(http)) throw new Error("media.http must be an object");
+      if (typeof http.enabled !== "boolean") throw new Error("media.http.enabled must be a boolean");
+      for (const field of Object.keys(DEFAULT_MEDIA_HTTP).filter(name => name !== "enabled")) {
+        if (!Number.isSafeInteger(http[field]) || http[field] <= 0) {
+          throw new Error(`media.http.${field} must be a positive safe integer`);
+        }
+      }
+      if (!Number.isSafeInteger(http.maxUploadBytes * 3)) throw new Error("media.http.maxUploadBytes is too large");
+    }
+    if (cfg.media.webrtc != null) {
+      const webrtc = cfg.media.webrtc;
+      if (typeof webrtc !== "object" || Array.isArray(webrtc)) throw new Error("media.webrtc must be an object");
+      for (const [field, fallback] of Object.entries(DEFAULT_WEBRTC)) {
+        if (typeof fallback === "boolean") {
+          if (typeof webrtc[field] !== "boolean") throw new Error(`media.webrtc.${field} must be a boolean`);
+        } else if (!Number.isSafeInteger(webrtc[field]) || webrtc[field] <= 0 || webrtc[field] > 2147483647) {
+          throw new Error(`media.webrtc.${field} must be a positive integer up to 2147483647`);
+        }
+      }
+      if (webrtc.clientSecretTtlSeconds < 10 || webrtc.clientSecretTtlSeconds > 7200) throw new Error("media.webrtc.clientSecretTtlSeconds must be between 10 and 7200");
+    }
+    if (cfg.media.realtime != null) {
+      const realtime = cfg.media.realtime;
+      if (typeof realtime !== "object" || Array.isArray(realtime)) throw new Error("media.realtime must be an object");
+      if (typeof realtime.enabled !== "boolean") throw new Error("media.realtime.enabled must be a boolean");
+      for (const field of Object.keys(DEFAULT_REALTIME).filter(name => name !== "enabled")) {
+        if (!Number.isSafeInteger(realtime[field]) || realtime[field] <= 0 || realtime[field] > 2147483647) {
+          throw new Error(`media.realtime.${field} must be a positive integer up to 2147483647`);
+        }
+      }
+      if (realtime.maxInitialConfigBytes > realtime.maxMessageBytes || realtime.maxMessageBytes > realtime.maxBufferedBytes) {
+        throw new Error("media.realtime byte limits must satisfy initial config <= message <= buffer");
+      }
     }
     if (cfg.media.inputCompression != null) {
       const compression = cfg.media.inputCompression;

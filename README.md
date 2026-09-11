@@ -9,6 +9,7 @@
 ## Overview
 
 - OpenAI- and Anthropic-compatible proxy for `chat/completions`, `responses`, `responses/compact`, `messages`, `messages/count_tokens`, `images/generations`, and `models`
+- Opt-in HTTP audio/image edits, native MAI Speech, Realtime WebSocket, and WebRTC setup/control; MAI Image and Thinking use dedicated Foundry routes. See [protocol contracts](docs/protocols/protocol-support.md#25-mai音频与实时传输) and [configuration defaults](docs/configuration/feature-flags.zh-CN.md#音频与实时连接限额).
 - Client -> Proxy uses API key auth via `Authorization: Bearer` or `x-api-key`
 - Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or protocol-appropriate `api-key` / `x-api-key` headers, based on `auth.mode`
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
@@ -29,6 +30,8 @@ The standard raw-template Deploy to Azure button does not automatically use `cre
 The deployment templates now distinguish between `new` and `existing` storage/database resources so policy-restricted environments can reuse pre-provisioned Azure Files or PostgreSQL resources instead of forcing resource creation.
 
 ## Distribution Profiles
+
+New media transports are disabled by default in both profiles. WebRTC media/data channels go directly to the provider; call ownership is in-process and requires a single instance or affinity. Client-secret export is a separate administrator opt-in. Complete observed media usage with supported rates is priced and recorded; missing usage/rates or incomplete sessions retain unknown/partial totals, not zero. See [media pricing](pricing/README.md#media-usage-pricing) for units, provider isolation and persistence limits. Post-hoc accounting is not a hard cap: TPM/budget-constrained keys remain rejected before upstream work. Local acceptance does not establish live provider, browser audio, billing or deployment acceptance.
 
 `nextgen` and `minimum` are runtime scope profiles on the same source and container image, selected with `distribution.profile` or `AOAI_PROXY_PROFILE`. The default is `nextgen`.
 

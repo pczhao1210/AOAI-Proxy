@@ -1,0 +1,35 @@
+{
+  "id": "mai-voice-2-flash",
+  "displayName": "MAI-Voice-2-Flash",
+  "provider": "microsoft",
+  "family": "mai-voice",
+  "status": "preview",
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["audio/speech"],
+  "defaultInterface": "audio/speech",
+  "proxyAdapters": { "responses": "azure-speech-synthesize" },
+  "inputModalities": ["text"],
+  "outputModalities": ["audio"],
+  "capabilities": ["text-to-speech", "speech-generation"],
+  "pricing": { "currency": "USD", "sourceType": "azure-official", "status": "unavailable" },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "mai-voice-2-flash",
+    "displayName": "MAI-Voice-2-Flash",
+    "targetModel": "MAI-Voice-2-Flash",
+    "capabilities": ["text-to-speech", "speech-generation"],
+    "pricingRef": "mai-voice-2-flash",
+    "routes": { "audio/speech": "azure-speech-tts" }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/ai-services/speech-service/mai-voices",
+    "pricing": "https://azure.microsoft.com/pricing/details/cognitive-services/speech-services/"
+  },
+  "notes": [
+    "Use an explicit Speech baseUrl, for example https://eastus.tts.speech.microsoft.com. This is not an Azure OpenAI deployment route. Enable media.http.enabled separately.",
+    "The standard audio/speech adapter requires a native voice such as en-US-Harper:MAI-Voice-2-Flash. It maps text to SSML and mp3/wav/pcm to explicit Speech formats. It does not map OpenAI voice aliases or transcode audio.",
+    "The native /v1/providers/azure-speech/{publicModel}/speech endpoint accepts SSML and X-Microsoft-OutputFormat. All voices must select this model. Custom voice management is out of scope.",
+    "Subscription-key authentication and mock wire contracts are covered. Live provider, Entra authentication and exact pricing have not been verified. pricingCatalogEntry remains null."
+  ]
+}

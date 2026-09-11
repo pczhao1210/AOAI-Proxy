@@ -71,8 +71,39 @@ HTTP 状态码重试只依据最终解析出的 `statuses` 列表；显式空列
 | `media.inputCompression.useMozJpeg` | `true` | JPEG 输出优先使用 mozjpeg 编码参数。 | Workspace；热 |
 | `media.remoteImages.allow` | `false` | 允许向上游透传远程图片 URL，并检查 `allowedHosts`；代理不下载图片，也不验证远端文件的 MIME、大小或像素。 | Workspace；热 |
 | `media.generation.enabled` | `true` | 启用图片生成能力；还需要对应 route profile 开启。 | Workspace；热 |
+| `media.http.enabled` | `false` | 启用独立音频、图片 multipart 编辑、MAI Speech 原生入口及显式绑定的 Responses Speech 适配器；不改变既有图片生成开关。 | Workspace；热 |
+| `media.realtime.enabled` | `false` | 启用 Realtime WebSocket 对话、转写和翻译。 | Workspace；热，仅新连接 |
+| `media.webrtc.enabled` | `false` | 启用 WebRTC 建连及所有权校验后的 sideband/hangup；媒体和 data channel 直连 provider。 | Workspace；热，仅新请求 |
+| `media.webrtc.allowClientSecrets` | `false` | 允许导出上游短期凭证；还需开启 WebRTC，管理页开启时要求确认。 | Workspace；热 |
 
 文本协议的图片策略只检查正式图片内容块，覆盖 Chat、Responses、Messages 及支持的工具结果图片，不递归处理同名业务字段。关闭压缩仍执行远程 URL 策略和内联字节限制；字节上限按解码后大小计算，在分配图片 Buffer 前校验。`legacy` 模式下合法 Messages 图片仍保留原字节和 MIME；只有显式启用 `adaptive` 才会尝试优化 Messages 的 JPEG。
+
+#### 音频与实时连接限额
+
+以下参数均可在 Workspace 媒体策略中配置，时间单位为毫秒，大小单位为字节。计数和限额按进程生效，不是跨实例配额。默认值分别由 [HTTP 媒体](../../src/proxy/media-body.js)、[WebSocket](../../src/proxy/realtime-policy.js) 和 [WebRTC](../../src/proxy/realtime-calls.js) 定义。
+
+| 配置前缀 | 参数与默认值 | 行为 |
+| --- | --- | --- |
+| `media.http` | `maxUploadBytes=26214400`、`maxFiles=10`、`maxFields=64`、`maxFieldBytes=65536` | multipart 总上传、文件数量、普通字段数量及单字段限额。模型字段必须唯一。 |
+| `media.http` | `maxConcurrentUploads=4`、`maxBufferedUploadBytes=314572800`、`uploadTimeoutMs=60000` | 上传并发、总缓冲预留与上传期限；每次上传按 `maxUploadBytes * 3` 预留容量。 |
+| `media.http` | `maxResponseBytes=104857600` | 原生音频、文本、JSON、SSE 响应总字节上限；其他上游超时沿用代理策略。 |
+| `media.realtime` | `maxConnections=100`、`maxMessageBytes=8388608`、`maxBufferedBytes=16777216` | 包含等待首配置与握手的连接上限；单消息及发送缓冲上限，超限终止而不重放音频。 |
+| `media.realtime` | `handshakeTimeoutMs=10000`、`initialConfigTimeoutMs=10000`、`maxInitialConfigBytes=65536` | 上游握手与转写首配置的时间/大小边界。 |
+| `media.realtime` | `idleTimeoutMs=60000`、`maxSessionMs=3600000`、`heartbeatMs=30000` | 空闲、最长连接寿命与 ping/pong 周期。 |
+| `media.webrtc` | `maxCalls=100`、`maxSetupBytes=262144`、`maxResponseBytes=262144`、`setupTimeoutMs=15000` | 包含创建中的调用容量；SDP/session 上传、上游结果与创建时间边界。 |
+| `media.webrtc` | `callTtlMs=3600000`、`clientSecretTtlSeconds=60` | 调用到期尝试上游挂断；凭证 TTL 为秒，允许 10–7200。凭证过期不终止已建立的 provider 会话。 |
+
+这三个传输开关在 `minimum` 和 `nextgen` 均默认关闭，必须同时有可用模型绑定和正确上游路径。原生媒体错误保持上游状态和 body，不使用文本协议错误包装开关。已有 WS 与 WebRTC 调用保留创建时的路由和限额快照；关闭开关或修改路由不是挂断全部活动调用的命令。
+
+Responses Speech 同时检查 `routing.routeProfiles.responses.enabled` 和物理路由键 `routing.routeProfiles["audio/transcriptions"].enabled` / `["audio/speech"].enabled`。JSON 请求仍受全局 body limit（默认 50 MiB）和 `proxy.guards.maxRequestBodyBytes` 约束，不绕过 JSON 上传保护。转写只接收一个内联文件，解码后不超过 `maxUploadBytes`；其原始 JSON 结果限额为 `min(maxResponseBytes, 1 MiB)`。Voice 在调用上游前预留音频收集和 base64/JSON 编码容量：原始音频限额为 `min(maxResponseBytes, floor((maxBufferedUploadBytes - 16 * 输入UTF8字节数 - 65536) / 10))`，默认略低于 30 MiB；编码结果另受 `4 * ceil(原始限额 / 3) + 65536` 限额。预留与 multipart 共用并发及总缓冲池，因此同时请求可能收到容量不足错误。原生音频仍直接流式返回，不受 Voice JSON 编码限额影响。详见 [Responses Speech 配置及调用](../protocols/protocol-support.md#responses-speech-profile)。
+
+WebRTC 所有权记录只在进程内保存，必须使用单实例或确保创建、sideband、hangup 落到同一实例。未知/其他 key 的 call ID 返回 404，不尝试其他上游。sideband 断开不释放调用租约；到期挂断未被 provider 确认时仍占用容量，所有者可重试 hangup。重启丢失记录，不承诺恢复活动媒体；停机只尽力挂断，强制退出可能留下 provider 会话。
+
+媒体 usage 按独立 response/item 去重，并按创建/观察时的价格快照计算已知费用，支持分通道及缓存 token、时长、字符单位。单价与预算数字使用 USD 单位；币种配置继续可编辑，但旧标签不影响数值相加，显示统一为 USD，不做汇率转换或历史回填。缺少计数/价格或会话未完整结束时，总费用为 `null`，状态为 `unknown/partial`，保留已知 USD 小计。OpenAI 官方价格不自动用于 Azure；显式覆盖需声明 `billingUnit`，见[媒体计价](../../pricing/README.md#media-usage-pricing)。
+
+结算在 HTTP 完成、WS 清理或 WebRTC call 结束时执行，并使用现有 runtime store 队列；数据库模式保存白名单摘要和已知金额，文件模式不承诺持久化账本。活动会话崩溃可能丢失尚未结算的观察，不能保证 provider 账单完全一致或跨进程恰好一次。数据库媒体摘要/未知计数受明细保留期约束，历史已知金额仍保存在 rollup；管理端金额为已知估算小计。
+
+事后入账不是预留或硬预算，带 TPM 或预算约束的 key 仍前置拒绝；WebRTC 还拒绝有模型白名单的 key。凭证导出进一步拒绝并发受限 key，因为同一凭证可能创建多个会话、改变配置并绕过代理。要求逐事件内容策略的工作负载不能使用 WebRTC 直连。不得在浏览器嵌入代理或上游长期密钥。协议和启用步骤见 [协议支持](../protocols/protocol-support.md)。
 
 #### 输入图片模式与资源预算
 
