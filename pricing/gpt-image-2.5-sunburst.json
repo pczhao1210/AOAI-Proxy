@@ -1,0 +1,51 @@
+{
+  "id": "gpt-image-2.5-sunburst",
+  "displayName": "GPT-Image-2.5-Sunburst",
+  "provider": "azure-openai",
+  "family": "gpt-image",
+  "modelVersion": "2026-09-09",
+  "status": "ga",
+  "interfaces": ["images/generations"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["image"],
+  "capabilities": ["vision", "image-generation", "image-editing"],
+  "protocolProfiles": {
+    "images/generations": {
+      "request": {
+        "transport": "azure-deployment",
+        "removeModel": true,
+        "qualityAliases": {
+          "standard": "medium",
+          "hd": "high"
+        }
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "sourceType": "azure-openai-global",
+    "status": "unavailable"
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "gpt-image-2.5-sunburst",
+    "displayName": "GPT-Image-2.5-Sunburst",
+    "targetModel": "gpt-image-2.5-sunburst",
+    "capabilities": ["vision", "image-generation", "image-editing"],
+    "pricingRef": "gpt-image-2.5-sunburst",
+    "routes": {
+      "*": "openai-image"
+    }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/openai/how-to/dall-e#models-and-capabilities",
+    "version": "https://learn.microsoft.com/azure/foundry/openai/how-to/responses#supported-models",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
+  },
+  "notes": [
+    "Generally available high-fidelity image generation model optimized for editing precision; supports text and image input and inpainting.",
+    "Native quality values are low, medium, high, xhigh, max and auto. Custom dimensions support up to 4K; the upstream validates size and quality constraints.",
+    "Exact model-specific pricing was not available in the checked Azure pricing page on 2026-09-11. No GPT-Image-2 prices are substituted, and pricingCatalogEntry remains null.",
+    "This proxy template exposes images/generations; native model editing capabilities do not imply a proxy images/edits endpoint."
+  ]
+}

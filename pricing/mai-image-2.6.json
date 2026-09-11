@@ -1,0 +1,54 @@
+{
+  "id": "mai-image-2.6",
+  "displayName": "MAI-Image-2.6",
+  "provider": "microsoft",
+  "family": "mai-image",
+  "modelVersion": "2026-07-31",
+  "status": "preview",
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["images/generations"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["image"],
+  "capabilities": ["vision", "image-generation", "image-editing"],
+  "protocolProfiles": {
+    "images/generations": {
+      "request": {
+        "transport": "any",
+        "dropParameters": ["size"],
+        "sizeExpansion": {
+          "source": "size",
+          "width": "width",
+          "height": "height"
+        }
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "sourceType": "azure-official",
+    "status": "unavailable"
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "mai-image-2.6",
+    "displayName": "MAI-Image-2.6",
+    "targetModel": "MAI-Image-2.6",
+    "capabilities": ["vision", "image-generation", "image-editing"],
+    "pricingRef": "mai-image-2.6",
+    "routes": {
+      "*": "openai-image"
+    }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-mai-image",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/"
+  },
+  "notes": [
+    "Microsoft Foundry Global Standard public preview with text-to-image generation and image editing, improved text rendering, portraits and commercial imagery.",
+    "Configure the upstream images/generations route as /mai/v1/images/generations on the Foundry resource endpoint. The default /openai/v1/images/generations route is not the MAI endpoint. Set targetModel to the actual deployment name.",
+    "Generation uses width and height; the profile expands explicit WIDTHxHEIGHT size values. Native auto_aspect_ratio and web_grounding parameters are preserved for upstream handling.",
+    "The upstream returns base64 PNG data. Native image edits require multipart requests to /mai/v1/images/edits and are not exposed by this proxy template.",
+    "Exact model-specific pricing has not been verified as of 2026-09-11. pricingCatalogEntry remains null to avoid inventing token-based image charges."
+  ]
+}

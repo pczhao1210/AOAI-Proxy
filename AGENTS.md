@@ -5,8 +5,10 @@
 - Treat public request/response objects, SSE frames, errors, and model catalogs as wire contracts.
 - Keep the bundled Model Catalog, runtime compilation and lookup, and remote atomic catalog updates in both `minimum` and `nextgen`.
 - Use [protocol support](docs/protocols/protocol-support.md) for protocol semantics, compatibility boundaries, and the 3x3 Chat/Responses/Messages matrix.
+- Use the [model card guide](pricing/README.md) for pricing fields, capabilities, and route templates; preserve atomic catalog activation and retain the previous generation on update failure.
 - Use [test/README.md](test/README.md) for focused, CLI, real-upstream, and latency test prerequisites.
 - Use [README.md](README.md) for runtime and deployment configuration, and the [Git workflow guide](docs/development/git-workflow.zh-CN.md) for branch/worktree operations.
+- Use the [configuration guide](docs/configuration/feature-flags.zh-CN.md) for defaults and reload behavior, and the [documentation index](docs/README.md) for deployment and observability guides.
 - Keep `minimum` and `nextgen` as scope profiles on the same code baseline. Do not restore long-lived feature branches or hard-merge the old minimum branch unless explicitly requested.
 
 ## Protocol Invariants
@@ -42,40 +44,44 @@
 - `src/server.js`: route registration, public model catalogs, and admin HTTP surface.
 - `src/proxy/routing.js`: route overrides, final protocol reconciliation, upstream URLs, and native utility URLs.
 - `src/proxy.js`: request orchestration, native/shim selection, policy application, upstream calls, and JSON response dispatch.
-- `src/proxy/body.js`: body cleanup, proxy controls, headers, and media input handling.
+- [src/proxy/body.js](src/proxy/body.js): body cleanup, proxy controls, and media input handling.
+- [src/proxy/request-policy.js](src/proxy/request-policy.js) and [src/proxy/anthropic-policy.js](src/proxy/anthropic-policy.js): configured field/tool/image-generation policy and Messages thinking/effort/cache policy, respectively.
+- [src/proxy/upstream-headers.js](src/proxy/upstream-headers.js): upstream header assembly and beta filtering; the orchestrator resolves backend/auth and logs filtered betas.
 - `src/proxy/shim.js`: directional compatibility analysis, request converters, and JSON response mappers.
 - `src/proxy/stream.js`: native SSE observation/passthrough and cross-protocol stream state machines.
 - `src/config.js` and `src/model-validation.js`: defaults, normalization, validation, and client-native route gates.
+- [src/model-catalog.js](src/model-catalog.js): model card compilation, immutable snapshots, lookup, and candidate validation.
+- [src/usage.js](src/usage.js): internal governance/statistics usage normalization; preserve explicit zero counters and the original protocol usage object.
 - `test/lib/route-definitions.js` and `test/proxy-safety.test.js`: route contracts and focused protocol/unit regressions.
 - Keep adapters and validators small and directional. Do not use Chat as an intermediate format for native Responses or Messages semantics merely for code reuse.
 
 ## Validation
 
-Install and build with:
+Install development dependencies and build the admin UI with:
 
 ```bash
 npm ci
 npm run build
 ```
 
-Run the narrowest applicable check first. Focused Messages route contracts include:
+`npm run build` builds only the admin UI; it does not validate the backend. Runtime and tests use Node.js ES modules, with scripts defined in [package.json](package.json).
+
+Run the narrowest applicable check first. Select a focused `node --test` suite from [test/README.md](test/README.md), or a route ID from [test/lib/route-definitions.js](test/lib/route-definitions.js), for example:
 
 ```bash
-node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("chat-to-message")'
-node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("response-to-message")'
-node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("message-to-chat")'
 node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("message-to-response")'
-node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("shim-compatibility-guards")'
 ```
 
-After focused checks pass, run:
+Mock route tests use disposable proxy processes and temporary configs; do not point them at the running service. Admin component tests need development dependencies but no browser, backend, or credentials; browser layout and save/reload checks remain separate.
+
+After focused checks pass for code changes, run:
 
 ```bash
 npm run test:unit
 npm run test:routes
 ```
 
-Run `npm run test:cli:claude-code`, `npm run test:cli:codex`, and `npm run test:real` only when their documented prerequisites are available. There is no generic `npm test` script.
+Run CLI contracts, real-upstream tests (including `npm run test:real:matrix`), and latency checks only when their [documented prerequisites](test/README.md) are available. Record checks not run; mock or synthetic checks do not establish real-upstream or deployment acceptance. There is no generic `npm test` script.
 
 ## Worktree And Generated Files
 

@@ -11,6 +11,7 @@ import {
 import { getConfiguredModelBindingIssues, validateConfiguredModels } from "../src/model-validation.js";
 import { recordGovernanceUsage } from "../src/governance.js";
 import { listPricingDefinitions } from "../src/pricing-library.js";
+import { prepareImageGenerationRequest } from "../src/proxy/image-adapter.js";
 import { resolveEffectiveRouteKey, resolveRoutePlan } from "../src/proxy/routing.js";
 import { chatToResponsesRequest, responsesToMessagesRequest } from "../src/proxy/shim.js";
 
@@ -75,7 +76,7 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
   const bundledDefinitions = listPricingDefinitions();
   const ids = new Set();
 
-  assert.equal(bundledDefinitions.length, 82);
+  assert.equal(bundledDefinitions.length, 86);
   for (const definition of bundledDefinitions) {
     assert.ok(definition.id, `${definition.fileName}: id is required`);
     assert.ok(!ids.has(definition.id.toLowerCase()), `${definition.fileName}: duplicate id ${definition.id}`);
@@ -148,8 +149,59 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
     }
   }
 
-  for (const id of ["glm-5.3", "gpt-6-astra", "claude-fable-5-1"]) {
+  for (const id of [
+    "glm-5.3", "gpt-6-astra", "claude-fable-5-1",
+    "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "mai-image-2.6", "mai-image-2.6-flash"
+  ]) {
     assert.ok(ids.has(id), `missing bundled Model Catalog definition ${id}`);
+  }
+});
+
+test("new image model cards preserve deployment identities and native request parameters", () => {
+  const definitionsById = new Map(listPricingDefinitions().map((definition) => [definition.id, definition]));
+  const expectedModels = [
+    ["gpt-image-2.5-flare", "gpt-image-2.5-flare", "2026-09-09", "ga"],
+    ["gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst", "2026-09-09", "ga"],
+    ["mai-image-2.6", "MAI-Image-2.6", "2026-07-31", "preview"],
+    ["mai-image-2.6-flash", "MAI-Image-2.6-Flash", "2026-07-31", "preview"]
+  ];
+  for (const [id, targetModel, modelVersion, status] of expectedModels) {
+    const definition = definitionsById.get(id);
+    const isMai = id.startsWith("mai-");
+    assert.equal(definition.proxyTemplate.targetModel, targetModel);
+    assert.equal(definition.proxyTemplate.pricingRef, id);
+    assert.deepEqual(definition.proxyTemplate.routes, { "*": "openai-image" });
+    assert.equal(definition.modelVersion, modelVersion);
+    assert.equal(definition.status, status);
+    assert.equal(definition.pricing.status, "unavailable");
+    assert.equal(definition.pricingCatalogEntry, null);
+    assert.deepEqual(definition.capabilities, ["vision", "image-generation", "image-editing"]);
+    const body = {
+      model: targetModel,
+      prompt: "A geometric poster",
+      size: "1024x1024",
+      ...(isMai ? { auto_aspect_ratio: true, web_grounding: true } : { quality: "max" })
+    };
+    const originalBody = structuredClone(body);
+    const prepared = prepareImageGenerationRequest({
+      body,
+      model: definition.proxyTemplate,
+      routeKey: "images/generations",
+      backendRouteKey: "images/generations",
+      targetUrl: isMai
+        ? "https://example.services.ai.azure.com/mai/v1/images/generations"
+        : `https://example.openai.azure.com/openai/deployments/${targetModel}/images/generations`
+    });
+    const expectedBody = { ...body };
+    if (isMai) {
+      delete expectedBody.size;
+      expectedBody.width = 1024;
+      expectedBody.height = 1024;
+    } else {
+      delete expectedBody.model;
+    }
+    assert.deepEqual(prepared, expectedBody, id);
+    assert.deepEqual(body, originalBody, `${id}: caller body must not be mutated`);
   }
 });
 
