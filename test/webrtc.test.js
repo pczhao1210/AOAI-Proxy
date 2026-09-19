@@ -334,6 +334,48 @@ test("WebRTC rejects untrusted locations, preserves upstream errors and recovers
   });
 });
 
+test("WebRTC retains a created call and its lease when setup cleanup is unconfirmed", { timeout: 15000 }, async testContext => {
+  let hangupConfirmed = false;
+  const requests = [];
+  const upstreamServer = http.createServer(async (request, response) => {
+    for await (const chunk of request) void chunk;
+    requests.push(request.url);
+    if (request.url.endsWith("/hangup")) {
+      if (hangupConfirmed) return response.writeHead(200).end();
+      return response.writeHead(503, { "content-type": "application/json" }).end('{"error":"unavailable"}');
+    }
+    response.writeHead(201, {
+      "content-type": "application/sdp",
+      location: "/v1/realtime/calls/rtc_unconfirmed"
+    }).end("x".repeat(1024));
+  });
+  upstreamServer.listen(0, "127.0.0.1");
+  await once(upstreamServer, "listening");
+  testContext.after(() => new Promise(resolve => upstreamServer.close(resolve)));
+  await withTestContext(async ctx => {
+    const config = await ctx.readConfigFile();
+    config.media = { webrtc: { enabled: true, maxCalls: 1, maxResponseBytes: 128 } };
+    config.upstreams[0].provider = "openai";
+    config.upstreams[0].baseUrl = `http://127.0.0.1:${upstreamServer.address().port}`;
+    config.upstreams[0].routes.realtime = "/v1/realtime";
+    config.models.push({ id: "voice", targetModel: "deployment", pricingRef: "gpt-realtime-2", upstream: config.upstreams[0].name });
+    const saved = await ctx.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1" },
+      json: config
+    });
+    assert.equal(saved.status, 200, saved.text);
+    const create = () => ctx.publicRequest("/v1/realtime/calls", { method: "POST", body: callForm() });
+    const failed = await create();
+    assert.equal(failed.status, 502, failed.text);
+    assert.equal(failed.json.error.code, "WEBRTC_RESPONSE_TOO_LARGE");
+    assert.equal(requests.filter(url => url.endsWith("/hangup")).length, 1);
+    assert.equal((await create()).status, 429);
+    hangupConfirmed = true;
+    assert.equal((await ctx.publicRequest("/v1/realtime/calls/rtc_unconfirmed/hangup", { method: "POST" })).status, 200);
+  });
+});
+
 test("WebRTC call settlement deduplicates observers and keeps unobserved media cost partial", async () => {
   const registry = createRealtimeCallRegistry({ log: { warn() {} } });
   let releases = 0;

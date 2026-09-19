@@ -117,6 +117,7 @@ export async function registerWebRtcRoutes(app, { getConfig, extractApiKey, call
       let upload;
       let lease;
       let reservation;
+      let record;
       let committed = false;
       try {
         const consumer = req.proxyAccess.consumer;
@@ -168,31 +169,46 @@ export async function registerWebRtcRoutes(app, { getConfig, extractApiKey, call
         }
         const target = controlUrl(binding, "calls");
         const response = await fetch(target, { method: "POST", headers, body, signal: controller.signal, redirect: "manual" });
-        const responseBody = await boundedResponse(response, limits.maxResponseBytes);
-        if (!response.ok) return forwardResponse(reply, response, responseBody);
+        if (!response.ok) return forwardResponse(reply, response, await boundedResponse(response, limits.maxResponseBytes));
         const callId = parseCallLocation(response.headers.get("location"), target);
-        const record = { callId, keyId: consumer.keyId, consumer, publicRouteKey, binding, config, context, lease,
+        const requestHangup = async () => {
+          const control = await controlHeaders(config, binding, {}, context);
+          return fetch(controlUrl(binding, `calls/${encodeURIComponent(callId)}/hangup`), {
+            method: "POST", headers: control.headers, signal: AbortSignal.timeout(limits.setupTimeoutMs), redirect: "manual"
+          });
+        };
+        record = { callId, keyId: consumer.keyId, consumer, publicRouteKey, binding, config, context, lease,
           catalogGeneration: getModelCatalogRuntimeInfo().generation,
           hangup: async () => {
-            const control = await controlHeaders(config, binding, {}, context);
-            const ended = await fetch(controlUrl(binding, `calls/${encodeURIComponent(callId)}/hangup`), {
-              method: "POST", headers: control.headers, signal: AbortSignal.timeout(limits.setupTimeoutMs), redirect: "manual"
-            });
+            const ended = await requestHangup();
             return { response: ended, body: await boundedResponse(ended, limits.maxResponseBytes) };
           } };
         record.terminate = async () => {
-          const result = await record.hangup();
-          if (!result.response.ok && result.response.status !== 404) throw realtimeError(502, "WEBRTC_TERMINATION_UNCONFIRMED", "Call termination was not confirmed");
+          const ended = await requestHangup();
+          const confirmed = ended.ok || ended.status === 404;
+          try {
+            await boundedResponse(ended, limits.maxResponseBytes);
+          } catch (error) {
+            if (!confirmed) throw error;
+          }
+          if (!confirmed) throw realtimeError(502, "WEBRTC_TERMINATION_UNCONFIRMED", "Call termination was not confirmed");
         };
         reservation.commit(record, limits.callTtlMs);
         committed = true;
-        if (controller.signal.aborted) {
-          try { await record.terminate(); } finally { callRegistry.finish(record); }
-          return;
-        }
+        const responseBody = await boundedResponse(response, limits.maxResponseBytes);
+        if (controller.signal.aborted) throw realtimeError(504, "WEBRTC_SETUP_TIMEOUT", "WebRTC setup timed out");
         reply.header("location", `/v1/${publicRouteKey}/calls/${encodeURIComponent(callId)}`);
         return forwardResponse(reply, response, responseBody);
       } catch (error) {
+        if (committed) {
+          try {
+            await record.terminate();
+            callRegistry.finish(record);
+          } catch {
+            req.log.warn({ event: "proxy.webrtc_setup_cleanup_unconfirmed", modelId: record.binding.model.id },
+              "WebRTC setup failed after call creation and termination could not be confirmed");
+          }
+        }
         if (!reply.raw.destroyed) reply.code(error.status || (controller.signal.aborted ? 504 : 400)).send({ error: { code: error.code || "WEBRTC_SETUP_FAILED" } });
       } finally {
         clearTimeout(timeout);
