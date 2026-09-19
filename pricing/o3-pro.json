@@ -5,6 +5,9 @@
   "family": "o-series",
   "modelVersion": "2025-06-10",
   "status": "ga",
+  "contextWindow": 200000,
+  "maxInputTokens": 200000,
+  "maxOutputTokens": 100000,
   "interfaces": [
     "responses"
   ],
@@ -65,6 +68,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "limits": "https://developers.openai.com/api/docs/models/o3-pro",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [

@@ -5,6 +5,9 @@
   "family": "llama-4-maverick",
   "modelVersion": null,
   "status": "ga",
+  "contextWindow": 1000000,
+  "maxInputTokens": 1000000,
+  "maxOutputTokens": 1000000,
   "interfaces": [
     "chat/completions"
   ],
@@ -44,6 +47,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#meta-models-sold-directly-by-azure",
+    "limits": "https://github.com/meta-llama/llama-models/blob/main/models/llama4/MODEL_CARD.md",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [

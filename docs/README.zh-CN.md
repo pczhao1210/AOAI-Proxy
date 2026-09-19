@@ -553,12 +553,13 @@ claude
   "clientCompatibility": { "codex": true },
   "routes": {},
   "codex": {
-    "contextWindow": 128000,
     "supportedReasoningEfforts": ["low", "medium", "high"],
     "baseInstructions": "You are a coding agent working in the user's current workspace."
   }
 }
 ```
+
+Codex 上下文元数据依次取 `models[].codex.contextWindow`、`models[].contextWindow`、匹配 Model Catalog 的 `contextWindow`，总窗口未知时再取 `maxInputTokens`，最后才使用旧版 `128000` 回退。具有配置或目录 token 限制的模型会把包含输入和输出容量的完整上下文作为当前及最大窗口，并以 100% 有效窗口发布；仅当 deployment 需要覆盖目录规格时才设置 `models[].codex.contextWindow`。没有任何限制元数据的模型仍保留 128,000 token、95% 的旧版回退行为。
 
 Codex `0.153.2` 会请求 `<base_url>/models?client_version=0.153.2`，并要求每个模型条目提供指令来源。代理会输出简短的默认 `base_instructions`；可用 `models[].codex.baseInstructions` 替换为 deployment 专属指令。该 query 只选择响应表示，不会绕过模型访问控制或 Harness 资格校验。
 

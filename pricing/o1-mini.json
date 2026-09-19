@@ -5,6 +5,9 @@
   "family": "o-series",
   "modelVersion": "2024-09-12",
   "status": "ga",
+  "contextWindow": 128000,
+  "maxInputTokens": 128000,
+  "maxOutputTokens": 65536,
   "interfaces": [
     "chat/completions"
   ],
@@ -53,6 +56,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "limits": "https://developers.openai.com/api/docs/models/o1-mini",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
   }
 }

@@ -5,6 +5,7 @@
   "family": "kimi-k3",
   "modelVersion": null,
   "status": "ga",
+  "contextWindow": 1000000,
   "interfaces": [
     "chat/completions"
   ],
@@ -64,6 +65,7 @@
   },
   "sources": {
     "capabilities": "https://fireworks.ai/models/fireworks/kimi-k3",
+    "limits": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart",
     "pricing": "https://fireworks.ai/models/fireworks/kimi-k3"
   },
   "notes": [

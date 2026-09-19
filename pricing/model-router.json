@@ -5,6 +5,7 @@
   "family": "model-router",
   "modelVersion": "2025-11-18",
   "status": "ga",
+  "contextWindow": 200000,
   "interfaces": [
     "chat/completions",
     "responses"
@@ -67,6 +68,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-router",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-router",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/model-router/"
   },
   "notes": [

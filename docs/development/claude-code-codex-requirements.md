@@ -137,7 +137,7 @@ Codex 自定义 provider 应明确设置 `wire_api = "responses"`。当前 Codex
 
 Codex `0.153.2` 在启用远端目录刷新时会请求 `<base_url>/models?client_version=0.153.2`，并严格按专用 `ModelsResponse { models }` 解析。普通 `env_key` 自定义 provider 在干净状态下可能直接使用内置目录；远端刷新条件包括 Codex backend auth 或 command-backed provider auth。代理按显式 `format`、非空 `client_version`、User-Agent 的顺序协商目录格式，同时保留标准 OpenAI 与 Anthropic 模型列表格式。UA 判断使用不区分大小写的客户端关键词，不绑定完整 header 文本或具体版本号。
 
-Codex 目录只暴露 `clientCompatibility.codex=true` 且原生路由到 Responses 的模型。默认 context window 为 128K；可通过 `models[].codex` 覆盖描述、context window、reasoning 档位、优先级和 `baseInstructions`。Codex `0.153.2` 要求每个条目提供 `base_instructions` 或 `model_messages.instructions_template`；代理不会复制 Codex 内置提示，而是输出简短默认指令或管理员配置的 deployment 专属指令。
+Codex 目录只暴露 `clientCompatibility.codex=true` 且原生路由到 Responses 的模型。目录优先使用模型配置覆盖，其次使用 Model Catalog 中经来源验证的完整 context window；仅当两者都缺失时回退到 128K。可通过 `models[].codex` 覆盖描述、context window、reasoning 档位、优先级和 `baseInstructions`。Codex `0.153.2` 要求每个条目提供 `base_instructions` 或 `model_messages.instructions_template`；代理不会复制 Codex 内置提示，而是输出简短默认指令或管理员配置的 deployment 专属指令。
 
 ### 4.5 错误不是完全透明透传
 
@@ -199,6 +199,7 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 - `base_url` 应包含 `/v1`，Codex 会在其后请求 `/responses`。
 - `<responses-model-id>` 必须设置 `clientCompatibility.codex=true` 并原生路由到 `responses`。
 - 建议显式设置 `model`；代理 `/models` 已能返回 Codex 专用模型目录，不再需要额外 `model_catalog_json` 来规避解析告警。
+- Codex 目录优先发布模型配置中的 `codex.contextWindow` 或 `contextWindow`，否则使用 Model Catalog 中经来源验证的完整 `contextWindow`；仅当总窗口未知时才使用 `maxInputTokens`，所有目录限制均缺失时继续使用旧版 `128000` 回退。
 - 保持 `supports_websockets = false`。代理已提供原生 `/v1/responses/compact`，但 Codex `0.153.2` 的自定义 provider 没有独立 compact 能力开关；不要通过伪装 provider 名称或地址来强制启用未经真实 CLI 验证的远端 compact。
 - 代理已负责首字节前重试，示例关闭 Codex 的 request/stream 重试，避免多层重试放大流量。若要在客户端恢复重试，必须先验证工具调用幂等性和总超时。
 

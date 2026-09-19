@@ -39,6 +39,9 @@ const definitions = [{
   provider: "azure-openai",
   interfaces: ["chat/completions", "responses"],
   defaultInterface: "responses",
+  contextWindow: 1050000,
+  maxInputTokens: 922000,
+  maxOutputTokens: 128000,
   capabilities: ["reasoning", "vision"],
   protocolProfiles: {
     responses: {
@@ -93,6 +96,27 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
     assert.ok(definition.sources.capabilities, `${definition.fileName}: sources.capabilities is required`);
     assert.ok(definition.sources.pricing, `${definition.fileName}: sources.pricing is required`);
     assertPricingConversions(definition.pricing, definition.fileName);
+    for (const field of ["contextWindow", "maxInputTokens", "maxOutputTokens"]) {
+      if (definition[field] != null) {
+        assert.ok(
+          Number.isSafeInteger(definition[field]) && definition[field] > 0,
+          `${definition.fileName}: ${field} must be a positive safe integer`
+        );
+      }
+    }
+    if (definition.contextWindow != null) {
+      for (const field of ["maxInputTokens", "maxOutputTokens"]) {
+        if (definition[field] != null) {
+          assert.ok(
+            definition[field] <= definition.contextWindow,
+            `${definition.fileName}: ${field} must not exceed contextWindow`
+          );
+        }
+      }
+    }
+    if (["contextWindow", "maxInputTokens", "maxOutputTokens"].some((field) => definition[field] != null)) {
+      assert.ok(definition.sources.limits, `${definition.fileName}: token limits require sources.limits`);
+    }
 
     if (definition.pricing.channels || definition.pricing.tiers) {
       assert.equal(
@@ -163,6 +187,42 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
     "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "mai-image-2.6", "mai-image-2.6-flash"
   ]) {
     assert.ok(ids.has(id), `missing bundled Model Catalog definition ${id}`);
+  }
+});
+
+test("verified model cards preserve documented token limits without filling ambiguous cards", () => {
+  const definitionsById = new Map(listPricingDefinitions().map((definition) => [definition.id, definition]));
+  const definitionsWithLimits = [...definitionsById.values()].filter((definition) => (
+    ["contextWindow", "maxInputTokens", "maxOutputTokens"].some((field) => definition[field] != null)
+  ));
+  assert.equal(definitionsWithLimits.length, 63);
+
+  for (const id of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
+    const definition = definitionsById.get(id);
+    assert.equal(definition.contextWindow, 1050000);
+    assert.equal(definition.maxInputTokens, 922000);
+    assert.equal(definition.maxOutputTokens, 128000);
+    assert.match(definition.sources.limits, /learn\.microsoft\.com/);
+  }
+
+  for (const id of [
+    "claude-opus-4-1",
+    "DeepSeek-V4-Flash",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-5-pro",
+    "grok-4",
+    "grok-4.3",
+    "grok-4.6",
+    "Kimi-K2.5"
+  ]) {
+    const definition = definitionsById.get(id);
+    assert.deepEqual(
+      [definition.contextWindow, definition.maxInputTokens, definition.maxOutputTokens],
+      [null, null, null],
+      `${id} must retain deployment-specific or ambiguous limits`
+    );
   }
 });
 
@@ -393,11 +453,21 @@ test("Model Catalog compiler resolves exact model facts and protocol defaults", 
   assert.equal(matched.catalogId, "gpt-special");
   assert.equal(matched.defaultInterface, "responses");
   assert.deepEqual(matched.capabilities, ["reasoning", "vision"]);
+  assert.deepEqual(matched.tokenLimits, {
+    contextWindow: 1050000,
+    maxInputTokens: 922000,
+    maxOutputTokens: 128000
+  });
   assert.deepEqual(getDescriptorProtocolProfile(matched, "responses").reasoning.levels, ["low", "medium", "high", "xhigh"]);
   assert.equal(resolveModelDescriptor("gpt-special-alias", snapshot), matched);
 
   const unknown = resolveModelDescriptor("unknown-model", snapshot);
   assert.equal(unknown.catalogMatched, false);
+  assert.deepEqual(unknown.tokenLimits, {
+    contextWindow: null,
+    maxInputTokens: null,
+    maxOutputTokens: null
+  });
   assert.equal(getDescriptorProtocolProfile(unknown, "responses"), getDefaultProtocolProfile("responses"));
   assert.ok(snapshot.generation > 0);
   assert.equal(snapshot.modelCount, 2);
@@ -418,6 +488,17 @@ test("Model Catalog compiler rejects ambiguous aliases", () => {
     { ...definitions[0], id: "first", aliases: ["shared"] },
     { ...definitions[0], id: "second", aliases: ["shared"] }
   ]), /alias collision for shared/);
+});
+
+test("Model Catalog compiler rejects inconsistent token limits", () => {
+  assert.throws(
+    () => compileModelCatalog(config, [{
+      ...definitions[0],
+      contextWindow: 128000,
+      maxInputTokens: 256000
+    }]),
+    /maxInputTokens must not exceed contextWindow/
+  );
 });
 
 test("Model Catalog digest is deterministic across definition order", () => {

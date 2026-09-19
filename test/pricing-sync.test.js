@@ -67,9 +67,11 @@ test("remote Model Catalog sync swaps directory and snapshot only after candidat
             ? ["invalid-template-route.json"]
             : syncMode === "invalid-template-routes-shape"
               ? ["invalid-template-routes-shape.json"]
-            : syncMode === "invalid-hosting" || syncMode === "invalid-hosting-empty"
-              ? ["hosted-model.json"]
-          : ["new-model.json"];
+              : syncMode === "invalid-token-limits"
+                ? ["invalid-token-limits.json"]
+                : syncMode === "invalid-hosting" || syncMode === "invalid-hosting-empty"
+                  ? ["hosted-model.json"]
+                  : ["new-model.json"];
       return new Response(JSON.stringify(names.map((name) => ({
         type: "file",
         name,
@@ -103,6 +105,12 @@ test("remote Model Catalog sync swaps directory and snapshot only after candidat
               targetModel: "invalid-template-routes-shape",
               routes: []
             }
+          }
+        : syncMode === "invalid-token-limits"
+          ? {
+            ...definition("invalid-token-limits"),
+            contextWindow: 128000,
+            maxInputTokens: 256000
           }
         : syncMode === "invalid-hosting"
           ? {
@@ -178,6 +186,14 @@ test("remote Model Catalog sync swaps directory and snapshot only after candidat
     await assert.rejects(
       syncPricingDefinitionsFromGitHub({ owner: "test", repo: "catalog", path: "pricing", ref: "test-ref" }, transaction),
       /proxyTemplate\.routes must be an object/
+    );
+    assert.deepEqual(await fs.readdir(pricingDir), ["old-model.json"]);
+    assertOldCatalogStillActive();
+
+    syncMode = "invalid-token-limits";
+    await assert.rejects(
+      syncPricingDefinitionsFromGitHub({ owner: "test", repo: "catalog", path: "pricing", ref: "test-ref" }, transaction),
+      /maxInputTokens must not exceed contextWindow/
     );
     assert.deepEqual(await fs.readdir(pricingDir), ["old-model.json"]);
     assertOldCatalogStillActive();

@@ -34,6 +34,13 @@ This directory stores reusable model definitions for AOAI Proxy.
   - Text profiles can declare `reasoning.parameter`, `levels`, `default`, `aliases`, and `validation`; Messages profiles can also declare thinking types and a default.
   - `images/generations.request` can declare `transport`, `removeModel`, `qualityAliases`, `dropParameters`, and `sizeExpansion`.
 
+- `contextWindow`, `maxInputTokens`, and `maxOutputTokens`
+  - Store independently sourced model token limits as positive integers.
+  - `contextWindow` is the total model context capacity. Input and output maxima must not exceed it.
+  - Codex catalog publication uses the complete `contextWindow`, including input and output capacity, for both its current and maximum window. `maxInputTokens` is used only when the total context window is unavailable.
+  - Catalog-backed or explicitly configured windows are published with a 100 percent effective window; the legacy 128,000-token fallback retains the historical 95 percent value.
+  - Add `sources.limits` whenever these fields are published. Do not infer limits from model names or pricing tiers.
+
 ### Media usage pricing
 
 HTTP audio/image-edit, Realtime WebSocket and WebRTC accounting uses a separate

@@ -5,6 +5,8 @@
   "family": "mai-thinking",
   "modelVersion": "2026-06-01",
   "status": "preview",
+  "contextWindow": 256000,
+  "maxOutputTokens": 64000,
   "hostingModes": ["azure"],
   "defaultHostingMode": "azure",
   "interfaces": ["chat/completions"],
@@ -34,6 +36,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-mai-thinking",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#microsoft-models-sold-by-azure",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/"
   },
   "notes": [

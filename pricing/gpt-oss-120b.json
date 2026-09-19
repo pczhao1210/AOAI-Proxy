@@ -5,6 +5,8 @@
   "family": "gpt-oss",
   "modelVersion": "1",
   "status": "preview",
+  "contextWindow": 131072,
+  "maxOutputTokens": 131072,
   "interfaces": [
     "chat/completions"
   ],
@@ -56,6 +58,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-oss",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-oss",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
   },
   "notes": [

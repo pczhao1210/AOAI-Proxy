@@ -5,6 +5,9 @@
   "family": "gpt-5.2",
   "modelVersion": "2026-02-10",
   "status": "preview",
+  "contextWindow": 128000,
+  "maxInputTokens": 111616,
+  "maxOutputTokens": 16384,
   "interfaces": [
     "chat/completions",
     "responses"
@@ -54,6 +57,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-52",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
   }
 }

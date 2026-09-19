@@ -5,6 +5,8 @@
   "family": "claude-4",
   "modelVersion": null,
   "status": "preview",
+  "contextWindow": 1000000,
+  "maxOutputTokens": 128000,
   "hostingModes": ["anthropic"],
   "defaultHostingMode": "anthropic",
   "interfacesByHostingMode": {
@@ -75,6 +77,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-from-partners#anthropic",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
     "pricing": "https://claude.com/pricing#api"
   },
   "notes": [

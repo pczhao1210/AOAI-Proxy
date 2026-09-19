@@ -5,6 +5,8 @@
   "family": "glm-5.2",
   "modelVersion": null,
   "status": "ga",
+  "contextWindow": 1000000,
+  "maxOutputTokens": 128000,
   "interfaces": [
     "chat/completions"
   ],
@@ -65,6 +67,7 @@
   },
   "sources": {
     "capabilities": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
+    "limits": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [

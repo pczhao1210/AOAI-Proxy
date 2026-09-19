@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { listPricingDefinitions } from "./pricing-library.js";
+import { listPricingDefinitions, normalizeModelTokenLimits } from "./pricing-library.js";
 
 const TEXT_PROTOCOLS = new Set(["chat/completions", "responses", "messages"]);
 const DEFAULT_PROTOCOL_PROFILES = Object.freeze({
@@ -187,6 +187,7 @@ function validateProxyAdapters(definition, interfaces = definition?.interfaces |
 function compileDescriptor(model, definition, upstream, knownRouteInterfaces) {
   const interfaces = resolveInterfaces(model, definition);
   const routeTargets = resolveRouteTargets(definition, interfaces);
+  const tokenLimits = freezeJson(normalizeModelTokenLimits(definition));
   const capabilities = definition?.capabilities?.length
     ? definition.capabilities
     : (Array.isArray(model?.capabilities) ? model.capabilities : []);
@@ -205,6 +206,7 @@ function compileDescriptor(model, definition, upstream, knownRouteInterfaces) {
     routeTargets: Object.freeze(routeTargets),
     defaultInterface: resolveDefaultInterface(definition, interfaces),
     capabilities: Object.freeze([...new Set(capabilities.map(normalizeKey).filter(Boolean))]),
+    tokenLimits,
     protocolProfiles,
     definition: definition || null,
     model

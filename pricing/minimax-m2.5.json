@@ -5,6 +5,7 @@
   "family": "minimax-m2.5",
   "modelVersion": null,
   "status": "ga",
+  "contextWindow": 204800,
   "interfaces": [
     "chat/completions"
   ],
@@ -53,6 +54,7 @@
   },
   "sources": {
     "capabilities": "https://platform.minimax.io/docs/api-reference/text-post",
+    "limits": "https://platform.minimax.io/docs/api-reference/api-overview",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [

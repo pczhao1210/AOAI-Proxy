@@ -570,12 +570,13 @@ These settings are request compatibility controls, not protocol selectors. A pro
   "clientCompatibility": { "codex": true },
   "routes": {},
   "codex": {
-    "contextWindow": 128000,
     "supportedReasoningEfforts": ["low", "medium", "high"],
     "baseInstructions": "You are a coding agent working in the user's current workspace."
   }
 }
 ```
+
+Codex context metadata resolves in this order: `models[].codex.contextWindow`, `models[].contextWindow`, the matched Model Catalog `contextWindow`, `maxInputTokens` when no total is known, then the legacy `128000` fallback. Models with configured or catalog token-limit metadata publish the complete context window, including input and output capacity, as both the current and maximum window with a 100 percent effective window. Set `models[].codex.contextWindow` only when a deployment-specific limit must replace the catalog value; values must be positive safe integers. Models without any configured or catalog limit retain the historical 128,000-token, 95-percent fallback.
 
 Codex `0.153.2` requests `<base_url>/models?client_version=0.153.2` and requires each model entry to contain an instruction source. The proxy emits a concise default `base_instructions`; set `models[].codex.baseInstructions` to replace it with deployment-specific instructions. The query parameter selects only the response representation and never bypasses model access or Harness eligibility.
 

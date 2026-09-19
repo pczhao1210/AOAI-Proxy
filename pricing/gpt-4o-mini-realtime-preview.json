@@ -5,6 +5,8 @@
   "family": "gpt-4o",
   "modelVersion": "2024-12-17",
   "status": "preview",
+  "contextWindow": 16000,
+  "maxOutputTokens": 4096,
   "interfaces": [
     "realtime"
   ],
@@ -47,6 +49,7 @@
   "pricingCatalogEntry": null,
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "limits": "https://developers.openai.com/api/docs/models/gpt-4o-mini-realtime-preview",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
   }
 }

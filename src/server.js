@@ -327,10 +327,24 @@ function getCodexReasoningProfile(model, capabilities) {
 function buildCodexModelInfo(model, index) {
   const capabilities = normalizeCapabilitySet(model);
   const reasoningProfile = getCodexReasoningProfile(model, capabilities);
-  const configuredContextWindow = Number(model?.codex?.contextWindow ?? model?.contextWindow);
-  const contextWindow = Number.isInteger(configuredContextWindow) && configuredContextWindow > 0
-    ? configuredContextWindow
-    : 128000;
+  const descriptor = resolveModelDescriptor(model?.id);
+  const configuredContextWindow = [
+    model?.codex?.contextWindow,
+    model?.contextWindow
+  ].find((value) => Number.isSafeInteger(value) && value > 0);
+  const catalogContextWindow = descriptor?.tokenLimits?.contextWindow;
+  const catalogInputLimit = descriptor?.tokenLimits?.maxInputTokens;
+  const contextWindow = configuredContextWindow
+    || (
+      Number.isSafeInteger(catalogContextWindow) && catalogContextWindow > 0
+        ? catalogContextWindow
+        : Number.isSafeInteger(catalogInputLimit) && catalogInputLimit > 0
+          ? catalogInputLimit
+          : 128000
+    );
+  const hasKnownContextWindow = configuredContextWindow != null
+    || (Number.isSafeInteger(catalogContextWindow) && catalogContextWindow > 0)
+    || (Number.isSafeInteger(catalogInputLimit) && catalogInputLimit > 0);
   const supportsVision = capabilities.has("vision");
   const supportsWebSearch = capabilities.has("web-search");
   const codeOptimized = capabilities.has("code-optimized");
@@ -369,7 +383,7 @@ function buildCodexModelInfo(model, index) {
     supports_image_detail_original: supportsVision,
     context_window: contextWindow,
     max_context_window: contextWindow,
-    effective_context_window_percent: 95,
+    effective_context_window_percent: hasKnownContextWindow ? 100 : 95,
     experimental_supported_tools: [],
     input_modalities: supportsVision ? ["text", "image"] : ["text"],
     supports_search_tool: supportsWebSearch,

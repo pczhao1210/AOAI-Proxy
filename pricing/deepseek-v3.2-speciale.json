@@ -5,6 +5,8 @@
   "family": "deepseek-v3.2",
   "modelVersion": "1",
   "status": "ga",
+  "maxInputTokens": 128000,
+  "maxOutputTokens": 128000,
   "interfaces": [
     "chat/completions"
   ],
@@ -52,6 +54,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-by-azure",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/deepseek/"
   },
   "notes": [

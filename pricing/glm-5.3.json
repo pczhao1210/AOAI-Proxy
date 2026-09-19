@@ -5,6 +5,8 @@
   "family": "glm-5.3",
   "modelVersion": null,
   "status": "ga",
+  "contextWindow": 1000000,
+  "maxOutputTokens": 128000,
   "hostingModes": [
     "azure"
   ],
@@ -75,6 +77,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "limits": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3",
     "pricing": "https://docs.fireworks.ai/serverless/pricing",
     "azurePricing": "https://prices.azure.com/api/retail/prices"
   },

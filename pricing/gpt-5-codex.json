@@ -5,6 +5,9 @@
   "family": "gpt-5",
   "modelVersion": "2025-09-11",
   "status": "ga",
+  "contextWindow": 400000,
+  "maxInputTokens": 272000,
+  "maxOutputTokens": 128000,
   "interfaces": [
     "responses"
   ],
@@ -72,6 +75,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-5",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [

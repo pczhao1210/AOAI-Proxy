@@ -1794,6 +1794,14 @@ function validateConfig(cfg) {
     if (model.codex != null && (typeof model.codex !== "object" || Array.isArray(model.codex))) {
       throw new Error(`models[${idx}].codex must be an object`);
     }
+    for (const [field, value] of [
+      ["contextWindow", model.contextWindow],
+      ["codex.contextWindow", model.codex?.contextWindow]
+    ]) {
+      if (value != null && (!Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error(`models[${idx}].${field} must be a positive safe integer`);
+      }
+    }
     if (model.requestPolicy != null) {
       if (typeof model.requestPolicy !== "object" || Array.isArray(model.requestPolicy)) {
         throw new Error(`models[${idx}].requestPolicy must be an object`);

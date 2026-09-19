@@ -203,7 +203,9 @@ export const routeTests = [
       const codexModel = result.json.models.find((model) => model.slug === "gpt-5.6-luna");
       ensure(codexModel, "Expected native Responses model in Codex catalog");
       assert.equal(codexModel.display_name, "GPT-5.6 Luna");
-      assert.equal(codexModel.context_window, 128000);
+      assert.equal(codexModel.context_window, 1050000);
+      assert.equal(codexModel.max_context_window, 1050000);
+      assert.equal(codexModel.effective_context_window_percent, 100);
       assert.equal(codexModel.default_reasoning_level, "medium");
       assert.deepEqual(codexModel.supported_reasoning_levels.map((item) => item.effort), ["none", "low", "medium", "high", "xhigh", "max"]);
       assert.equal(codexModel.support_verbosity, false);
@@ -212,6 +214,10 @@ export const routeTests = [
       assert.equal(typeof codexModel.base_instructions, "string");
       assert.ok(codexModel.base_instructions.length > 0);
       assert.ok(result.json.models.some((model) => model.slug === "model-router"));
+      const routedModel = result.json.models.find((model) => model.slug === "model-router");
+      assert.equal(routedModel.context_window, 200000);
+      assert.equal(routedModel.max_context_window, 200000);
+      assert.equal(routedModel.effective_context_window_percent, 100);
       assert.equal(result.json.models.some((model) => model.slug === "gpt-5-mini"), false);
       assert.equal(result.json.models.some((model) => model.slug === "claude-sonnet-4-6"), false);
       assert.equal(result.json.models.some((model) => model.slug === "chat-only"), false);
@@ -266,6 +272,35 @@ export const routeTests = [
       assert.deepEqual(refreshedModel.input_modalities, ["text", "image"]);
       assert.equal(refreshedModel.supports_image_detail_original, true);
       assert.equal(refreshedModel.supports_parallel_tool_calls, true);
+
+      staleCapabilityModel.contextWindow = 700000;
+      const savedGeneralContextOverride = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: staleCapabilityConfig
+      });
+      assert.equal(savedGeneralContextOverride.status, 200, savedGeneralContextOverride.text);
+      const generalOverrideResult = await ctx.publicRequest("/v1/models?format=codex");
+      const generalOverrideModel = generalOverrideResult.json?.models?.find((model) => model.slug === "gpt-5.6-luna");
+      assert.equal(generalOverrideModel?.context_window, 700000);
+      assert.equal(generalOverrideModel?.max_context_window, 700000);
+      assert.equal(generalOverrideModel?.effective_context_window_percent, 100);
+
+      staleCapabilityModel.codex = {
+        ...(staleCapabilityModel.codex || {}),
+        contextWindow: 640000
+      };
+      const savedContextOverride = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: staleCapabilityConfig
+      });
+      assert.equal(savedContextOverride.status, 200, savedContextOverride.text);
+      const overriddenResult = await ctx.publicRequest("/v1/models?format=codex");
+      const overriddenModel = overriddenResult.json?.models?.find((model) => model.slug === "gpt-5.6-luna");
+      assert.equal(overriddenModel?.context_window, 640000);
+      assert.equal(overriddenModel?.max_context_window, 640000);
+      assert.equal(overriddenModel?.effective_context_window_percent, 100);
 
       const standardResult = await ctx.publicRequest("/v1/models", {
         headers: { "user-agent": "openai-node/6.0" }
@@ -387,6 +422,26 @@ export const routeTests = [
       });
       assert.equal(invalidCompatibilityResult.status, 400, invalidCompatibilityResult.text);
       assert.match(invalidCompatibilityResult.json?.error || "", /compatibility\.codex must be an object/);
+
+      for (const [field, value, expectedError] of [
+        ["contextWindow", "922000", /models\[\d+\]\.contextWindow must be a positive safe integer/],
+        ["codex.contextWindow", 0, /models\[\d+\]\.codex\.contextWindow must be a positive safe integer/]
+      ]) {
+        const invalidContextConfig = structuredClone(config);
+        const invalidContextModel = invalidContextConfig.models.find((model) => model.id === "gpt-5.6-luna");
+        if (field === "contextWindow") {
+          invalidContextModel.contextWindow = value;
+        } else {
+          invalidContextModel.codex = { ...(invalidContextModel.codex || {}), contextWindow: value };
+        }
+        const invalidContextResult = await ctx.adminRequest("/admin/api/config", {
+          method: "PUT",
+          headers: { "x-aoai-admin-csrf": "1" },
+          json: invalidContextConfig
+        });
+        assert.equal(invalidContextResult.status, 400, invalidContextResult.text);
+        assert.match(invalidContextResult.json?.error || "", expectedError);
+      }
 
       config.models.push({ ...codexModel });
       const duplicateModel = await ctx.adminRequest("/admin/api/config", {

@@ -5,6 +5,9 @@
   "family": "kimi-k2",
   "modelVersion": null,
   "status": "preview",
+  "contextWindow": 262144,
+  "maxInputTokens": 262144,
+  "maxOutputTokens": 262144,
   "interfaces": [
     "chat/completions"
   ],
@@ -60,6 +63,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "limits": "https://platform.kimi.ai/docs/guide/kimi-k2-7-code-quickstart",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [

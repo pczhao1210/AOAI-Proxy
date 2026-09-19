@@ -5,6 +5,9 @@
   "family": "gpt-5.4",
   "modelVersion": "2026-03-17",
   "status": "ga",
+  "contextWindow": 400000,
+  "maxInputTokens": 272000,
+  "maxOutputTokens": 128000,
   "interfaces": [
     "chat/completions",
     "responses"
@@ -84,6 +87,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-54",
     "pricing": "https://developers.openai.com/api/docs/pricing"
   }
 }

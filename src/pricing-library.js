@@ -42,6 +42,31 @@ function normalizeStringArray(value) {
     : [];
 }
 
+function normalizeOptionalPositiveSafeInteger(value, fieldName) {
+  if (value == null) return null;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Model Catalog ${fieldName} must be a positive safe integer`);
+  }
+  return value;
+}
+
+export function normalizeModelTokenLimits(value) {
+  const definition = asPlainObject(value);
+  const tokenLimits = {
+    contextWindow: normalizeOptionalPositiveSafeInteger(definition.contextWindow, "contextWindow"),
+    maxInputTokens: normalizeOptionalPositiveSafeInteger(definition.maxInputTokens, "maxInputTokens"),
+    maxOutputTokens: normalizeOptionalPositiveSafeInteger(definition.maxOutputTokens, "maxOutputTokens")
+  };
+  if (tokenLimits.contextWindow != null) {
+    for (const field of ["maxInputTokens", "maxOutputTokens"]) {
+      if (tokenLimits[field] != null && tokenLimits[field] > tokenLimits.contextWindow) {
+        throw new Error(`Model Catalog ${field} must not exceed contextWindow`);
+      }
+    }
+  }
+  return tokenLimits;
+}
+
 function normalizeProxyTemplateRoutes(value) {
   if (value == null) return {};
   if (typeof value !== "object" || Array.isArray(value)) {
@@ -296,6 +321,7 @@ function rememberLookup(lookup, key, definition) {
 
 function normalizePricingDefinition(rawDefinition) {
   const definition = asPlainObject(rawDefinition);
+  const tokenLimits = normalizeModelTokenLimits(definition);
   const hasPricingCatalogEntry = Object.prototype.hasOwnProperty.call(definition, "pricingCatalogEntry");
   const interfacesByHostingMode = Object.fromEntries(
     Object.entries(asPlainObject(definition.interfacesByHostingMode))
@@ -322,6 +348,7 @@ function normalizePricingDefinition(rawDefinition) {
     family: String(definition.family || ""),
     modelVersion: definition.modelVersion ?? null,
     status: String(definition.status || "unknown"),
+    ...tokenLimits,
     interfaces,
     hostingModes: normalizeStringArray(definition.hostingModes).map((mode) => mode.toLowerCase()),
     defaultHostingMode: String(definition.defaultHostingMode || "").trim().toLowerCase(),
@@ -384,7 +411,7 @@ function readPricingDefinitionsFromDir(dirPath) {
   });
 }
 
-function enrichWithBundledProtocolMetadata(definitions, activeSource) {
+function enrichWithBundledCatalogMetadata(definitions, activeSource) {
   if (activeSource === "bundled") return definitions;
   const bundledById = new Map(
     readPricingDefinitionsFromDir(getBundledPricingDir())
@@ -403,7 +430,16 @@ function enrichWithBundledProtocolMetadata(definitions, activeSource) {
         : bundled.interfacesByHostingMode,
       protocolProfiles: Object.keys(definition.protocolProfiles).length
         ? definition.protocolProfiles
-        : bundled.protocolProfiles
+        : bundled.protocolProfiles,
+      contextWindow: definition.contextWindow ?? bundled.contextWindow,
+      maxInputTokens: definition.maxInputTokens ?? bundled.maxInputTokens,
+      maxOutputTokens: definition.maxOutputTokens ?? bundled.maxOutputTokens,
+      sources: {
+        ...definition.sources,
+        ...(!definition.sources?.limits && bundled.sources?.limits
+          ? { limits: bundled.sources.limits }
+          : {})
+      }
     };
   });
 }
@@ -434,7 +470,7 @@ function loadPricingDefinitions() {
     return pricingDefinitionsCache;
   }
 
-  const entries = enrichWithBundledProtocolMetadata(
+  const entries = enrichWithBundledCatalogMetadata(
     readPricingDefinitionsFromDir(activeLocation.dir),
     activeLocation.source
   )
@@ -617,7 +653,7 @@ async function performPricingDefinitionsSync(overrides, transaction) {
       await fsp.writeFile(path.join(stagingDir, fileName), `${JSON.stringify(rawDefinition, null, 2)}\n`, "utf8");
     }
 
-    const compiledDefinitions = enrichWithBundledProtocolMetadata(candidateDefinitions, "persisted")
+    const compiledDefinitions = enrichWithBundledCatalogMetadata(candidateDefinitions, "persisted")
       .sort((left, right) => left.displayName.localeCompare(right.displayName));
     const preparedTransaction = transaction.prepare?.(compiledDefinitions);
 
