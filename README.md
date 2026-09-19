@@ -299,7 +299,7 @@ The helper injects the generated version and UTC build time into the image. Quer
 
 The default version uses the UTC build minute in `nextgen-YYYYMMDDHHmm` format. The same values are available as standard OCI image labels.
 
-The Dockerfile tracks the current stable major lines with `NODE_MAJOR=24` and `CADDY_MAJOR=2`, which resolve to `node:24-alpine` and `caddy:2-alpine`. The helper runs `docker buildx build --pull` so each build fetches the latest available patch/minor image in those major lines. A build without `--push` uses buildx `--load`; a combined build and push uses `--push` directly. Multi-platform output must be pushed because Docker cannot load a multi-platform manifest into the classic local image store.
+The Dockerfile tracks the current stable major lines with `NODE_MAJOR=24` and `CADDY_MAJOR=2`, and pins `ALPINE_VERSION=3.24` so the Node dependency stage and minimal Alpine runtime use the same musl release. The runtime copies only the Node executable instead of retaining npm, Yarn, and build headers. The helper runs `docker buildx build --pull` so each build fetches the latest available patch/minor image in those version lines. A build without `--push` uses buildx `--load`; a combined build and push uses `--push` directly. Multi-platform output must be pushed because Docker cannot load a multi-platform manifest into the classic local image store.
 
 The selected buildx builder must advertise every requested platform. Cross-building arm64 on an amd64 host normally requires QEMU/binfmt support. When calling buildx directly, pass the platform and build metadata:
 
@@ -307,6 +307,7 @@ The selected buildx builder must advertise every requested platform. Cross-build
 docker buildx build --pull --load \
   --platform linux/amd64 \
   --build-arg NODE_MAJOR=24 \
+  --build-arg ALPINE_VERSION=3.24 \
   --build-arg CADDY_MAJOR=2 \
   --build-arg AOAI_PROXY_VERSION=nextgen-202608100257 \
   --build-arg AOAI_PROXY_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

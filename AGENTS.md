@@ -2,20 +2,15 @@
 
 ## Source Of Truth
 
-- Treat public request/response objects, SSE frames, errors, and model catalogs as wire contracts.
-- Keep the bundled Model Catalog, runtime compilation and lookup, and remote atomic catalog updates in both `minimum` and `nextgen`.
-- Use [protocol support](docs/protocols/protocol-support.md) for protocol semantics, compatibility boundaries, and the 3x3 Chat/Responses/Messages matrix.
-- Use the [model card guide](pricing/README.md) for pricing fields, capabilities, and route templates; preserve atomic catalog activation and retain the previous generation on update failure.
-- Use [test/README.md](test/README.md) for focused, CLI, real-upstream, and latency test prerequisites.
-- Use [README.md](README.md) for runtime and deployment configuration, and the [Git workflow guide](docs/development/git-workflow.zh-CN.md) for branch/worktree operations.
-- Use the [configuration guide](docs/configuration/feature-flags.zh-CN.md) for defaults and reload behavior, and the [documentation index](docs/README.md) for deployment and observability guides.
-- Keep `minimum` and `nextgen` as scope profiles on the same code baseline. Do not restore long-lived feature branches or hard-merge the old minimum branch unless explicitly requested.
+- [README.md](README.md): local startup, runtime configuration, and deployment. [Configuration guide](docs/configuration/feature-flags.zh-CN.md): setting defaults and reload/restart requirements.
+- [Protocol support](docs/protocols/protocol-support.md): the 3x3 Chat/Responses/Messages matrix and compatibility boundaries. Treat public JSON, SSE, errors, and model discovery as wire contracts.
+- [Model card guide](pricing/README.md): pricing, capabilities, protocol profiles, and route templates. [Test guide](test/README.md): focused suites and integration prerequisites.
+- `minimum` and `nextgen` are runtime profiles on one baseline, not separate implementations. Both retain the protocol matrix and bundled/remote-updatable Model Catalog. Do not restore or hard-merge the old minimum branch.
 
 ## Protocol Invariants
 
 - Prefer native passthrough. When client and upstream protocols match, do not route payloads through a lower-common-denominator representation; preserve native objects and raw SSE frames except for authentication, model mapping, safety, and explicit policy handling.
 - Resolve the effective backend protocol from the final upstream URL. A configured route name alone is not sufficient.
-- Treat each cross-protocol direction independently. A successful Chat -> Messages rule does not imply the reverse rule or another target is equivalent.
 - Preserve core semantics during conversion: public model mapping, system/developer instructions, ordered text, supported images, function tools, tool calls/results and IDs, output token limits, supported reasoning controls, stream intent, usage, and terminal reason.
 - Prefer explicit field mapping, then safe extension passthrough. If the target protocol cannot carry a non-core field, use the configured best-effort loss behavior and emit `proxy.protocol_shim_lossy_conversion` rather than silently deleting it.
 - Never silently drop or fabricate core state. Signed/redacted thinking, server-side conversation state, or another unrepresentable invariant must follow the explicit strict/loss policy.
@@ -23,70 +18,71 @@
 - Keep inbound credentials separate from upstream credentials. Credential-like and hop-by-hop headers remain blocked; protocol metadata headers may only follow their established allowlist.
 - Keep `messages/count_tokens` native to Messages and `responses/compact` native to Responses. Validate their final URL suffixes; do not emulate them through another protocol.
 - Require source-protocol terminal evidence for streams, retry only before downstream-visible output, and cancel upstream work when the client disconnects.
+- Claude Code requires native Messages and Codex requires native Responses. Keep their model-discovery eligibility aligned with the final native route; generic shim support is not sufficient.
+- HTTP audio/image edits, Realtime WebSocket, and WebRTC are independently gated and disabled by default in both profiles. WebRTC media bypasses the proxy; its in-process call registry requires a single instance or affinity, and client-secret export requires a separate administrator opt-in.
 
-## Direction Freeze Discipline
+## Protocol Regression Workflow
 
-- Use one named source -> target direction as the unit of change. Do not modify unrelated conversion directions to make one case pass.
-- Before changing shared validators, converters, or stream state, run the narrowest existing contract for the affected direction and record what currently passes.
-- Once a direction passes, freeze its client wire output and recorded upstream URL, body, and headers with regression assertions. Later work must rerun that contract and preserve it unless the task explicitly changes that direction's contract.
-- Add a failing focused test before changing an already frozen direction. Keep the repair local; avoid broad shared rewrites when a directional adapter or policy rule can express the behavior.
-- JSON and SSE are separate contracts for the same direction. A direction is not frozen until both applicable forms and their terminal/error behavior are covered.
+- Use one named source -> target direction as the unit of change; conversion rules are not symmetric. Run its narrowest existing contract before changing shared validators, converters, or stream state.
+- Freeze client output and upstream URL/body/headers with assertions. Cover JSON and SSE separately, including terminal/error behavior. Add a failing focused test before repairing a frozen direction; keep the repair directional.
+- Rejection tests must identify a security, administrator-policy, unrepresentable-core-state, or actual-upstream boundary. Assert no upstream request for proxy preflight rejection; otherwise assert upstream receipt and preserved status/error semantics.
+- Scope negative tests to one direction, phase, structure, and outcome. Add the nearest counterexample, not a global unsupported-field list. Broaden the matrix only for shared-code or shared-wire changes.
 
-## Negative-Test Boundaries
+## High-Level Architecture
 
-- Define the intended boundary before adding a rejection test: security, explicit administrator policy, protocol-unrepresentable core state, or actual upstream rejection.
-- Keep each negative test scoped to one direction, phase, structure, and expected outcome. Do not grow global unsupported-field lists from a single provider example.
-- For proxy-owned preflight rejection, assert that no upstream request was made. For upstream capability behavior, assert that the request reached the mock upstream and preserve the upstream status/error semantics.
-- Add only the nearest counterexample needed to protect the boundary. Broaden the matrix only when shared code or shared wire behavior changed.
+- [src/server.js](src/server.js) starts Fastify, configuration, authentication, the upstream HTTP pool, and Caddy integration. It exposes public routes/model discovery and the separately protected admin API.
+- [src/proxy.js](src/proxy.js) orchestrates model resolution, governance, policy, upstream calls, and response dispatch. [routing.js](src/proxy/routing.js) resolves overrides and final URLs/protocols; [shim.js](src/proxy/shim.js) owns directional request/JSON conversion; [stream.js](src/proxy/stream.js) owns native SSE and shim state machines. Map public model IDs to `targetModel` upstream and restore them in successful responses; never use Chat as an intermediate for native Responses/Messages.
+- Keep body cleanup in [body.js](src/proxy/body.js), configured field/tool/image-generation policy in [request-policy.js](src/proxy/request-policy.js), Messages thinking/effort/cache policy in [anthropic-policy.js](src/proxy/anthropic-policy.js), and header assembly/beta filtering in [upstream-headers.js](src/proxy/upstream-headers.js). The orchestrator decides when to apply them and logs filtered betas.
+- [media.js](src/proxy/media.js), [realtime.js](src/proxy/realtime.js), and [webrtc.js](src/proxy/webrtc.js) own HTTP media, WebSocket forwarding, and WebRTC setup/control respectively, separate from text shims.
+- [pricing/](pricing/) contains model protocol/routing facts as well as prices. [pricing-library.js](src/pricing-library.js) loads/syncs definitions; [model-catalog.js](src/model-catalog.js) compiles immutable descriptors shared by routing, discovery, normalization, and pricing. [model-validation.js](src/model-validation.js) checks bindings and client-native eligibility. Remote updates must validate a candidate, activate files/indexes/snapshot atomically, and retain the previous generation on failure.
+- [persistence.js](src/persistence.js) stores configuration; [runtime-store.js](src/runtime-store.js) stores PostgreSQL events/rollups. [stats.js](src/stats.js) keeps in-memory counters and [governance.js](src/governance.js) enforces per-key access/limits; both use [usage.js](src/usage.js) for token totals.
+- The React/Vite admin app's [App.jsx](admin-ui/src/App.jsx) owns editable config and review/save state. Fastify serves its built assets; the container copies them without rebuilding the UI.
 
-## Module Boundaries
+## Configuration, Catalog, And Admin Conventions
 
-- `src/server.js`: route registration, public model catalogs, and admin HTTP surface.
-- `src/proxy/routing.js`: route overrides, final protocol reconciliation, upstream URLs, and native utility URLs.
-- `src/proxy.js`: request orchestration, native/shim selection, policy application, upstream calls, and JSON response dispatch.
-- [src/proxy/body.js](src/proxy/body.js): body cleanup, proxy controls, and media input handling.
-- [src/proxy/request-policy.js](src/proxy/request-policy.js) and [src/proxy/anthropic-policy.js](src/proxy/anthropic-policy.js): configured field/tool/image-generation policy and Messages thinking/effort/cache policy, respectively.
-- [src/proxy/upstream-headers.js](src/proxy/upstream-headers.js): upstream header assembly and beta filtering; the orchestrator resolves backend/auth and logs filtered betas.
-- `src/proxy/shim.js`: directional compatibility analysis, request converters, and JSON response mappers.
-- `src/proxy/stream.js`: native SSE observation/passthrough and cross-protocol stream state machines.
-- `src/config.js` and `src/model-validation.js`: defaults, normalization, validation, and client-native route gates.
-- [src/model-catalog.js](src/model-catalog.js): model card compilation, immutable snapshots, lookup, and candidate validation.
-- [src/usage.js](src/usage.js): internal governance/statistics usage normalization; preserve explicit zero counters and the original protocol usage object.
-- `test/lib/route-definitions.js` and `test/proxy-safety.test.js`: route contracts and focused protocol/unit regressions.
-- Keep adapters and validators small and directional. Do not use Chat as an intermediate format for native Responses or Messages semantics merely for code reuse.
+- Configuration uses schema version 3. Defaults and normalization live in [src/config.js](src/config.js); keep [config/sample_config.json](config/sample_config.json), admin controls, and the [configuration guide](docs/configuration/feature-flags.zh-CN.md) aligned when adding settings.
+- Environment overrides and profile restrictions apply to a runtime clone; saves must preserve environment-managed and profile-disabled persisted values. File edits require explicit reload. Only hot-reloadable settings take effect on save/reload; startup-only settings and environment changes require restart, as documented in the configuration guide.
+- Every configured model must resolve a Catalog definition via `pricingRef`, public ID, or target model. `models[].routes` selects catalog-allowed interfaces or declared transport targets; concrete URL paths belong in `upstreams[].routes`. Keep provider-native `interfaces`/`capabilities` separate from explicit proxy-only `proxyAdapters`.
+- Source model token limits independently and record `sources.limits`; never infer limits from names/prices. Preserve explicit zero counters and raw protocol usage; missing media usage/rates or incomplete sessions remain unknown/partial, not zero-cost success.
+- Admin forms use `updateConfig`/`updateField` and [shared path helpers](admin-ui/src/utils.js); preserve hidden settings and numeric zeros. Add UI text to both dictionaries in [i18n.jsx](admin-ui/src/i18n.jsx).
+- Use [api.js](admin-ui/src/api.js) for custom admin paths and the `x-aoai-admin-csrf` mutation header. Preserve [secret redaction/restoration](src/admin-config.js) so masked round trips do not overwrite credentials.
 
 ## Validation
 
-Install development dependencies and build the admin UI with:
+Run from the repository root with Node.js 24 (the [Dockerfile](Dockerfile) default). Backend code/tests use ES modules; commands come from [package.json](package.json).
+
+| Command | Purpose |
+| --- | --- |
+| `npm ci` | Install runtime and development dependencies. |
+| `npm run build` | Build only the admin UI (alias for `build:admin`), not backend validation. |
+| `npm start` | Start the Fastify backend with the active configuration. |
+| `npm run dev` | Start the backend with Node's file watcher. |
+| `npm run admin:dev` | Start the Vite admin development server; backend APIs are separate. |
+
+Follow [local startup](README.md#local-run) for configuration and credentials. `CONFIG_PATH` defaults to `./config/config.json` locally and `/app/data/config.json` in the container.
+
+Run the narrowest applicable check first. Select a focused `node --test` suite from [test/README.md](test/README.md), a single named test, or a route ID from [test/lib/route-definitions.js](test/lib/route-definitions.js):
 
 ```bash
-npm ci
-npm run build
-```
-
-`npm run build` builds only the admin UI; it does not validate the backend. Runtime and tests use Node.js ES modules, with scripts defined in [package.json](package.json).
-
-Run the narrowest applicable check first. Select a focused `node --test` suite from [test/README.md](test/README.md), or a route ID from [test/lib/route-definitions.js](test/lib/route-definitions.js), for example:
-
-```bash
+node --test test/model-catalog.test.js
+node --test --test-name-pattern='Model Catalog compiler rejects ambiguous aliases' test/model-catalog.test.js
 node --input-type=module -e 'import { runRouteTestById } from "./test/lib/run-route-test.js"; await runRouteTestById("message-to-response")'
 ```
 
-Mock route tests use disposable proxy processes and temporary configs; do not point them at the running service. Admin component tests need development dependencies but no browser, backend, or credentials; browser layout and save/reload checks remain separate.
+Mock routes use disposable proxies and temporary configs through [test/lib/harness.js](test/lib/harness.js), never the running service. Admin media/routing/log-content form tests share [admin-workspace-form.js](test/lib/admin-workspace-form.js): `node:test`, React Testing Library, jsdom, and Vite JSX transformation, with no backend or credentials. Browser layout/save/reload checks are separate.
 
-After focused checks pass for code changes, run:
+After focused code checks pass, run:
 
 ```bash
 npm run test:unit
 npm run test:routes
 ```
 
-Run CLI contracts, real-upstream tests (including `npm run test:real:matrix`), and latency checks only when their [documented prerequisites](test/README.md) are available. Record checks not run; mock or synthetic checks do not establish real-upstream or deployment acceptance. There is no generic `npm test` script.
+Run CLI, real-upstream (including `npm run test:real:matrix`), and latency checks only with their [documented prerequisites](test/README.md). Record unrun checks; mocks do not establish live-provider or deployment acceptance.
 
 ## Worktree And Generated Files
 
 - Inspect `git status --short --branch` before editing. Preserve unrelated staged or unstaged user changes.
-- Commit code, documentation, tests, and generated artifacts to `aoai-nextgen` first. Promote validated `aoai-nextgen` commits to `master`; do not create master-only implementation commits.
+- Follow the [Git workflow](docs/development/git-workflow.zh-CN.md): commit changes to `aoai-nextgen` first, then promote validated commits to `master`; no master-only implementation commits.
 - Do not manually edit runtime state in `config/config.json`, `data/`, the root `Caddyfile`, or `test/output/` unless explicitly requested.
-- Edit admin sources under `admin-ui/`; `npm run build` regenerates `public/admin-app/`.
-- Keep changes compact and within the owning module so a route, conversion, or stream failure can be debugged independently.
+- Edit [admin-ui/](admin-ui/); `npm run build` regenerates [public/admin-app/](public/admin-app/).

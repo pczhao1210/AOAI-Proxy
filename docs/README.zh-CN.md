@@ -274,7 +274,7 @@ amd64 默认镜像为 `alexmcr.azurecr.io/aoai-proxy:nextgen-latest`。设置 `D
 
 默认版本号使用 UTC 构建分钟，格式为 `nextgen-YYYYMMDDHHmm`；相同信息也会写入标准 OCI 镜像标签。
 
-Dockerfile 使用动态大版本基线：`NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，实际解析为 `node:24-alpine` 和 `caddy:2-alpine`。构建脚本会执行 `docker buildx build --pull`，因此每次构建都会拉取这些大版本线内最新可用的 patch/minor 镜像。不带 `--push` 的构建使用 buildx `--load`；组合构建和推送会直接使用 `--push`。多平台产物必须直接推送，因为经典本地镜像存储不能载入多平台 manifest。
+Dockerfile 使用动态大版本基线 `NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，并通过 `ALPINE_VERSION=3.24` 让 Node 依赖构建阶段和最小化 Alpine 运行阶段使用相同的 musl 版本。运行镜像只复制 Node 可执行文件，不包含 npm、Yarn 和构建头文件。构建脚本会执行 `docker buildx build --pull`，因此每次构建都会拉取这些版本线内最新可用的 patch/minor 镜像。不带 `--push` 的构建使用 buildx `--load`；组合构建和推送会直接使用 `--push`。多平台产物必须直接推送，因为经典本地镜像存储不能载入多平台 manifest。
 
 所选 buildx builder 必须声明所有目标平台。在 amd64 主机交叉构建 arm64 通常还需要 QEMU/binfmt。直接调用 buildx 时，还需传入平台、构建元数据和需要覆盖的大版本参数：
 
@@ -282,6 +282,7 @@ Dockerfile 使用动态大版本基线：`NODE_MAJOR=24` 与 `CADDY_MAJOR=2`，�
 docker buildx build --pull --load \
   --platform linux/amd64 \
   --build-arg NODE_MAJOR=24 \
+  --build-arg ALPINE_VERSION=3.24 \
   --build-arg CADDY_MAJOR=2 \
   --build-arg AOAI_PROXY_VERSION=nextgen-202608100257 \
   --build-arg AOAI_PROXY_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

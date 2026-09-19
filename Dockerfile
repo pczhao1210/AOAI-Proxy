@@ -2,15 +2,16 @@
 
 ARG NODE_MAJOR=24
 ARG CADDY_MAJOR=2
+ARG ALPINE_VERSION=3.24
 
 FROM caddy:${CADDY_MAJOR}-alpine AS caddy
 
-FROM node:${NODE_MAJOR}-alpine AS deps
+FROM node:${NODE_MAJOR}-alpine${ALPINE_VERSION} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-FROM node:${NODE_MAJOR}-alpine AS runtime
+FROM alpine:${ALPINE_VERSION} AS runtime
 WORKDIR /app
 ARG AOAI_PROXY_VERSION=unknown
 ARG AOAI_PROXY_BUILD_TIME=unknown
@@ -20,6 +21,13 @@ ENV AOAI_PROXY_VERSION=${AOAI_PROXY_VERSION} \
 LABEL org.opencontainers.image.title="AOAI Proxy" \
 	org.opencontainers.image.version=${AOAI_PROXY_VERSION} \
 	org.opencontainers.image.created=${AOAI_PROXY_BUILD_TIME}
+
+# Node runs as a standalone binary; omit npm, Yarn, and build headers from runtime.
+RUN addgroup -g 1000 node \
+	&& adduser -u 1000 -G node -s /bin/sh -D node \
+	&& apk add --no-cache libstdc++
+COPY --from=deps /usr/local/bin/node /usr/local/bin/node
+COPY --from=deps /usr/local/LICENSE /usr/local/LICENSE
 
 # App code
 COPY --from=deps /app/node_modules ./node_modules
