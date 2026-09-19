@@ -86,6 +86,7 @@ Run CLI contracts, real-upstream tests (including `npm run test:real:matrix`), a
 ## Worktree And Generated Files
 
 - Inspect `git status --short --branch` before editing. Preserve unrelated staged or unstaged user changes.
+- Commit code, documentation, tests, and generated artifacts to `aoai-nextgen` first. Promote validated `aoai-nextgen` commits to `master`; do not create master-only implementation commits.
 - Do not manually edit runtime state in `config/config.json`, `data/`, the root `Caddyfile`, or `test/output/` unless explicitly requested.
 - Edit admin sources under `admin-ui/`; `npm run build` regenerates `public/admin-app/`.
 - Keep changes compact and within the owning module so a route, conversion, or stream failure can be debugged independently.
