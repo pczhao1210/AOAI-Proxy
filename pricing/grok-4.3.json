@@ -5,6 +5,7 @@
   "family": "grok-4.3",
   "modelVersion": null,
   "status": "preview",
+  "contextWindow": 1000000,
   "interfaces": [
     "chat/completions",
     "responses"
@@ -78,6 +79,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-grok",
+    "limits": "https://docs.x.ai/developers/models/grok-4.3",
     "pricing": "https://docs.x.ai/developers/models/grok-4.3"
   },
   "notes": [

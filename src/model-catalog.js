@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { listPricingDefinitions, normalizeModelTokenLimits } from "./pricing-library.js";
+import { listArchivedPricingDefinitions, listPricingDefinitions, normalizeModelTokenLimits } from "./pricing-library.js";
 
 const TEXT_PROTOCOLS = new Set(["chat/completions", "responses", "messages"]);
 const DEFAULT_PROTOCOL_PROFILES = Object.freeze({
@@ -233,6 +233,9 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
     ? definitions.map((definition) => freezeJson(cloneJson(definition)))
     : [];
   const indexes = indexDefinitions(normalizedDefinitions);
+  const archivedIndexes = indexDefinitions(
+    listArchivedPricingDefinitions().map((definition) => freezeJson(cloneJson(definition)))
+  );
   for (const definition of normalizedDefinitions) validateProxyAdapters(definition);
   const upstreamsByName = new Map(
     (config?.upstreams || []).filter((upstream) => upstream?.name).map((upstream) => [upstream.name, upstream])
@@ -244,7 +247,7 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
 
   for (const model of config?.models || []) {
     if (!model?.id) continue;
-    const definition = findDefinition(model, indexes);
+    const definition = findDefinition(model, indexes) || findDefinition(model, archivedIndexes);
     const descriptor = compileDescriptor(model, definition, upstreamsByName.get(model.upstream), routeInterfaces);
     rememberUnique(modelsByPublicId, model.id, descriptor, "configured model ID");
     for (const alias of definition?.aliases || []) rememberUnique(modelsByAlias, alias, descriptor, "configured model alias");

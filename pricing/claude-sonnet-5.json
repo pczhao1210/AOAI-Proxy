@@ -3,7 +3,7 @@
   "displayName": "Claude Sonnet 5",
   "provider": "anthropic",
   "family": "claude-5",
-  "modelVersion": null,
+  "modelVersion": "2026-06-30",
   "status": "ga",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,

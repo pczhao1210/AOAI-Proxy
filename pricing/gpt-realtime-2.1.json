@@ -1,0 +1,99 @@
+{
+  "id": "gpt-realtime-2.1",
+  "displayName": "GPT Realtime 2.1",
+  "provider": "azure-openai",
+  "family": "gpt-realtime",
+  "modelVersion": "2026-07-07",
+  "status": "ga",
+  "contextWindow": 128000,
+  "maxOutputTokens": 32000,
+  "interfaces": [
+    "realtime"
+  ],
+  "inputModalities": [
+    "text",
+    "image",
+    "audio"
+  ],
+  "outputModalities": [
+    "text",
+    "audio"
+  ],
+  "capabilities": [
+    "reasoning",
+    "realtime",
+    "audio-input",
+    "audio-output",
+    "vision",
+    "function-calling"
+  ],
+  "protocolProfiles": {
+    "realtime": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "inputPer1mTokens": 4,
+    "cachedInputPer1mTokens": 0.4,
+    "outputPer1mTokens": 24,
+    "inputPer1kTokens": 0.004,
+    "cachedInputPer1kTokens": 0.0004,
+    "outputPer1kTokens": 0.024,
+    "channels": {
+      "audio": {
+        "inputPer1mTokens": 32,
+        "cachedInputPer1mTokens": 0.4,
+        "outputPer1mTokens": 64,
+        "inputPer1kTokens": 0.032,
+        "cachedInputPer1kTokens": 0.0004,
+        "outputPer1kTokens": 0.064
+      },
+      "image": {
+        "inputPer1mTokens": 5,
+        "cachedInputPer1mTokens": 0.5,
+        "inputPer1kTokens": 0.005,
+        "cachedInputPer1kTokens": 0.0005
+      }
+    }
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "id": "gpt-realtime-2.1",
+    "displayName": "GPT Realtime 2.1",
+    "targetModel": "gpt-realtime-2.1",
+    "pricingRef": "gpt-realtime-2.1",
+    "capabilities": [
+      "reasoning",
+      "realtime",
+      "audio-input",
+      "audio-output",
+      "vision",
+      "function-calling"
+    ],
+    "routes": {
+      "realtime": "realtime"
+    }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "limits": "https://developers.openai.com/api/docs/models/gpt-realtime-2.1",
+    "pricing": "https://prices.azure.com/api/retail/prices"
+  },
+  "notes": [
+    "Microsoft Foundry lists model version 2026-07-07 as generally available.",
+    "Azure Retail Prices uses separate global and data-zone meters; this card records the global-standard text, audio, and image rates."
+  ]
+}

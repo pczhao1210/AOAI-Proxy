@@ -3,7 +3,7 @@
   "displayName": "Claude Opus 4.6",
   "provider": "anthropic",
   "family": "claude-4",
-  "modelVersion": "2025-08-05",
+  "modelVersion": "2026-02-05",
   "status": "preview",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,

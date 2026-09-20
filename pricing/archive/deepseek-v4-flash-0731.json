@@ -1,0 +1,81 @@
+{
+  "id": "DeepSeek-V4-Flash-0731",
+  "displayName": "DeepSeek V4 Flash (0731)",
+  "provider": "fireworks-ai",
+  "family": "deepseek-v4",
+  "modelVersion": "2026-07-31",
+  "status": "ga",
+  "interfaces": [
+    "chat/completions"
+  ],
+  "inputModalities": [
+    "text"
+  ],
+  "outputModalities": [
+    "text"
+  ],
+  "capabilities": [
+    "reasoning",
+    "json-output"
+  ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default": "high",
+        "aliases": {
+          "medium": "high",
+          "xhigh": "high"
+        }
+      },
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": [
+          "enabled",
+          "disabled"
+        ],
+        "default": "enabled"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "fireworks-serverless",
+    "status": "published",
+    "inputPer1mTokens": 0.22,
+    "cachedInputPer1mTokens": 0.007,
+    "outputPer1mTokens": 0.66,
+    "inputPer1kTokens": 0.00022,
+    "cachedInputPer1kTokens": 0.000007,
+    "outputPer1kTokens": 0.00066
+  },
+  "pricingCatalogEntry": {
+    "currency": "USD",
+    "inputPer1kTokens": 0.00022,
+    "cachedInputPer1kTokens": 0.000007,
+    "outputPer1kTokens": 0.00066
+  },
+  "proxyTemplate": {
+    "id": "DeepSeek-V4-Flash-0731",
+    "displayName": "DeepSeek V4 Flash (0731)",
+    "targetModel": "accounts/fireworks/models/deepseek-v4-flash-0731",
+    "capabilities": [
+      "reasoning",
+      "json-output"
+    ],
+    "pricingRef": "DeepSeek-V4-Flash-0731"
+  },
+  "sources": {
+    "capabilities": "https://app.fireworks.ai/models/fireworks/deepseek-v4-flash-0731",
+    "pricing": "https://docs.fireworks.ai/serverless/pricing"
+  },
+  "notes": [
+    "Fireworks Serverless lists DeepSeek V4 Flash (0731) at USD 0.22 input, USD 0.007 cached input, and USD 0.66 output per 1M tokens."
+  ]
+}

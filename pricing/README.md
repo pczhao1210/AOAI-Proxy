@@ -2,6 +2,39 @@
 
 This directory stores reusable model definitions for AOAI Proxy.
 
+### Archived model cards
+
+`pricing/archive/` stores model cards that are retained for history or migration
+references but must not be offered as active templates. The backend loader reads
+only JSON files directly under `pricing/`; it does not recurse into
+subdirectories. GitHub pricing sync likewise accepts only JSON file entries
+directly under the configured path, and the admin UI bundle uses the
+non-recursive `pricing/*.json` glob. Keeping retired cards under `archive/`
+therefore excludes them from runtime catalog compilation, GitHub sync, and
+bundled UI template updates without deleting their metadata.
+
+When archiving a card, verify the provider-specific lifecycle and preserve the
+card's original filename. Do not archive a card solely because another
+provider's deployment of the same model has retired.
+
+### Provider profile reconciliation
+
+A release-date or retirement audit is not sufficient to keep this catalog
+complete. Provider checks must also diff the current catalog and pricing
+surfaces by exact model ID and deployment target, then verify each missing
+profile's interface, modalities, context limit, tool support, reasoning
+controls, and unit prices. For example, `deepseek-v4p1-flash` is distinct from
+`deepseek-v4-flash`, and `glm-5p3-flash` is distinct from `glm-5p3`; family-name
+matching must not treat either pair as covered.
+
+The current limit audit intentionally leaves these active text cards unresolved
+until provider-specific limits are verified: `DeepSeek-V4-Flash`, `grok-4`, and
+`Kimi-K2.5`. The remaining active cards
+without `contextWindow`/input/output limits are image, audio, speech, or
+realtime-only cards whose provider contracts do not expose the same text-token
+window fields. The reviewed exception set is enforced by the Model Catalog unit
+test so a newly added card cannot silently introduce another missing limit.
+
 ### Field semantics
 
 - `interfaces`

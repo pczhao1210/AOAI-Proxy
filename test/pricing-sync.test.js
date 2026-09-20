@@ -13,6 +13,7 @@ import {
 import { getConfiguredModelBindingIssues } from "../src/model-validation.js";
 import {
   findPricingDefinitionForModel,
+  listPricingDefinitions,
   syncPricingDefinitionsFromGitHub
 } from "../src/pricing-library.js";
 
@@ -72,11 +73,15 @@ test("remote Model Catalog sync swaps directory and snapshot only after candidat
                 : syncMode === "invalid-hosting" || syncMode === "invalid-hosting-empty"
                   ? ["hosted-model.json"]
                   : ["new-model.json"];
-      return new Response(JSON.stringify(names.map((name) => ({
+      const entries = names.map((name) => ({
         type: "file",
         name,
         download_url: `https://download.test/${name}`
-      }))));
+      }));
+      if (syncMode === "success") {
+        entries.unshift({ type: "dir", name: "archive" });
+      }
+      return new Response(JSON.stringify(entries));
     }
     const fileName = urlText.split("/").at(-1);
     const rawDefinition = syncMode === "collision"
@@ -251,6 +256,13 @@ test("remote Model Catalog sync swaps directory and snapshot only after candidat
     assert.equal(resolveModelDescriptor("new-public")?.catalogId, "new-model");
     assert.equal(findPricingDefinitionForModel({ pricingRef: "new-model-alias" })?.id, "new-model");
     assert.ok(getModelCatalogRuntimeInfo().generation > oldSnapshot.generation);
+
+    await fs.mkdir(path.join(pricingDir, "archive"), { recursive: true });
+    await fs.writeFile(
+      path.join(pricingDir, "archive", "archived-model.json"),
+      `${JSON.stringify(definition("archived-model"), null, 2)}\n`
+    );
+    assert.equal(listPricingDefinitions().some((entry) => entry.id === "archived-model"), false);
 
     let releaseFirstSync;
     let markFirstSyncStarted;

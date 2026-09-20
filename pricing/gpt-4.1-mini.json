@@ -5,6 +5,8 @@
   "family": "gpt-4.1",
   "modelVersion": "2025-04-14",
   "status": "ga",
+  "contextWindow": 1047576,
+  "maxOutputTokens": 32768,
   "interfaces": [
     "chat/completions",
     "responses"
@@ -54,6 +56,7 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-41-series",
+    "limits": "https://developers.openai.com/api/docs/models/gpt-4.1-mini",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
   }
 }

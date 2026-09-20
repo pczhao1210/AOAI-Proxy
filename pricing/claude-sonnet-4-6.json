@@ -3,7 +3,7 @@
   "displayName": "Claude Sonnet 4.6",
   "provider": "anthropic",
   "family": "claude-4",
-  "modelVersion": null,
+  "modelVersion": "2026-02-17",
   "status": "preview",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,

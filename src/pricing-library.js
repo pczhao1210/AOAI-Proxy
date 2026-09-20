@@ -29,6 +29,9 @@ const DEFAULT_UPSTREAM_ROUTES = {
 let pricingDefinitionsCache = null;
 let pricingLookupCache = null;
 let pricingCacheDir = "";
+let archivedPricingDefinitionsCache = null;
+let archivedPricingLookupCache = null;
+let archivedPricingCacheDir = "";
 let missingPricingDirLogged = false;
 let pricingSyncQueue = Promise.resolve();
 
@@ -411,6 +414,17 @@ function readPricingDefinitionsFromDir(dirPath) {
   });
 }
 
+function resolveArchivedPricingDir(activeLocation = resolveActivePricingLocation()) {
+  const activeArchiveDir = path.join(activeLocation.dir, "archive");
+  if (activeLocation.source === "bundled") {
+    return activeArchiveDir;
+  }
+  if (listPricingFileNames(activeArchiveDir).length > 0) {
+    return activeArchiveDir;
+  }
+  return path.join(getBundledPricingDir(), "archive");
+}
+
 function enrichWithBundledCatalogMetadata(definitions, activeSource) {
   if (activeSource === "bundled") return definitions;
   const bundledById = new Map(
@@ -448,6 +462,9 @@ function resetPricingCaches() {
   pricingDefinitionsCache = null;
   pricingLookupCache = null;
   pricingCacheDir = "";
+  archivedPricingDefinitionsCache = null;
+  archivedPricingLookupCache = null;
+  archivedPricingCacheDir = "";
 }
 
 function loadPricingDefinitions() {
@@ -501,6 +518,39 @@ function getPricingLookup() {
   return pricingLookupCache;
 }
 
+function loadArchivedPricingDefinitions() {
+  const activeLocation = resolveActivePricingLocation();
+  const archiveDir = resolveArchivedPricingDir(activeLocation);
+  if (archivedPricingDefinitionsCache !== null && archivedPricingCacheDir === archiveDir) {
+    return archivedPricingDefinitionsCache;
+  }
+
+  archivedPricingDefinitionsCache = readPricingDefinitionsFromDir(archiveDir)
+    .sort((left, right) => left.displayName.localeCompare(right.displayName));
+  archivedPricingLookupCache = null;
+  archivedPricingCacheDir = archiveDir;
+  return archivedPricingDefinitionsCache;
+}
+
+function getArchivedPricingLookup() {
+  const definitions = loadArchivedPricingDefinitions();
+  if (archivedPricingLookupCache) return archivedPricingLookupCache;
+
+  archivedPricingLookupCache = new Map();
+  for (const definition of definitions) {
+    rememberLookup(archivedPricingLookupCache, definition.id, definition);
+    for (const alias of definition.aliases || []) {
+      rememberLookup(archivedPricingLookupCache, alias, definition);
+    }
+    rememberLookup(archivedPricingLookupCache, definition.displayName, definition);
+    rememberLookup(archivedPricingLookupCache, definition.proxyTemplate?.id, definition);
+    rememberLookup(archivedPricingLookupCache, definition.proxyTemplate?.targetModel, definition);
+    rememberLookup(archivedPricingLookupCache, definition.proxyTemplate?.pricingRef, definition);
+  }
+
+  return archivedPricingLookupCache;
+}
+
 function buildRouterAggregateCapabilities(model, models) {
   const union = new Set();
   for (const peer of Array.isArray(models) ? models : []) {
@@ -521,6 +571,10 @@ function buildRouterAggregateCapabilities(model, models) {
 
 export function listPricingDefinitions() {
   return loadPricingDefinitions().map((definition) => cloneJson(definition));
+}
+
+export function listArchivedPricingDefinitions() {
+  return loadArchivedPricingDefinitions().map((definition) => cloneJson(definition));
 }
 
 export function getPricingLibraryStatus() {
@@ -719,7 +773,9 @@ export function findPricingDefinitionForModel(model) {
     model?.displayName
   ];
   for (const candidate of candidates) {
-    const definition = getPricingDefinition(candidate);
+    const definition = getPricingDefinition(candidate)
+      || getArchivedPricingLookup().get(String(candidate || "").trim().toLowerCase())
+      || null;
     if (definition) return definition;
   }
   return null;

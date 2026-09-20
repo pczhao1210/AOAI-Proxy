@@ -81,7 +81,7 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
   const bundledDefinitions = listPricingDefinitions();
   const ids = new Set();
 
-  assert.equal(bundledDefinitions.length, 91);
+  assert.equal(bundledDefinitions.length, 78);
   for (const definition of bundledDefinitions) {
     assert.ok(definition.id, `${definition.fileName}: id is required`);
     assert.ok(!ids.has(definition.id.toLowerCase()), `${definition.fileName}: duplicate id ${definition.id}`);
@@ -184,9 +184,68 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
 
   for (const id of [
     "glm-5.3", "gpt-6-astra", "claude-fable-5-1",
-    "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "mai-image-2.6", "mai-image-2.6-flash"
+    "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "mai-image-2.6", "mai-image-2.6-flash",
+    "deepseek-v4.1-flash", "glm-5.3-flash"
   ]) {
     assert.ok(ids.has(id), `missing bundled Model Catalog definition ${id}`);
+  }
+});
+
+test("archived model cards stay outside the active Model Catalog", () => {
+  const activeIds = new Set(listPricingDefinitions().map((definition) => definition.id.toLowerCase()));
+  for (const archivedId of [
+    "codex-mini",
+    "claude-opus-4-1",
+    "claude-haiku-4-5",
+    "claude-sonnet-4-5",
+    "gpt-4o-mini",
+    "gpt-4o-transcribe",
+    "gpt-5-chat",
+    "gpt-5.1-chat",
+    "gpt-5.2-chat",
+    "gpt-chat-latest",
+    "gpt-image-1.5",
+    "kimi-k2.7-code",
+    "deepseek-v4-flash-0731",
+    "deepseek-v4-pro-0813",
+    "o1",
+    "o3",
+    "o3-mini",
+    "o3-pro",
+    "o4-mini"
+  ]) {
+    assert.equal(activeIds.has(archivedId), false, `${archivedId} must remain archived`);
+  }
+});
+
+test("configured models can still resolve archived definitions at runtime", () => {
+  const snapshot = compileModelCatalog({
+    models: [{
+      id: "legacy-model",
+      pricingRef: "gpt-4o-mini"
+    }]
+  }, []);
+
+  assert.equal(snapshot.descriptors[0].catalogId, "gpt-4o-mini");
+  assert.equal(snapshot.descriptors[0].definition.status, "ga");
+});
+
+test("recent Fireworks profiles preserve catalog targets and serverless rates", () => {
+  const definitionsById = new Map(listPricingDefinitions().map((definition) => [definition.id, definition]));
+  const expected = [
+    ["DeepSeek-V4.1-Flash", "accounts/fireworks/models/deepseek-v4p1-flash", 0.3, 0.006, 1.2],
+    ["glm-5.3-flash", "accounts/fireworks/models/glm-5p3-flash", 0.15, 0.03, 0.5]
+  ];
+
+  for (const [id, targetModel, input, cachedInput, output] of expected) {
+    const definition = definitionsById.get(id);
+    assert.equal(definition.provider, "fireworks-ai");
+    assert.equal(definition.contextWindow, 1040000);
+    assert.equal(definition.proxyTemplate.targetModel, targetModel);
+    assert.equal(definition.pricing.sourceType, "fireworks-serverless");
+    assert.equal(definition.pricing.inputPer1mTokens, input);
+    assert.equal(definition.pricing.cachedInputPer1mTokens, cachedInput);
+    assert.equal(definition.pricing.outputPer1mTokens, output);
   }
 });
 
@@ -195,7 +254,7 @@ test("verified model cards preserve documented token limits without filling ambi
   const definitionsWithLimits = [...definitionsById.values()].filter((definition) => (
     ["contextWindow", "maxInputTokens", "maxOutputTokens"].some((field) => definition[field] != null)
   ));
-  assert.equal(definitionsWithLimits.length, 63);
+  assert.equal(definitionsWithLimits.length, 59);
 
   for (const id of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
     const definition = definitionsById.get(id);
@@ -205,16 +264,22 @@ test("verified model cards preserve documented token limits without filling ambi
     assert.match(definition.sources.limits, /learn\.microsoft\.com/);
   }
 
+  for (const id of ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]) {
+    const definition = definitionsById.get(id);
+    assert.equal(definition.contextWindow, 1047576);
+    assert.equal(definition.maxOutputTokens, 32768);
+    assert.equal(definition.maxInputTokens, null);
+    assert.match(definition.sources.limits, /developers\.openai\.com/);
+  }
+
+  assert.equal(definitionsById.get("gpt-5-pro").contextWindow, 400000);
+  assert.equal(definitionsById.get("gpt-5-pro").maxOutputTokens, 272000);
+  assert.equal(definitionsById.get("grok-4.3").contextWindow, 1000000);
+  assert.equal(definitionsById.get("grok-4.6").contextWindow, 500000);
+
   for (const id of [
-    "claude-opus-4-1",
     "DeepSeek-V4-Flash",
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4.1-nano",
-    "gpt-5-pro",
     "grok-4",
-    "grok-4.3",
-    "grok-4.6",
     "Kimi-K2.5"
   ]) {
     const definition = definitionsById.get(id);
@@ -223,6 +288,57 @@ test("verified model cards preserve documented token limits without filling ambi
       [null, null, null],
       `${id} must retain deployment-specific or ambiguous limits`
     );
+  }
+});
+
+test("all active cards with unresolved token limits are explicitly reviewed", () => {
+  const expectedUnresolvedIds = [
+    "DeepSeek-V4-Flash",
+    "flux-2-flex",
+    "flux-2-pro",
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-mini-tts",
+    "gpt-4o-transcribe-diarize",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2",
+    "gpt-realtime-translate",
+    "gpt-realtime-whisper",
+    "grok-4",
+    "Kimi-K2.5",
+    "mai-image-2.6-flash",
+    "mai-image-2.6",
+    "mai-transcribe-2",
+    "mai-voice-2-flash",
+    "mai-voice-2",
+    "whisper-1"
+  ].sort();
+  const actualUnresolvedIds = listPricingDefinitions()
+    .filter((definition) => (
+      definition.contextWindow == null
+      && definition.maxInputTokens == null
+      && definition.maxOutputTokens == null
+    ))
+    .map((definition) => definition.id)
+    .sort();
+
+  assert.deepEqual(actualUnresolvedIds, expectedUnresolvedIds);
+});
+
+test("Claude cards preserve official release dates and token limits", () => {
+  const definitionsById = new Map(listPricingDefinitions().map((definition) => [definition.id, definition]));
+  const expected = [
+    ["claude-opus-4-6", "2026-02-05"],
+    ["claude-opus-5", "2026-07-24"],
+    ["claude-sonnet-4-6", "2026-02-17"],
+    ["claude-sonnet-5", "2026-06-30"]
+  ];
+
+  for (const [id, modelVersion] of expected) {
+    const definition = definitionsById.get(id);
+    assert.equal(definition.modelVersion, modelVersion);
+    assert.equal(definition.contextWindow, 1000000);
+    assert.equal(definition.maxOutputTokens, 128000);
   }
 });
 
