@@ -28,11 +28,6 @@
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "gpt-image-2.5-flare",
-    "displayName": "GPT-Image-2.5-Flare",
-    "targetModel": "gpt-image-2.5-flare",
-    "capabilities": ["vision", "image-generation", "image-editing"],
-    "pricingRef": "gpt-image-2.5-flare",
     "routes": {
       "*": "openai-image"
     }

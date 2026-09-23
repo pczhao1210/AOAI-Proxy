@@ -8,17 +8,9 @@
   "contextWindow": 1050000,
   "maxInputTokens": 922000,
   "maxOutputTokens": 128000,
-  "interfaces": [
-    "chat/completions",
-    "responses"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "text"
-  ],
+  "interfaces": ["chat/completions", "responses"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
   "capabilities": [
     "reasoning",
     "vision",
@@ -31,26 +23,14 @@
     "chat/completions": {
       "reasoning": {
         "parameter": "reasoning_effort",
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
+        "levels": ["none", "low", "medium", "high", "xhigh"],
         "default": "none"
       }
     },
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
+        "levels": ["none", "low", "medium", "high", "xhigh"],
         "default": "none"
       }
     }
@@ -60,36 +40,37 @@
     "billingUnit": "1M tokens",
     "sourceType": "openai-official",
     "status": "published",
-    "inputPer1mTokens": 2.5,
-    "cachedInputPer1mTokens": 0.25,
-    "outputPer1mTokens": 15,
-    "inputPer1kTokens": 0.0025,
-    "cachedInputPer1kTokens": 0.00025,
-    "outputPer1kTokens": 0.015
+    "tiering": {
+      "basis": "inputTokensIncludingCache",
+      "method": "whole-request"
+    },
+    "tiers": [
+      {
+        "id": "short",
+        "contextClass": "short",
+        "promptTokensBelow": 272001,
+        "inputPer1mTokens": 2.5,
+        "cachedInputPer1mTokens": 0.25,
+        "outputPer1mTokens": 15
+      },
+      {
+        "id": "long",
+        "contextClass": "long",
+        "promptTokensAtLeast": 272001,
+        "inputPer1mTokens": 5,
+        "cachedInputPer1mTokens": 0.5,
+        "outputPer1mTokens": 22.5
+      }
+    ]
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.0025,
-    "cachedInputPer1kTokens": 0.00025,
-    "outputPer1kTokens": 0.015
-  },
-  "proxyTemplate": {
-    "id": "gpt-5.4",
-    "displayName": "GPT-5.4",
-    "targetModel": "gpt-5.4",
-    "capabilities": [
-      "reasoning",
-      "vision",
-      "function-calling",
-      "structured-outputs",
-      "parallel-tool-calling",
-      "computer-use"
-    ],
-    "pricingRef": "gpt-5.4"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-54",
     "pricing": "https://developers.openai.com/api/docs/pricing"
-  }
+  },
+  "notes": [
+    "The administrator-confirmed whole-request policy selects the long tier only when this request's input, including cache, exceeds 272000 tokens. Exactly 272000 remains short; session totals and output length do not select the tier.",
+    "The rates are OpenAI standard per-token prices, not Batch, Flex, Priority or independently verified Azure deployment prices."
+  ]
 }

@@ -1,10 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { AccordionSection, Section, StatCard } from "./ui.jsx";
-import { formatEstimatedCost } from "../utils.js";
-
-function formatMoney(amount, currency = "USD", digits = 4) {
-  return `${Number(amount || 0).toFixed(digits)} ${currency || "USD"}`;
-}
+import { formatBudgetCost, formatCacheWriteCost, formatCacheWriteTokens, formatEstimatedCost } from "../utils.js";
 
 function getWarningSignalLabel(signalName, t) {
   const mapping = {
@@ -73,6 +69,9 @@ function TrendTable({ title, rows, formatDateTime, t }) {
               <th>{t("table.blockedCount", "Blocked")}</th>
               <th>{t("table.warningCount", "Warnings")}</th>
               <th>{t("table.totalTokens", "Total Tokens")}</th>
+              <th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
+              <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th>
+              <th>{t("table.cacheWriteCost", "Cache Write Cost (included)")}</th>
               <th>{t("table.cost", "Estimated Cost")}</th>
             </tr>
           </thead>
@@ -85,9 +84,12 @@ function TrendTable({ title, rows, formatDateTime, t }) {
                 <td>{row.blockedCount || 0}</td>
                 <td>{row.warningCount || 0}</td>
                 <td>{row.totalTokens || 0}</td>
-                <td>{formatMoney(row.estimatedCostAmount || 0, row.estimatedCostCurrency || "USD")}</td>
+                <td>{row.cachedTokens || 0}</td>
+                <td>{formatCacheWriteTokens(row.cacheWrite, t)}</td>
+                <td>{formatCacheWriteCost(row.cacheWrite, t)}</td>
+                <td>{formatEstimatedCost(row, t, row.estimatedCostCurrency)}</td>
               </tr>
-            )) : <tr><td colSpan="7">{t("table.noData", "No data yet")}</td></tr>}
+            )) : <tr><td colSpan="10">{t("table.noData", "No data yet")}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -271,13 +273,13 @@ export default function RuntimeTab({
           />
           <StatCard
             label={t("runtime.rollupDaily", "Latest Day")}
-            value={formatMoney(latestDaily.estimatedCostAmount || 0, latestDaily.estimatedCostCurrency || "USD")}
-            note={`${t("table.warningCount", "Warnings")} ${latestDaily.warningCount || 0} · ${t("table.totalTokens", "Total Tokens")} ${latestDaily.totalTokens || 0}`}
+            value={formatEstimatedCost(latestDaily, t, latestDaily.estimatedCostCurrency)}
+            note={`${t("table.warningCount", "Warnings")} ${latestDaily.warningCount || 0} · ${t("table.totalTokens", "Total Tokens")} ${latestDaily.totalTokens || 0} · ${t("table.cacheWriteTokens", "Cache Write Tokens")} ${formatCacheWriteTokens(latestDaily.cacheWrite, t)} · ${t("table.cacheWriteCost", "Cache Write Cost (included)")} ${formatCacheWriteCost(latestDaily.cacheWrite, t)}`}
           />
           <StatCard
             label={t("runtime.rollupWeekly", "Latest Week")}
             value={latestWeekly.requests || 0}
-            note={`${t("table.cost", "Estimated Cost")} ${formatMoney(latestWeekly.estimatedCostAmount || 0, latestWeekly.estimatedCostCurrency || "USD")}`}
+            note={`${t("table.cost", "Estimated Cost")} ${formatEstimatedCost(latestWeekly, t, latestWeekly.estimatedCostCurrency)} · ${t("table.cacheWriteTokens", "Cache Write Tokens")} ${formatCacheWriteTokens(latestWeekly.cacheWrite, t)} · ${t("table.cacheWriteCost", "Cache Write Cost (included)")} ${formatCacheWriteCost(latestWeekly.cacheWrite, t)}`}
           />
         </div>
       </Section>
@@ -417,6 +419,9 @@ export default function RuntimeTab({
                 <th>{t("table.requests", "Requests")}</th>
                 <th>{t("table.errors", "Errors")}</th>
                 <th>{t("table.totalTokens", "Total Tokens")}</th>
+                <th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
+                <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th>
+                <th>{t("table.cacheWriteCost", "Cache Write Cost (included)")}</th>
                 <th>{t("table.cost", "Estimated Cost")}</th>
                 <th>{t("table.concurrent", "Concurrency")}</th>
                 <th>{t("table.limits", "Limits")}</th>
@@ -432,9 +437,7 @@ export default function RuntimeTab({
                 const perKey = perKeyStats[entry.keyId] || {};
                 const budgetWindow = runtimeEntry.budgetWindow || {};
                 const signalBadges = getBudgetSignalBadges(runtimeEntry, t);
-                const budgetText = entry.budget?.limitAmount > 0
-                  ? `${Number(budgetWindow.spentAmount || 0).toFixed(4)} / ${Number(entry.budget.limitAmount || 0).toFixed(2)} ${entry.budget.currency || "USD"}`
-                  : `${Number(budgetWindow.spentAmount || 0).toFixed(4)} ${entry.budget?.currency || "USD"}`;
+                const budgetText = formatBudgetCost(budgetWindow, entry.budget, t);
                 return (
                   <tr key={entry.keyId}>
                     <td>{entry.displayName || entry.keyId}</td>
@@ -442,7 +445,10 @@ export default function RuntimeTab({
                     <td>{perKey.requests || runtimeEntry.totalRequests || 0}</td>
                     <td>{perKey.errors || runtimeEntry.totalErrors || 0}</td>
                     <td>{perKey.totalTokens || runtimeEntry.rateWindow?.totalTokens || 0}</td>
-                    <td>{formatEstimatedCost({ ...perKey, estimatedCostAmount: perKey.estimatedCostAmount ?? budgetWindow.spentAmount ?? 0, estimatedCostCurrency: perKey.estimatedCostCurrency || entry.budget?.currency || "USD" }, t)}</td>
+                    <td>{perKey.cachedTokens || 0}</td>
+                    <td>{formatCacheWriteTokens(perKey.cacheWrite, t)}</td>
+                    <td>{formatCacheWriteCost(perKey.cacheWrite, t)}</td>
+                    <td>{formatEstimatedCost({ ...perKey, estimatedCostAmount: perKey.estimatedCostAmount ?? budgetWindow.spentAmount ?? 0, textUnknownCostRequests: perKey.textUnknownCostRequests ?? budgetWindow.textUnknownCostRequests ?? 0 }, t)}</td>
                     <td>{runtimeEntry.currentConcurrent || 0}</td>
                     <td>{`rpm ${entry.rateLimit?.rpm || "-"} / tpm ${entry.rateLimit?.tpm || "-"} / con ${entry.rateLimit?.concurrency || "-"}`}</td>
                     <td>{budgetText}</td>
@@ -464,7 +470,7 @@ export default function RuntimeTab({
                     <td>{runtimeEntry.lastSeenAt ? formatDateTime(runtimeEntry.lastSeenAt) : "-"}</td>
                   </tr>
                 );
-              }) : <tr><td colSpan="12">{t("table.noData", "No data yet")}</td></tr>}
+              }) : <tr><td colSpan="15">{t("table.noData", "No data yet")}</td></tr>}
             </tbody>
           </table>
         </div>
@@ -479,7 +485,9 @@ export default function RuntimeTab({
                 <th>{t("table.requests", "Requests")}</th>
                 <th>{t("table.errors", "Errors")}</th>
                 <th>{t("table.inputTokens", "Input Tokens")}</th>
-                <th>{t("table.cachedTokens", "Cached Tokens")}</th>
+                <th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
+                <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th>
+                <th>{t("table.cacheWriteCost", "Cache Write Cost (included)")}</th>
                 <th>{t("table.outputTokens", "Output Tokens")}</th>
                 <th>{t("table.totalTokens", "Total Tokens")}</th>
                 <th>{t("table.cost", "Estimated Cost")}</th>
@@ -514,13 +522,15 @@ export default function RuntimeTab({
                       <td>{modelStat.errors || 0}</td>
                       <td>{modelStat.promptTokens || 0}</td>
                       <td>{modelStat.cachedTokens || 0}</td>
+                      <td>{formatCacheWriteTokens(modelStat.cacheWrite, t)}</td>
+                      <td>{formatCacheWriteCost(modelStat.cacheWrite, t)}</td>
                       <td>{modelStat.completionTokens || 0}</td>
                       <td>{modelStat.totalTokens || 0}</td>
                       <td>{formatEstimatedCost(modelStat, t)}</td>
                     </tr>
                     {expanded && actualModels.length ? (
                       <tr className="model-breakdown-row">
-                        <td colSpan="8">
+                        <td colSpan="10">
                           <div className="model-breakdown">
                             <div className="model-breakdown-title">{t("runtime.actualModelBreakdown", "实际模型明细")}</div>
                             <div className="table-scroll">
@@ -531,7 +541,9 @@ export default function RuntimeTab({
                                     <th>{t("table.requests", "Requests")}</th>
                                     <th>{t("table.errors", "Errors")}</th>
                                     <th>{t("table.inputTokens", "Input Tokens")}</th>
-                                    <th>{t("table.cachedTokens", "Cached Tokens")}</th>
+                                    <th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
+                                    <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th>
+                                    <th>{t("table.cacheWriteCost", "Cache Write Cost (included)")}</th>
                                     <th>{t("table.outputTokens", "Output Tokens")}</th>
                                     <th>{t("table.totalTokens", "Total Tokens")}</th>
                                     {isModelRouter ? <th>{t("table.modelRouterCost", "Model Router Cost")}</th> : null}
@@ -547,15 +559,17 @@ export default function RuntimeTab({
                                       <td>{actualStat.errors || 0}</td>
                                       <td>{actualStat.promptTokens || 0}</td>
                                       <td>{actualStat.cachedTokens || 0}</td>
+                                      <td>{formatCacheWriteTokens(actualStat.cacheWrite, t)}</td>
+                                      <td>{formatCacheWriteCost(actualStat.cacheWrite, t)}</td>
                                       <td>{actualStat.completionTokens || 0}</td>
                                       <td>{actualStat.totalTokens || 0}</td>
                                       {isModelRouter ? (
-                                        <td>{formatMoney(actualStat.modelRouterCostAmount || 0, actualStat.modelRouterCostCurrency || "USD")}</td>
+                                        <td>{formatEstimatedCost({ ...actualStat, estimatedCostAmount: actualStat.modelRouterCostAmount }, t, actualStat.modelRouterCostCurrency)}</td>
                                       ) : null}
                                       {isModelRouter ? (
-                                        <td>{formatMoney(actualStat.actualModelCostAmount || 0, actualStat.actualModelCostCurrency || "USD")}</td>
+                                        <td>{formatEstimatedCost({ ...actualStat, estimatedCostAmount: actualStat.actualModelCostAmount }, t, actualStat.actualModelCostCurrency)}</td>
                                       ) : null}
-                                      <td>{formatMoney(actualStat.estimatedCostAmount || 0, actualStat.estimatedCostCurrency || "USD")}</td>
+                                      <td>{formatEstimatedCost(actualStat, t, actualStat.estimatedCostCurrency)}</td>
                                     </tr>
                                   ))}
                                 </tbody>
@@ -567,7 +581,7 @@ export default function RuntimeTab({
                     ) : null}
                   </Fragment>
                 );
-              }) : <tr><td colSpan="8">{t("table.noData", "No data yet")}</td></tr>}
+              }) : <tr><td colSpan="10">{t("table.noData", "No data yet")}</td></tr>}
             </tbody>
           </table>
         </div>

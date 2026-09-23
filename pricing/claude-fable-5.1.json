@@ -7,49 +7,26 @@
   "status": "ga",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,
-  "hostingModes": [
-    "anthropic"
-  ],
+  "hostingModes": ["anthropic"],
   "defaultHostingMode": "anthropic",
   "interfacesByHostingMode": {
-    "anthropic": [
-      "messages"
-    ]
+    "anthropic": ["messages"]
   },
-  "interfaces": [
-    "messages"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "reasoning",
-    "vision",
-    "function-calling"
-  ],
+  "interfaces": ["messages"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "messages": {
       "thinking": {
         "parameter": "thinking.type",
-        "types": [
-          "adaptive"
-        ],
+        "types": ["adaptive"],
         "default": "adaptive",
         "validation": "passthrough"
       },
       "reasoning": {
         "parameter": "output_config.effort",
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
+        "levels": ["low", "medium", "high", "xhigh", "max"],
         "default": "high",
         "validation": "passthrough"
       }
@@ -62,28 +39,9 @@
     "status": "published",
     "inputPer1mTokens": 10,
     "cachedInputPer1mTokens": 0.25,
-    "outputPer1mTokens": 50,
-    "inputPer1kTokens": 0.01,
-    "cachedInputPer1kTokens": 0.00025,
-    "outputPer1kTokens": 0.05
+    "outputPer1mTokens": 50
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.01,
-    "cachedInputPer1kTokens": 0.00025,
-    "outputPer1kTokens": 0.05
-  },
-  "proxyTemplate": {
-    "id": "claude-fable-5-1",
-    "displayName": "Claude Fable 5.1",
-    "targetModel": "claude-fable-5-1",
-    "capabilities": [
-      "reasoning",
-      "vision",
-      "function-calling"
-    ],
-    "pricingRef": "claude-fable-5-1"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",

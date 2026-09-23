@@ -31,11 +31,7 @@
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "mai-image-2.6",
-    "displayName": "MAI-Image-2.6",
     "targetModel": "MAI-Image-2.6",
-    "capabilities": ["vision", "image-generation", "image-editing"],
-    "pricingRef": "mai-image-2.6",
     "routes": {
       "*": "mai-image",
       "images/edits": "mai-image-edits"

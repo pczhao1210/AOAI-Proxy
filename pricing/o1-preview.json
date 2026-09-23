@@ -8,18 +8,10 @@
   "contextWindow": 128000,
   "maxInputTokens": 128000,
   "maxOutputTokens": 32768,
-  "interfaces": [
-    "chat/completions"
-  ],
-  "inputModalities": [
-    "text"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "reasoning"
-  ],
+  "interfaces": ["chat/completions"],
+  "inputModalities": ["text"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
@@ -34,26 +26,9 @@
     "status": "published",
     "inputPer1mTokens": 15,
     "cachedInputPer1mTokens": 7.5,
-    "outputPer1mTokens": 60,
-    "inputPer1kTokens": 0.015,
-    "cachedInputPer1kTokens": 0.0075,
-    "outputPer1kTokens": 0.06
+    "outputPer1mTokens": 60
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.015,
-    "cachedInputPer1kTokens": 0.0075,
-    "outputPer1kTokens": 0.06
-  },
-  "proxyTemplate": {
-    "id": "o1-preview",
-    "displayName": "o1 Preview",
-    "targetModel": "o1-preview",
-    "capabilities": [
-      "reasoning"
-    ],
-    "pricingRef": "o1-preview"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://developers.openai.com/api/docs/models/o1-preview",

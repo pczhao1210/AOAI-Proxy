@@ -8,19 +8,23 @@
   "defaultHostingMode": "azure",
   "interfaces": ["audio/speech"],
   "defaultInterface": "audio/speech",
-  "proxyAdapters": { "responses": "azure-speech-synthesize" },
   "inputModalities": ["text"],
   "outputModalities": ["audio"],
   "capabilities": ["text-to-speech", "speech-generation"],
-  "pricing": { "currency": "USD", "sourceType": "azure-official", "status": "unavailable" },
+  "proxyAdapters": {
+    "responses": "azure-speech-synthesize"
+  },
+  "pricing": {
+    "currency": "USD",
+    "sourceType": "azure-official",
+    "status": "unavailable"
+  },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "mai-voice-2",
-    "displayName": "MAI-Voice-2",
     "targetModel": "MAI-Voice-2",
-    "capabilities": ["text-to-speech", "speech-generation"],
-    "pricingRef": "mai-voice-2",
-    "routes": { "audio/speech": "azure-speech-tts" }
+    "routes": {
+      "audio/speech": "azure-speech-tts"
+    }
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/ai-services/speech-service/mai-voices",

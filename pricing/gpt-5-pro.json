@@ -7,22 +7,10 @@
   "status": "ga",
   "contextWindow": 400000,
   "maxOutputTokens": 272000,
-  "interfaces": [
-    "responses"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "reasoning",
-    "vision",
-    "function-calling",
-    "structured-outputs"
-  ],
+  "interfaces": ["responses"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs"],
   "protocolProfiles": {
     "responses": {
       "reasoning": {
@@ -37,26 +25,9 @@
     "sourceType": "azure-openai-global",
     "status": "published",
     "inputPer1mTokens": 15,
-    "outputPer1mTokens": 120,
-    "inputPer1kTokens": 0.015,
-    "outputPer1kTokens": 0.12
-  },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.015,
-    "outputPer1kTokens": 0.12
+    "outputPer1mTokens": 120
   },
   "proxyTemplate": {
-    "id": "gpt-5-pro",
-    "displayName": "GPT-5 Pro",
-    "targetModel": "gpt-5-pro",
-    "capabilities": [
-      "reasoning",
-      "vision",
-      "function-calling",
-      "structured-outputs"
-    ],
-    "pricingRef": "gpt-5-pro",
     "routes": {
       "*": "responses"
     }

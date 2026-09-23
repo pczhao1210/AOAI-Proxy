@@ -8,42 +8,20 @@
   "contextWindow": 1000000,
   "maxInputTokens": 1000000,
   "maxOutputTokens": 1000000,
-  "interfaces": [
-    "chat/completions"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "vision"
-  ],
+  "interfaces": ["chat/completions"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["vision"],
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
     "status": "published",
     "inputPer1mTokens": 0.29,
-    "outputPer1mTokens": 1.16,
-    "inputPer1kTokens": 0.00029,
-    "outputPer1kTokens": 0.00116
-  },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.00029,
-    "outputPer1kTokens": 0.00116
+    "outputPer1mTokens": 1.16
   },
   "proxyTemplate": {
-    "id": "llama4-maverick-instruct",
-    "displayName": "Llama 4 Maverick Instruct",
-    "targetModel": "Llama-4-Maverick-17B-128E-Instruct-FP8",
-    "capabilities": [
-      "vision"
-    ],
-    "pricingRef": "llama4-maverick-instruct"
+    "targetModel": "Llama-4-Maverick-17B-128E-Instruct-FP8"
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#meta-models-sold-directly-by-azure",

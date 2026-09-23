@@ -7,19 +7,10 @@
   "status": "ga",
   "maxInputTokens": 128000,
   "maxOutputTokens": 128000,
-  "interfaces": [
-    "chat/completions"
-  ],
-  "inputModalities": [
-    "text"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "reasoning",
-    "json-output"
-  ],
+  "interfaces": ["chat/completions"],
+  "inputModalities": ["text"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "json-output"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
@@ -33,25 +24,9 @@
     "sourceType": "azure-foundry-models",
     "status": "published",
     "inputPer1mTokens": 0.58,
-    "outputPer1mTokens": 1.68,
-    "inputPer1kTokens": 0.00058,
-    "outputPer1kTokens": 0.00168
+    "outputPer1mTokens": 1.68
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.00058,
-    "outputPer1kTokens": 0.00168
-  },
-  "proxyTemplate": {
-    "id": "DeepSeek-V3.2-Speciale",
-    "displayName": "DeepSeek V3.2 Speciale",
-    "targetModel": "DeepSeek-V3.2-Speciale",
-    "capabilities": [
-      "reasoning",
-      "json-output"
-    ],
-    "pricingRef": "DeepSeek-V3.2-Speciale"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-by-azure",

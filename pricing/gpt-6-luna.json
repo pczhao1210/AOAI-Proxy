@@ -1,0 +1,86 @@
+{
+  "id": "gpt-6-luna",
+  "displayName": "GPT-6 Luna",
+  "provider": "azure-openai",
+  "family": "gpt-6",
+  "modelVersion": "2026-09-22",
+  "status": "ga",
+  "contextWindow": 1050000,
+  "maxInputTokens": 922000,
+  "maxOutputTokens": 128000,
+  "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling",
+    "computer-use"
+  ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["none", "low", "medium", "high", "xhigh"],
+        "default": "medium",
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "default": "medium",
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "tiering": {
+      "basis": "inputTokensIncludingCache",
+      "method": "whole-request"
+    },
+    "tiers": [
+      {
+        "id": "short",
+        "deploymentType": "global-standard",
+        "contextClass": "short",
+        "promptTokensBelow": 272001,
+        "inputPer1mTokens": 0.1,
+        "cachedInputPer1mTokens": 0.01,
+        "cacheWritePer1mTokens": 0.125,
+        "outputPer1mTokens": 0.5
+      },
+      {
+        "id": "long",
+        "deploymentType": "global-standard",
+        "contextClass": "long",
+        "promptTokensAtLeast": 272001,
+        "inputPer1mTokens": 0.2,
+        "cachedInputPer1mTokens": 0.02,
+        "cacheWritePer1mTokens": 0.25,
+        "outputPer1mTokens": 0.75
+      }
+    ]
+  },
+  "proxyTemplate": {},
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-6",
+    "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-6",
+    "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
+    "pricing": "https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/"
+  },
+  "notes": [
+    "Azure OpenAI lists Chat Completions and Responses as native interfaces; the template does not force either through a protocol shim.",
+    "The root rates represent Global Standard short-context pricing. The tier table records Global Standard short/long-context rates, including cache writes, per 1M tokens.",
+    "The administrator-specified whole-request policy selects the long tier only when this request's input, including cache, exceeds 272000 tokens. Exactly 272000 remains short; session totals and output length do not select the tier.",
+    "The cited Azure post supplies Global Standard prices but does not establish this numeric threshold or whole-request rule. These policy choices were explicitly supplied by the administrator, not independently verified from that source."
+  ]
+}

@@ -2,6 +2,64 @@
 
 This directory stores reusable model definitions for AOAI Proxy.
 
+### Canonical authoring format
+
+Each active card is a self-contained JSON document, not an instance of a shared
+family template. Backend loading, remote sync and the bundled admin library use
+the same [price/template defaults](../src/model-card.js). Compact source files
+expand into complete runtime/admin objects; old full cards remain accepted.
+
+- Write token rates in USD per **1M tokens**, using `inputPer1mTokens`,
+  `cachedInputPer1mTokens`, `cacheWritePer1mTokens` (or explicit TTL rates), and
+  `outputPer1mTokens`. Do not store a second per-1K representation.
+- Flat prices live directly under `pricing`. For whole-request prices, write
+  rates only in `pricing.tiers`, with `tiering` and explicit interval bounds.
+  Do not duplicate the short tier at the root. Unknown/unpublished rates are
+  omitted, never filled with zero; independently published zero prices remain zero.
+- Omit a duplicate `pricingCatalogEntry`: absence uses `pricing`. Keep explicit
+  `pricingCatalogEntry: null` for automatic-text-pricing opt-out, including
+  media/reference-only cards. A distinct non-null entry remains a supported
+  intentional override, not another copy to keep in sync.
+- Use `proxyTemplate: {}` when the model is offered as a template and needs no
+  overrides. It inherits root `id`, `displayName`, and `capabilities`;
+  `targetModel` and `pricingRef` default to root `id`. Keep only exceptions such
+  as an upstream deployment ID or a route mapping. Missing/null templates do
+  **not** opt in. Routes and explicit empty arrays are preserved, not inferred.
+- Keep protocol-specific profiles, hosting modes, limits, media channels,
+  non-token units, and evidence. Do not collapse Chat/Responses parameter paths
+  or make one provider's rates apply to another. Sources may repeat a URL to
+  independently substantiate capabilities and limits.
+- Notes should explain model/provider-specific caveats and policy provenance;
+  avoid restating structured fields or the generic billing implementation.
+
+For example, a template-only override is now:
+
+```json
+"proxyTemplate": {
+  "targetModel": "provider-specific-deployment",
+  "routes": { "chat/completions": "responses" }
+}
+```
+
+Use the repository formatter rather than hand-minifying JSON:
+
+```bash
+npm run cards:format
+npm run cards:check
+```
+
+It uses two-space indentation, stable root/price/template field ordering, inline
+scalar arrays when they fit within 120 columns, and one note per line. It removes
+equivalent duplicates, preserves differing overrides and explicit nulls, and
+refuses conflicting rate conversions. It only visits `pricing/*.json`, never
+archives or live/persisted configuration. Unit tests enforce canonical formatting
+and parity between the backend and bundled admin libraries.
+
+**Rollout:** deploy the updated runtime and rebuilt admin assets before remotely
+syncing compact cards. Older template loaders do not fill their omitted fields.
+After that upgrade, data-only card edits still use ordinary catalog sync.
+Persisted cards and administrator pricing overrides retain their existing priority.
+
 ### Archived model cards
 
 `pricing/archive/` stores model cards that are retained for history or migration
@@ -35,6 +93,63 @@ realtime-only cards whose provider contracts do not expose the same text-token
 window fields. The reviewed exception set is enforced by the Model Catalog unit
 test so a newly added card cannot silently introduce another missing limit.
 
+The GPT-6 Astra, Sol, and Luna cards record only the published Global Standard
+short/long-context rates from the [Microsoft Azure GPT-6 launch post](https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/).
+Each `pricing.tiers` entry records the context class and input, cached-input,
+cache-write, and output rates per million tokens.
+All three cards enable automatic pricing from `pricing` using the administrator's
+explicitly specified whole-request policy: **this request's input tokens,
+including cached input, must exceed 272,000 to select the long tier**.
+Exactly 272,000 stays short; 272,001 starts long. The cited post supplies the
+prices but does not independently establish this threshold or rule, so the cards
+record that policy provenance separately in their notes. The user-provided
+Standard pricing screenshot also labels short input as **at most 272K**.
+Only Global Standard
+rates are included. Existing `models[].pricing` and `access.pricingCatalog`
+overrides are not removed by catalog sync and may need deliberate replacement
+or removal before the new card policies apply.
+
+Grok 4.3 and 4.6 now enable their **xAI-official** whole-request tables at
+`promptTokensAtLeast: 200000`. Both xAI model pages explicitly apply the higher
+rate to all tokens when the prompt reaches 200K. These are not independently
+verified Azure-hosted prices; administrators must bind a matching price source
+or supply a verified override for their deployment.
+
+OpenAI's published standard pricing also has 272K prompt-context tiers for
+`gpt-5.5`, `gpt-5.4`, and `gpt-5.4-pro`. Their `pricing.tiers` list per-million
+rates once, without short-rate copies at the root.
+Their executable `pricing` policies follow the administrator-confirmed
+strict boundary, **input >272,000**, and charge the entire request at the selected
+rate. All nine enabled GPT policies use `promptTokensBelow: 272001` for short and
+`promptTokensAtLeast: 272001` for long because intervals are integer `[min, max)`.
+Output length and cumulative session usage do not select the tier. These entries do not encode
+Batch, Flex, Priority/Fast, or Azure-specific pricing. `gpt-5.4-mini` and
+`gpt-5.4-nano` have no separately published long-context rate in the same
+pricing table, so they retain their single rate.
+
+GPT-5.6 Sol, Terra, and Luna now use the same executable whole-request policy.
+Their short/long input, cache-read, cache-write, and output rates match both the
+provided Standard pricing screenshot and the [official OpenAI price table](https://developers.openai.com/api/docs/pricing).
+In particular, Sol's short rates are USD **4 / 0.4 / 5 / 20** per million tokens,
+not the previous 5 / 0.5 / unlisted / 30. These are OpenAI Standard prices,
+not independently verified Azure deployment prices. The published Sol promotion
+is available at least through November 21, 2026; recheck prices on future syncs.
+Dashes in the published table remain missing rates, never zero/free rates.
+
+Anthropic's current [context-window guide](https://platform.claude.com/docs/en/build-with-claude/context-windows)
+says all models with a 1M-token window are billed at standard pricing, and its
+[model pricing table](https://platform.claude.com/docs/en/about-claude/pricing#model-pricing)
+publishes per-model rates without a context-length threshold. Prompt-cache
+write prices are separate cache-operation rates, not long-context tiers, so
+the Claude cards retain their standard per-model token prices.
+
+`claude-opus-5-5` is available in Microsoft Foundry on both Azure and
+Anthropic infrastructure via native Messages. Its published base rates are
+USD 4 input, USD 0.20 cache reads, and USD 20 output per 1M tokens.
+Cache writes and US Data Zone inference have separate rates; the flat
+`pricing` policy only represents the base rates. Unlike Opus 5,
+Opus 5.5 cannot disable adaptive thinking or use a manual thinking budget.
+
 ### Field semantics
 
 - `interfaces`
@@ -52,7 +167,7 @@ test so a newly added card cannot silently introduce another missing limit.
   - This list is intended to be copied into `config.models[].capabilities` as the model capability declaration.
 
 - `proxyTemplate.capabilities`
-  - Mirrors the same model-native capability list for direct config scaffolding.
+  - Defaults to root `capabilities` during normalization. Do not store a duplicate list in the card.
 
 - `defaultInterface`
   - Selects the provider-facing protocol used when the requested protocol is unavailable and more than one declared interface remains.
@@ -73,6 +188,144 @@ test so a newly added card cannot silently introduce another missing limit.
   - Codex catalog publication uses the complete `contextWindow`, including input and output capacity, for both its current and maximum window. `maxInputTokens` is used only when the total context window is unavailable.
   - Catalog-backed or explicitly configured windows are published with a 100 percent effective window; the legacy 128,000-token fallback retains the historical 95 percent value.
   - Add `sources.limits` whenever these fields are published. Do not infer limits from model names or pricing tiers.
+
+### Whole-request text pricing
+
+Text JSON and SSE responses share one estimator. It reads upstream `usage`, not
+output text deltas, local character counts, `max_tokens`, the model's context
+window, or conversation lifetime totals. Existing stream handlers merge usage
+snapshots and settle once at source-protocol completion; no output buffering or
+new stream conversion is needed. JSON accounting also uses the original upstream
+usage before protocol conversion, so cache details are not lost by a shim.
+
+Executable pricing is selected in this order:
+
+1. A nonempty `models[].pricing` override.
+2. A nonempty `access.pricingCatalog[pricingRef]` override.
+3. The card's `pricing`, unless `pricingCatalogEntry` explicitly overrides it
+   (including `null` to opt out).
+
+`pricingCatalogEntry: null` remains an explicit opt-out. Root `pricing.tiers`
+can therefore document prices without enabling automatic billing. To enable a
+verified table, put the full policy below in `pricing` and omit a duplicate
+`pricingCatalogEntry`, or use either administrator override. Admin template import copies the entire policy. It does
+not flatten it to the first tier. Existing administrator overrides continue to
+win after card sync; remove obsolete overrides deliberately.
+
+This is an illustrative policy, **not a GPT-6 cutoff or a deployment price quote**:
+
+```json
+{
+  "currency": "USD",
+  "billingUnit": "1M tokens",
+  "tiering": {
+    "basis": "inputTokensIncludingCache",
+    "method": "whole-request"
+  },
+  "tiers": [
+    {
+      "id": "short",
+      "promptTokensBelow": 200000,
+      "inputPer1mTokens": 2,
+      "cachedInputPer1mTokens": 0.2,
+      "outputPer1mTokens": 10
+    },
+    {
+      "id": "long",
+      "promptTokensAtLeast": 200000,
+      "inputPer1mTokens": 4,
+      "cachedInputPer1mTokens": 0.4,
+      "outputPer1mTokens": 15
+    }
+  ]
+}
+```
+
+Intervals are `[promptTokensAtLeast, promptTokensBelow)`. The first lower bound
+may be omitted for zero, and the final upper bound is omitted for unbounded.
+Tables must be ordered, contiguous and nonoverlapping, covering all nonnegative
+input counts. If the provider says **above** B, use B+1 as the integer long-tier
+lower bound; if it says **at least** B, use B. Verify the exact boundary, the
+provider/deployment/service tier and source before enabling a policy. The engine
+does not automatically select a region, deployment class, Batch, Flex or Priority
+rate.
+
+The selected rates apply to the **entire request**, including output, not only
+tokens above the threshold. Each row is independent; no missing rate inherits
+the root's short-context price. Rates are finite nonnegative numbers; explicit
+zero is valid. Both per-million and legacy per-thousand fields are accepted and
+must agree when supplied together. Old flat policies need no `tiering` field.
+Unknown tiering methods, malformed intervals and invalid executable rates reject
+config saves and catalog activation instead of falling back to cheaper prices.
+
+Input used for selection includes cache reads and writes. Chat/Responses input
+totals already include both. Native Messages input excludes the separate
+`cache_read_input_tokens` and `cache_creation_input_tokens`, so they are added
+once. Already normalized `prompt_tokens` is not expanded again. Ordinary input,
+cache reads, cache writes and output are then charged separately. Reasoning tokens
+already included in output are not charged a second time.
+
+Supported write prices are `cacheWritePer1mTokens`, `cacheWrite5mPer1mTokens` and
+`cacheWrite1hPer1mTokens` (and per-thousand equivalents). Messages TTL evidence
+comes from `cache_creation.ephemeral_5m_input_tokens` and
+`cache_creation.ephemeral_1h_input_tokens`. A combined write rate can price a
+reported combined count; TTL-specific rates require the corresponding breakdown.
+Unreported provider-specific write counts are not invented from uncached input.
+Observed writes without a usable rate remain unpriced rather than being billed
+as ordinary input.
+
+Azure documents `prompt_tokens_details.cache_write_tokens` for Chat on GPT-5.6
+and later. OpenAI's [prompt-cache cost example](https://developers.openai.com/api/docs/guides/prompt-caching#monitor-cache-performance)
+documents Responses `input_tokens_details.cache_write_tokens` and the partition:
+`ordinary input = input - cache reads - cache writes`. Writes replace the ordinary
+input charge for those tokens; they are not an additive surcharge. Missing or
+inconsistent required evidence stays unpriced rather than being clamped, inferred
+from uncached input, or silently charged as ordinary input. Native response
+passthrough and input/total-token quotas are unchanged.
+
+Every request captures the active catalog and configured prices before upstream
+work. In-flight requests retain that generation across sync/reload, including
+Model Router's eventual actual-model price. Router input fees are calculated
+separately from the actual model's full token cost. Usage audit records include
+the pricing source, policy digest, selected tier/rates and `costStatus`:
+
+- `priced`: all required costs known, including a valid zero-cost request.
+- `partial`: a known subtotal exists but some cost/evidence is missing.
+- `unknown`: the request cannot be priced from available evidence.
+
+Missing/invalid input usage and locally estimated token counts cannot select an
+exact context tier. Statistics and budgets keep numerical **known subtotals** for
+compatibility, with `textUnknownCostRequests` marking incompleteness; the admin
+UI does not label those subtotals as a complete/free bill. Detail events retain
+the audit and unknown reason, while rollups retain the unknown-request count.
+Existing historical events are not retroactively repriced or reclassified.
+This remains post-hoc estimated accounting, not a guaranteed prepaid hard cap:
+an in-flight request may exceed a budget and unknown costs cannot be enforced
+as known spend.
+
+Cache-write reporting is independent of cache reads and total-token accounting.
+Each settlement carries `cacheWrite.tokens`, `usageStatus`, `knownCostAmount`,
+nullable `estimatedCostAmount`, and `costStatus`. Explicit zero is preserved;
+absent/invalid write evidence is unknown. In aggregated statistics, `tokens`
+and `estimatedCostAmount` are null when coverage is incomplete, while
+`observedTokens` and `knownCostAmount` retain known subtotals. Coverage counts
+track observed, priced, partial, and unreported requests.
+
+PostgreSQL event and rollup tables add `cache_write_tokens`,
+`cache_write_known_cost_amount`, `cache_write_estimated_cost_amount`,
+`cache_write_requests`, `cache_write_observed_requests`,
+`cache_write_priced_requests`, `cache_write_partial_cost_requests`, and
+`cache_write_unreported_requests`. The additive migration does not manufacture
+zero usage/cost for old rows. Spill/replay and aggregate queries preserve the
+same nullable coverage. The admin overview, trend and model/key/actual-model
+tables show write tokens and write cost separately, including partial or
+unreported labels. Write cost is a component of the existing total, not an extra
+budget charge.
+
+The new runtime must be deployed once (and admin assets built before building the
+container). Subsequent valid price policy changes apply to new requests after
+config save/reload or successful catalog sync; no container rebuild is needed
+for those data-only updates. The independent media estimator below is unchanged.
 
 ### Media usage pricing
 
@@ -195,7 +448,7 @@ These labels are provider-native feature hints. They are not a universal ontolog
 
 Notes:
 
-- `proxyTemplate.capabilities` should normally use the same meanings as root `capabilities`; if a label is present in root definitions but absent from the proxy-template subset, it usually means some pricing entries do not expose a `proxyTemplate`.
+- Normalized `proxyTemplate.capabilities` inherits root `capabilities`; source cards only need a field when deliberately overriding it.
 - Some labels overlap by design. For example, a text-to-speech model can carry both `text-to-speech` and `speech-generation`, where one describes the product shape and the other describes the output capability.
 - Capability labels should describe what the upstream model can do, not the internal AOAI Proxy route name that happens to carry the request.
 
@@ -203,7 +456,7 @@ Notes:
 
 - If `inputModalities` includes `image`, `capabilities` should also include `vision`.
 - If a model supports `image-editing`, it must accept image input; declare both `image` in `inputModalities` and `vision` in `capabilities`.
-- Keep `proxyTemplate.capabilities` in sync with the root `capabilities` array whenever a pricing definition exposes a proxy template.
+- Omit duplicate `proxyTemplate.capabilities`; the shared loader keeps templates aligned with root capabilities.
 - If vendor documentation disagrees with the current file, correct the underlying modality declaration instead of adding `vision` speculatively.
 
 ### Upstream defaults

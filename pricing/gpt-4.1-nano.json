@@ -7,23 +7,10 @@
   "status": "ga",
   "contextWindow": 1047576,
   "maxOutputTokens": 32768,
-  "interfaces": [
-    "chat/completions",
-    "responses"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "vision",
-    "streaming",
-    "function-calling",
-    "structured-outputs"
-  ],
+  "interfaces": ["chat/completions", "responses"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["vision", "streaming", "function-calling", "structured-outputs"],
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -31,29 +18,9 @@
     "status": "published",
     "inputPer1mTokens": 0.1,
     "cachedInputPer1mTokens": 0.025,
-    "outputPer1mTokens": 0.4,
-    "inputPer1kTokens": 0.0001,
-    "cachedInputPer1kTokens": 0.000025,
-    "outputPer1kTokens": 0.0004
+    "outputPer1mTokens": 0.4
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.0001,
-    "cachedInputPer1kTokens": 0.000025,
-    "outputPer1kTokens": 0.0004
-  },
-  "proxyTemplate": {
-    "id": "gpt-4.1-nano",
-    "displayName": "GPT-4.1 Nano",
-    "targetModel": "gpt-4.1-nano",
-    "capabilities": [
-      "vision",
-      "streaming",
-      "function-calling",
-      "structured-outputs"
-    ],
-    "pricingRef": "gpt-4.1-nano"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-41-series",
     "limits": "https://developers.openai.com/api/docs/models/gpt-4.1-nano",

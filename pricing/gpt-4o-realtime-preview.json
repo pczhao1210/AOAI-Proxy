@@ -7,23 +7,10 @@
   "status": "preview",
   "contextWindow": 32000,
   "maxOutputTokens": 4096,
-  "interfaces": [
-    "realtime"
-  ],
-  "inputModalities": [
-    "text",
-    "audio"
-  ],
-  "outputModalities": [
-    "text",
-    "audio"
-  ],
-  "capabilities": [
-    "realtime",
-    "audio-input",
-    "audio-output",
-    "streaming"
-  ],
+  "interfaces": ["realtime"],
+  "inputModalities": ["text", "audio"],
+  "outputModalities": ["text", "audio"],
+  "capabilities": ["realtime", "audio-input", "audio-output", "streaming"],
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -32,17 +19,11 @@
     "inputPer1mTokens": 5,
     "cachedInputPer1mTokens": 2.5,
     "outputPer1mTokens": 20,
-    "inputPer1kTokens": 0.005,
-    "cachedInputPer1kTokens": 0.0025,
-    "outputPer1kTokens": 0.02,
     "channels": {
       "audio": {
         "inputPer1mTokens": 40,
         "cachedInputPer1mTokens": 2.5,
-        "outputPer1mTokens": 80,
-        "inputPer1kTokens": 0.04,
-        "cachedInputPer1kTokens": 0.0025,
-        "outputPer1kTokens": 0.08
+        "outputPer1mTokens": 80
       }
     }
   },

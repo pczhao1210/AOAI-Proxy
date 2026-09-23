@@ -81,7 +81,7 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
   const bundledDefinitions = listPricingDefinitions();
   const ids = new Set();
 
-  assert.equal(bundledDefinitions.length, 78);
+  assert.equal(bundledDefinitions.length, 81);
   for (const definition of bundledDefinitions) {
     assert.ok(definition.id, `${definition.fileName}: id is required`);
     assert.ok(!ids.has(definition.id.toLowerCase()), `${definition.fileName}: duplicate id ${definition.id}`);
@@ -118,11 +118,20 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
       assert.ok(definition.sources.limits, `${definition.fileName}: token limits require sources.limits`);
     }
 
-    if (definition.pricing.channels || definition.pricing.tiers) {
+    if (definition.pricing.tiers && definition.pricingCatalogEntry) {
+      assert.equal(definition.pricingCatalogEntry.tiering.method, "whole-request");
+      assert.equal(definition.pricingCatalogEntry.tiering.basis, "inputTokensIncludingCache");
+      assert.deepEqual(
+        definition.pricingCatalogEntry.tiers.map(({ promptTokensBelow, promptTokensAtLeast, inputPer1mTokens, cachedInputPer1mTokens, outputPer1mTokens }) =>
+          ({ promptTokensBelow, promptTokensAtLeast, inputPer1mTokens, cachedInputPer1mTokens, outputPer1mTokens })),
+        definition.pricing.tiers.map(({ promptTokensBelow, promptTokensAtLeast, inputPer1mTokens, cachedInputPer1mTokens, outputPer1mTokens }) =>
+          ({ promptTokensBelow, promptTokensAtLeast, inputPer1mTokens, cachedInputPer1mTokens, outputPer1mTokens }))
+      );
+    } else if (definition.pricing.channels || definition.pricing.tiers) {
       assert.equal(
         definition.pricingCatalogEntry,
         null,
-        `${definition.fileName}: channel or tier pricing requires pricingCatalogEntry: null`
+        `${definition.fileName}: reference-only channel or tier pricing requires pricingCatalogEntry: null`
       );
     }
 
@@ -183,7 +192,7 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
   }
 
   for (const id of [
-    "glm-5.3", "gpt-6-astra", "claude-fable-5-1",
+    "glm-5.3", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "claude-fable-5-1", "claude-opus-5-5",
     "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "mai-image-2.6", "mai-image-2.6-flash",
     "deepseek-v4.1-flash", "glm-5.3-flash"
   ]) {
@@ -254,9 +263,9 @@ test("verified model cards preserve documented token limits without filling ambi
   const definitionsWithLimits = [...definitionsById.values()].filter((definition) => (
     ["contextWindow", "maxInputTokens", "maxOutputTokens"].some((field) => definition[field] != null)
   ));
-  assert.equal(definitionsWithLimits.length, 59);
+  assert.equal(definitionsWithLimits.length, 62);
 
-  for (const id of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
+  for (const id of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol"]) {
     const definition = definitionsById.get(id);
     assert.equal(definition.contextWindow, 1050000);
     assert.equal(definition.maxInputTokens, 922000);
@@ -330,6 +339,7 @@ test("Claude cards preserve official release dates and token limits", () => {
   const expected = [
     ["claude-opus-4-6", "2026-02-05"],
     ["claude-opus-5", "2026-07-24"],
+    ["claude-opus-5-5", "2026-09-22"],
     ["claude-sonnet-4-6", "2026-02-17"],
     ["claude-sonnet-5", "2026-06-30"]
   ];
@@ -339,6 +349,52 @@ test("Claude cards preserve official release dates and token limits", () => {
     assert.equal(definition.modelVersion, modelVersion);
     assert.equal(definition.contextWindow, 1000000);
     assert.equal(definition.maxOutputTokens, 128000);
+  }
+});
+
+test("Claude Opus 5.5 card preserves native hosting, adaptive thinking, and published rates", () => {
+  const definition = listPricingDefinitions().find((entry) => entry.id === "claude-opus-5-5");
+  assert.ok(definition, "Claude Opus 5.5 must have a bundled model card");
+  assert.equal(definition.provider, "anthropic");
+  assert.equal(definition.status, "ga");
+  assert.deepEqual(definition.hostingModes, ["azure", "anthropic"]);
+  assert.equal(definition.defaultHostingMode, "azure");
+  assert.deepEqual(definition.interfaces, ["messages"]);
+  assert.deepEqual(definition.interfacesByHostingMode, {
+    azure: ["messages"],
+    anthropic: ["messages"]
+  });
+  assert.deepEqual(definition.inputModalities, ["text", "image"]);
+  assert.deepEqual(definition.outputModalities, ["text"]);
+  assert.deepEqual(definition.protocolProfiles.messages.thinking.types, ["adaptive"]);
+  assert.equal(definition.protocolProfiles.messages.thinking.default, "adaptive");
+  assert.deepEqual(definition.protocolProfiles.messages.reasoning.levels,
+    ["low", "medium", "high", "xhigh", "max"]);
+  assert.equal(definition.protocolProfiles.messages.reasoning.default, "medium");
+  assert.equal(definition.pricingCatalogEntry.currency, "USD");
+  assert.deepEqual([
+    definition.pricingCatalogEntry.inputPer1mTokens,
+    definition.pricingCatalogEntry.cachedInputPer1mTokens,
+    definition.pricingCatalogEntry.outputPer1mTokens
+  ], [4, 0.2, 20]);
+  assert.equal(definition.pricing.sourceType, "anthropic-official");
+  assert.equal(definition.pricing.status, "published");
+  assert.equal(definition.proxyTemplate.targetModel, "claude-opus-5-5");
+  assert.equal(definition.proxyTemplate.pricingRef, "claude-opus-5-5");
+  assert.deepEqual(definition.proxyTemplate.routes, {});
+
+  const upstream = buildUpstreamFromPricingTemplate(definition, "claude");
+  upstream.baseUrl = "https://example.openai.azure.com";
+  for (const hostingMode of definition.hostingModes) {
+    const model = {
+      ...buildModelFromPricingTemplate(definition, upstream.name, { models: [] }),
+      hostingMode
+    };
+    const snapshot = compileModelCatalog({ upstreams: [upstream], models: [model] }, [definition]);
+    const descriptor = resolveModelDescriptor(model.id, snapshot);
+    const plan = resolveRoutePlan({ routeKey: "messages", model, upstream, descriptor });
+    assert.equal(plan.backendRouteKey, "messages");
+    assert.equal(plan.targetUrl, "https://example.services.ai.azure.com/anthropic/v1/messages");
   }
 });
 
@@ -443,20 +499,120 @@ test("Azure Foundry model profiles preserve deployment IDs and pricing sources",
   assert.match(fable.sources.capabilities, /learn\.microsoft\.com\/azure\/foundry/);
   assert.ok(fable.notes.some((note) => note.includes("Microsoft Foundry")));
 
-  const expectedGlobalPricing = {
-    "gpt-5.6-luna": [0.0002, 0.00002, 0.0012],
-    "gpt-5.6-sol": [0.005, 0.0005, 0.03],
-    "gpt-5.6-terra": [0.002, 0.0002, 0.012]
+  const expectedStandardPricing = {
+    "gpt-5.6-luna": [0.2, 0.02, 1.2],
+    "gpt-5.6-sol": [4, 0.4, 20],
+    "gpt-5.6-terra": [2, 0.2, 12]
   };
-  for (const [id, [inputPer1kTokens, cachedInputPer1kTokens, outputPer1kTokens]] of Object.entries(expectedGlobalPricing)) {
+  for (const [id, expected] of Object.entries(expectedStandardPricing)) {
     const definition = definitionsById.get(id);
-    assert.equal(definition.pricing.sourceType, "azure-openai-global", `${id}: Azure pricing source`);
-    assert.deepEqual(definition.pricingCatalogEntry, {
-      currency: "USD",
-      inputPer1kTokens,
-      cachedInputPer1kTokens,
-      outputPer1kTokens
-    }, `${id}: Azure Global Standard short-context pricing`);
+    assert.equal(definition.pricing.sourceType, "openai-official", `${id}: Standard pricing source`);
+    assert.equal(definition.sources.pricing, "https://developers.openai.com/api/docs/pricing");
+    assert.deepEqual([
+      definition.pricing.tiers[0].inputPer1mTokens,
+      definition.pricing.tiers[0].cachedInputPer1mTokens,
+      definition.pricing.tiers[0].outputPer1mTokens
+    ], expected, `${id}: Standard short-context pricing`);
+  }
+});
+
+test("GPT-6 cards preserve the published Global Standard short/long-context prices", () => {
+  const definitionsById = new Map(listPricingDefinitions().map((definition) => [definition.id, definition]));
+  const expectedPrices = {
+    "gpt-6-astra": [
+      ["global-standard", "short", 10, 1, 12.5, 50],
+      ["global-standard", "long", 20, 2, 25, 75]
+    ],
+    "gpt-6-sol": [
+      ["global-standard", "short", 2, 0.2, 2.5, 10],
+      ["global-standard", "long", 4, 0.4, 5, 15]
+    ],
+    "gpt-6-luna": [
+      ["global-standard", "short", 0.1, 0.01, 0.125, 0.5],
+      ["global-standard", "long", 0.2, 0.02, 0.25, 0.75]
+    ]
+  };
+
+  for (const [id, expected] of Object.entries(expectedPrices)) {
+    const definition = definitionsById.get(id);
+    assert.equal(definition.pricing.currency, "USD");
+    assert.equal(definition.pricing.billingUnit, "1M tokens");
+    assert.equal(definition.pricing.sourceType, "azure-openai-global");
+    assert.equal(definition.pricing.status, "published");
+    assert.deepEqual([
+      definition.pricing.tiers[0].inputPer1mTokens,
+      definition.pricing.tiers[0].cachedInputPer1mTokens,
+      definition.pricing.tiers[0].cacheWritePer1mTokens,
+      definition.pricing.tiers[0].outputPer1mTokens
+    ], expected[0].slice(2), `${id}: Global Standard short-context rates`);
+    assert.deepEqual(definition.pricing.tiers.map((tier) => [
+      tier.deploymentType,
+      tier.contextClass,
+      tier.inputPer1mTokens,
+      tier.cachedInputPer1mTokens,
+      tier.cacheWritePer1mTokens,
+      tier.outputPer1mTokens
+    ]), expected, `${id}: all published per-million-token rates`);
+    assert.deepEqual(definition.pricingCatalogEntry.tiering,
+      { basis: "inputTokensIncludingCache", method: "whole-request" });
+    assert.deepEqual(definition.pricingCatalogEntry.tiers.map((tier) => [
+      tier.id, tier.promptTokensBelow ?? null, tier.promptTokensAtLeast ?? null,
+      tier.inputPer1mTokens, tier.cachedInputPer1mTokens, tier.cacheWritePer1mTokens, tier.outputPer1mTokens
+    ]), expected.map((row, index) => [row[1], index === 0 ? 272001 : null, index === 1 ? 272001 : null, ...row.slice(2)]),
+    `${id}: import the full whole-request policy, including cache-write rates`);
+    assert.equal(
+      definition.sources.pricing,
+      "https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/"
+    );
+  }
+});
+
+test("GPT-6 Luna and Sol cards retain native routes and verified model pricing", () => {
+  const bundledDefinitions = listPricingDefinitions();
+  for (const id of ["gpt-6-luna", "gpt-6-sol"]) {
+    const definition = bundledDefinitions.find((entry) => entry.id === id);
+    assert.ok(definition, `${id}: bundled card`);
+    assert.equal(definition.modelVersion, "2026-09-22");
+    assert.equal(definition.status, "ga");
+    assert.deepEqual(definition.interfaces, ["chat/completions", "responses"]);
+    assert.equal(definition.defaultInterface, "responses");
+    assert.deepEqual(definition.inputModalities, ["text", "image"]);
+    assert.deepEqual(definition.outputModalities, ["text"]);
+    assert.deepEqual(definition.protocolProfiles["chat/completions"].reasoning.levels,
+      ["none", "low", "medium", "high", "xhigh"]);
+    assert.deepEqual(definition.protocolProfiles.responses.reasoning.levels,
+      ["none", "low", "medium", "high", "xhigh", "max"]);
+    assert.equal(definition.proxyTemplate.targetModel, id);
+    assert.equal(definition.proxyTemplate.pricingRef, id);
+    assert.deepEqual(definition.proxyTemplate.routes, {});
+
+    const model = { ...definition.proxyTemplate, upstream: "azure" };
+    const snapshot = compileModelCatalog({ upstreams: config.upstreams, models: [model] }, bundledDefinitions);
+    const descriptor = resolveModelDescriptor(id, snapshot);
+    for (const routeKey of definition.interfaces) {
+      const plan = resolveRoutePlan({ routeKey, model, upstream: config.upstreams[0], descriptor });
+      assert.equal(plan.backendRouteKey, routeKey);
+      assert.equal(plan.targetUrl, `https://example.openai.azure.com/openai/v1/${routeKey}`);
+    }
+  }
+});
+
+test("GPT-5.6 Standard cards match the supplied short/long cache-write price table", () => {
+  const definitionsById = new Map(listPricingDefinitions().map((entry) => [entry.id, entry]));
+  const priceFields = ["inputPer1mTokens", "cachedInputPer1mTokens", "cacheWritePer1mTokens", "outputPer1mTokens"];
+  for (const [id, expected] of [
+    ["gpt-5.6-sol", [[4, 0.4, 5, 20], [8, 0.8, 10, 30]]],
+    ["gpt-5.6-terra", [[2, 0.2, 2.5, 12], [4, 0.4, 5, 18]]],
+    ["gpt-5.6-luna", [[0.2, 0.02, 0.25, 1.2], [0.4, 0.04, 0.5, 1.8]]]
+  ]) {
+    const definition = definitionsById.get(id);
+    assert.deepEqual(priceFields.map((field) => definition.pricing.tiers[0][field]), expected[0], id);
+    for (const pricing of [definition.pricing, definition.pricingCatalogEntry]) {
+      assert.deepEqual(pricing.tiering, { basis: "inputTokensIncludingCache", method: "whole-request" });
+      assert.deepEqual(pricing.tiers.map((tier) => priceFields.map((field) => tier[field])), expected, id);
+      assert.equal(pricing.tiers[0].promptTokensBelow, 272001);
+      assert.equal(pricing.tiers[1].promptTokensAtLeast, 272001);
+    }
   }
 });
 

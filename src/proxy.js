@@ -2,7 +2,7 @@ import { getUpstreamAuthHeaders } from "./auth.js";
 import { appendStructuredLog, buildContentLogSnapshot, resolveLogContentMode } from "./logs.js";
 import { recordError, recordRequest, recordUsage } from "./stats.js";
 import { recordRuntimeError, recordRuntimeRequest, recordRuntimeUsage } from "./runtime-store.js";
-import { resolveModelDescriptor } from "./model-catalog.js";
+import { getModelCatalogPricingContext, resolveModelDescriptor } from "./model-catalog.js";
 import {
   findUpstream,
   findModel,
@@ -505,6 +505,7 @@ export async function proxyRequest({
     return;
   }
   const modelDescriptor = resolveModelDescriptor(modelId);
+  const pricingContext = getModelCatalogPricingContext();
 
   body = isNativeUtilityRequest
     ? { ...body, model: modelId }
@@ -1148,7 +1149,10 @@ export async function proxyRequest({
       requestId,
       routeKey,
       backendRouteKey,
-      modelDescriptor
+      modelDescriptor,
+      pricingContext,
+      usageEstimated,
+      usageComplete: metadata.complete !== false
     });
     recordUsage(model.id, usage, {
       keyId: consumer?.keyId,
@@ -1176,7 +1180,11 @@ export async function proxyRequest({
       source: "proxy",
       usageSource,
       usageEstimated,
-      usageEstimationReason
+      usageEstimationReason,
+      costStatus: cost.costStatus,
+      costReason: cost.costReason,
+      cacheWrite: cost.cacheWrite,
+      pricing: cost.pricing
     });
     emitInfoLog({
       ...requestContext,
@@ -1198,6 +1206,10 @@ export async function proxyRequest({
       modelRouterCostAmount: cost?.modelRouterCostAmount,
       actualModelCostAmount: cost?.actualModelCostAmount,
       currency: cost?.currency,
+      costStatus: cost.costStatus,
+      costReason: cost.costReason,
+      cacheWrite: cost.cacheWrite,
+      pricing: cost.pricing,
       message: usageEstimated ? "proxy usage estimated locally" : "proxy usage recorded"
     });
   };
@@ -2165,7 +2177,7 @@ export async function proxyRequest({
         reply.code(200).send(mapped);
         deferPostResponse(() => {
           noteResolvedUpstreamModel(payload?.model || mapped?.model);
-          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          if (payload?.usage) recordProxyUsage(payload.usage, payload?.model || mapped?.model);
           emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
         });
         finishTiming({
@@ -2180,7 +2192,7 @@ export async function proxyRequest({
         reply.code(200).send(mapped);
         deferPostResponse(() => {
           noteResolvedUpstreamModel(payload?.model || mapped?.model);
-          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          if (payload?.usage) recordProxyUsage(payload.usage, payload?.model || mapped?.model);
           emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
         });
         finishTiming({
@@ -2195,7 +2207,7 @@ export async function proxyRequest({
         reply.code(200).send(mapped);
         deferPostResponse(() => {
           noteResolvedUpstreamModel(payload?.model || mapped?.model);
-          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          if (payload?.usage) recordProxyUsage(payload.usage, payload?.model || mapped?.model);
           emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
         });
         finishTiming({ status: 200, outcome: "success", source: "proxy" });
@@ -2209,7 +2221,7 @@ export async function proxyRequest({
         reply.code(200).send(mapped);
         deferPostResponse(() => {
           noteResolvedUpstreamModel(payload?.model || mapped?.model);
-          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          if (payload?.usage) recordProxyUsage(payload.usage, payload?.model || mapped?.model);
           emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
         });
         finishTiming({ status: 200, outcome: "success", source: "proxy" });
@@ -2220,7 +2232,7 @@ export async function proxyRequest({
         reply.code(200).send(mapped);
         deferPostResponse(() => {
           noteResolvedUpstreamModel(payload?.model || mapped?.model);
-          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          if (payload?.usage) recordProxyUsage(payload.usage, payload?.model || mapped?.model);
           emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
         });
         finishTiming({ status: 200, outcome: "success", source: "proxy" });
@@ -2231,7 +2243,7 @@ export async function proxyRequest({
         reply.code(200).send(mapped);
         deferPostResponse(() => {
           noteResolvedUpstreamModel(payload?.model || mapped?.model);
-          if (mapped?.usage) recordProxyUsage(mapped.usage, payload?.model || mapped?.model);
+          if (payload?.usage) recordProxyUsage(payload.usage, payload?.model || mapped?.model);
           emitRequestCompleted({ responsePayload: mapped, status: 200, attempt: fetchResult.attempt });
         });
         finishTiming({ status: 200, outcome: "success", source: "proxy" });

@@ -109,6 +109,9 @@ test("structured logs apply configured privacy controls", () => {
     keyId: "customer-key",
     headers: { "x-label": "visible" },
     promptTokens: 100,
+    costStatus: "priced",
+    costReason: "tier selected",
+    pricing: { actual: { tier: { id: "long", promptTokensAtLeast: 200000 } } },
     prompt: "private prompt text",
     imageBase64: "YWJjZGVmZ2hp"
   });
@@ -119,8 +122,32 @@ test("structured logs apply configured privacy controls", () => {
   assert.equal(entry.fields.keyId, "[REDACTED]");
   assert.equal(entry.fields.headers, "[OMITTED]");
   assert.equal("promptTokens" in entry.fields, false);
+  assert.equal("pricing" in entry.fields, false);
+  assert.equal("costStatus" in entry.fields, false);
+  assert.equal("costReason" in entry.fields, false);
   assert.equal(entry.fields.prompt, "[OMITTED]");
   assert.equal(entry.fields.imageBase64, "[BINARY_OMITTED chars=12]");
+});
+
+test("cache-write logging preserves observed zero and unknown costs, and usage privacy removes nested dimensions", () => {
+  const cacheWrite = { tokens: 0, usageStatus: "observed", knownCostAmount: 0, estimatedCostAmount: 0, costStatus: "priced" };
+  const unknown = { tokens: null, usageStatus: "unknown", knownCostAmount: 0, estimatedCostAmount: null, costStatus: "unknown" };
+  configureLogs({ includeUsage: true });
+  appendStructuredLog("info", { event: "test.cache-write.visible", cacheWrite, nested: { cacheWrite: unknown } });
+  const visible = queryLogs({ event: "test.cache-write.visible" }).items[0];
+  assert.deepEqual(visible.fields.cacheWrite, cacheWrite);
+  assert.deepEqual(visible.fields.nested.cacheWrite, unknown);
+
+  configureLogs({ includeUsage: false });
+  appendStructuredLog("info", {
+    event: "test.cache-write.private",
+    cacheWrite,
+    nested: { cacheWrite: unknown, audit: { cache_write: cacheWrite } }
+  });
+  const hidden = queryLogs({ event: "test.cache-write.private" }).items[0];
+  assert.equal("cacheWrite" in hidden.fields, false);
+  assert.equal("cacheWrite" in hidden.fields.nested, false);
+  assert.equal("cache_write" in hidden.fields.nested.audit, false);
 });
 
 test("content snapshots provide bounded partial previews with permanent redaction", () => {

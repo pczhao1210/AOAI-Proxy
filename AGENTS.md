@@ -47,6 +47,17 @@
 - Admin forms use `updateConfig`/`updateField` and [shared path helpers](admin-ui/src/utils.js); preserve hidden settings and numeric zeros. Add UI text to both dictionaries in [i18n.jsx](admin-ui/src/i18n.jsx).
 - Use [api.js](admin-ui/src/api.js) for custom admin paths and the `x-aoai-admin-csrf` mutation header. Preserve [secret redaction/restoration](src/admin-config.js) so masked round trips do not overwrite credentials.
 
+## Model Card Authoring
+
+- Keep each active `pricing/*.json` self-contained; do not add family inheritance, cross-file references, or generated duplicates. Leave `pricing/archive/` unchanged unless explicitly updating an archived model.
+- Store each token price once using canonical `*Per1mTokens` fields. Flat rates belong in `pricing`; whole-request rates belong only in `pricing.tiers`, with explicit `tiering`, contiguous integer bounds and independent rates per tier. Do not repeat the short tier at the root or add per-thousand copies. Keep media channel/hosting rates and non-token units distinct.
+- Omit `pricingCatalogEntry` when it would duplicate `pricing`. Missing means use `pricing`; explicit `null` disables automatic text pricing and must not be removed. Keep a non-null entry only for a deliberate pricing override. Missing rates are not zero.
+- `proxyTemplate: {}` opts into a template using the root `id`, `displayName` and `capabilities`; `targetModel` and `pricingRef` default to the root `id`. Store only differing fields such as deployment IDs and route overrides. Missing or `null` templates remain disabled; do not replace them with `{}`. Explicit empty arrays and transport routes are not disposable defaults.
+- Use the shared [model-card defaults](src/model-card.js) in backend/admin consumers. Preserve legacy cards and config overrides; do not add another price/template fallback implementation.
+- Keep independently sourced limits, protocol-specific parameter paths, hosting facts, evidence URLs, and provider/policy exceptions. Equal URLs may substantiate different facts; do not replace them with implicit references. New notes should explain caveats/provenance rather than duplicate structured prices or generic runtime behavior.
+- Use two-space JSON, stable field ordering and compact short scalar arrays through `npm run cards:format`; `npm run cards:check` must pass. The tool operates on active cards only. Validate defaults/import/sync with `node --test test/model-card-format.test.js test/model-catalog.test.js test/pricing-sync.test.js` and pricing/route tests when changing semantics.
+- Deploy the compact-card-aware runtime/admin before syncing compact cards to an older deployment. Existing persisted cards and explicit pricing overrides still take precedence; formatting does not migrate live configuration.
+
 ## Validation
 
 Run from the repository root with Node.js 24 (the [Dockerfile](Dockerfile) default). Backend code/tests use ES modules; commands come from [package.json](package.json).

@@ -12,24 +12,10 @@
   "interfacesByHostingMode": {
     "anthropic": ["messages"]
   },
-  "interfaces": [
-    "messages"
-  ],
-  "inputModalities": [
-    "text",
-    "image",
-    "code"
-  ],
-  "outputModalities": [
-    "text",
-    "image",
-    "code"
-  ],
-  "capabilities": [
-    "reasoning",
-    "vision",
-    "function-calling"
-  ],
+  "interfaces": ["messages"],
+  "inputModalities": ["text", "image", "code"],
+  "outputModalities": ["text", "image", "code"],
+  "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "messages": {
       "thinking": {
@@ -52,28 +38,9 @@
     "status": "published",
     "inputPer1mTokens": 10,
     "cachedInputPer1mTokens": 1,
-    "outputPer1mTokens": 50,
-    "inputPer1kTokens": 0.01,
-    "cachedInputPer1kTokens": 0.001,
-    "outputPer1kTokens": 0.05
+    "outputPer1mTokens": 50
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.01,
-    "cachedInputPer1kTokens": 0.001,
-    "outputPer1kTokens": 0.05
-  },
-  "proxyTemplate": {
-    "id": "claude-fable-5",
-    "displayName": "Claude Fable 5",
-    "targetModel": "claude-fable-5",
-    "capabilities": [
-      "reasoning",
-      "vision",
-      "function-calling"
-    ],
-    "pricingRef": "claude-fable-5"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-from-partners",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",

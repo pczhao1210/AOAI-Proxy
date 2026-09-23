@@ -3,6 +3,8 @@ import { resolveModelDescriptor } from "./model-catalog.js";
 import { findPricingDefinitionForModel } from "./pricing-library.js";
 import { hydrateGovernanceRuntime, recordRuntimeBlocked, recordRuntimeWarning } from "./runtime-store.js";
 import { getUsageTotals } from "./usage.js";
+import { compileDefinitionPricing, resolveConfiguredPricing } from "./pricing-policy.js";
+import { calculateTokenCost } from "./token-pricing.js";
 
 const governanceState = {
   perKey: new Map()
@@ -93,6 +95,7 @@ function buildBudgetWindow(settings, now) {
     totalTokens: 0,
     cachedTokens: 0,
     spentAmount: 0,
+    textUnknownCostRequests: 0,
     blockedRequests: 0,
     softLimitReached: false,
     softLimitReachedAt: "",
@@ -150,6 +153,7 @@ async function hydrateRuntimeStateIfNeeded(config, consumer, runtime, rateLimitS
         runtime.rateWindow.blockedRequests = toNonNegativeInteger(persisted.rate_blocked_requests, runtime.rateWindow.blockedRequests);
         runtime.budgetWindow.requests = toNonNegativeInteger(persisted.budget_requests, runtime.budgetWindow.requests);
         runtime.budgetWindow.mediaUnknownCostRequests = toNonNegativeInteger(persisted.budget_media_unknown_cost_requests, runtime.budgetWindow.mediaUnknownCostRequests || 0);
+        runtime.budgetWindow.textUnknownCostRequests = toNonNegativeInteger(persisted.budget_text_unknown_cost_requests, runtime.budgetWindow.textUnknownCostRequests || 0);
         runtime.budgetWindow.promptTokens = toNonNegativeInteger(persisted.budget_prompt_tokens, runtime.budgetWindow.promptTokens);
         runtime.budgetWindow.completionTokens = toNonNegativeInteger(persisted.budget_completion_tokens, runtime.budgetWindow.completionTokens);
         runtime.budgetWindow.totalTokens = toNonNegativeInteger(persisted.budget_total_tokens, runtime.budgetWindow.totalTokens);
@@ -218,22 +222,6 @@ function resetBudgetWindowIfNeeded(runtime, settings, now) {
   }
 }
 
-function normalizePricingEntry(entry, defaultCurrency) {
-  if (!entry || typeof entry !== "object") return null;
-  const inputPer1kTokens = Math.max(0, toFiniteNumber(entry.inputPer1kTokens ?? entry.promptPer1kTokens, 0));
-  const outputPer1kTokens = Math.max(0, toFiniteNumber(entry.outputPer1kTokens ?? entry.completionPer1kTokens, 0));
-  const cachedInputPer1kTokens = Math.max(0, toFiniteNumber(entry.cachedInputPer1kTokens ?? entry.cachedPromptPer1kTokens, 0));
-  if (inputPer1kTokens <= 0 && outputPer1kTokens <= 0 && cachedInputPer1kTokens <= 0) {
-    return null;
-  }
-  return {
-    currency: "USD",
-    inputPer1kTokens,
-    outputPer1kTokens,
-    cachedInputPer1kTokens
-  };
-}
-
 function normalizeLookupCandidates(value) {
   const normalized = String(value || "").trim();
   if (!normalized) return [];
@@ -269,6 +257,9 @@ function resolvePricingModel(config, model, actualModelName) {
     : null;
 
   for (const candidate of candidates) {
+    if (!modelRouterRequest && matchesPricingCandidate(model, candidate)) {
+      return { model, actualModelName: candidate };
+    }
     const configuredModel = configuredModels.find((item) => matchesPricingCandidate(item, candidate));
     if (configuredModel) {
       return {
@@ -294,98 +285,83 @@ function resolvePricingModel(config, model, actualModelName) {
   };
 }
 
-function resolvePricing(config, model, descriptor = null) {
-  const defaultCurrency = "USD";
-  const directPricing = normalizePricingEntry(model?.pricing, defaultCurrency);
-  if (directPricing) {
-    return { pricing: directPricing, source: "model.pricing" };
-  }
-  const pricingRef = typeof model?.pricingRef === "string" ? model.pricingRef.trim() : "";
-  const catalog = config?.access?.pricingCatalog;
-  if (pricingRef && catalog && typeof catalog === "object") {
-    const resolved = normalizePricingEntry(catalog[pricingRef], defaultCurrency);
-    if (resolved) {
-      return { pricing: resolved, source: `access.pricingCatalog.${pricingRef}` };
-    }
-  }
-  const libraryDefinition = descriptor?.definition || findPricingDefinitionForModel(model);
-  if (libraryDefinition) {
-    const libraryPricing = Object.prototype.hasOwnProperty.call(libraryDefinition, "pricingCatalogEntry")
-      ? libraryDefinition.pricingCatalogEntry
-      : libraryDefinition.pricing;
-    const resolved = normalizePricingEntry(
-      libraryPricing,
-      defaultCurrency
-    );
-    if (resolved) {
-      return { pricing: resolved, source: `pricing-library.${libraryDefinition.id}` };
-    }
-  }
-  return { pricing: null, source: "" };
+function resolvePricing(config, model, descriptor = null, context = null) {
+  if (context) return context.resolve(model);
+  return resolveConfiguredPricing(config, model, () => {
+    const definition = descriptor?.definition || findPricingDefinitionForModel(model);
+    return definition ? compileDefinitionPricing(definition) : { pricing: null, source: "", policyDigest: "" };
+  });
 }
 
 function isModelRouterRequest(model) {
   return matchesPricingCandidate(model, "model-router");
 }
 
-function estimateUsageCost(config, model, usage, actualModelName, descriptor = null) {
+function estimateUsageCost(config, model, usage, actualModelName, metadata = {}) {
   const totals = getUsageTotals(usage);
-  const defaultCurrency = "USD";
+  const context = metadata.pricingContext;
+  const pricingConfig = context?.config || config;
+  const capturedModel = pricingConfig.models?.find((item) => item.id === model?.id) || model;
   const modelRouterRequest = isModelRouterRequest(model);
-  const pricingModelResolution = resolvePricingModel(config, model, actualModelName);
+  const pricingModelResolution = resolvePricingModel(pricingConfig, capturedModel, actualModelName);
   const actualModelResolved = pricingModelResolution.actualModelName
     && !matchesPricingCandidate(model, pricingModelResolution.actualModelName);
-
-  let actualModelCostAmount = 0;
-  let actualModelCostCurrency = defaultCurrency;
+  const options = {
+    backendProtocol: metadata.backendRouteKey,
+    estimated: metadata.usageEstimated === true
+  };
+  const unknown = { ...calculateTokenCost(null, usage, options), reason: "actual model pricing unavailable" };
+  let actualCost = unknown;
+  let actualAudit = null;
   let actualSource = "";
   if (!modelRouterRequest || actualModelResolved) {
-    const pricingDescriptor = pricingModelResolution.model === model
-      ? descriptor
+    const pricingDescriptor = pricingModelResolution.model === capturedModel
+      ? metadata.modelDescriptor
       : resolveModelDescriptor(pricingModelResolution.model?.id);
-    const { pricing, source } = resolvePricing(config, pricingModelResolution.model, pricingDescriptor);
-    if (pricing) {
-      const billablePromptTokens = Math.max(0, totals.promptTokens - totals.cachedTokens);
-      actualModelCostAmount =
-        (billablePromptTokens / 1000) * pricing.inputPer1kTokens
-        + (totals.cachedTokens / 1000) * pricing.cachedInputPer1kTokens
-        + (totals.completionTokens / 1000) * pricing.outputPer1kTokens;
-      actualModelCostCurrency = pricing.currency || defaultCurrency;
-      actualSource = source;
-    }
+    const resolution = resolvePricing(pricingConfig, pricingModelResolution.model, pricingDescriptor, context);
+    actualCost = calculateTokenCost(resolution.pricing, usage, options);
+    actualSource = resolution.pricing ? resolution.source : "";
+    actualAudit = { source: resolution.source, policyDigest: resolution.policyDigest, tier: actualCost.tier };
   }
 
-  let modelRouterCostAmount = 0;
-  let modelRouterCostCurrency = defaultCurrency;
+  let routerCost = null;
+  let routerAudit = null;
   let modelRouterSource = "";
   if (modelRouterRequest) {
-    const { pricing, source } = resolvePricing(config, {
-      ...model,
-      pricingRef: typeof model?.pricingRef === "string" && model.pricingRef.trim() ? model.pricingRef : "model-router"
-    }, descriptor);
-    if (pricing) {
-      modelRouterCostAmount = (totals.promptTokens / 1000) * pricing.inputPer1kTokens;
-      modelRouterCostCurrency = pricing.currency || defaultCurrency;
-      modelRouterSource = source;
-    }
+    const resolution = resolvePricing(pricingConfig, {
+      ...capturedModel,
+      pricingRef: capturedModel?.pricingRef?.trim() || "model-router"
+    }, metadata.modelDescriptor, context);
+    routerCost = calculateTokenCost(resolution.pricing, usage, { ...options, inputOnly: true });
+    modelRouterSource = resolution.pricing ? resolution.source : "";
+    routerAudit = { source: resolution.source, policyDigest: resolution.policyDigest, tier: routerCost.tier };
   }
 
+  const actualModelCostAmount = actualCost.amount;
+  const modelRouterCostAmount = routerCost?.amount || 0;
   const amount = actualModelCostAmount + modelRouterCostAmount;
-  const currency = actualModelCostAmount > 0
-    ? actualModelCostCurrency
-    : (modelRouterCostAmount > 0 ? modelRouterCostCurrency : defaultCurrency);
+  const parts = [actualCost, ...(routerCost ? [routerCost] : [])];
+  const complete = metadata.usageComplete !== false && parts.every((part) => part.costStatus === "priced");
+  const costStatus = complete ? "priced" : parts.some((part) => part.costStatus !== "unknown") ? "partial" : "unknown";
+  const costReason = [metadata.usageComplete === false ? "upstream usage incomplete" : "",
+    ...parts.map((part) => part.reason)].filter(Boolean).join("; ");
   return {
-    configured: modelRouterRequest ? !!(modelRouterSource && actualSource) : amount > 0,
+    configured: complete,
     amount,
-    currency,
+    estimatedCostAmount: complete ? amount : null,
+    costStatus,
+    costReason,
+    cacheWrite: actualCost.cacheWrite,
+    pricing: { actual: actualAudit, router: routerAudit },
+    currency: "USD",
     source: [modelRouterSource ? `model-router:${modelRouterSource}` : "", actualSource ? `actual:${actualSource}` : ""]
       .filter(Boolean)
       .join(" + "),
     actualModelName: pricingModelResolution.actualModelName,
     modelRouterCostAmount,
-    modelRouterCostCurrency,
+    modelRouterCostCurrency: "USD",
     actualModelCostAmount,
-    actualModelCostCurrency,
+    actualModelCostCurrency: "USD",
     ...totals
   };
 }
@@ -661,6 +637,11 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
       amount: 0,
       currency: "USD",
       source: "",
+      costStatus: "unknown",
+      costReason: "usage or consumer unavailable",
+      estimatedCostAmount: null,
+      cacheWrite: calculateTokenCost(null, usage, { backendProtocol: metadata.backendRouteKey }).cacheWrite,
+      pricing: { actual: null, router: null },
       actualModelName: String(actualModelName || ""),
       ...getUsageTotals(usage)
     };
@@ -671,7 +652,7 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
   resetRateWindowIfNeeded(runtime, rateLimitSettings, now);
   resetBudgetWindowIfNeeded(runtime, budgetSettings, now);
 
-  const usageCost = estimateUsageCost(config, model, usage, actualModelName, metadata.modelDescriptor);
+  const usageCost = estimateUsageCost(config, model, usage, actualModelName, metadata);
   runtime.lastSeenAt = toIsoString(now);
   runtime.rateWindow.promptTokens += usageCost.promptTokens;
   runtime.rateWindow.completionTokens += usageCost.completionTokens;
@@ -684,6 +665,17 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
   runtime.budgetWindow.totalTokens += usageCost.totalTokens;
   runtime.budgetWindow.cachedTokens += usageCost.cachedTokens;
   runtime.budgetWindow.spentAmount += usageCost.amount;
+  if (usageCost.costStatus !== "priced") {
+    runtime.budgetWindow.textUnknownCostRequests += 1;
+    appendStructuredLog("warn", {
+      source: "governance",
+      event: "governance.text_cost_incomplete",
+      requestId: String(metadata.requestId || ""),
+      modelId: model?.id || "",
+      costStatus: usageCost.costStatus,
+      failureReason: usageCost.costReason
+    });
+  }
 
   if (budgetSettings.enabled && budgetSettings.limitAmount > 0 && !usageCost.configured && !runtime.budgetWindow.unmeteredWarningAt) {
     runtime.budgetWindow.unmeteredWarningAt = toIsoString(now);
@@ -695,7 +687,7 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
       actualModelName: usageCost.actualModelName || actualModelName || "",
       routeKey: String(metadata.routeKey || ""),
       backendRouteKey: String(metadata.backendRouteKey || ""),
-      failureReason: "budget enabled but pricing could not be resolved",
+      failureReason: usageCost.costReason || "budget enabled but pricing could not be resolved",
       currency: budgetSettings.currency,
       limitAmount: budgetSettings.limitAmount
     });

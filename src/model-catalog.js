@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { listArchivedPricingDefinitions, listPricingDefinitions, normalizeModelTokenLimits } from "./pricing-library.js";
+import { createPricingContext } from "./pricing-policy.js";
 
 const TEXT_PROTOCOLS = new Set(["chat/completions", "responses", "messages"]);
 const DEFAULT_PROTOCOL_PROFILES = Object.freeze({
@@ -233,9 +234,9 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
     ? definitions.map((definition) => freezeJson(cloneJson(definition)))
     : [];
   const indexes = indexDefinitions(normalizedDefinitions);
-  const archivedIndexes = indexDefinitions(
-    listArchivedPricingDefinitions().map((definition) => freezeJson(cloneJson(definition)))
-  );
+  const archivedDefinitions = listArchivedPricingDefinitions().map((definition) => freezeJson(cloneJson(definition)));
+  const archivedIndexes = indexDefinitions(archivedDefinitions);
+  const pricingContext = createPricingContext(config, [...normalizedDefinitions, ...archivedDefinitions]);
   for (const definition of normalizedDefinitions) validateProxyAdapters(definition);
   const upstreamsByName = new Map(
     (config?.upstreams || []).filter((upstream) => upstream?.name).map((upstream) => [upstream.name, upstream])
@@ -261,6 +262,7 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
     definitionCount: normalizedDefinitions.length,
     modelCount: descriptors.length,
     routeInterfaces,
+    pricingContext,
     modelsByPublicId,
     modelsByAlias,
     descriptors: Object.freeze(descriptors)
@@ -271,9 +273,14 @@ export function installModelCatalogSnapshot(snapshot) {
   if (!snapshot || !(snapshot.modelsByPublicId instanceof Map)) {
     throw new Error("Invalid Model Catalog snapshot");
   }
+
   installedSnapshot = snapshot;
   catalogGeneration = snapshot.generation;
   return snapshot;
+}
+
+export function getModelCatalogPricingContext() {
+  return installedSnapshot?.pricingContext || null;
 }
 
 export function refreshModelCatalog(config, definitions) {

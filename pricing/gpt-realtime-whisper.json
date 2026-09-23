@@ -5,21 +5,10 @@
   "family": "gpt-realtime",
   "modelVersion": null,
   "status": "ga",
-  "interfaces": [
-    "realtime/transcription_sessions"
-  ],
-  "inputModalities": [
-    "audio"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "realtime",
-    "transcription",
-    "speech-to-text",
-    "streaming"
-  ],
+  "interfaces": ["realtime/transcription_sessions"],
+  "inputModalities": ["audio"],
+  "outputModalities": ["text"],
+  "capabilities": ["realtime", "transcription", "speech-to-text", "streaming"],
   "pricing": {
     "currency": "USD",
     "billingUnit": "minute",
@@ -30,11 +19,9 @@
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "gpt-realtime-whisper",
-    "targetModel": "gpt-realtime-whisper",
-    "pricingRef": "gpt-realtime-whisper",
-    "capabilities": ["realtime", "transcription", "speech-to-text", "streaming"],
-    "routes": { "realtime/transcription_sessions": "realtime/transcription_sessions" }
+    "routes": {
+      "realtime/transcription_sessions": "realtime/transcription_sessions"
+    }
   },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-whisper",

@@ -46,6 +46,8 @@ import {
   ensureUniqueName,
   formatDateTime,
   formatBytes,
+  formatCacheWriteCost,
+  formatCacheWriteTokens,
   formatEstimatedCost,
   getSuggestedModelRouteValues,
   getPayloadEditorNote,
@@ -1093,6 +1095,8 @@ export default function App() {
       requests: totals.requests || 0,
       errors: totals.errors || 0,
       cost: formatEstimatedCost(totals, t),
+      cacheWriteTokens: formatCacheWriteTokens(totals.cacheWrite, t),
+      cacheWriteCost: formatCacheWriteCost(totals.cacheWrite, t),
       blocked,
       persistence: runtime?.persistence?.activeMode || runtime?.persistence?.mode || "file",
       logging: statusLabel(
@@ -1291,7 +1295,7 @@ export default function App() {
 
       <section className="summary-grid status-strip" aria-label={t("summary.title", "System status") }>
         <StatCard label={t("summary.requests", "Requests")} value={summary.requests} note={`${t("summary.errors", "Errors")} ${summary.errors}`} />
-        <StatCard label={t("summary.cost", "Estimated Cost")} value={summary.cost} note={`${t("summary.blocked", "Blocked")} ${summary.blocked}`} />
+        <StatCard label={t("summary.cost", "Estimated Cost")} value={summary.cost} note={`${t("summary.blocked", "Blocked")} ${summary.blocked} · ${t("table.cacheWriteTokens", "Cache Write Tokens")} ${summary.cacheWriteTokens} · ${t("table.cacheWriteCost", "Cache Write Cost (included)")} ${summary.cacheWriteCost}`} />
         <StatCard label={t("summary.persistence", "Persistence")} value={t(`option.${summary.persistence}`, summary.persistence)} note={`${t("summary.logging", "Logging")} ${t(`status.${summary.logging}`, summary.logging)}`} />
         <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : t("summary.synced", "Synced")} />
       </section>

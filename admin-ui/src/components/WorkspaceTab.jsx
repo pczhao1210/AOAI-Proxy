@@ -135,7 +135,7 @@ export default function WorkspaceTab({
               <label><input type="checkbox" checked={getValueByPath(config, "access.budgets.enabled") === true} disabled={!budgetsAvailable} onChange={(event) => updateField("access.budgets.enabled", event.target.checked)} /> {t("field.enableBudget", "Enable Budgets")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "admin.features.enableLegacyJsonEditor") !== false} onChange={(event) => updateField("admin.features.enableLegacyJsonEditor", event.target.checked)} /> {t("field.enableAdvancedJson", "Enable Advanced JSON Editor")}</label>
             </div>
-            <Field label={t("field.pricingCatalog", "Pricing Catalog")} hint={t("field.pricingCatalogHint", "JSON object. Without pricing data, only tokens are counted and amount remains zero.")}>
+            <Field label={t("field.pricingCatalog", "Pricing Catalog")} hint={t("field.pricingCatalogHint", "JSON object. Token rates use USD per million tokens. Set cacheWritePer1mTokens for cache writes; tiers must declare their own write rates, without inheriting base rates. Writes are part of input tokens and their cost is already included in totals. Missing prices or usage mean unknown or partial cost, not free; known subtotals still count toward budgets.")}>
               <textarea rows={8} value={pricingCatalogText} onChange={(event) => updatePricingCatalog(event.target.value)} />
             </Field>
             {pricingCatalogError ? <div className="inline-error">{pricingCatalogError}</div> : null}

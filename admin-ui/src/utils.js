@@ -1,9 +1,43 @@
+import { getModelCardPricing } from "../../src/model-card.js";
+
 export const REDACTED_SECRET_VALUE = "__AOAI_PROXY_REDACTED__";
 
-export function formatEstimatedCost(stats = {}, t = (_key, fallback) => fallback) {
-  const parts = [`${Number(stats.estimatedCostAmount || 0).toFixed(4)} USD`];
-  if (stats.media?.unknownCostRequests > 0) parts.push(t("runtime.costUnknown", "Unknown"));
+export function formatEstimatedCost(stats = {}, t = (_key, fallback) => fallback, currency = "USD") {
+  const amount = Number(stats.estimatedCostAmount ?? stats.knownCostAmount ?? stats.amount ?? 0);
+  const textIncomplete = stats.textUnknownCostRequests > 0
+    || (stats.pricing && ["partial", "unknown"].includes(stats.costStatus));
+  const parts = textIncomplete && amount === 0 ? [] : [`${amount.toFixed(4)} ${currency || "USD"}`];
+  if (textIncomplete || stats.media?.unknownCostRequests > 0) parts.push(t("runtime.costUnknown", "Unknown"));
   return parts.join(" + ");
+}
+
+export function formatBudgetCost(window = {}, budget = {}, t = (_key, fallback) => fallback) {
+  const currency = budget.currency || "USD";
+  const limit = Number(budget.limitAmount || 0);
+  const amount = Number(window.spentAmount || 0);
+  if (window.textUnknownCostRequests > 0) {
+    const cost = formatEstimatedCost({ estimatedCostAmount: amount, textUnknownCostRequests: window.textUnknownCostRequests }, t, currency);
+    return limit > 0 ? `${cost} / ${limit.toFixed(2)} ${currency}` : cost;
+  }
+  return limit > 0 ? `${amount.toFixed(4)} / ${limit.toFixed(2)} ${currency}` : `${amount.toFixed(4)} ${currency}`;
+}
+
+export function formatCacheWriteTokens(cacheWrite, t = (_key, fallback) => fallback) {
+  if (!cacheWrite || cacheWrite.requests === 0) return t("runtime.notReported", "Not reported");
+  if (Number.isInteger(cacheWrite.tokens) && cacheWrite.tokens >= 0) return String(cacheWrite.tokens);
+  const unknown = t("runtime.usageUnknown", "Unknown");
+  return cacheWrite.observedRequests > 0 && Number.isInteger(cacheWrite.observedTokens)
+    ? `${cacheWrite.observedTokens} + ${unknown}` : unknown;
+}
+
+export function formatCacheWriteCost(cacheWrite, t = (_key, fallback) => fallback) {
+  if (!cacheWrite || cacheWrite.requests === 0) return t("runtime.notReported", "Not reported");
+  if (cacheWrite.costStatus === "priced" && Number.isFinite(cacheWrite.estimatedCostAmount)) {
+    return `${cacheWrite.estimatedCostAmount.toFixed(4)} USD`;
+  }
+  const unknown = t("runtime.costUnknown", "Unknown");
+  return Number.isFinite(cacheWrite.knownCostAmount) && (cacheWrite.knownCostAmount > 0 || cacheWrite.costStatus === "partial")
+    ? `${cacheWrite.knownCostAmount.toFixed(4)} USD + ${unknown}` : unknown;
 }
 
 export const DEFAULT_KEY_TEMPLATE = {
@@ -300,11 +334,13 @@ export function applyPricingTemplateToModel(config, model, definition) {
 
 export function upsertPricingCatalogEntry(config, definition) {
   const pricingRef = String(definition?.proxyTemplate?.pricingRef || definition?.id || "").trim();
-  if (!pricingRef || !definition?.pricingCatalogEntry) return;
+  if (!pricingRef) return;
+  const pricing = getModelCardPricing(definition);
+  if (!pricing) return;
 
   config.access = asPlainObject(config.access);
   config.access.pricingCatalog = asPlainObject(config.access.pricingCatalog);
-  config.access.pricingCatalog[pricingRef] = cloneJson(definition.pricingCatalogEntry);
+  config.access.pricingCatalog[pricingRef] = cloneJson(pricing);
 }
 
 export function syncUpstreamCapabilities(config, upstreamName) {

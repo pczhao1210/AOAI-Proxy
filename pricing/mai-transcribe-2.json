@@ -8,19 +8,23 @@
   "defaultHostingMode": "azure",
   "interfaces": ["audio/transcriptions"],
   "defaultInterface": "audio/transcriptions",
-  "proxyAdapters": { "responses": "azure-speech-transcribe" },
   "inputModalities": ["audio"],
   "outputModalities": ["text"],
   "capabilities": ["speech-to-text", "transcription", "speaker-diarization"],
-  "pricing": { "currency": "USD", "sourceType": "azure-official", "status": "unavailable" },
+  "proxyAdapters": {
+    "responses": "azure-speech-transcribe"
+  },
+  "pricing": {
+    "currency": "USD",
+    "sourceType": "azure-official",
+    "status": "unavailable"
+  },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "mai-transcribe-2",
-    "displayName": "MAI-Transcribe-2",
     "targetModel": "MAI-Transcribe-2",
-    "capabilities": ["speech-to-text", "transcription", "speaker-diarization"],
-    "pricingRef": "mai-transcribe-2",
-    "routes": { "audio/transcriptions": "azure-speech-transcribe" }
+    "routes": {
+      "audio/transcriptions": "azure-speech-transcribe"
+    }
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/ai-services/speech-service/mai-transcribe",

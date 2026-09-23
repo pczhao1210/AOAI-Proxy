@@ -1,0 +1,58 @@
+{
+  "id": "claude-opus-5-5",
+  "displayName": "Claude Opus 5.5",
+  "provider": "anthropic",
+  "family": "claude-5",
+  "modelVersion": "2026-09-22",
+  "status": "ga",
+  "contextWindow": 1000000,
+  "maxOutputTokens": 128000,
+  "hostingModes": ["azure", "anthropic"],
+  "defaultHostingMode": "azure",
+  "interfacesByHostingMode": {
+    "azure": ["messages"],
+    "anthropic": ["messages"]
+  },
+  "interfaces": ["messages"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling"],
+  "protocolProfiles": {
+    "messages": {
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": ["adaptive"],
+        "default": "adaptive",
+        "validation": "passthrough"
+      },
+      "reasoning": {
+        "parameter": "output_config.effort",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "default": "medium",
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "anthropic-official",
+    "status": "published",
+    "inputPer1mTokens": 4,
+    "cachedInputPer1mTokens": 0.2,
+    "outputPer1mTokens": 20
+  },
+  "proxyTemplate": {},
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
+    "limits": "https://platform.claude.com/docs/en/models/opus-5-5/overview",
+    "reasoning": "https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5",
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  "notes": [
+    "Hosted on Azure and Hosted on Anthropic infrastructure are both generally available in Microsoft Foundry. Both use the native Anthropic Messages API.",
+    "Adaptive thinking is always on. Disabled thinking, manual budget_tokens, and forced tool_choice (any or tool) are rejected by the upstream; leave these requests to the provider for validation.",
+    "The cached-input price represents cache reads. Five-minute and one-hour cache writes cost USD 5 and USD 8 per 1M tokens, respectively, and are not represented by the single cached-input rate.",
+    "Foundry bills via Claude Consumption Units at standard Anthropic per-model rates before any discounts. US Data Zone inference adds a 1.1x multiplier not represented by this base price."
+  ]
+}

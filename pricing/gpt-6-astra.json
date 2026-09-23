@@ -8,17 +8,10 @@
   "contextWindow": 1050000,
   "maxInputTokens": 922000,
   "maxOutputTokens": 128000,
-  "interfaces": [
-    "chat/completions",
-    "responses"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "text"
-  ],
+  "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
   "capabilities": [
     "reasoning",
     "vision",
@@ -27,19 +20,11 @@
     "parallel-tool-calling",
     "computer-use"
   ],
-  "defaultInterface": "responses",
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
         "parameter": "reasoning_effort",
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
+        "levels": ["none", "low", "medium", "high", "xhigh", "max"],
         "default": "medium",
         "validation": "passthrough"
       }
@@ -47,14 +32,7 @@
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
+        "levels": ["none", "low", "medium", "high", "xhigh", "max"],
         "default": "medium",
         "validation": "passthrough"
       }
@@ -65,44 +43,47 @@
     "billingUnit": "1M tokens",
     "sourceType": "azure-openai-global",
     "status": "published",
-    "inputPer1mTokens": 10,
-    "cachedInputPer1mTokens": 1,
-    "outputPer1mTokens": 50,
-    "inputPer1kTokens": 0.01,
-    "cachedInputPer1kTokens": 0.001,
-    "outputPer1kTokens": 0.05
-  },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.01,
-    "cachedInputPer1kTokens": 0.001,
-    "outputPer1kTokens": 0.05
+    "tiering": {
+      "basis": "inputTokensIncludingCache",
+      "method": "whole-request"
+    },
+    "tiers": [
+      {
+        "id": "short",
+        "deploymentType": "global-standard",
+        "contextClass": "short",
+        "promptTokensBelow": 272001,
+        "inputPer1mTokens": 10,
+        "cachedInputPer1mTokens": 1,
+        "cacheWritePer1mTokens": 12.5,
+        "outputPer1mTokens": 50
+      },
+      {
+        "id": "long",
+        "deploymentType": "global-standard",
+        "contextClass": "long",
+        "promptTokensAtLeast": 272001,
+        "inputPer1mTokens": 20,
+        "cachedInputPer1mTokens": 2,
+        "cacheWritePer1mTokens": 25,
+        "outputPer1mTokens": 75
+      }
+    ]
   },
   "proxyTemplate": {
-    "id": "gpt-6-astra",
-    "displayName": "GPT-6 Astra",
-    "targetModel": "gpt-6-astra",
     "routes": {
       "chat/completions": "responses"
-    },
-    "capabilities": [
-      "reasoning",
-      "vision",
-      "function-calling",
-      "structured-outputs",
-      "parallel-tool-calling",
-      "computer-use"
-    ],
-    "pricingRef": "gpt-6-astra"
+    }
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-6",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-6",
     "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning",
-    "pricing": "https://azure.microsoft.com/en-us/blog/gpt-6-astra-frontier-intelligence-for-work-now-generally-available-in-microsoft-foundry/"
+    "pricing": "https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/"
   },
   "notes": [
-    "Azure Foundry Global Standard short-context pricing is USD 10 input, USD 1 cached input, and USD 50 output per 1M tokens.",
-    "For requests above 272K input tokens, Azure Foundry Global Standard charges USD 20 input, USD 2 cached input, and USD 75 output per 1M tokens. Cache writes cost USD 12.50 per 1M tokens and are not represented by the single cached-input price field."
+    "The root rates represent Global Standard short-context pricing. The tier table records Global Standard short/long-context rates, including cache writes, per 1M tokens.",
+    "The administrator-specified whole-request policy selects the long tier only when this request's input, including cache, exceeds 272000 tokens. Exactly 272000 remains short; session totals and output length do not select the tier.",
+    "The cited Azure post supplies Global Standard prices but does not establish this numeric threshold or whole-request rule. These policy choices were explicitly supplied by the administrator, not independently verified from that source."
   ]
 }

@@ -5,21 +5,10 @@
   "family": "gpt-image",
   "modelVersion": null,
   "status": "ga",
-  "interfaces": [
-    "images/generations"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "image"
-  ],
-  "capabilities": [
-    "vision",
-    "image-generation",
-    "image-editing"
-  ],
+  "interfaces": ["images/generations"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["image"],
+  "capabilities": ["vision", "image-generation", "image-editing"],
   "protocolProfiles": {
     "images/generations": {
       "request": {
@@ -40,30 +29,16 @@
     "status": "published",
     "inputPer1mTokens": 5,
     "cachedInputPer1mTokens": 1.25,
-    "inputPer1kTokens": 0.005,
-    "cachedInputPer1kTokens": 0.00125,
     "channels": {
       "image": {
         "inputPer1mTokens": 8,
         "cachedInputPer1mTokens": 2,
-        "outputPer1mTokens": 30,
-        "inputPer1kTokens": 0.008,
-        "cachedInputPer1kTokens": 0.002,
-        "outputPer1kTokens": 0.03
+        "outputPer1mTokens": 30
       }
     }
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "gpt-image-2",
-    "displayName": "GPT-Image-2",
-    "targetModel": "gpt-image-2",
-    "capabilities": [
-      "vision",
-      "image-generation",
-      "image-editing"
-    ],
-    "pricingRef": "gpt-image-2",
     "routes": {
       "*": "openai-image"
     }

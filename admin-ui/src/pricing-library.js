@@ -1,3 +1,5 @@
+import { expandModelCard } from "../../src/model-card.js";
+
 function normalizeStringArray(value) {
   return Array.isArray(value)
     ? value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
@@ -9,7 +11,7 @@ function asPlainObject(value) {
 }
 
 function normalizePricingDefinition(rawDefinition) {
-  const definition = asPlainObject(rawDefinition);
+  const definition = expandModelCard(asPlainObject(rawDefinition));
   const interfacesByHostingMode = Object.fromEntries(
     Object.entries(asPlainObject(definition.interfacesByHostingMode))
       .map(([mode, interfaces]) => [String(mode).trim().toLowerCase(), normalizeStringArray(interfaces)])
@@ -36,9 +38,8 @@ function normalizePricingDefinition(rawDefinition) {
     interfacesByHostingMode,
     proxyAdapters: asPlainObject(definition.proxyAdapters),
     capabilities: normalizeStringArray(definition.capabilities),
-    pricingCatalogEntry: definition.pricingCatalogEntry && typeof definition.pricingCatalogEntry === "object"
-      ? asPlainObject(definition.pricingCatalogEntry)
-      : null,
+    pricing: asPlainObject(definition.pricing),
+    pricingCatalogEntry: definition.pricingCatalogEntry,
     proxyTemplate,
     supportsProxyTemplate: !!(
       proxyTemplate?.id

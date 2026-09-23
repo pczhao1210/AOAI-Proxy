@@ -5,22 +5,10 @@
   "family": "gpt-realtime",
   "modelVersion": null,
   "status": "ga",
-  "interfaces": [
-    "realtime/translations"
-  ],
-  "inputModalities": [
-    "audio"
-  ],
-  "outputModalities": [
-    "audio",
-    "text"
-  ],
-  "capabilities": [
-    "realtime",
-    "translation",
-    "speech-to-speech",
-    "streaming"
-  ],
+  "interfaces": ["realtime/translations"],
+  "inputModalities": ["audio"],
+  "outputModalities": ["audio", "text"],
+  "capabilities": ["realtime", "translation", "speech-to-speech", "streaming"],
   "pricing": {
     "currency": "USD",
     "billingUnit": "minute",
@@ -31,11 +19,9 @@
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "gpt-realtime-translate",
-    "targetModel": "gpt-realtime-translate",
-    "pricingRef": "gpt-realtime-translate",
-    "capabilities": ["realtime", "translation", "speech-to-speech", "streaming"],
-    "routes": { "realtime/translations": "realtime/translations" }
+    "routes": {
+      "realtime/translations": "realtime/translations"
+    }
   },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-translate",

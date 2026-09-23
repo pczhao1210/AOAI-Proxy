@@ -16,8 +16,12 @@
   "capabilities": ["reasoning", "tool-calling"],
   "protocolProfiles": {
     "chat/completions": {
-      "reasoning": { "configurable": false },
-      "request": { "transport": "any" }
+      "reasoning": {
+        "configurable": false
+      },
+      "request": {
+        "transport": "any"
+      }
     }
   },
   "pricing": {
@@ -27,12 +31,10 @@
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "mai-thinking-1",
-    "displayName": "MAI-Thinking-1",
     "targetModel": "MAI-Thinking-1",
-    "capabilities": ["reasoning", "tool-calling"],
-    "pricingRef": "mai-thinking-1",
-    "routes": { "*": "mai-chat" }
+    "routes": {
+      "*": "mai-chat"
+    }
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-mai-thinking",

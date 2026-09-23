@@ -154,7 +154,11 @@ const USAGE_KEYS = new Set([
   "completiontokens",
   "outputtokens",
   "totaltokens",
-  "cachedtokens"
+  "cachedtokens",
+  "cachewrite",
+  "pricing",
+  "coststatus",
+  "costreason"
 ]);
 const CONTENT_KEYS = new Set([
   "prompt",

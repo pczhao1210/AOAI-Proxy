@@ -3,6 +3,7 @@ import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
 import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
 import { parsePersistenceMode } from "./persistence-mode.js";
+import { normalizeCacheWrite, summarizeCacheWrite } from "./stats.js";
 
 const DEFAULT_DATABASE_SCHEMA = "public";
 const DEFAULT_RUNTIME_EVENTS_TABLE_NAME = "runtime_events";
@@ -21,6 +22,17 @@ const GLOBAL_SCOPE_KEY = "__all__";
 const GLOBAL_SCOPE_SUBKEY = "";
 const ROLLUP_GRAINS = ["hourly", "daily", "weekly"];
 const META_LAST_ROLLED_EVENT_ID = "last_rolled_event_id";
+const CACHE_WRITE_COLUMN_DEFINITIONS = [
+  ["cache_write_tokens", "BIGINT"],
+  ["cache_write_known_cost_amount", "DOUBLE PRECISION"],
+  ["cache_write_estimated_cost_amount", "DOUBLE PRECISION"],
+  ["cache_write_requests", "BIGINT NOT NULL DEFAULT 0"],
+  ["cache_write_observed_requests", "BIGINT NOT NULL DEFAULT 0"],
+  ["cache_write_priced_requests", "BIGINT NOT NULL DEFAULT 0"],
+  ["cache_write_partial_cost_requests", "BIGINT NOT NULL DEFAULT 0"],
+  ["cache_write_unreported_requests", "BIGINT"]
+];
+const CACHE_WRITE_COLUMNS = CACHE_WRITE_COLUMN_DEFINITIONS.map(([name]) => name);
 const STATS_TIME_RANGES = {
   "24h": 24 * 60 * 60 * 1000,
   "7d": 7 * 24 * 60 * 60 * 1000,
@@ -335,6 +347,8 @@ async function ensureRuntimeTables(settings) {
       completion_tokens BIGINT NOT NULL DEFAULT 0,
       total_tokens BIGINT NOT NULL DEFAULT 0,
       cached_tokens BIGINT NOT NULL DEFAULT 0,
+      text_unknown_cost_requests BIGINT NOT NULL DEFAULT 0,
+      ${CACHE_WRITE_COLUMN_DEFINITIONS.map(([name, type]) => `${name} ${type}`).join(",\n      ")},
       estimated_cost_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
       model_router_cost_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
       actual_model_cost_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -343,6 +357,8 @@ async function ensureRuntimeTables(settings) {
     )
   `);
   await pool.query(`ALTER TABLE ${schemaName}.${eventsTableName} ADD COLUMN IF NOT EXISTS signal_name TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE ${schemaName}.${eventsTableName} ADD COLUMN IF NOT EXISTS text_unknown_cost_requests BIGINT NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE ${schemaName}.${eventsTableName} ${CACHE_WRITE_COLUMN_DEFINITIONS.map(([name, type]) => `ADD COLUMN IF NOT EXISTS ${name} ${type}`).join(", ")}`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${settings.eventsTableName}_event_type_occurred_at_idx`, "runtime events index")}
     ON ${schemaName}.${eventsTableName} (event_type, occurred_at DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${settings.eventsTableName}_signal_name_occurred_at_idx`, "runtime events index")}
@@ -371,6 +387,8 @@ async function ensureRuntimeTables(settings) {
       completion_tokens BIGINT NOT NULL DEFAULT 0,
       total_tokens BIGINT NOT NULL DEFAULT 0,
       cached_tokens BIGINT NOT NULL DEFAULT 0,
+      text_unknown_cost_requests BIGINT NOT NULL DEFAULT 0,
+      ${CACHE_WRITE_COLUMN_DEFINITIONS.map(([name, type]) => `${name} ${type}`).join(",\n      ")},
       estimated_cost_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
       model_router_cost_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
       actual_model_cost_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -379,6 +397,8 @@ async function ensureRuntimeTables(settings) {
       PRIMARY KEY (grain, bucket_start, scope_type, scope_key, scope_subkey)
     )
   `);
+  await pool.query(`ALTER TABLE ${schemaName}.${rollupsTableName} ADD COLUMN IF NOT EXISTS text_unknown_cost_requests BIGINT NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE ${schemaName}.${rollupsTableName} ${CACHE_WRITE_COLUMN_DEFINITIONS.map(([name, type]) => `ADD COLUMN IF NOT EXISTS ${name} ${type}`).join(", ")}`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${settings.rollupsTableName}_grain_scope_bucket_idx`, "runtime rollups index")}
     ON ${schemaName}.${rollupsTableName} (grain, scope_type, bucket_start DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${settings.rollupsTableName}_scope_key_bucket_idx`, "runtime rollups index")}
@@ -428,6 +448,8 @@ function scheduleFlush(settings) {
 }
 
 function buildEventRow(eventType, fields = {}) {
+  const textUsage = eventType === "usage" && fields.payload?.source !== "media";
+  const cacheWrite = textUsage ? normalizeCacheWrite(fields.payload?.cacheWrite) : null;
   return {
     eventType,
     signalName: String(fields.signalName || fields.eventName || fields.event || "").trim(),
@@ -443,6 +465,17 @@ function buildEventRow(eventType, fields = {}) {
     completionTokens: resolveInt(fields.completionTokens, 0, 0),
     totalTokens: resolveInt(fields.totalTokens, 0, 0),
     cachedTokens: resolveInt(fields.cachedTokens, 0, 0),
+    cacheWrite: summarizeCacheWrite({
+      requests: cacheWrite ? 1 : 0,
+      observedRequests: cacheWrite?.usageStatus === "observed" ? 1 : 0,
+      pricedRequests: cacheWrite?.costStatus === "priced" ? 1 : 0,
+      partialCostRequests: cacheWrite?.costStatus === "partial" ? 1 : 0,
+      unreportedRequests: textUsage && !cacheWrite ? 1 : 0,
+      observedTokens: cacheWrite?.tokens ?? null,
+      knownCostAmount: cacheWrite?.knownCostAmount ?? null
+    }),
+    textUnknownCostRequests: eventType === "usage" && fields.payload?.textCost?.costStatus
+      && fields.payload.textCost.costStatus !== "priced" ? 1 : 0,
     estimatedCostAmount: resolveFloat(fields.estimatedCostAmount, 0, 0),
     modelRouterCostAmount: resolveFloat(fields.modelRouterCostAmount, 0, 0),
     actualModelCostAmount: resolveFloat(fields.actualModelCostAmount, 0, 0),
@@ -513,6 +546,8 @@ async function insertRuntimeEvents(settings, batchItems) {
     "completion_tokens",
     "total_tokens",
     "cached_tokens",
+    "text_unknown_cost_requests",
+    ...CACHE_WRITE_COLUMNS,
     "estimated_cost_amount",
     "model_router_cost_amount",
     "actual_model_cost_amount",
@@ -538,6 +573,8 @@ async function insertRuntimeEvents(settings, batchItems) {
       item.completionTokens,
       item.totalTokens,
       item.cachedTokens,
+      item.textUnknownCostRequests,
+      ...cacheWriteColumnValues(item.cacheWrite),
       item.estimatedCostAmount,
       item.modelRouterCostAmount,
       item.actualModelCostAmount,
@@ -570,6 +607,8 @@ function normalizeEventRecord(row) {
     completionTokens: resolveInt(row?.completion_tokens, 0, 0),
     totalTokens: resolveInt(row?.total_tokens, 0, 0),
     cachedTokens: resolveInt(row?.cached_tokens, 0, 0),
+    cacheWrite: cacheWriteFromRow(row),
+    textUnknownCostRequests: resolveInt(row?.text_unknown_cost_requests, 0, 0),
     estimatedCostAmount: resolveFloat(row?.estimated_cost_amount, 0, 0),
     modelRouterCostAmount: resolveFloat(row?.model_router_cost_amount, 0, 0),
     actualModelCostAmount: resolveFloat(row?.actual_model_cost_amount, 0, 0),
@@ -588,6 +627,8 @@ function createMetricDelta(event) {
     completionTokens: event.eventType === "usage" ? event.completionTokens : 0,
     totalTokens: event.eventType === "usage" ? event.totalTokens : 0,
     cachedTokens: event.eventType === "usage" ? event.cachedTokens : 0,
+    cacheWrite: event.cacheWrite,
+    textUnknownCostRequests: event.eventType === "usage" ? event.textUnknownCostRequests : 0,
     estimatedCostAmount: event.eventType === "usage" ? event.estimatedCostAmount : 0,
     modelRouterCostAmount: event.eventType === "usage" ? event.modelRouterCostAmount : 0,
     actualModelCostAmount: event.eventType === "usage" ? event.actualModelCostAmount : 0,
@@ -626,6 +667,19 @@ function addRollupMetric(target, delta) {
   target.completionTokens += delta.completionTokens;
   target.totalTokens += delta.totalTokens;
   target.cachedTokens += delta.cachedTokens;
+  const left = target.cacheWrite;
+  const right = delta.cacheWrite;
+  const nullableSum = (a, b) => a === null && b === null ? null : (a ?? 0) + (b ?? 0);
+  target.cacheWrite = summarizeCacheWrite({
+    requests: left.requests + right.requests,
+    observedRequests: left.observedRequests + right.observedRequests,
+    pricedRequests: left.pricedRequests + right.pricedRequests,
+    partialCostRequests: left.partialCostRequests + right.partialCostRequests,
+    unreportedRequests: left.unreportedRequests === null || right.unreportedRequests === null ? null : left.unreportedRequests + right.unreportedRequests,
+    observedTokens: nullableSum(left.observedTokens, right.observedTokens),
+    knownCostAmount: nullableSum(left.knownCostAmount, right.knownCostAmount)
+  });
+  target.textUnknownCostRequests += delta.textUnknownCostRequests;
   target.estimatedCostAmount += delta.estimatedCostAmount;
   target.modelRouterCostAmount += delta.modelRouterCostAmount;
   target.actualModelCostAmount += delta.actualModelCostAmount;
@@ -654,6 +708,8 @@ function addRollupRow(map, grain, bucketStart, scopeType, scopeKey, scopeSubkey,
       completionTokens: 0,
       totalTokens: 0,
       cachedTokens: 0,
+      cacheWrite: summarizeCacheWrite(),
+      textUnknownCostRequests: 0,
       estimatedCostAmount: 0,
       modelRouterCostAmount: 0,
       actualModelCostAmount: 0,
@@ -712,6 +768,8 @@ async function upsertRollupRows(settings, rollupRows) {
     "completion_tokens",
     "total_tokens",
     "cached_tokens",
+    "text_unknown_cost_requests",
+    ...CACHE_WRITE_COLUMNS,
     "estimated_cost_amount",
     "model_router_cost_amount",
     "actual_model_cost_amount",
@@ -735,6 +793,8 @@ async function upsertRollupRows(settings, rollupRows) {
       item.completionTokens,
       item.totalTokens,
       item.cachedTokens,
+      item.textUnknownCostRequests,
+      ...cacheWriteColumnValues(item.cacheWrite),
       item.estimatedCostAmount,
       item.modelRouterCostAmount,
       item.actualModelCostAmount,
@@ -756,6 +816,21 @@ async function upsertRollupRows(settings, rollupRows) {
        completion_tokens = ${schemaName}.${rollupsTableName}.completion_tokens + EXCLUDED.completion_tokens,
        total_tokens = ${schemaName}.${rollupsTableName}.total_tokens + EXCLUDED.total_tokens,
        cached_tokens = ${schemaName}.${rollupsTableName}.cached_tokens + EXCLUDED.cached_tokens,
+       text_unknown_cost_requests = ${schemaName}.${rollupsTableName}.text_unknown_cost_requests + EXCLUDED.text_unknown_cost_requests,
+       ${CACHE_WRITE_COLUMNS.map(name => {
+         const current = `${schemaName}.${rollupsTableName}.${name}`;
+         if (name === "cache_write_estimated_cost_amount") {
+           const table = `${schemaName}.${rollupsTableName}`;
+           return `${name} = CASE WHEN ${table}.cache_write_unreported_requests + EXCLUDED.cache_write_unreported_requests = 0
+             AND ${table}.cache_write_requests + EXCLUDED.cache_write_requests > 0
+             AND ${table}.cache_write_priced_requests + EXCLUDED.cache_write_priced_requests = ${table}.cache_write_requests + EXCLUDED.cache_write_requests
+             THEN COALESCE(${current}, 0) + COALESCE(EXCLUDED.${name}, 0) ELSE NULL END`;
+         }
+         if (["cache_write_tokens", "cache_write_known_cost_amount"].includes(name)) {
+           return `${name} = CASE WHEN ${current} IS NULL AND EXCLUDED.${name} IS NULL THEN NULL ELSE COALESCE(${current}, 0) + COALESCE(EXCLUDED.${name}, 0) END`;
+         }
+         return `${name} = ${current} + EXCLUDED.${name}`;
+       }).join(",\n       ")},
        estimated_cost_amount = ${schemaName}.${rollupsTableName}.estimated_cost_amount + EXCLUDED.estimated_cost_amount,
        model_router_cost_amount = ${schemaName}.${rollupsTableName}.model_router_cost_amount + EXCLUDED.model_router_cost_amount,
        actual_model_cost_amount = ${schemaName}.${rollupsTableName}.actual_model_cost_amount + EXCLUDED.actual_model_cost_amount,
@@ -807,6 +882,8 @@ async function fetchUnrolledEvents(settings, afterEventId) {
        completion_tokens,
        total_tokens,
        cached_tokens,
+       text_unknown_cost_requests,
+       ${CACHE_WRITE_COLUMNS.join(", ")},
        estimated_cost_amount,
        model_router_cost_amount,
        actual_model_cost_amount,
@@ -1079,15 +1156,54 @@ export function recordRuntimeError(config, fields = {}) {
 
 export function recordRuntimeUsage(config, fields = {}) {
   const settings = resolveRuntimeStoreSettings(config);
+  const knownCostAmount = resolveFloat(fields.costStatus ? fields.amount ?? fields.estimatedCostAmount : fields.estimatedCostAmount, 0, 0);
   enqueueRuntimeEvent(settings, buildEventRow("usage", {
     ...fields,
+    estimatedCostAmount: knownCostAmount,
     payload: {
       source: fields.source || "",
       usageSource: fields.usageSource || "",
       usageEstimated: fields.usageEstimated === true,
-      usageEstimationReason: fields.usageEstimationReason || ""
+      usageEstimationReason: fields.usageEstimationReason || "",
+      ...(fields.cacheWrite ? { cacheWrite: normalizeCacheWrite(fields.cacheWrite) } : {}),
+      ...(fields.costStatus ? {
+        textCost: {
+          costStatus: fields.costStatus,
+          costReason: fields.costReason || "",
+          estimatedCostAmount: fields.costStatus === "priced" ? knownCostAmount : null,
+          knownCostAmount,
+          pricing: {
+            actual: snapshotPricingAudit(fields.pricing?.actual),
+            router: snapshotPricingAudit(fields.pricing?.router)
+          }
+        }
+      } : {})
     }
   }));
+}
+
+function snapshotPricingAudit(value) {
+  if (!value || typeof value !== "object") return null;
+  let tier = null;
+  if (typeof value.tier === "string") tier = value.tier;
+  else if (value.tier && typeof value.tier === "object") {
+    const rates = asPlainObject(value.tier.rates);
+    tier = {
+      id: value.tier.id,
+      promptTokensAtLeast: value.tier.promptTokensAtLeast,
+      promptTokensBelow: value.tier.promptTokensBelow,
+      rates: Object.fromEntries([
+        "inputPer1mTokens", "outputPer1mTokens", "cachedInputPer1mTokens",
+        "cacheWritePer1mTokens", "cacheWrite5mPer1mTokens", "cacheWrite1hPer1mTokens"
+      ].filter(name => typeof rates[name] === "number" && Number.isFinite(rates[name]) && rates[name] >= 0)
+        .map(name => [name, rates[name]]))
+    };
+  }
+  return {
+    source: value.source || "",
+    policyDigest: value.policyDigest || "",
+    tier
+  };
 }
 
 export function recordRuntimeMediaUsage(config, fields = {}) {
@@ -1121,6 +1237,42 @@ function currencyValue(...values) {
   return "USD";
 }
 
+function cacheWriteFromRow(row = {}) {
+  const nonTextEvent = row.event_type && (row.event_type !== "usage" || row.payload?.source === "media");
+  return summarizeCacheWrite({
+    requests: integer(row.cache_write_requests),
+    observedRequests: integer(row.cache_write_observed_requests),
+    pricedRequests: integer(row.cache_write_priced_requests),
+    partialCostRequests: integer(row.cache_write_partial_cost_requests),
+    // NULL coverage marks historical data, not a measured zero.
+    unreportedRequests: row.cache_write_unreported_requests == null ? nonTextEvent ? 0 : null : integer(row.cache_write_unreported_requests),
+    observedTokens: row.cache_write_tokens == null ? null : integer(row.cache_write_tokens),
+    knownCostAmount: row.cache_write_known_cost_amount == null ? null : numeric(row.cache_write_known_cost_amount)
+  });
+}
+
+function cacheWriteColumnValues(cacheWrite) {
+  return [
+    cacheWrite.observedTokens, cacheWrite.knownCostAmount, cacheWrite.estimatedCostAmount, cacheWrite.requests,
+    cacheWrite.observedRequests, cacheWrite.pricedRequests, cacheWrite.partialCostRequests,
+    cacheWrite.unreportedRequests
+  ];
+}
+
+function cacheWriteAggregateSql(fromEvents = false) {
+  const unreported = fromEvents
+    ? "cache_write_unreported_requests IS NULL AND event_type = 'usage' AND payload->>'source' IS DISTINCT FROM 'media'"
+    : "cache_write_unreported_requests IS NULL";
+  return CACHE_WRITE_COLUMNS.map(name => {
+    if (name === "cache_write_unreported_requests") {
+      return `CASE WHEN COUNT(*) FILTER (WHERE ${unreported}) > 0 THEN NULL ELSE COALESCE(SUM(${name}), 0) END AS ${name}`;
+    }
+    const sum = ["cache_write_tokens", "cache_write_known_cost_amount", "cache_write_estimated_cost_amount"].includes(name)
+      ? `SUM(${name})` : `COALESCE(SUM(${name}), 0)`;
+    return `${sum} AS ${name}`;
+  }).join(",\n      ");
+}
+
 function buildAggregateNode(row) {
   return {
     requests: integer(row?.requests),
@@ -1131,6 +1283,8 @@ function buildAggregateNode(row) {
     completionTokens: integer(row?.completion_tokens),
     totalTokens: integer(row?.total_tokens),
     cachedTokens: integer(row?.cached_tokens),
+    cacheWrite: cacheWriteFromRow(row || {}),
+    textUnknownCostRequests: integer(row?.text_unknown_cost_requests),
     modelRouterCostAmount: numeric(row?.model_router_cost_amount),
     modelRouterCostCurrency: currencyValue(row?.model_router_cost_currency, row?.currency),
     actualModelCostAmount: numeric(row?.actual_model_cost_amount),
@@ -1194,6 +1348,8 @@ async function queryTotals(settings) {
       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens), 0) AS total_tokens,
       COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+      COALESCE(SUM(text_unknown_cost_requests), 0) AS text_unknown_cost_requests,
+      ${cacheWriteAggregateSql()},
       COALESCE(SUM(model_router_cost_amount), 0) AS model_router_cost_amount,
       COALESCE(SUM(actual_model_cost_amount), 0) AS actual_model_cost_amount,
       COALESCE(SUM(estimated_cost_amount), 0) AS estimated_cost_amount,
@@ -1222,6 +1378,8 @@ async function queryFilteredTotals(settings, filters) {
       COALESCE(SUM(completion_tokens) FILTER (WHERE event_type = 'usage'), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens) FILTER (WHERE event_type = 'usage'), 0) AS total_tokens,
       COALESCE(SUM(cached_tokens) FILTER (WHERE event_type = 'usage'), 0) AS cached_tokens,
+      COALESCE(SUM(text_unknown_cost_requests) FILTER (WHERE event_type = 'usage'), 0) AS text_unknown_cost_requests,
+      ${cacheWriteAggregateSql(true)},
       COALESCE(SUM(model_router_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS model_router_cost_amount,
       COALESCE(SUM(actual_model_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS actual_model_cost_amount,
       COALESCE(SUM(estimated_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS estimated_cost_amount,
@@ -1248,6 +1406,8 @@ async function queryPerModel(settings) {
       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens), 0) AS total_tokens,
       COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+      COALESCE(SUM(text_unknown_cost_requests), 0) AS text_unknown_cost_requests,
+      ${cacheWriteAggregateSql()},
       COALESCE(SUM(model_router_cost_amount), 0) AS model_router_cost_amount,
       COALESCE(SUM(actual_model_cost_amount), 0) AS actual_model_cost_amount,
       COALESCE(SUM(estimated_cost_amount), 0) AS estimated_cost_amount,
@@ -1279,6 +1439,8 @@ async function queryFilteredPerModel(settings, filters) {
       COALESCE(SUM(completion_tokens) FILTER (WHERE event_type = 'usage'), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens) FILTER (WHERE event_type = 'usage'), 0) AS total_tokens,
       COALESCE(SUM(cached_tokens) FILTER (WHERE event_type = 'usage'), 0) AS cached_tokens,
+      COALESCE(SUM(text_unknown_cost_requests) FILTER (WHERE event_type = 'usage'), 0) AS text_unknown_cost_requests,
+      ${cacheWriteAggregateSql(true)},
       COALESCE(SUM(model_router_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS model_router_cost_amount,
       COALESCE(SUM(actual_model_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS actual_model_cost_amount,
       COALESCE(SUM(estimated_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS estimated_cost_amount,
@@ -1308,6 +1470,8 @@ async function queryPerActualModel(settings) {
       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens), 0) AS total_tokens,
       COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+      COALESCE(SUM(text_unknown_cost_requests), 0) AS text_unknown_cost_requests,
+      ${cacheWriteAggregateSql()},
       COALESCE(SUM(model_router_cost_amount), 0) AS model_router_cost_amount,
       COALESCE(SUM(actual_model_cost_amount), 0) AS actual_model_cost_amount,
       COALESCE(SUM(estimated_cost_amount), 0) AS estimated_cost_amount,
@@ -1340,6 +1504,8 @@ async function queryFilteredPerActualModel(settings, filters) {
       COALESCE(SUM(completion_tokens) FILTER (WHERE event_type = 'usage'), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens) FILTER (WHERE event_type = 'usage'), 0) AS total_tokens,
       COALESCE(SUM(cached_tokens) FILTER (WHERE event_type = 'usage'), 0) AS cached_tokens,
+      COALESCE(SUM(text_unknown_cost_requests) FILTER (WHERE event_type = 'usage'), 0) AS text_unknown_cost_requests,
+      ${cacheWriteAggregateSql(true)},
       COALESCE(SUM(model_router_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS model_router_cost_amount,
       COALESCE(SUM(actual_model_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS actual_model_cost_amount,
       COALESCE(SUM(estimated_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS estimated_cost_amount,
@@ -1368,6 +1534,8 @@ async function queryPerKey(settings) {
       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens), 0) AS total_tokens,
       COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+      COALESCE(SUM(text_unknown_cost_requests), 0) AS text_unknown_cost_requests,
+      ${cacheWriteAggregateSql()},
       COALESCE(SUM(model_router_cost_amount), 0) AS model_router_cost_amount,
       COALESCE(SUM(actual_model_cost_amount), 0) AS actual_model_cost_amount,
       COALESCE(SUM(estimated_cost_amount), 0) AS estimated_cost_amount,
@@ -1399,6 +1567,8 @@ async function queryFilteredPerKey(settings, filters) {
       COALESCE(SUM(completion_tokens) FILTER (WHERE event_type = 'usage'), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens) FILTER (WHERE event_type = 'usage'), 0) AS total_tokens,
       COALESCE(SUM(cached_tokens) FILTER (WHERE event_type = 'usage'), 0) AS cached_tokens,
+      COALESCE(SUM(text_unknown_cost_requests) FILTER (WHERE event_type = 'usage'), 0) AS text_unknown_cost_requests,
+      ${cacheWriteAggregateSql(true)},
       COALESCE(SUM(model_router_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS model_router_cost_amount,
       COALESCE(SUM(actual_model_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS actual_model_cost_amount,
       COALESCE(SUM(estimated_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS estimated_cost_amount,
@@ -1427,6 +1597,8 @@ async function queryRollupSeries(settings, grain, limit) {
       completion_tokens,
       total_tokens,
       cached_tokens,
+      text_unknown_cost_requests,
+      ${CACHE_WRITE_COLUMNS.join(", ")},
       estimated_cost_amount,
       model_router_cost_amount,
       actual_model_cost_amount,
@@ -1460,6 +1632,8 @@ async function queryFilteredRollupSeries(settings, filters, grain, limit) {
       COALESCE(SUM(completion_tokens) FILTER (WHERE event_type = 'usage'), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens) FILTER (WHERE event_type = 'usage'), 0) AS total_tokens,
       COALESCE(SUM(cached_tokens) FILTER (WHERE event_type = 'usage'), 0) AS cached_tokens,
+      COALESCE(SUM(text_unknown_cost_requests) FILTER (WHERE event_type = 'usage'), 0) AS text_unknown_cost_requests,
+      ${cacheWriteAggregateSql(true)},
       COALESCE(SUM(model_router_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS model_router_cost_amount,
       COALESCE(SUM(actual_model_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS actual_model_cost_amount,
       COALESCE(SUM(estimated_cost_amount) FILTER (WHERE event_type = 'usage'), 0) AS estimated_cost_amount,
@@ -1793,6 +1967,7 @@ export async function hydrateGovernanceRuntime(config, keyId, rateWindowStartedA
           COALESCE(SUM(completion_tokens), 0) AS budget_completion_tokens,
           COALESCE(SUM(total_tokens), 0) AS budget_total_tokens,
           COALESCE(SUM(cached_tokens), 0) AS budget_cached_tokens,
+          COALESCE(SUM(text_unknown_cost_requests), 0) AS budget_text_unknown_cost_requests,
           COALESCE(SUM(estimated_cost_amount), 0) AS budget_spent_amount,
           COALESCE(SUM(blocked_count), 0) AS budget_blocked_requests
         FROM ${schemaName}.${rollupsTableName}
@@ -1821,6 +1996,7 @@ export async function hydrateGovernanceRuntime(config, keyId, rateWindowStartedA
         rate_window.rate_blocked_requests,
         budget_requests.budget_requests,
         budget_requests.budget_media_unknown_cost_requests,
+        budget_window.budget_text_unknown_cost_requests,
         budget_window.budget_prompt_tokens,
         budget_window.budget_completion_tokens,
         budget_window.budget_total_tokens,

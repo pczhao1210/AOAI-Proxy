@@ -8,48 +8,22 @@
   "contextWindow": 400000,
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
-  "interfaces": [
-    "chat/completions",
-    "responses"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "reasoning",
-    "vision",
-    "function-calling",
-    "structured-outputs",
-    "parallel-tool-calling"
-  ],
+  "interfaces": ["chat/completions", "responses"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs", "parallel-tool-calling"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
         "parameter": "reasoning_effort",
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
+        "levels": ["none", "low", "medium", "high", "xhigh"],
         "default": "none"
       }
     },
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
+        "levels": ["none", "low", "medium", "high", "xhigh"],
         "default": "none"
       }
     }
@@ -61,30 +35,9 @@
     "status": "published",
     "inputPer1mTokens": 0.2,
     "cachedInputPer1mTokens": 0.02,
-    "outputPer1mTokens": 1.25,
-    "inputPer1kTokens": 0.0002,
-    "cachedInputPer1kTokens": 0.00002,
-    "outputPer1kTokens": 0.00125
+    "outputPer1mTokens": 1.25
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.0002,
-    "cachedInputPer1kTokens": 0.00002,
-    "outputPer1kTokens": 0.00125
-  },
-  "proxyTemplate": {
-    "id": "gpt-5.4-nano",
-    "displayName": "GPT-5.4 Nano",
-    "targetModel": "gpt-5.4-nano",
-    "capabilities": [
-      "reasoning",
-      "vision",
-      "function-calling",
-      "structured-outputs",
-      "parallel-tool-calling"
-    ],
-    "pricingRef": "gpt-5.4-nano"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-54",

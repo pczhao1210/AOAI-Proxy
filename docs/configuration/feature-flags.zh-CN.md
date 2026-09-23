@@ -145,6 +145,27 @@ JPEG 处理应用 EXIF 方向、等比缩放且不放大、不裁切，转换到
 
 ### 持久化与访问治理
 
+文本上下文计费不新增布尔开关。`models[].pricing`、`access.pricingCatalog[pricingRef]`
+和模型卡 `pricing` 可声明 `tiering.method: "whole-request"`，
+按包含缓存的输入总量选择 `[promptTokensAtLeast, promptTokensBelow)` 区间，整次请求
+采用该档费率。JSON 和 SSE 均使用上游 usage；不根据输出 delta 推测输入长度。
+卡中的 `pricingCatalogEntry: null` 仍然禁用自动计费，仅有 `short/long` 标签不能选档。
+活动卡默认省略重复的 `pricingCatalogEntry`；只有明确覆盖 `pricing` 时才保留非空值。
+旧版完整卡与每千 token 价格仍可读取；新卡使用每百万 token 单一写法。
+详见[分档 schema、缓存和未知费用](../../pricing/README.md#whole-request-text-pricing)。
+
+价格配置保存/reload、有效模型卡同步后对新请求热生效，进行中的请求保留原价格快照。
+首次安装计价引擎需构建管理端并部署新容器。区间错误会拒绝配置或目录激活，
+不会回退至短档；缺失 usage/费率和本地估算保留未知状态，预算金额只累计已知小计，
+不是请求前预付费硬上限。旧统计不回填、不重新计价。
+
+缓存写入与缓存读取分别展示，管理端统计与 PostgreSQL event/rollup 记录写入 token
+和写入费用。显式 `0` 与上游未报告不同；缺失计数或费率显示未知，不视为免费。
+Chat/Responses 的普通输入量为输入总量减去缓存读取及写入，写入按独立费率收费，
+不得再次加入总 token 或重复收取普通输入费用。相关费率可在定价 JSON 中使用
+`cacheWritePer1mTokens`、`cacheWrite5mPer1mTokens`、`cacheWrite1hPer1mTokens`，
+分档时需在每档独立声明。数据库通过兼容性迁移添加字段；已有历史缺失值不会编造成零。
+
 | 配置项 | 默认值 | 功能 | 入口与生效方式 |
 | --- | --- | --- | --- |
 | `persistence.compatibilityExport.enabled` | `true` | 允许把规范配置额外导出到兼容路径。 | Workspace；保存时生效 |

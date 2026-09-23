@@ -203,9 +203,30 @@ The admin Operations page can override owner, repo, path, and ref per sync reque
 
 When you trigger `Sync From GitHub` from `/admin`, the proxy downloads pricing JSON files into a staging directory, normalizes every definition, and compiles a candidate Model Catalog before changing active state. It then swaps the persistent directory, in-memory pricing indexes, and immutable runtime snapshot as one generation. A failed parse or compile leaves the previous directory and snapshot active. In Azure Files-style deployments, successful updates survive container replacement without rebuilding the image.
 
+Text billing supports [whole-request context tiers](pricing/README.md#whole-request-text-pricing).
+JSON and SSE accounting use upstream usage (including cached input), not output
+text deltas. Numeric tier boundaries must be verified; labels such as `short` and
+`long` alone do not enable billing. Prices are frozen per request, and unknown
+costs remain visibly incomplete rather than free. Installing this runtime
+feature requires an updated container; later supported price-table updates can
+use catalog sync.
+
+Cache reads and cache writes are separate reporting dimensions. Runtime statistics
+and PostgreSQL event/rollup storage retain reported write tokens and write costs;
+missing write evidence or prices remain unknown instead of becoming zero. Writes
+are already part of input usage and are not added to total tokens a second time.
+For Chat/Responses, billed ordinary input excludes both reads and writes.
+
 ### Model Catalog Schema
 
 Each `pricing/*.json` file is also a Model Catalog definition. Besides pricing, it can declare `aliases`, `defaultInterface`, and `protocolProfiles`. Text protocol profiles may define a reasoning parameter path, supported levels, default, aliases, validation mode, and Messages thinking types. An `images/generations` profile may define request transport matching, model removal, quality aliases, dropped parameters, and size expansion into width/height fields.
+
+Cards follow the [canonical authoring format](pricing/README.md#canonical-authoring-format):
+one per-million price table and a `proxyTemplate` containing only overrides.
+Backend and admin loaders fill defaults while preserving explicit null opt-outs
+and legacy full cards. Run `npm run cards:format` and `npm run cards:check` when
+editing active cards; archives are excluded. Deploy this loader/admin upgrade
+before syncing compact cards to older installations.
 
 Catalog definitions are compiled when config is loaded or saved and after a successful remote update. Every active configured model must resolve a definition through its `pricingRef`, public ID, or target model before the candidate config or catalog can become active. Requests then reuse that immutable descriptor for routing, provider/interface selection, normalization, discovery, image adaptation, and governance pricing.
 

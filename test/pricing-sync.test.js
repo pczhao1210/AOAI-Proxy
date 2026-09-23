@@ -11,6 +11,8 @@ import {
   resolveModelDescriptor
 } from "../src/model-catalog.js";
 import { getConfiguredModelBindingIssues } from "../src/model-validation.js";
+import { compileDefinitionPricing } from "../src/pricing-policy.js";
+import { buildModelFromPricingTemplate, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
 import {
   findPricingDefinitionForModel,
   listPricingDefinitions,
@@ -27,6 +29,64 @@ function definition(id, aliases = []) {
     capabilities: ["reasoning"]
   };
 }
+
+test("remote compact cards preserve source form and activate complete template and pricing contracts", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-compact-sync-"));
+  const previousPricingDir = process.env.PRICING_DIR;
+  const previousFetch = globalThis.fetch;
+  const pricing = {
+    currency: "USD", billingUnit: "1M tokens",
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [
+      { id: "short", promptTokensBelow: 272001, inputPer1mTokens: 2, cachedInputPer1mTokens: 0, cacheWritePer1mTokens: 2.5, outputPer1mTokens: 10 },
+      { id: "long", promptTokensAtLeast: 272001, inputPer1mTokens: 4, cachedInputPer1mTokens: 0, cacheWritePer1mTokens: 5, outputPer1mTokens: 15 }
+    ]
+  };
+  const compact = {
+    ...definition("compact-model"), pricing,
+    proxyTemplate: { targetModel: "provider-deployment" }
+  };
+  const config = {
+    upstreams: [{ name: "test", provider: "openai", baseUrl: "https://api.example.test", routes: { responses: "/v1/responses" } }],
+    models: [{ id: "compact-public", pricingRef: "compact-model", targetModel: "provider-deployment", upstream: "test" }]
+  };
+  let remote = compact;
+  process.env.PRICING_DIR = path.join(tempDir, "pricing");
+  globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes("/contents/") ? [
+    { type: "file", name: "compact-model.json", download_url: "https://download.test/compact-model.json" }
+  ] : remote));
+  try {
+    const transaction = createModelCatalogSyncTransaction(() => config, getConfiguredModelBindingIssues);
+    const sync = () => syncPricingDefinitionsFromGitHub({ owner: "test", repo: "catalog", ref: "compact" }, transaction);
+    await sync();
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(process.env.PRICING_DIR, "compact-model.json"), "utf8")), compact);
+    const card = findPricingDefinitionForModel({ pricingRef: "compact-model" });
+    assert.equal(card.supportsProxyTemplate, true);
+    assert.equal(card.proxyTemplate.targetModel, "provider-deployment");
+    assert.deepEqual(card.proxyTemplate.capabilities, compact.capabilities);
+    assert.deepEqual(card.pricingCatalogEntry, pricing);
+    const generated = buildModelFromPricingTemplate(card, "test", {});
+    assert.equal(generated.id, "compact-model");
+    assert.equal(generated.pricingRef, "compact-model");
+    assert.equal(generated.targetModel, "provider-deployment");
+    const imported = {};
+    upsertPricingCatalogEntry(imported, card);
+    assert.deepEqual(imported.access.pricingCatalog["compact-model"], pricing);
+    assert.equal(compileDefinitionPricing(card).pricing.tiers[0].rates.cachedInputPer1mTokens, 0);
+    assert.equal(resolveModelDescriptor("compact-public").catalogId, "compact-model");
+    const active = getModelCatalogRuntimeInfo();
+    remote = structuredClone(compact);
+    remote.pricing.tiers[1].promptTokensAtLeast = 272000;
+    await assert.rejects(sync(), /tiers|pricing/i);
+    assert.deepEqual(getModelCatalogRuntimeInfo(), active);
+    assert.deepEqual(findPricingDefinitionForModel({ pricingRef: "compact-model" }).pricingCatalogEntry, pricing);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousPricingDir == null) delete process.env.PRICING_DIR;
+    else process.env.PRICING_DIR = previousPricingDir;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
 
 test("remote Model Catalog sync swaps directory and snapshot only after candidate compilation", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-pricing-sync-"));
@@ -84,7 +144,20 @@ test("remote Model Catalog sync swaps directory and snapshot only after candidat
       return new Response(JSON.stringify(entries));
     }
     const fileName = urlText.split("/").at(-1);
-    const rawDefinition = syncMode === "collision"
+    const rawDefinition = syncMode === "invalid-pricing-shape"
+      ? { ...definition("bad-pricing"), pricingCatalogEntry: [] }
+      : syncMode === "invalid-pricing"
+      ? {
+        ...definition("bad-pricing"),
+        pricingCatalogEntry: {
+          tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+          tiers: [
+            { promptTokensBelow: 200000, inputPer1mTokens: 2, outputPer1mTokens: 10 },
+            { promptTokensAtLeast: 199999, inputPer1mTokens: 4, outputPer1mTokens: 15 }
+          ]
+        }
+      }
+      : syncMode === "collision"
       ? definition(fileName === "first.json" ? "first" : "second", ["shared-alias"])
       : syncMode === "invalid-binding"
         ? {
@@ -150,6 +223,22 @@ test("remote Model Catalog sync swaps directory and snapshot only after candidat
     await assert.rejects(
       syncPricingDefinitionsFromGitHub({ owner: "test", repo: "catalog", path: "pricing", ref: "test-ref" }, transaction),
       /alias collision for shared-alias/
+    );
+    assert.deepEqual(await fs.readdir(pricingDir), ["old-model.json"]);
+    assertOldCatalogStillActive();
+
+    syncMode = "invalid-pricing-shape";
+    await assert.rejects(
+      syncPricingDefinitionsFromGitHub({ owner: "test", repo: "catalog", path: "pricing", ref: "test-ref" }, transaction),
+      /pricingCatalogEntry must be an object or null/
+    );
+    assert.deepEqual(await fs.readdir(pricingDir), ["old-model.json"]);
+    assertOldCatalogStillActive();
+
+    syncMode = "invalid-pricing";
+    await assert.rejects(
+      syncPricingDefinitionsFromGitHub({ owner: "test", repo: "catalog", path: "pricing", ref: "test-ref" }, transaction),
+      /pricing|tiers/i
     );
     assert.deepEqual(await fs.readdir(pricingDir), ["old-model.json"]);
     assertOldCatalogStillActive();

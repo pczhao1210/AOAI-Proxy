@@ -5,28 +5,15 @@
   "family": "deepseek-v4",
   "modelVersion": "2026-04-23",
   "status": "ga",
-  "interfaces": [
-    "chat/completions"
-  ],
-  "inputModalities": [
-    "text"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "reasoning",
-    "json-output"
-  ],
+  "interfaces": ["chat/completions"],
+  "inputModalities": ["text"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "json-output"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
         "parameter": "reasoning_effort",
-        "levels": [
-          "low",
-          "high",
-          "max"
-        ],
+        "levels": ["low", "high", "max"],
         "default": "high",
         "aliases": {
           "medium": "high",
@@ -35,10 +22,7 @@
       },
       "thinking": {
         "parameter": "thinking.type",
-        "types": [
-          "enabled",
-          "disabled"
-        ],
+        "types": ["enabled", "disabled"],
         "default": "enabled"
       }
     }
@@ -50,27 +34,9 @@
     "status": "published",
     "inputPer1mTokens": 0.14,
     "cachedInputPer1mTokens": 0.0028,
-    "outputPer1mTokens": 0.28,
-    "inputPer1kTokens": 0.00014,
-    "cachedInputPer1kTokens": 0.0000028,
-    "outputPer1kTokens": 0.00028
+    "outputPer1mTokens": 0.28
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.00014,
-    "cachedInputPer1kTokens": 0.0000028,
-    "outputPer1kTokens": 0.00028
-  },
-  "proxyTemplate": {
-    "id": "DeepSeek-V4-Flash",
-    "displayName": "DeepSeek V4 Flash",
-    "targetModel": "DeepSeek-V4-Flash",
-    "capabilities": [
-      "reasoning",
-      "json-output"
-    ],
-    "pricingRef": "DeepSeek-V4-Flash"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
     "pricing": "https://api-docs.deepseek.com/quick_start/pricing"

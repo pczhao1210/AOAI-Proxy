@@ -12,6 +12,7 @@ Focused reliability and policy regressions:
 node --test test/media-policy.test.js
 node --test test/stream-backpressure.test.js
 node --test test/governance-pricing.test.js
+node --test test/token-pricing.test.js test/context-pricing-integration.test.js test/context-pricing-routes.test.js test/text-cost-observability.test.js
 node --test test/request-policy.test.js
 node --test test/request-body-policy.test.js test/anthropic-body-policy.test.js
 node --test test/admin-runtime-loader.test.js
@@ -50,6 +51,28 @@ disabled, starts a disposable container, and verifies HTTP audio bytes, large WS
 closure through the actual reverse proxy. It does not exercise public TLS, production networking,
 slow-consumer saturation through Caddy or real audio. Direct WS slow-consumer/shutdown checks remain
 in the ordinary realtime suite. Neither optional gate uses the running service's config.
+
+Whole-request pricing tests cover exact interval boundaries, cache-inclusive
+input, Messages cache-write TTLs, explicit zero versus missing rates, local
+estimates, override precedence, in-flight price snapshots, Model Router fees,
+and atomic catalog rejection. The pricing route test uses disposable proxies
+to check all nine JSON/SSE text directions against the same upstream usage,
+including duplicate terminals. These mocks establish internal accounting
+contracts, not provider invoices or production deployment acceptance.
+
+Model-card authoring checks: `npm run cards:check` verifies canonical active JSON
+without touching archives. `node --test test/model-card-format.test.js` covers
+compact/legacy equivalence, explicit null/zero/overrides, complete tier import,
+formatter idempotence and backend/admin loader parity. Use
+`npm run cards:format` to normalize active cards, then run the Catalog and sync suites.
+
+Cache-write regressions cover the documented Chat and Responses detail fields,
+Messages combined/TTL counts, distinct reported zero versus missing evidence,
+non-additive input pricing, write counts/costs in statistics and spill records,
+and admin display of known/partial/unreported values. The nine-direction route
+test checks that JSON and SSE preserve upstream write accounting across shims
+without increasing input or total token counts. The optional PostgreSQL gate
+must also pass before claiming live database migration/rollup acceptance.
 
 These tests never establish real audio or provider acceptance. Live MAI/OpenAI/Azure verification
 requires separately authorized deployments, endpoint versions/regions, credentials, legal small audio/image

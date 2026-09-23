@@ -5,20 +5,10 @@
   "family": "gpt-4o",
   "modelVersion": "2025-12-15",
   "status": "preview",
-  "interfaces": [
-    "audio/transcriptions"
-  ],
-  "inputModalities": [
-    "audio",
-    "text"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "transcription",
-    "speech-to-text"
-  ],
+  "interfaces": ["audio/transcriptions"],
+  "inputModalities": ["audio", "text"],
+  "outputModalities": ["text"],
+  "capabilities": ["transcription", "speech-to-text"],
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
@@ -26,12 +16,9 @@
     "status": "published",
     "inputPer1mTokens": 1.25,
     "outputPer1mTokens": 5,
-    "inputPer1kTokens": 0.00125,
-    "outputPer1kTokens": 0.005,
     "channels": {
       "audio": {
-        "inputPer1mTokens": 3,
-        "inputPer1kTokens": 0.003
+        "inputPer1mTokens": 3
       }
     }
   },

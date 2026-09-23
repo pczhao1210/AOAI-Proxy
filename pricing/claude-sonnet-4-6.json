@@ -12,24 +12,10 @@
   "interfacesByHostingMode": {
     "anthropic": ["messages"]
   },
-  "interfaces": [
-    "messages"
-  ],
-  "inputModalities": [
-    "text",
-    "image",
-    "code"
-  ],
-  "outputModalities": [
-    "text",
-    "image",
-    "code"
-  ],
-  "capabilities": [
-    "reasoning",
-    "vision",
-    "function-calling"
-  ],
+  "interfaces": ["messages"],
+  "inputModalities": ["text", "image", "code"],
+  "outputModalities": ["text", "image", "code"],
+  "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "messages": {
       "thinking": {
@@ -41,7 +27,9 @@
       "reasoning": {
         "parameter": "output_config.effort",
         "levels": ["low", "medium", "high", "max"],
-        "aliases": { "xhigh": "max" },
+        "aliases": {
+          "xhigh": "max"
+        },
         "validation": "passthrough"
       }
     }
@@ -53,28 +41,9 @@
     "status": "published",
     "inputPer1mTokens": 3,
     "cachedInputPer1mTokens": 0.3,
-    "outputPer1mTokens": 15,
-    "inputPer1kTokens": 0.003,
-    "cachedInputPer1kTokens": 0.0003,
-    "outputPer1kTokens": 0.015
+    "outputPer1mTokens": 15
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.003,
-    "cachedInputPer1kTokens": 0.0003,
-    "outputPer1kTokens": 0.015
-  },
-  "proxyTemplate": {
-    "id": "claude-sonnet-4-6",
-    "displayName": "Claude Sonnet 4.6",
-    "targetModel": "claude-sonnet-4-6",
-    "capabilities": [
-      "reasoning",
-      "vision",
-      "function-calling"
-    ],
-    "pricingRef": "claude-sonnet-4-6"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-from-partners#anthropic",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",

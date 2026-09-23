@@ -7,37 +7,15 @@
   "status": "ga",
   "contextWindow": 128000,
   "maxOutputTokens": 32000,
-  "interfaces": [
-    "realtime"
-  ],
-  "inputModalities": [
-    "text",
-    "image",
-    "audio"
-  ],
-  "outputModalities": [
-    "text",
-    "audio"
-  ],
-  "capabilities": [
-    "reasoning",
-    "realtime",
-    "audio-input",
-    "audio-output",
-    "vision",
-    "function-calling"
-  ],
+  "interfaces": ["realtime"],
+  "inputModalities": ["text", "image", "audio"],
+  "outputModalities": ["text", "audio"],
+  "capabilities": ["reasoning", "realtime", "audio-input", "audio-output", "vision", "function-calling"],
   "protocolProfiles": {
     "realtime": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
+        "levels": ["minimal", "low", "medium", "high", "xhigh"]
       }
     }
   },
@@ -49,40 +27,20 @@
     "inputPer1mTokens": 4,
     "cachedInputPer1mTokens": 0.4,
     "outputPer1mTokens": 24,
-    "inputPer1kTokens": 0.004,
-    "cachedInputPer1kTokens": 0.0004,
-    "outputPer1kTokens": 0.024,
     "channels": {
       "audio": {
         "inputPer1mTokens": 32,
         "cachedInputPer1mTokens": 0.4,
-        "outputPer1mTokens": 64,
-        "inputPer1kTokens": 0.032,
-        "cachedInputPer1kTokens": 0.0004,
-        "outputPer1kTokens": 0.064
+        "outputPer1mTokens": 64
       },
       "image": {
         "inputPer1mTokens": 5,
-        "cachedInputPer1mTokens": 0.5,
-        "inputPer1kTokens": 0.005,
-        "cachedInputPer1kTokens": 0.0005
+        "cachedInputPer1mTokens": 0.5
       }
     }
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "gpt-realtime-2.1",
-    "displayName": "GPT Realtime 2.1",
-    "targetModel": "gpt-realtime-2.1",
-    "pricingRef": "gpt-realtime-2.1",
-    "capabilities": [
-      "reasoning",
-      "realtime",
-      "audio-input",
-      "audio-output",
-      "vision",
-      "function-calling"
-    ],
     "routes": {
       "realtime": "realtime"
     }

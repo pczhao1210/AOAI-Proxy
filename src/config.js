@@ -8,6 +8,7 @@ import {
 import { getConfiguredModelBindingIssues } from "./model-validation.js";
 import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
 import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from "./pricing-library.js";
+import { compilePricingPolicy } from "./token-pricing.js";
 import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
 import { isSupportedPersistenceMode } from "./persistence-mode.js";
 import { DEFAULT_MEDIA_HTTP } from "./proxy/media-body.js";
@@ -1829,6 +1830,7 @@ function validateConfig(cfg) {
       }
     }
     if (model.pricing != null) {
+      compilePricingPolicy(model.pricing, `models[${idx}].pricing`);
       if (typeof model.pricing !== "object") {
         throw new Error(`models[${idx}].pricing must be an object`);
       }
@@ -1852,6 +1854,7 @@ function validateConfig(cfg) {
         throw new Error("access.pricingCatalog must be an object");
       }
       for (const [pricingRef, entry] of Object.entries(cfg.access.pricingCatalog)) {
+        compilePricingPolicy(entry, `access.pricingCatalog.${pricingRef}`);
         if (!entry || typeof entry !== "object") {
           throw new Error(`access.pricingCatalog.${pricingRef} must be an object`);
         }

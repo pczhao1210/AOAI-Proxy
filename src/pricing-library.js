@@ -3,6 +3,8 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
 import { fileURLToPath } from "node:url";
+import { compileDefinitionPricing } from "./pricing-policy.js";
+import { expandModelCard } from "./model-card.js";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BUNDLED_PRICING_DIR = path.resolve(MODULE_DIR, "..", "pricing");
@@ -323,9 +325,8 @@ function rememberLookup(lookup, key, definition) {
 }
 
 function normalizePricingDefinition(rawDefinition) {
-  const definition = asPlainObject(rawDefinition);
+  const definition = expandModelCard(asPlainObject(rawDefinition));
   const tokenLimits = normalizeModelTokenLimits(definition);
-  const hasPricingCatalogEntry = Object.prototype.hasOwnProperty.call(definition, "pricingCatalogEntry");
   const interfacesByHostingMode = Object.fromEntries(
     Object.entries(asPlainObject(definition.interfacesByHostingMode))
       .map(([mode, interfaces]) => [String(mode).trim().toLowerCase(), normalizeStringArray(interfaces)])
@@ -363,6 +364,7 @@ function normalizePricingDefinition(rawDefinition) {
     outputModalities: normalizeStringArray(definition.outputModalities),
     capabilities: normalizeStringArray(definition.capabilities),
     pricing: asPlainObject(definition.pricing),
+    pricingCatalogEntry: definition.pricingCatalogEntry,
     proxyTemplate,
     sources: asPlainObject(definition.sources),
     notes: Array.isArray(definition.notes) ? definition.notes.filter((item) => typeof item === "string") : [],
@@ -389,11 +391,6 @@ function normalizePricingDefinition(rawDefinition) {
       }
     }
   };
-  if (hasPricingCatalogEntry) {
-    normalizedDefinition.pricingCatalogEntry = definition.pricingCatalogEntry && typeof definition.pricingCatalogEntry === "object"
-      ? asPlainObject(definition.pricingCatalogEntry)
-      : null;
-  }
   return normalizedDefinition;
 }
 
@@ -403,6 +400,7 @@ function parsePricingDefinition(text, fileName) {
     throw new Error(`Pricing definition ${fileName} is missing required id`);
   }
   definition.fileName = fileName;
+  compileDefinitionPricing(definition);
   return definition;
 }
 

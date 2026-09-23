@@ -4,6 +4,7 @@ import { recordGovernanceUsage, getGovernanceSnapshot, checkUnmeteredRequestAcce
 import { getStats, recordUsage, recordMediaUsage } from "../src/stats.js";
 import { createMediaUsageTracker, normalizeMediaUsage, estimateMediaCost } from "../src/proxy/media-usage.js";
 import { resolveMediaPricing, settleMediaUsage } from "../src/proxy/media-accounting.js";
+import { getCacheWriteUsage, getUsageTotals } from "../src/usage.js";
 
 const model = { id: "gpt-4o", targetModel: "gpt-4o", pricingRef: "gpt-4o" };
 const config = { models: [model], access: { budgets: { enabled: false, defaultCurrency: "USD" } } };
@@ -36,6 +37,50 @@ for (const [index, [name, usage, expected]] of cases.entries()) {
     assert.deepEqual(usage, original);
   });
 }
+
+test("reported cache writes preserve zero, large counts, TTL totals and unknown absence without changing legacy totals", () => {
+  for (const [protocol, usage, tokens, totals] of [
+    ["chat/completions", { prompt_tokens: 10, completion_tokens: 1, prompt_tokens_details: { cache_write_tokens: 1000 } }, 1000, [10, 1, 11, 0]],
+    ["responses", { input_tokens: 10, output_tokens: 1, input_tokens_details: { cache_write_tokens: 3 } }, 3, [10, 1, 11, 0]],
+    ["messages", { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 7, cache_creation_input_tokens: 3 }, 3, [12, 1, 13, 7]],
+    ["messages", { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 7,
+      cache_creation: { ephemeral_5m_input_tokens: "2", ephemeral_1h_input_tokens: "1" } }, 3, [12, 1, 13, 7]],
+    ["messages", { prompt_tokens: 12, input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 7, cache_creation_input_tokens: 3 }, 3, [12, 1, 13, 7]],
+    ["chat/completions", { prompt_tokens: 10, completion_tokens: 1, prompt_tokens_details: { cache_write_tokens: 0 } }, 0, [10, 1, 11, 0]],
+    ["chat/completions", { prompt_tokens: 10, completion_tokens: 1 }, null, [10, 1, 11, 0]],
+    ["messages", { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: null }, null, [10, 1, 11, 0]]
+  ]) {
+    const original = structuredClone(usage);
+    const reported = getCacheWriteUsage(usage, protocol);
+    assert.equal(reported.tokens, tokens);
+    assert.equal(reported.usageStatus, tokens === null ? "unknown" : "observed");
+    assert.deepEqual(counters.map(field => getUsageTotals(usage)[field]), totals);
+    assert.deepEqual(usage, original);
+  }
+});
+
+test("governance exposes actual cache-write costs without adding a second TPM charge or router write fee", () => {
+  const actual = { id: "cache-write-backend", pricing: { inputPer1mTokens: 2, outputPer1mTokens: 10, cacheWritePer1mTokens: 3 } };
+  const router = { id: "model-router", pricing: { inputPer1kTokens: 0.001 } };
+  const usage = { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 5 };
+  const pricingConfig = { models: [router, actual], access: { budgets: { enabled: false } } };
+  const cost = recordGovernanceUsage(pricingConfig, { keyId: "cache-write-router-reporting", apiKey: {} }, router, usage,
+    Date.now(), actual.id, { backendRouteKey: "messages" });
+  assert.equal(cost.promptTokens, 15);
+  assert.equal(cost.totalTokens, 16);
+  assert.equal(cost.cacheWrite.tokens, 5);
+  assert.equal(cost.cacheWrite.costStatus, "priced");
+  assert.ok(Math.abs(cost.cacheWrite.knownCostAmount - 0.000015) < 1e-12);
+  assert.ok(Math.abs(cost.modelRouterCostAmount - 0.000015) < 1e-12);
+  const unresolved = recordGovernanceUsage(pricingConfig, { keyId: "cache-write-unresolved-reporting", apiKey: {} }, router, usage,
+    Date.now(), "", { backendRouteKey: "messages" });
+  assert.equal(unresolved.cacheWrite.tokens, 5);
+  assert.equal(unresolved.cacheWrite.knownCostAmount, 0);
+  assert.equal(unresolved.cacheWrite.costStatus, "unknown");
+  const noConsumer = recordGovernanceUsage(pricingConfig, null, actual, usage, Date.now(), "", { backendRouteKey: "messages" });
+  assert.equal(noConsumer.cacheWrite.tokens, 5);
+  assert.equal(noConsumer.cacheWrite.costStatus, "unknown");
+});
 
 test("media usage preserves explicit zero and never infers time or cost from bytes", () => {
   const raw = { type: "tokens", input_tokens: 10, output_tokens: 0, total_tokens: 10,

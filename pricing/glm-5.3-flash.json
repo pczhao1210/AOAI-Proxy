@@ -6,30 +6,15 @@
   "modelVersion": "2026-08-26",
   "status": "ga",
   "contextWindow": 1040000,
-  "interfaces": [
-    "chat/completions"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "reasoning",
-    "vision",
-    "function-calling"
-  ],
+  "interfaces": ["chat/completions"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
         "parameter": "reasoning_effort",
-        "levels": [
-          "low",
-          "high",
-          "max"
-        ],
+        "levels": ["low", "high", "max"],
         "default": "max"
       }
     }
@@ -41,27 +26,10 @@
     "status": "published",
     "inputPer1mTokens": 0.15,
     "cachedInputPer1mTokens": 0.03,
-    "outputPer1mTokens": 0.5,
-    "inputPer1kTokens": 0.00015,
-    "cachedInputPer1kTokens": 0.00003,
-    "outputPer1kTokens": 0.0005
-  },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.00015,
-    "cachedInputPer1kTokens": 0.00003,
-    "outputPer1kTokens": 0.0005
+    "outputPer1mTokens": 0.5
   },
   "proxyTemplate": {
-    "id": "glm-5.3-flash",
-    "displayName": "GLM-5.3 Flash",
-    "targetModel": "accounts/fireworks/models/glm-5p3-flash",
-    "capabilities": [
-      "reasoning",
-      "vision",
-      "function-calling"
-    ],
-    "pricingRef": "glm-5.3-flash"
+    "targetModel": "accounts/fireworks/models/glm-5p3-flash"
   },
   "sources": {
     "capabilities": "https://fireworks.ai/models/fireworks/glm-5p3-flash",

@@ -28,11 +28,6 @@
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "gpt-image-2.5-sunburst",
-    "displayName": "GPT-Image-2.5-Sunburst",
-    "targetModel": "gpt-image-2.5-sunburst",
-    "capabilities": ["vision", "image-generation", "image-editing"],
-    "pricingRef": "gpt-image-2.5-sunburst",
     "routes": {
       "*": "openai-image"
     }

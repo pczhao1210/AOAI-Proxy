@@ -1,5 +1,56 @@
 import { getUsageTotals } from "./usage.js";
 
+export function normalizeCacheWrite(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const tokens = value.usageStatus === "observed" && Number.isInteger(value.tokens) && value.tokens >= 0 ? value.tokens : null;
+  const knownCostAmount = Number.isFinite(value.knownCostAmount) && value.knownCostAmount >= 0 ? value.knownCostAmount : 0;
+  const priced = value.costStatus === "priced" && Number.isFinite(value.estimatedCostAmount) && value.estimatedCostAmount >= 0;
+  return {
+    tokens,
+    usageStatus: tokens === null ? "unknown" : "observed",
+    knownCostAmount,
+    estimatedCostAmount: priced ? value.estimatedCostAmount : null,
+    costStatus: priced ? "priced" : value.costStatus === "partial" || knownCostAmount > 0 ? "partial" : "unknown"
+  };
+}
+
+export function summarizeCacheWrite({
+  requests = 0, observedRequests = 0, pricedRequests = 0, partialCostRequests = 0,
+  unreportedRequests = 0, observedTokens = null, knownCostAmount = null
+} = {}) {
+  const usageComplete = requests > 0 && unreportedRequests === 0 && observedRequests === requests;
+  const costComplete = requests > 0 && unreportedRequests === 0 && pricedRequests === requests;
+  return {
+    requests, observedRequests, pricedRequests, partialCostRequests, unreportedRequests,
+    unknownUsageRequests: requests - observedRequests,
+    unknownCostRequests: requests - pricedRequests,
+    observedTokens,
+    tokens: usageComplete ? observedTokens : null,
+    usageStatus: usageComplete ? "observed" : "unknown",
+    knownCostAmount,
+    estimatedCostAmount: costComplete ? knownCostAmount : null,
+    costStatus: costComplete ? "priced" : pricedRequests > 0 || partialCostRequests > 0 || knownCostAmount > 0 ? "partial" : "unknown"
+  };
+}
+
+function addCacheWrite(bucket, value) {
+  const current = bucket.cacheWrite || summarizeCacheWrite();
+  const next = { ...current };
+  if (!value) {
+    if (next.unreportedRequests !== null) next.unreportedRequests += 1;
+  } else {
+    next.requests += 1;
+    if (value.usageStatus === "observed") {
+      next.observedRequests += 1;
+      next.observedTokens = (next.observedTokens ?? 0) + value.tokens;
+    }
+    if (value.costStatus === "priced") next.pricedRequests += 1;
+    if (value.costStatus === "partial") next.partialCostRequests += 1;
+    next.knownCostAmount = (next.knownCostAmount ?? 0) + value.knownCostAmount;
+  }
+  bucket.cacheWrite = summarizeCacheWrite(next);
+}
+
 const stats = {
   startedAt: new Date().toISOString(),
   totals: {
@@ -9,6 +60,8 @@ const stats = {
     completionTokens: 0,
     totalTokens: 0,
     cachedTokens: 0,
+    cacheWrite: summarizeCacheWrite(),
+    textUnknownCostRequests: 0,
     modelRouterCostAmount: 0,
     modelRouterCostCurrency: "USD",
     actualModelCostAmount: 0,
@@ -35,6 +88,8 @@ function getModelStats(model) {
       completionTokens: 0,
       totalTokens: 0,
       cachedTokens: 0,
+      cacheWrite: summarizeCacheWrite(),
+      textUnknownCostRequests: 0,
       modelRouterCostAmount: 0,
       modelRouterCostCurrency: "USD",
       actualModelCostAmount: 0,
@@ -58,6 +113,8 @@ function getActualModelStats(modelStats, actualModel) {
       completionTokens: 0,
       totalTokens: 0,
       cachedTokens: 0,
+      cacheWrite: summarizeCacheWrite(),
+      textUnknownCostRequests: 0,
       modelRouterCostAmount: 0,
       modelRouterCostCurrency: "USD",
       actualModelCostAmount: 0,
@@ -78,6 +135,8 @@ function getKeyStats(keyId) {
       completionTokens: 0,
       totalTokens: 0,
       cachedTokens: 0,
+      cacheWrite: summarizeCacheWrite(),
+      textUnknownCostRequests: 0,
       modelRouterCostAmount: 0,
       modelRouterCostCurrency: "USD",
       actualModelCostAmount: 0,
@@ -158,6 +217,19 @@ export function recordUsage(model, usage, context = {}) {
   keyStats.completionTokens += completion;
   keyStats.totalTokens += total;
   keyStats.cachedTokens += cached;
+
+  if (context.cost?.pricing || context.cost?.cacheWrite) {
+    const cacheWrite = normalizeCacheWrite(context.cost.cacheWrite);
+    for (const bucket of [stats.totals, modelStats, keyStats, actualModelStats]) {
+      if (bucket) addCacheWrite(bucket, cacheWrite);
+    }
+  }
+
+  if (context.cost?.pricing && context.cost.costStatus && context.cost.costStatus !== "priced") {
+    for (const bucket of [stats.totals, modelStats, keyStats, actualModelStats]) {
+      if (bucket) bucket.textUnknownCostRequests += 1;
+    }
+  }
 
   if (Number.isFinite(context?.cost?.amount) && context.cost.amount > 0) {
     stats.totals.estimatedCostAmount += context.cost.amount;

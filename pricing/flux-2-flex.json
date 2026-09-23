@@ -5,26 +5,26 @@
   "family": "flux-2",
   "modelVersion": null,
   "status": "ga",
-  "interfaces": [
-    "images/generations"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "image"
-  ],
-  "capabilities": [
-    "vision",
-    "image-generation",
-    "image-editing"
-  ],
+  "interfaces": ["images/generations"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["image"],
+  "capabilities": ["vision", "image-generation", "image-editing"],
   "protocolProfiles": {
     "images/generations": {
       "request": {
         "transport": "blackforest-provider",
-        "dropParameters": ["size", "background", "input_fidelity", "moderation", "output_compression", "partial_images", "response_format", "stream", "style", "user"],
+        "dropParameters": [
+          "size",
+          "background",
+          "input_fidelity",
+          "moderation",
+          "output_compression",
+          "partial_images",
+          "response_format",
+          "stream",
+          "style",
+          "user"
+        ],
         "sizeExpansion": {
           "source": "size",
           "width": "width",
@@ -50,15 +50,7 @@
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
-    "id": "flux-2-flex",
-    "displayName": "FLUX.2 [flex]",
     "targetModel": "FLUX.2-flex",
-    "capabilities": [
-      "vision",
-      "image-generation",
-      "image-editing"
-    ],
-    "pricingRef": "flux-2-flex",
     "routes": {
       "*": "blackforest-image"
     }

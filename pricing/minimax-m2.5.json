@@ -6,18 +6,10 @@
   "modelVersion": null,
   "status": "ga",
   "contextWindow": 204800,
-  "interfaces": [
-    "chat/completions"
-  ],
-  "inputModalities": [
-    "text"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "reasoning"
-  ],
+  "interfaces": ["chat/completions"],
+  "inputModalities": ["text"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
@@ -32,26 +24,9 @@
     "status": "published",
     "inputPer1mTokens": 0.33,
     "cachedInputPer1mTokens": 0.033,
-    "outputPer1mTokens": 1.32,
-    "inputPer1kTokens": 0.00033,
-    "cachedInputPer1kTokens": 0.000033,
-    "outputPer1kTokens": 0.00132
+    "outputPer1mTokens": 1.32
   },
-  "pricingCatalogEntry": {
-    "currency": "USD",
-    "inputPer1kTokens": 0.00033,
-    "cachedInputPer1kTokens": 0.000033,
-    "outputPer1kTokens": 0.00132
-  },
-  "proxyTemplate": {
-    "id": "MiniMax-M2.5",
-    "displayName": "MiniMax M2.5",
-    "targetModel": "MiniMax-M2.5",
-    "capabilities": [
-      "reasoning"
-    ],
-    "pricingRef": "MiniMax-M2.5"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://platform.minimax.io/docs/api-reference/text-post",
     "limits": "https://platform.minimax.io/docs/api-reference/api-overview",

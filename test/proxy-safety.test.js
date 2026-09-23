@@ -447,14 +447,16 @@ test("pricing protocol metadata distinguishes GPT, Claude, DeepSeek, and Grok in
 
   const grok43 = getPricingDefinition("grok-4.3");
   assert.deepEqual(grok43?.interfaces, ["chat/completions", "responses"]);
-  assert.equal(grok43?.pricingCatalogEntry, null);
+  assert.equal(grok43?.pricingCatalogEntry?.tiering?.method, "whole-request");
+  assert.equal(grok43?.pricingCatalogEntry?.tiers?.[1]?.promptTokensAtLeast, 200000);
   assert.equal(grok43?.pricing?.tiers?.[1]?.promptTokensAtLeast, 200000);
   assert.equal(grok43?.pricing?.tiers?.[1]?.inputPer1mTokens, 2.5);
 
   const grok46 = getPricingDefinition("grok-4.6");
   assert.deepEqual(grok46?.interfaces, ["chat/completions", "responses"]);
   assert.deepEqual(grok46?.inputModalities, ["text", "image"]);
-  assert.equal(grok46?.pricingCatalogEntry, null);
+  assert.equal(grok46?.pricingCatalogEntry?.tiering?.method, "whole-request");
+  assert.equal(grok46?.pricingCatalogEntry?.tiers?.[1]?.promptTokensAtLeast, 200000);
   assert.equal(grok46?.pricing?.tiers?.[1]?.promptTokensAtLeast, 200000);
   assert.equal(grok46?.pricing?.tiers?.[1]?.inputPer1mTokens, 4);
 });

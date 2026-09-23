@@ -6,32 +6,15 @@
   "modelVersion": null,
   "status": "preview",
   "contextWindow": 500000,
-  "interfaces": [
-    "chat/completions",
-    "responses"
-  ],
-  "inputModalities": [
-    "text",
-    "image"
-  ],
-  "outputModalities": [
-    "text"
-  ],
-  "capabilities": [
-    "reasoning",
-    "vision",
-    "function-calling"
-  ],
+  "interfaces": ["chat/completions", "responses"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
         "parameter": "reasoning_effort",
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
+        "levels": ["low", "medium", "high", "xhigh"],
         "default": "high"
       }
     },
@@ -48,45 +31,28 @@
     "billingUnit": "1M tokens",
     "sourceType": "xai-official",
     "status": "published",
-    "inputPer1mTokens": 2,
-    "cachedInputPer1mTokens": 0.5,
-    "outputPer1mTokens": 6,
-    "inputPer1kTokens": 0.002,
-    "cachedInputPer1kTokens": 0.0005,
-    "outputPer1kTokens": 0.006,
+    "tiering": {
+      "basis": "inputTokensIncludingCache",
+      "method": "whole-request"
+    },
     "tiers": [
       {
+        "id": "short",
         "promptTokensBelow": 200000,
         "inputPer1mTokens": 2,
         "cachedInputPer1mTokens": 0.5,
-        "outputPer1mTokens": 6,
-        "inputPer1kTokens": 0.002,
-        "cachedInputPer1kTokens": 0.0005,
-        "outputPer1kTokens": 0.006
+        "outputPer1mTokens": 6
       },
       {
+        "id": "long",
         "promptTokensAtLeast": 200000,
         "inputPer1mTokens": 4,
         "cachedInputPer1mTokens": 1,
-        "outputPer1mTokens": 12,
-        "inputPer1kTokens": 0.004,
-        "cachedInputPer1kTokens": 0.001,
-        "outputPer1kTokens": 0.012
+        "outputPer1mTokens": 12
       }
     ]
   },
-  "pricingCatalogEntry": null,
-  "proxyTemplate": {
-    "id": "grok-4.6",
-    "displayName": "Grok 4.6",
-    "targetModel": "grok-4.6",
-    "capabilities": [
-      "reasoning",
-      "vision",
-      "function-calling"
-    ],
-    "pricingRef": "grok-4.6"
-  },
+  "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-grok",
     "limits": "https://docs.x.ai/developers/models/grok-4.6",
@@ -94,6 +60,6 @@
   },
   "notes": [
     "Azure Foundry 将 Grok 4.6 列为支持 Chat Completions 和 Responses 的 preview deployment；Responses reasoning effort 固定为 high。",
-    "xAI 直连请求在 prompt 达到 200K tokens 时整次请求使用高档费率；当前治理不支持该阶梯，pricingCatalogEntry 保持为空以避免低估。"
+    "xAI 直连请求在 prompt 达到 200K tokens 时整次请求使用高档费率；pricingCatalogEntry 启用该分档。此处为 xAI 官方单价，不代表已验证的 Azure 托管价格，绑定前需核实实际计费来源。"
   ]
 }

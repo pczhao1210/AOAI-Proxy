@@ -10,6 +10,8 @@
     "admin:dev": "vite --config admin-ui/vite.config.js",
     "build:admin": "vite build --config admin-ui/vite.config.js",
     "build": "npm run build:admin",
+    "cards:check": "node scripts/model-cards.js --check",
+    "cards:format": "node scripts/model-cards.js --write",
     "test:unit": "node --test test/*.test.js",
     "test:routes": "node test/run-all-routes.js",
     "test:cli:claude-code": "node test/cli/claude-code-smoke.js",
