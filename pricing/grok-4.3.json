@@ -30,14 +30,14 @@
     },
     "tiers": [
       {
-        "id": "short",
+        "id": "short <200K",
         "promptTokensBelow": 200000,
         "inputPer1mTokens": 1.25,
         "cachedInputPer1mTokens": 0.2,
         "outputPer1mTokens": 2.5
       },
       {
-        "id": "long",
+        "id": "long >=200K",
         "promptTokensAtLeast": 200000,
         "inputPer1mTokens": 2.5,
         "cachedInputPer1mTokens": 0.4,

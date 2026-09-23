@@ -46,7 +46,7 @@
     },
     "tiers": [
       {
-        "id": "short",
+        "id": "short <=272K",
         "contextClass": "short",
         "promptTokensBelow": 272001,
         "inputPer1mTokens": 2.5,
@@ -54,7 +54,7 @@
         "outputPer1mTokens": 15
       },
       {
-        "id": "long",
+        "id": "long >272K",
         "contextClass": "long",
         "promptTokensAtLeast": 272001,
         "inputPer1mTokens": 5,

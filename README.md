@@ -13,6 +13,7 @@
 - Client -> Proxy uses API key auth via `Authorization: Bearer` or `x-api-key`
 - Proxy -> Azure AI Foundry / Azure OpenAI uses AAD tokens or protocol-appropriate `api-key` / `x-api-key` headers, based on `auth.mode`
 - Static admin page for config editing, AAD verification, model usage stats, and recent log inspection
+- Runtime model tables show four token metrics, a derived cache-read ratio, final estimated cost, and request-time billing-tier breakdowns. Confirmed model-only resets preserve global/key usage and quotas; see [statistics semantics](docs/configuration/feature-flags.zh-CN.md#持久化与访问治理).
 - Model-level route overrides via `models[].routes` and upstream route maps via `upstreams[].routes`
 - Native protocol routes preserve modern Responses items and Anthropic content blocks; cross-protocol shims use best-effort conversion with structured loss warnings by default and expose strict request/response rejection switches
 - Optional DCE-based Log Analytics export for correlated proxy events, usage, and redacted prompt/output content; see the [setup guide](docs/observability/log-analytics-dce.en.md)

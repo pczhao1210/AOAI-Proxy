@@ -11,6 +11,7 @@ import {
   fetchStats,
   initializeLogAnalytics,
   reloadConfig,
+  resetModelStats,
   restartService,
   saveConfig,
   sendProxyRequest,
@@ -46,9 +47,8 @@ import {
   ensureUniqueName,
   formatDateTime,
   formatBytes,
-  formatCacheWriteCost,
-  formatCacheWriteTokens,
   formatEstimatedCost,
+  formatTokenSummary,
   getSuggestedModelRouteValues,
   getPayloadEditorNote,
   getLogDetails,
@@ -60,6 +60,7 @@ import {
   pickCompressionPreset,
   prepareProxyPayload,
   REDACTED_SECRET_VALUE,
+  runtimeTokenHelp,
   supportsPricingTemplate,
   setValueByPath
 } from "./utils.js";
@@ -168,6 +169,7 @@ export default function App() {
   const loadRequestRef = useRef(0);
   const logsRequestRef = useRef(0);
   const harnessEligibilityRequestRef = useRef(0);
+  const modelStatsResetRef = useRef(null);
   const sectionNavigationTargetRef = useRef(null);
 
   const dirty = useMemo(() => JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText]);
@@ -449,6 +451,27 @@ export default function App() {
     } finally {
       setDiagnosticsBusy((current) => ({ ...current, runtimeSync: false }));
     }
+  }
+
+  async function handleResetModelStats() {
+    if (modelStatsResetRef.current) return modelStatsResetRef.current;
+    setDiagnosticsBusy((current) => ({ ...current, modelStatsReset: true }));
+    const pending = (async () => {
+      const result = await resetModelStats();
+      // Fence any pre-reset loads, including a slow initial load or filter change.
+      runtimeLoader.updateFilters({});
+      setStats((current) => current ? { ...current, perModel: {}, modelsResetAt: result.modelsResetAt } : current);
+      try {
+        await refreshRuntimeAndStats();
+      } catch (loadError) {
+        throw new Error(t("runtime.modelsResetRefreshFailed", "Model statistics were reset, but refreshing failed. Reload the view before continuing.") + ` ${loadError.message || ""}`);
+      }
+    })().finally(() => {
+      modelStatsResetRef.current = null;
+      setDiagnosticsBusy((current) => ({ ...current, modelStatsReset: false }));
+    });
+    modelStatsResetRef.current = pending;
+    return pending;
   }
 
   useEffect(() => {
@@ -1095,8 +1118,7 @@ export default function App() {
       requests: totals.requests || 0,
       errors: totals.errors || 0,
       cost: formatEstimatedCost(totals, t),
-      cacheWriteTokens: formatCacheWriteTokens(totals.cacheWrite, t),
-      cacheWriteCost: formatCacheWriteCost(totals.cacheWrite, t),
+      tokens: formatTokenSummary(totals, t),
       blocked,
       persistence: runtime?.persistence?.activeMode || runtime?.persistence?.mode || "file",
       logging: statusLabel(
@@ -1295,7 +1317,7 @@ export default function App() {
 
       <section className="summary-grid status-strip" aria-label={t("summary.title", "System status") }>
         <StatCard label={t("summary.requests", "Requests")} value={summary.requests} note={`${t("summary.errors", "Errors")} ${summary.errors}`} />
-        <StatCard label={t("summary.cost", "Estimated Cost")} value={summary.cost} note={`${t("summary.blocked", "Blocked")} ${summary.blocked} · ${t("table.cacheWriteTokens", "Cache Write Tokens")} ${summary.cacheWriteTokens} · ${t("table.cacheWriteCost", "Cache Write Cost (included)")} ${summary.cacheWriteCost}`} />
+        <StatCard label={t("summary.cost", "Estimated Cost")} value={summary.cost} note={<span title={runtimeTokenHelp(t)}>{`${t("summary.blocked", "Blocked")} ${summary.blocked} · ${summary.tokens}`}</span>} />
         <StatCard label={t("summary.persistence", "Persistence")} value={t(`option.${summary.persistence}`, summary.persistence)} note={`${t("summary.logging", "Logging")} ${t(`status.${summary.logging}`, summary.logging)}`} />
         <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : t("summary.synced", "Synced")} />
       </section>
@@ -1545,6 +1567,9 @@ export default function App() {
           governanceKeys={governanceKeys}
           perKeyStats={perKeyStats}
           modelStats={modelStats}
+          modelsResetAt={stats?.modelsResetAt}
+          onResetModelStats={handleResetModelStats}
+          modelStatsResetBusy={diagnosticsBusy.modelStatsReset === true}
           analytics={stats?.analytics || {}}
           recentSignals={stats?.recent || {}}
           runtimeFilters={runtimeFilters}

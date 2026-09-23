@@ -321,7 +321,8 @@ function estimateUsageCost(config, model, usage, actualModelName, metadata = {})
     const resolution = resolvePricing(pricingConfig, pricingModelResolution.model, pricingDescriptor, context);
     actualCost = calculateTokenCost(resolution.pricing, usage, options);
     actualSource = resolution.pricing ? resolution.source : "";
-    actualAudit = { source: resolution.source, policyDigest: resolution.policyDigest, tier: actualCost.tier };
+    actualAudit = { source: resolution.source, policyDigest: resolution.policyDigest, tier: actualCost.tier,
+      tieringState: actualCost.tier ? "tier" : resolution.pricing && !resolution.pricing.tiering ? "flat" : "unknown" };
   }
 
   let routerCost = null;
@@ -334,7 +335,8 @@ function estimateUsageCost(config, model, usage, actualModelName, metadata = {})
     }, metadata.modelDescriptor, context);
     routerCost = calculateTokenCost(resolution.pricing, usage, { ...options, inputOnly: true });
     modelRouterSource = resolution.pricing ? resolution.source : "";
-    routerAudit = { source: resolution.source, policyDigest: resolution.policyDigest, tier: routerCost.tier };
+    routerAudit = { source: resolution.source, policyDigest: resolution.policyDigest, tier: routerCost.tier,
+      tieringState: routerCost.tier ? "tier" : resolution.pricing && !resolution.pricing.tiering ? "flat" : "unknown" };
   }
 
   const actualModelCostAmount = actualCost.amount;

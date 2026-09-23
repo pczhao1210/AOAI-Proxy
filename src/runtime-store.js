@@ -3,7 +3,8 @@ import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
 import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
 import { parsePersistenceMode } from "./persistence-mode.js";
-import { normalizeCacheWrite, summarizeCacheWrite } from "./stats.js";
+import { beginModelStatsReset } from "./stats.js";
+import { normalizeCacheWrite, summarizeCacheWrite, billingTierIdentity, billingTierKey, billingTierFromKey, reconcileBillingTiers } from "./statistics.js";
 
 const DEFAULT_DATABASE_SCHEMA = "public";
 const DEFAULT_RUNTIME_EVENTS_TABLE_NAME = "runtime_events";
@@ -22,6 +23,7 @@ const GLOBAL_SCOPE_KEY = "__all__";
 const GLOBAL_SCOPE_SUBKEY = "";
 const ROLLUP_GRAINS = ["hourly", "daily", "weekly"];
 const META_LAST_ROLLED_EVENT_ID = "last_rolled_event_id";
+const META_MODELS_RESET_AT = "models_reset_at";
 const CACHE_WRITE_COLUMN_DEFINITIONS = [
   ["cache_write_tokens", "BIGINT"],
   ["cache_write_known_cost_amount", "DOUBLE PRECISION"],
@@ -46,6 +48,14 @@ let flushRunning = false;
 let lastEnsureKey = "";
 let cleanupAfterTs = 0;
 let localBufferOperation = Promise.resolve();
+let databaseOperation = Promise.resolve();
+let modelEventClockFloor = 0;
+
+function serializeDatabaseOperation(operation) {
+  const next = databaseOperation.catch(() => undefined).then(operation);
+  databaseOperation = next.catch(() => undefined);
+  return next;
+}
 
 const runtimeStoreState = {
   enabled: false,
@@ -190,7 +200,8 @@ function normalizeBufferedEvent(entry = {}) {
     modelRouterCostAmount: entry.modelRouterCostAmount ?? entry.model_router_cost_amount,
     actualModelCostAmount: entry.actualModelCostAmount ?? entry.actual_model_cost_amount,
     currency: entry.currency,
-    payload: asPlainObject(entry.payload)
+    payload: { ...asPlainObject(entry.payload),
+      modelStatsRecordedAt: entry.payload?.modelStatsRecordedAt || entry.occurredAt || entry.occurred_at }
   });
 }
 
@@ -482,6 +493,8 @@ function buildEventRow(eventType, fields = {}) {
     currency: String(fields.currency || "USD").trim() || "USD",
     payload: {
       ...(fields.payload && typeof fields.payload === "object" && !Array.isArray(fields.payload) ? fields.payload : {}),
+      modelStatsRecordedAt: fields.payload?.modelStatsRecordedAt
+        || toIsoString(Math.max(Date.now(), modelEventClockFloor)),
       ...(fields.conversationId ? { conversationId: String(fields.conversationId) } : {}),
       ...(fields.sessionId ? { sessionId: String(fields.sessionId) } : {})
     }
@@ -720,10 +733,11 @@ function addRollupRow(map, grain, bucketStart, scopeType, scopeKey, scopeSubkey,
   addRollupMetric(map.get(key), delta);
 }
 
-function buildRollupRows(events) {
+function buildRollupRows(events, modelsResetAt) {
   const rows = new Map();
   for (const event of events) {
     const delta = createMetricDelta(event);
+    const includeModel = !modelsResetAt || Date.parse(event.payload.modelStatsRecordedAt || event.occurredAt) > Date.parse(modelsResetAt);
     for (const grain of ROLLUP_GRAINS) {
       const bucketStart = getBucketStart(grain, event.occurredAt);
       addRollupRow(rows, grain, bucketStart, "global", GLOBAL_SCOPE_KEY, GLOBAL_SCOPE_SUBKEY, delta);
@@ -731,10 +745,14 @@ function buildRollupRows(events) {
       if (event.keyId) {
         addRollupRow(rows, grain, bucketStart, "key", event.keyId, "", delta);
       }
-      if (event.modelId) {
+      if (event.modelId && includeModel) {
         addRollupRow(rows, grain, bucketStart, "model", event.modelId, "", delta);
+        if (event.eventType === "usage") {
+          const identity = billingTierIdentity(event.modelId, event.actualModelId, event.payload.textCost?.pricing?.actual);
+          addRollupRow(rows, grain, bucketStart, "billing_tier", event.modelId, billingTierKey(identity), { ...delta, requests: 1 });
+        }
       }
-      if (event.modelId && event.actualModelId) {
+      if (event.modelId && event.actualModelId && includeModel) {
         addRollupRow(rows, grain, bucketStart, "actual_model", event.modelId, event.actualModelId, delta);
       }
       if (event.eventType === "blocked" && event.blockedReason) {
@@ -905,13 +923,14 @@ async function rollupRuntimeEvents(settings) {
 
   let processed = 0;
   let lastEventId = resolveInt(await getMetaValue(settings, META_LAST_ROLLED_EVENT_ID), 0, 0);
+  const modelsResetAt = await getMetaValue(settings, META_MODELS_RESET_AT);
   try {
     while (true) {
       const batch = await fetchUnrolledEvents(settings, lastEventId);
       if (!batch.length) {
         break;
       }
-      const rollupRows = buildRollupRows(batch);
+      const rollupRows = buildRollupRows(batch, modelsResetAt);
       await upsertRollupRows(settings, rollupRows);
       lastEventId = batch[batch.length - 1].eventId;
       await setMetaValue(settings, META_LAST_ROLLED_EVENT_ID, lastEventId);
@@ -941,7 +960,51 @@ async function rollupRuntimeEvents(settings) {
   }
 }
 
-export async function flushRuntimeEvents() {
+export function flushRuntimeEvents() {
+  return serializeDatabaseOperation(flushRuntimeEventsInternal);
+}
+
+export async function resetRuntimeModelStats(config) {
+  return serializeDatabaseOperation(async () => {
+    const settings = resolveRuntimeStoreSettings(config);
+    let memoryReset;
+    try {
+      if (settings.enabled && !settings.configured) {
+        throw Object.assign(new Error("Model statistics reset requires a configured runtime database"), { code: "RUNTIME_STORE_CONFIG_INCOMPLETE" });
+      }
+      if (settings.configured) await ensureRuntimeTables(settings);
+      const modelsResetAt = toIsoString(Math.max(Date.now(), modelEventClockFloor));
+      modelEventClockFloor = Date.parse(modelsResetAt) + 1;
+      memoryReset = beginModelStatsReset(modelsResetAt);
+      if (settings.configured) {
+        const { schemaName, rollupsTableName, metaTableName } = getQualifiedTableNames(settings);
+        // One statement commits the durable boundary and model-only deletion atomically.
+        await getRuntimeStorePool(settings).query(`
+          WITH reset_models AS (
+            DELETE FROM ${schemaName}.${rollupsTableName}
+            WHERE scope_type IN ('model', 'actual_model', 'billing_tier')
+          )
+          INSERT INTO ${schemaName}.${metaTableName} (meta_key, meta_value, updated_at)
+          VALUES ($1, $2, NOW())
+          ON CONFLICT (meta_key) DO UPDATE SET meta_value = EXCLUDED.meta_value, updated_at = NOW()
+        `, [META_MODELS_RESET_AT, modelsResetAt]);
+      }
+      memoryReset.commit();
+      return { modelsResetAt };
+    } catch (error) {
+      memoryReset?.rollback();
+      updateRuntimeStoreState({ lastError: snapshotError(error) });
+      appendStructuredLog("warn", {
+        source: "runtime-store", event: "runtime_store.model_stats_reset_failed",
+        failureReason: error?.message || "Model statistics reset failed",
+        target: describeRuntimeTarget(settings)
+      });
+      throw error;
+    }
+  });
+}
+
+async function flushRuntimeEventsInternal() {
   const settings = resolveRuntimeStoreSettings(runtimeStoreConfig);
   if (runtimeStoreState.localBufferPath !== settings.localBufferPath || runtimeStoreState.maxPersistedEvents !== settings.maxPersistedEvents) {
     await refreshLocalBufferState(settings);
@@ -1202,6 +1265,7 @@ function snapshotPricingAudit(value) {
   return {
     source: value.source || "",
     policyDigest: value.policyDigest || "",
+    ...(["tier", "flat", "unknown"].includes(value.tieringState) ? { tieringState: value.tieringState } : {}),
     tier
   };
 }
@@ -1319,6 +1383,11 @@ function buildEventFilterParts(filters, startIndex = 1, alias = "") {
   if (filters?.since) {
     clauses.push(`${prefix}occurred_at >= $${paramIndex}::timestamptz`);
     values.push(filters.since);
+    paramIndex += 1;
+  }
+  if (filters?.modelsResetAt) {
+    clauses.push(`COALESCE((${prefix}payload->>'modelStatsRecordedAt')::timestamptz, ${prefix}occurred_at) > $${paramIndex}::timestamptz`);
+    values.push(filters.modelsResetAt);
     paramIndex += 1;
   }
 
@@ -1550,6 +1619,29 @@ async function queryPerKey(settings) {
   return result.rows;
 }
 
+async function queryBillingTiers(settings, filters, filtered) {
+  const pool = getRuntimeStorePool(settings);
+  const { schemaName, eventsTableName, rollupsTableName } = getQualifiedTableNames(settings);
+  const filter = filtered ? buildEventFilterParts(filters) : { clauses: [], values: [] };
+  const result = await pool.query(`
+    SELECT ${filtered
+    ? "model_id, actual_model_id, payload->'textCost'->'pricing'->'actual' AS pricing_audit, COUNT(*) AS requests"
+    : "scope_key AS model_id, scope_subkey AS tier_key, SUM(requests) AS requests"},
+      ${["prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "text_unknown_cost_requests",
+        "estimated_cost_amount", "model_router_cost_amount", "actual_model_cost_amount"].map(name => `COALESCE(SUM(${name}), 0) AS ${name}`).join(",\n      ")},
+      ${cacheWriteAggregateSql(filtered)},
+      MAX(currency) AS currency
+    FROM ${schemaName}.${filtered ? eventsTableName : rollupsTableName}
+    WHERE ${filtered ? "event_type = 'usage' AND model_id <> ''" : "grain = 'daily' AND scope_type = 'billing_tier'"}
+      ${filter.clauses.length ? `AND ${filter.clauses.join(" AND ")}` : ""}
+    GROUP BY ${filtered ? "model_id, actual_model_id, pricing_audit" : "scope_key, scope_subkey"}
+  `, filter.values);
+  return result.rows.map(row => ({
+    ...row,
+    identity: filtered ? billingTierIdentity(row.model_id, row.actual_model_id, row.pricing_audit) : billingTierFromKey(row.tier_key)
+  })).filter(row => row.identity);
+}
+
 async function queryFilteredPerKey(settings, filters) {
   const pool = getRuntimeStorePool(settings);
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
@@ -1769,19 +1861,22 @@ async function queryFilteredRecentSignals(settings, filters, eventType, limit = 
   }));
 }
 
-async function queryMediaAggregates(settings, filters) {
+async function queryMediaAggregates(settings, filters, modelsResetAt) {
   const pool = getRuntimeStorePool(settings);
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filter = buildEventFilterParts(filters);
+  const resetCondition = modelsResetAt
+    ? ` WHERE model_recorded_at > $${filter.values.push(modelsResetAt)}::timestamptz` : "";
   const result = await pool.query(`
     WITH media_events AS (
-      SELECT model_id, key_id, payload->'media' AS media
+      SELECT model_id, key_id, payload->'media' AS media,
+        COALESCE((payload->>'modelStatsRecordedAt')::timestamptz, occurred_at) AS model_recorded_at
       FROM ${schemaName}.${eventsTableName}
       WHERE event_type = 'usage' AND payload->>'source' = 'media'
       ${filter.clauses.length ? `AND ${filter.clauses.join(" AND ")}` : ""}
     ), scoped AS (
       SELECT 'total' AS scope_type, '' AS scope_key, media FROM media_events
-      UNION ALL SELECT 'model', model_id, media FROM media_events
+      UNION ALL SELECT 'model', model_id, media FROM media_events${resetCondition}
       UNION ALL SELECT 'key', key_id, media FROM media_events
     ), counts AS (
       SELECT scope_type, scope_key, COUNT(*) AS requests,
@@ -1810,19 +1905,25 @@ async function queryMediaAggregates(settings, filters) {
   return result.rows;
 }
 
-export async function getRuntimeStatsSnapshot(config, fallbackStats = null, options = {}) {
+export function getRuntimeStatsSnapshot(config, fallbackStats = null, options = {}) {
+  return serializeDatabaseOperation(() => getRuntimeStatsSnapshotInternal(config, fallbackStats, options));
+}
+
+async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
   const settings = resolveRuntimeStoreSettings(config);
   if (!settings.configured) {
     return fallbackStats;
   }
 
   try {
-    await flushRuntimeEvents();
+    await flushRuntimeEventsInternal();
     await ensureRuntimeTables(settings);
     await rollupRuntimeEvents(settings);
     await cleanupRuntimeData(settings);
 
     const filters = normalizeStatsFilters(options);
+    const modelsResetAt = await getMetaValue(settings, META_MODELS_RESET_AT);
+    const modelFilters = { ...filters, modelsResetAt };
     const useFilteredQueryPath = !!filters.keyId || !!filters.since;
 
     const [
@@ -1837,11 +1938,12 @@ export async function getRuntimeStatsSnapshot(config, fallbackStats = null, opti
       warningEvents,
       recentBlocked,
       recentWarnings,
-      mediaRows
+      mediaRows,
+      billingTierRows
     ] = await Promise.all([
       useFilteredQueryPath ? queryFilteredTotals(settings, filters) : queryTotals(settings),
-      useFilteredQueryPath ? queryFilteredPerModel(settings, filters) : queryPerModel(settings),
-      useFilteredQueryPath ? queryFilteredPerActualModel(settings, filters) : queryPerActualModel(settings),
+      useFilteredQueryPath ? queryFilteredPerModel(settings, modelFilters) : queryPerModel(settings),
+      useFilteredQueryPath ? queryFilteredPerActualModel(settings, modelFilters) : queryPerActualModel(settings),
       useFilteredQueryPath ? queryFilteredPerKey(settings, filters) : queryPerKey(settings),
       useFilteredQueryPath ? queryFilteredRollupSeries(settings, filters, "hourly", 24) : queryRollupSeries(settings, "hourly", 24),
       useFilteredQueryPath ? queryFilteredRollupSeries(settings, filters, "daily", 30) : queryRollupSeries(settings, "daily", 30),
@@ -1850,11 +1952,13 @@ export async function getRuntimeStatsSnapshot(config, fallbackStats = null, opti
       useFilteredQueryPath ? queryFilteredTopSignalScopes(settings, filters, "warning", "signal_name", 10) : queryTopSignalScopes(settings, "warning_event", "warning_count", 10),
       useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "blocked", 12) : queryRecentSignals(settings, "blocked", 12),
       useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "warning", 12) : queryRecentSignals(settings, "warning", 12),
-      queryMediaAggregates(settings, filters)
+      queryMediaAggregates(settings, filters, modelsResetAt),
+      queryBillingTiers(settings, modelFilters, useFilteredQueryPath)
     ]);
 
     const snapshot = {
       startedAt: totalsRow?.started_at ? new Date(totalsRow.started_at).toISOString() : (fallbackStats?.startedAt || toIsoString()),
+      ...(modelsResetAt ? { modelsResetAt } : {}),
       totals: buildAggregateNode(totalsRow),
       perModel: {},
       perKey: {},
@@ -1880,7 +1984,8 @@ export async function getRuntimeStatsSnapshot(config, fallbackStats = null, opti
     for (const row of perModelRows) {
       snapshot.perModel[row.model_id] = {
         ...buildAggregateNode(row),
-        actualModels: {}
+        actualModels: {},
+        billingTiers: []
       };
     }
 
@@ -1888,11 +1993,17 @@ export async function getRuntimeStatsSnapshot(config, fallbackStats = null, opti
       if (!snapshot.perModel[row.model_id]) {
         snapshot.perModel[row.model_id] = {
           ...buildAggregateNode({}),
-          actualModels: {}
+          actualModels: {},
+          billingTiers: []
         };
       }
       snapshot.perModel[row.model_id].actualModels[row.actual_model_id] = buildAggregateNode(row);
     }
+    for (const row of billingTierRows) {
+      const model = snapshot.perModel[row.model_id];
+      if (model) model.billingTiers.push({ ...buildAggregateNode(row), ...row.identity });
+    }
+    for (const [modelId, model] of Object.entries(snapshot.perModel)) reconcileBillingTiers(modelId, model);
 
     for (const row of perKeyRows) {
       snapshot.perKey[row.key_id] = buildAggregateNode(row);
@@ -1902,7 +2013,7 @@ export async function getRuntimeStatsSnapshot(config, fallbackStats = null, opti
       const costAmounts = asPlainObject(row.cost_amounts);
       const currencies = Object.keys(costAmounts);
       const bucket = row.scope_type === "total" ? snapshot.totals
-        : row.scope_type === "model" ? (snapshot.perModel[row.scope_key] ||= { ...buildAggregateNode({}), actualModels: {} })
+        : row.scope_type === "model" ? (snapshot.perModel[row.scope_key] ||= { ...buildAggregateNode({}), actualModels: {}, billingTiers: [] })
           : (snapshot.perKey[row.scope_key] ||= buildAggregateNode({}));
       bucket.media = { requests: numeric(row.requests), observedRequests: numeric(row.observed_requests),
         unknownUsageRequests: numeric(row.unknown_usage_requests), unknownCostRequests: numeric(row.unknown_cost_requests),

@@ -45,7 +45,7 @@ test("verified xAI catalog tables switch at 200000 input tokens", () => {
       const rates = input < 200000 ? shortRates : longRates;
       assert.ok(Math.abs(cost.amount - ((input - 190000) * rates[0] + 190000 * rates[1] + 1000 * rates[2]) / 1e6) < 1e-12);
       assert.equal(cost.costStatus, "priced");
-      assert.equal(cost.pricing.actual.tier.id, input < 200000 ? "short" : "long");
+      assert.equal(cost.pricing.actual.tier.id, input < 200000 ? "short <200K" : "long >=200K");
     }
   }
 });
@@ -73,7 +73,7 @@ test("GPT catalog policies select the whole-request rate only above 272000 input
           : { prompt_tokens: input, prompt_tokens_details: { cached_tokens: cached, cache_write_tokens: 0 }, completion_tokens: 128000 };
         const { cost } = settle(config, usage, id, { backendRouteKey: protocol });
         assert.equal(cost.costStatus, "priced", `${id} ${protocol}: ${cost.costReason}`);
-        assert.equal(cost.pricing.actual.tier.id, input > 272000 ? "long" : "short", id);
+        assert.equal(cost.pricing.actual.tier.id, input > 272000 ? "long >272K" : "short <=272K", id);
         assert.ok(Math.abs(cost.amount - expected) < 1e-10, `${id} ${protocol} input=${input}`);
       }
     }
@@ -81,7 +81,7 @@ test("GPT catalog policies select the whole-request rate only above 272000 input
     for (let request = 0; request < 3; request += 1) {
       const cost = recordGovernanceUsage(config, consumer, config.models[0],
         { input_tokens: 100000, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens: 0 });
-      assert.equal(cost.pricing.actual.tier.id, "short", "Session totals must not choose a request tier");
+      assert.equal(cost.pricing.actual.tier.id, "short <=272K", "Session totals must not choose a request tier");
     }
   }
 });
@@ -106,7 +106,7 @@ test("GPT cache-write prices use the selected request tier without charging ordi
           : { prompt_tokens: input, prompt_tokens_details: details, completion_tokens: 1000 };
         const { cost } = settle(config, usage, id, { backendRouteKey: protocol });
         assert.equal(cost.costStatus, "priced", `${id} ${protocol}: ${cost.costReason}`);
-        assert.equal(cost.pricing.actual.tier.id, input > 272000 ? "long" : "short");
+        assert.equal(cost.pricing.actual.tier.id, input > 272000 ? "long >272K" : "short <=272K");
         assert.equal(cost.promptTokens, input);
         assert.equal(cost.totalTokens, input + 1000);
         assert.ok(Math.abs(cost.amount - expected) < 1e-10, `${id} ${protocol}: ${cost.amount}`);

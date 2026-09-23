@@ -40,6 +40,75 @@ export function formatCacheWriteCost(cacheWrite, t = (_key, fallback) => fallbac
     ? `${cacheWrite.knownCostAmount.toFixed(4)} USD + ${unknown}` : unknown;
 }
 
+export function formatCacheHitRatio(stats = {}) {
+  const { promptTokens, cachedTokens } = stats;
+  if (!Number.isSafeInteger(promptTokens) || promptTokens <= 0
+    || !Number.isSafeInteger(cachedTokens) || cachedTokens < 0 || cachedTokens > promptTokens) return "—";
+  return `${(cachedTokens / promptTokens * 100).toFixed(1)}%`;
+}
+
+export function runtimeTokenHelp(t = (_key, fallback) => fallback) {
+  return t("runtime.tokenHelp", "Input includes cache read and cache write tokens; do not add them again. Cache hit ratio is cache read / input, based on recorded tokens. Legacy missing cache reads may already be recorded as 0.");
+}
+
+export function formatTokenSummary(stats = {}, t = (_key, fallback) => fallback) {
+  return [
+    `${t("table.inputTokensIncludingCache", "Input Total (Including Cache)")} ${stats.promptTokens ?? "—"}`,
+    `${t("table.cacheReadTokens", "Cache Read Tokens")} ${stats.cachedTokens ?? "—"}`,
+    `${t("table.cacheWriteTokens", "Cache Write Tokens")} ${formatCacheWriteTokens(stats.cacheWrite, t)}`,
+    `${t("table.outputTokens", "Output Tokens")} ${stats.completionTokens ?? "—"}`,
+    `${t("table.cacheHitRatio", "Cache Hit Ratio")} ${formatCacheHitRatio(stats)}`
+  ].join(" · ");
+}
+
+function formatTokenBoundary(value) {
+  return value > 0 && value % 1000 === 0 ? `${value / 1000}K` : String(value);
+}
+
+export function formatBillingTier(tier, t = (_key, fallback) => fallback) {
+  const unknown = t("runtime.tierUnknown", "Unclassified");
+  if (tier?.kind === "flat") return t("runtime.tierFlat", "Single rate");
+  if (tier?.kind !== "tier") return unknown;
+  if (typeof tier.id === "string" && tier.id.trim()) return tier.id.trim();
+  const lower = tier.promptTokensAtLeast;
+  const upper = tier.promptTokensBelow;
+  if ((lower != null && (!Number.isSafeInteger(lower) || lower < 0))
+    || (upper != null && (!Number.isSafeInteger(upper) || upper <= 0))
+    || (lower != null && upper != null && lower >= upper)
+    || (lower == null && upper == null)) return unknown;
+  const bounds = [];
+  if (lower > 0) {
+    bounds.push(lower > 1 && (lower - 1) % 1000 === 0
+      ? `>${formatTokenBoundary(lower - 1)}` : `≥${formatTokenBoundary(lower)}`);
+  }
+  if (upper != null) {
+    bounds.push(upper > 1 && (upper - 1) % 1000 === 0
+      ? `≤${formatTokenBoundary(upper - 1)}` : `<${formatTokenBoundary(upper)}`);
+  }
+  return bounds.join(" · ") || "≥0";
+}
+
+export function getModelBillingRows(modelId, stats = {}) {
+  const rows = Array.isArray(stats.billingTiers) && stats.billingTiers.length
+    ? stats.billingTiers
+    : (Object.keys(stats.actualModels || {}).length ? Object.entries(stats.actualModels) : [[modelId, stats]])
+      .map(([actualModelId, actual]) => ({
+        ...actual,
+        actualModelId,
+        tier: { kind: "unknown", promptTokensAtLeast: null, promptTokensBelow: null },
+        requests: null
+      }));
+  return [...rows].sort((left, right) => {
+    const leftBounds = left.tier?.intervals?.[0] || left.tier;
+    const rightBounds = right.tier?.intervals?.[0] || right.tier;
+    return String(left.actualModelId).localeCompare(String(right.actualModelId))
+      || Number(left.tier?.kind === "unknown") - Number(right.tier?.kind === "unknown")
+      || (leftBounds?.promptTokensAtLeast ?? 0) - (rightBounds?.promptTokensAtLeast ?? 0)
+      || (leftBounds?.promptTokensBelow ?? Infinity) - (rightBounds?.promptTokensBelow ?? Infinity)
+      || String(left.tier?.id || "").localeCompare(String(right.tier?.id || ""));
+  });
+}
+
 export const DEFAULT_KEY_TEMPLATE = {
   id: "",
   displayName: "",

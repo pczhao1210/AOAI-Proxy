@@ -142,7 +142,7 @@ test("runtime views mark incomplete costs in trends, key budgets and actual-mode
     });
     const { default: RuntimeTab } = await vite.ssrLoadModule("/admin-ui/src/components/RuntimeTab.jsx");
     const cacheWrite = summarizeCacheWrite({ requests: 2, observedRequests: 1, pricedRequests: 1, observedTokens: 20, knownCostAmount: 0.125 });
-    const incomplete = { estimatedCostAmount: 0, textUnknownCostRequests: 1, cachedTokens: 7, cacheWrite };
+    const incomplete = { estimatedCostAmount: 0, textUnknownCostRequests: 1, promptTokens: 100, completionTokens: 10, cachedTokens: 7, cacheWrite };
     const bucket = { ...incomplete, bucketStart: "2026-09-01T00:00:00.000Z" };
     const view = testing.render(React.createElement(RuntimeTab, {
       persistenceRuntime: {}, loggingRuntime: {}, runtimeStore: {},
@@ -162,41 +162,49 @@ test("runtime views mark incomplete costs in trends, key budgets and actual-mode
     for (const section of view.container.querySelectorAll("details")) section.open = true;
     const overview = testing.within(view.container.querySelector("#runtime-overview"));
     assert.ok(overview.getByText("Unknown"));
-    assert.ok(overview.getByText(/^Estimated Cost Unknown · Cache Write Tokens 20 \+ Unknown/));
+    assert.ok(overview.getByText(/^Estimated Cost Unknown · Input Total \(Including Cache\) 100 · Cache Read Tokens 7 · Cache Write Tokens 20 \+ Unknown · Output Tokens 10 · Cache Hit Ratio 7\.0%/));
     const trends = view.container.querySelectorAll("#runtime-analytics tbody tr");
     assert.equal(trends.length, 3);
     for (const row of trends) {
       assert.equal(row.lastElementChild.textContent, "Unknown");
       assert.equal(row.children[6].textContent, "7");
       assert.equal(row.children[7].textContent, "20 + Unknown");
-      assert.equal(row.children[8].textContent, "0.1250 USD + Unknown");
+      assert.equal(row.children[8].textContent, "10");
+      assert.equal(row.children[9].textContent, "7.0%");
     }
     for (const id of ["runtime-analytics", "runtime-models", "runtime-keys"]) {
       const section = view.container.querySelector(`#${id}`);
-      for (const label of ["Cache Read Tokens", "Cache Write Tokens", "Cache Write Cost (included)"]) {
+      for (const label of ["Input Total (Including Cache)", "Cache Read Tokens", "Cache Write Tokens", "Output Tokens", "Cache Hit Ratio"]) {
         assert.ok(testing.within(section).getAllByRole("columnheader", { name: label }).length);
+      }
+      for (const label of ["Total Tokens", "Cache Write Cost (included)", "Model Router Cost", "Actual Model Cost"]) {
+        assert.equal(testing.within(section).queryAllByRole("columnheader", { name: label }).length, 0);
       }
     }
     const keyCells = view.container.querySelector("#runtime-keys tbody tr").children;
     assert.equal(keyCells[6].textContent, "20 + Unknown");
-    assert.equal(keyCells[7].textContent, "0.1250 USD + Unknown");
-    assert.equal(keyCells[8].textContent, "Unknown");
-    assert.equal(keyCells[11].textContent, "Unknown / 10.00 USD");
+    assert.equal(keyCells[7].textContent, "10");
+    assert.equal(keyCells[8].textContent, "7.0%");
+    assert.equal(keyCells[9].textContent, "Unknown");
+    assert.equal(keyCells[12].textContent, "Unknown / 10.00 USD");
     const modelCells = view.container.querySelector("#runtime-models tbody tr").children;
     assert.equal(modelCells[5].textContent, "20 + Unknown");
-    assert.equal(modelCells[6].textContent, "0.1250 USD + Unknown");
-    assert.equal(modelCells[9].textContent, "Unknown");
+    assert.equal(modelCells[6].textContent, "10");
+    assert.equal(modelCells[7].textContent, "7.0%");
+    assert.equal(modelCells[8].textContent, "Unknown");
     const zeroCells = view.getByText("zero").closest("tr").children;
     assert.equal(zeroCells[5].textContent, "0");
-    assert.equal(zeroCells[6].textContent, "0.0000 USD");
+    assert.equal(zeroCells[8].textContent, "0.0000 USD");
     const unreportedCells = view.getByText("unreported").closest("tr").children;
     assert.equal(unreportedCells[5].textContent, "Not reported");
-    assert.equal(unreportedCells[6].textContent, "Not reported");
-    testing.fireEvent.click(view.getByRole("button", { name: "展开" }));
+    assert.equal(unreportedCells[7].textContent, "—");
+    testing.fireEvent.click(view.getByRole("button", { name: "Expand model-router" }));
     const actualCells = view.container.querySelector(".model-breakdown tbody tr").children;
     assert.equal(actualCells[5].textContent, "20 + Unknown");
-    assert.equal(actualCells[6].textContent, "0.1250 USD + Unknown");
-    for (const index of [9, 10, 11]) assert.equal(actualCells[index].textContent, "Unknown");
+    assert.equal(actualCells[6].textContent, "10");
+    assert.equal(actualCells[7].textContent, "7.0%");
+    assert.equal(actualCells[8].textContent, "Unknown");
+    assert.equal(actualCells.length, 9);
   } finally {
     cleanup?.();
     await vite?.close();

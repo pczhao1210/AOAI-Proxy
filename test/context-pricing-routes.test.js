@@ -98,6 +98,18 @@ test("all text directions settle JSON and SSE from upstream usage once without c
           assert.ok(Math.abs(entry.estimatedCostAmount - expected * count) < 1e-12,
             `${client} -> ${backend} stream=${stream}: ${JSON.stringify(entry)}`);
           assert.equal(entry.textUnknownCostRequests || 0, 0);
+          assert.equal(entry.billingTiers.length, 1);
+          const tier = entry.billingTiers[0];
+          assert.equal(tier.actualModelId, `${id}-deployment`);
+          assert.equal(tier.tier.kind, "tier");
+          assert.equal(tier.tier.id, "long");
+          assert.equal(tier.tier.promptTokensAtLeast, 20);
+          assert.equal(tier.tier.promptTokensBelow, null);
+          assert.equal(tier.requests, count, "Duplicate stream terminals must not duplicate tier settlements");
+          assert.equal(tier.promptTokens, entry.promptTokens);
+          assert.equal(tier.cachedTokens, entry.cachedTokens);
+          assert.equal(tier.completionTokens, entry.completionTokens);
+          assert.ok(Math.abs(tier.estimatedCostAmount - entry.estimatedCostAmount) < 1e-12);
           for (const bucket of [entry, entry.actualModels[`${id}-deployment`]]) {
             assert.equal(bucket.cacheWrite.tokens, 8 * count);
             assert.equal(bucket.cacheWrite.observedTokens, 8 * count);
@@ -124,6 +136,7 @@ test("all text directions settle JSON and SSE from upstream usage once without c
     const after = (await ctx.adminRequest("/admin/api/stats")).json.perModel["billing-responses"];
     assert.equal(after.estimatedCostAmount, before.estimatedCostAmount);
     assert.equal(after.textUnknownCostRequests, 1);
+    assert.equal(after.billingTiers.find((row) => row.tier.kind === "unknown")?.requests, 1);
   }, {
     upstreamHandler({ req, res, body }) {
       if (!String(body?.model).startsWith("billing-")) return false;
@@ -185,6 +198,10 @@ test("native JSON and SSE preserve unreported cache writes rather than charging 
           assert.equal(entry.cacheWrite.unknownCostRequests, unreported);
           assert.equal(entry.cacheWrite.estimatedCostAmount, missing ? null : 0);
           assert.equal(entry.textUnknownCostRequests, unreported);
+          assert.equal(entry.billingTiers.length, 1);
+          assert.equal(entry.billingTiers[0].tier.kind, "flat");
+          assert.equal(entry.billingTiers[0].requests, count);
+          assert.equal(entry.billingTiers[0].cacheWrite.tokens, entry.cacheWrite.tokens);
           assert.ok(Math.abs(entry.estimatedCostAmount - knownCost) < 1e-12);
           if (!stream) {
             const details = result.json.usage[backend === "responses" ? "input_tokens_details" : "prompt_tokens_details"];
@@ -204,6 +221,85 @@ test("native JSON and SSE preserve unreported cache writes rather than charging 
       res.writeHead(200, { "content-type": body.stream ? "text/event-stream" : "application/json" });
       res.end(body.stream
         ? events.map((event) => `data: ${typeof event === "string" ? event : JSON.stringify(event)}\n\n`).join("")
+        : JSON.stringify(json));
+      return true;
+    }
+  });
+});
+
+test("tier statistics preserve GPT pricing boundaries and aggregate historical usage by tier ID", async () => {
+  await withTestContext(async (ctx) => {
+    const config = await ctx.readConfigFile();
+    const boundaryPolicy = structuredClone(policy);
+    boundaryPolicy.tiers[0].promptTokensBelow = 272001;
+    boundaryPolicy.tiers[1].promptTokensAtLeast = 272001;
+    config.models.push({
+      id: "billing-boundary", targetModel: "billing-boundary-deployment",
+      upstream: "mock-foundry", pricingRef: "gpt-5-mini",
+      routes: { "*": "responses" }, pricing: boundaryPolicy
+    });
+    const save = async () => {
+      const result = await ctx.adminRequest("/admin/api/config", {
+        method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+      });
+      assert.equal(result.status, 200, result.text);
+    };
+    const send = async (input, stream = false) => {
+      const response = await ctx.publicRequest("/v1/responses", {
+        method: "POST", json: { model: "billing-boundary", input: String(input), stream }
+      });
+      assert.equal(response.status, 200, response.text);
+      return (await ctx.adminRequest("/admin/api/stats")).json.perModel["billing-boundary"];
+    };
+    const expectedCost = (input, rates) => (
+      (input - 18) * rates.inputPer1mTokens + 10 * rates.cachedInputPer1mTokens
+      + 8 * rates.cacheWritePer1mTokens + 3 * rates.outputPer1mTokens
+    ) / 1e6;
+
+    await save();
+    const shortCost = expectedCost(272000, boundaryPolicy.tiers[0]);
+    const oldLongCost = expectedCost(272001, boundaryPolicy.tiers[1]);
+    await send(272000);
+    const original = await send(272001, true);
+    assert.equal(original.billingTiers.length, 2);
+    assert.equal(original.billingTiers.find((row) => row.tier.promptTokensBelow === 272001).requests, 1);
+    assert.equal(original.billingTiers.find((row) => row.tier.promptTokensAtLeast === 272001).requests, 1);
+
+    boundaryPolicy.tiers[1].inputPer1mTokens = 8;
+    await save();
+    const newLongCost = expectedCost(272001, boundaryPolicy.tiers[1]);
+    const repriced = await send(272001);
+    assert.equal(repriced.billingTiers.length, 2, "Rate changes do not create duplicate interval rows");
+    const long = repriced.billingTiers.find((row) => row.tier.promptTokensAtLeast === 272001);
+    assert.equal(long.requests, 2);
+    assert.ok(Math.abs(long.estimatedCostAmount - oldLongCost - newLongCost) < 1e-12);
+
+    boundaryPolicy.tiers[0].promptTokensBelow = 100001;
+    boundaryPolicy.tiers[1].promptTokensAtLeast = 100001;
+    await save();
+    const changed = await send(100001, true);
+    assert.equal(changed.billingTiers.length, 2, "Same captured ID remains one category after threshold changes");
+    const longHistory = changed.billingTiers.find((row) => row.tier.id === "long");
+    assert.equal(longHistory.requests, 3);
+    assert.deepEqual(longHistory.tier.intervals, [
+      { promptTokensAtLeast: 100001, promptTokensBelow: null },
+      { promptTokensAtLeast: 272001, promptTokensBelow: null }
+    ]);
+    assert.equal(changed.billingTiers.reduce((sum, row) => sum + row.requests, 0), 4);
+    assert.equal(changed.billingTiers.reduce((sum, row) => sum + row.promptTokens, 0), changed.promptTokens);
+    const expected = shortCost + oldLongCost + newLongCost + expectedCost(100001, boundaryPolicy.tiers[1]);
+    assert.ok(Math.abs(changed.estimatedCostAmount - expected) < 1e-12);
+    assert.ok(Math.abs(changed.billingTiers.reduce((sum, row) => sum + row.estimatedCostAmount, 0) - expected) < 1e-12);
+  }, {
+    upstreamHandler({ req, res, body }) {
+      if (body?.model !== "billing-boundary-deployment") return false;
+      const { json, events } = fixture("responses", body.model);
+      json.usage.input_tokens = Number(body.input);
+      json.usage.total_tokens = json.usage.input_tokens + json.usage.output_tokens;
+      assert.ok(req.url.endsWith("/responses"));
+      res.writeHead(200, { "content-type": body.stream ? "text/event-stream" : "application/json" });
+      res.end(body.stream
+        ? events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")
         : JSON.stringify(json));
       return true;
     }

@@ -32,14 +32,14 @@
     },
     "tiers": [
       {
-        "id": "short",
+        "id": "short <=272K",
         "contextClass": "short",
         "promptTokensBelow": 272001,
         "inputPer1mTokens": 30,
         "outputPer1mTokens": 180
       },
       {
-        "id": "long",
+        "id": "long >272K",
         "contextClass": "long",
         "promptTokensAtLeast": 272001,
         "inputPer1mTokens": 60,

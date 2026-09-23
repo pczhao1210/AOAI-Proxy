@@ -13,6 +13,7 @@ node --test test/media-policy.test.js
 node --test test/stream-backpressure.test.js
 node --test test/governance-pricing.test.js
 node --test test/token-pricing.test.js test/context-pricing-integration.test.js test/context-pricing-routes.test.js test/text-cost-observability.test.js
+node --test test/model-statistics.test.js test/runtime-store.test.js test/model-stats-routes.test.js test/admin-runtime-stats.test.js
 node --test test/request-policy.test.js
 node --test test/request-body-policy.test.js test/anthropic-body-policy.test.js
 node --test test/admin-runtime-loader.test.js
@@ -73,6 +74,21 @@ and admin display of known/partial/unreported values. The nine-direction route
 test checks that JSON and SSE preserve upstream write accounting across shims
 without increasing input or total token counts. The optional PostgreSQL gate
 must also pass before claiming live database migration/rollup acceptance.
+
+Model statistics regressions cover request-time tier rows across all nine JSON/SSE
+directions, exact GPT boundaries, grouping by captured tier IDs across rate and
+threshold changes without historical repricing, separate renamed IDs at identical
+bounds, and compatibility with legacy ID-less rollup keys. The model-reset route
+contract checks admin authentication, CSRF, custom admin paths, all-model scope
+regardless of active filters, and preservation of global/key/governance counters.
+UI checks distinguish settled tier requests from admitted model requests, derive
+cache-read ratios from aggregated token counts, remove standalone write costs,
+and require confirmation before the model-only reset. No ratio is persisted.
+Mock storage checks cover restart, reset failure, queued/spilled pre-reset events,
+serialized flush/reset/snapshot operations, nullable history and media accounting.
+Requests already in flight are not cancelled: post-reset settlements remain
+visible without restoring their pre-reset admission count. Live PostgreSQL
+reset/rollup acceptance still requires the optional disposable-database gate.
 
 These tests never establish real audio or provider acceptance. Live MAI/OpenAI/Azure verification
 requires separately authorized deployments, endpoint versions/regions, credentials, legal small audio/image

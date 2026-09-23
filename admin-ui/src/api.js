@@ -80,6 +80,10 @@ export async function syncRuntime() {
   return readJson(await adminFetch("/runtime/sync", { method: "POST" }));
 }
 
+export async function resetModelStats() {
+  return readJson(await adminFetch("/stats/models/reset", { method: "POST" }));
+}
+
 export async function fetchDatabaseConfig() {
   return readJson(await fetch(adminApiUrl("/database/config")));
 }

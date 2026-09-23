@@ -558,12 +558,25 @@ test("GPT-6 cards preserve the published Global Standard short/long-context pric
     assert.deepEqual(definition.pricingCatalogEntry.tiers.map((tier) => [
       tier.id, tier.promptTokensBelow ?? null, tier.promptTokensAtLeast ?? null,
       tier.inputPer1mTokens, tier.cachedInputPer1mTokens, tier.cacheWritePer1mTokens, tier.outputPer1mTokens
-    ]), expected.map((row, index) => [row[1], index === 0 ? 272001 : null, index === 1 ? 272001 : null, ...row.slice(2)]),
+    ]), expected.map((row, index) => [index === 0 ? "short <=272K" : "long >272K", index === 0 ? 272001 : null, index === 1 ? 272001 : null, ...row.slice(2)]),
     `${id}: import the full whole-request policy, including cache-write rates`);
     assert.equal(
       definition.sources.pricing,
       "https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/"
     );
+  }
+});
+
+test("active context-tier cards expose descriptive IDs with exact GPT and Grok boundaries", () => {
+  const tiered = listPricingDefinitions().filter(definition => definition.pricing?.tiering);
+  assert.equal(tiered.length, 11);
+  for (const definition of tiered) {
+    const grok = definition.id.startsWith("grok-");
+    const threshold = grok ? 200000 : 272001;
+    assert.deepEqual(definition.pricing.tiers.map(tier => tier.id),
+      grok ? ["short <200K", "long >=200K"] : ["short <=272K", "long >272K"], definition.id);
+    assert.equal(definition.pricing.tiers[0].promptTokensBelow, threshold, definition.id);
+    assert.equal(definition.pricing.tiers[1].promptTokensAtLeast, threshold, definition.id);
   }
 });
 

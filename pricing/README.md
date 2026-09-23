@@ -224,14 +224,14 @@ This is an illustrative policy, **not a GPT-6 cutoff or a deployment price quote
   },
   "tiers": [
     {
-      "id": "short",
+      "id": "short <200K",
       "promptTokensBelow": 200000,
       "inputPer1mTokens": 2,
       "cachedInputPer1mTokens": 0.2,
       "outputPer1mTokens": 10
     },
     {
-      "id": "long",
+      "id": "long >=200K",
       "promptTokensAtLeast": 200000,
       "inputPer1mTokens": 4,
       "cachedInputPer1mTokens": 0.4,
@@ -249,6 +249,19 @@ lower bound; if it says **at least** B, use B. Verify the exact boundary, the
 provider/deployment/service tier and source before enabling a policy. The engine
 does not automatically select a region, deployment class, Batch, Flex or Priority
 rate.
+
+Each executable tier should have a unique, descriptive `id`. Runtime breakdowns
+display the captured ID verbatim and group by actual model plus ID, not by price
+or interval alone. The active GPT cards use `short <=272K` / `long >272K`;
+Grok 4.3/4.6 use `short <200K` / `long >=200K`. `K` means 1,000 tokens.
+Numeric bounds select rates; the ID is never parsed to determine billing.
+Keep IDs stable for price-only changes and update their boundary text when a
+threshold changes. Reusing an ID across different historical bounds merges those
+statistics, retaining the original per-request costs and interval evidence.
+Changing an ID creates a separate category; old snapshots are not renamed from
+the current catalog. Legacy rollups without captured IDs retain interval-based
+fallback labels and are not guessed into a new named category. No database
+columns or historical cost recalculation are required.
 
 The selected rates apply to the **entire request**, including output, not only
 tokens above the threshold. Each row is independent; no missing rate inherits

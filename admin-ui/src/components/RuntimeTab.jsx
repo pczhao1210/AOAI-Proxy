@@ -1,6 +1,31 @@
-import { Fragment, useEffect, useState } from "react";
-import { AccordionSection, Section, StatCard } from "./ui.jsx";
-import { formatBudgetCost, formatCacheWriteCost, formatCacheWriteTokens, formatEstimatedCost } from "../utils.js";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { AccordionSection, Modal, Section, StatCard } from "./ui.jsx";
+import { formatBillingTier, formatBudgetCost, formatCacheHitRatio, formatCacheWriteTokens, formatEstimatedCost, formatTokenSummary, getModelBillingRows, runtimeTokenHelp } from "../utils.js";
+
+function TokenHeaders({ t }) {
+  const help = runtimeTokenHelp(t);
+  return (
+    <>
+      <th title={help}>{t("table.inputTokensIncludingCache", "Input Total (Including Cache)")}</th>
+      <th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
+      <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th>
+      <th>{t("table.outputTokens", "Output Tokens")}</th>
+      <th title={help}>{t("table.cacheHitRatio", "Cache Hit Ratio")}</th>
+    </>
+  );
+}
+
+function TokenCells({ stats, t }) {
+  return (
+    <>
+      <td>{stats.promptTokens ?? "—"}</td>
+      <td>{stats.cachedTokens ?? "—"}</td>
+      <td>{formatCacheWriteTokens(stats.cacheWrite, t)}</td>
+      <td>{stats.completionTokens ?? "—"}</td>
+      <td>{formatCacheHitRatio(stats)}</td>
+    </>
+  );
+}
 
 function getWarningSignalLabel(signalName, t) {
   const mapping = {
@@ -68,10 +93,7 @@ function TrendTable({ title, rows, formatDateTime, t }) {
               <th>{t("table.errors", "Errors")}</th>
               <th>{t("table.blockedCount", "Blocked")}</th>
               <th>{t("table.warningCount", "Warnings")}</th>
-              <th>{t("table.totalTokens", "Total Tokens")}</th>
-              <th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
-              <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th>
-              <th>{t("table.cacheWriteCost", "Cache Write Cost (included)")}</th>
+              <TokenHeaders t={t} />
               <th>{t("table.cost", "Estimated Cost")}</th>
             </tr>
           </thead>
@@ -83,13 +105,10 @@ function TrendTable({ title, rows, formatDateTime, t }) {
                 <td>{row.errors || 0}</td>
                 <td>{row.blockedCount || 0}</td>
                 <td>{row.warningCount || 0}</td>
-                <td>{row.totalTokens || 0}</td>
-                <td>{row.cachedTokens || 0}</td>
-                <td>{formatCacheWriteTokens(row.cacheWrite, t)}</td>
-                <td>{formatCacheWriteCost(row.cacheWrite, t)}</td>
+                <TokenCells stats={row} t={t} />
                 <td>{formatEstimatedCost(row, t, row.estimatedCostCurrency)}</td>
               </tr>
-            )) : <tr><td colSpan="10">{t("table.noData", "No data yet")}</td></tr>}
+            )) : <tr><td colSpan="11">{t("table.noData", "No data yet")}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -134,10 +153,18 @@ export default function RuntimeTab({
   onRuntimeFilterChange,
   onSyncRuntime,
   runtimeSyncBusy,
+  onResetModelStats,
+  modelStatsResetBusy = false,
+  modelsResetAt,
   formatDateTime,
   t
 }) {
   const [expandedModels, setExpandedModels] = useState({});
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetFeedback, setResetFeedback] = useState(null);
+  const resetPending = useRef(false);
+  const isResetBusy = resetBusy || modelStatsResetBusy;
   const [nowTs, setNowTs] = useState(() => Date.now());
   const visibleGovernanceKeys = runtimeFilters?.keyId
     ? governanceKeys.filter((entry) => entry?.keyId === runtimeFilters.keyId)
@@ -176,6 +203,25 @@ export default function RuntimeTab({
       ...current,
       [modelId]: !current[modelId]
     }));
+  }
+
+  async function confirmModelStatsReset() {
+    if (resetPending.current) return;
+    resetPending.current = true;
+    setResetBusy(true);
+    setResetFeedback(null);
+    try {
+      await onResetModelStats();
+      setExpandedModels({});
+      setResetDialogOpen(false);
+      setResetFeedback({ success: true, message: t("runtime.modelsResetSuccess", "All model statistics have been reset. Request logs, Key statistics, governance quotas, and global totals were retained.") });
+    } catch (error) {
+      setResetDialogOpen(false);
+      setResetFeedback({ success: false, message: `${t("runtime.modelsResetFailed", "Could not reset model statistics and refresh the view.")} ${error.message || ""}`.trim() });
+    } finally {
+      resetPending.current = false;
+      setResetBusy(false);
+    }
   }
 
   return (
@@ -269,17 +315,17 @@ export default function RuntimeTab({
           <StatCard
             label={t("runtime.rollupHourly", "Latest Hour")}
             value={latestHourly.requests || 0}
-            note={`${t("table.errors", "Errors")} ${latestHourly.errors || 0} · ${t("runtime.nextFlushShort", "Next flush: {countdown}", { countdown: nextFlushCountdown })}`}
+            note={<span title={runtimeTokenHelp(t)}>{`${t("table.errors", "Errors")} ${latestHourly.errors || 0} · ${t("runtime.nextFlushShort", "Next flush: {countdown}", { countdown: nextFlushCountdown })} · ${formatTokenSummary(latestHourly, t)}`}</span>}
           />
           <StatCard
             label={t("runtime.rollupDaily", "Latest Day")}
             value={formatEstimatedCost(latestDaily, t, latestDaily.estimatedCostCurrency)}
-            note={`${t("table.warningCount", "Warnings")} ${latestDaily.warningCount || 0} · ${t("table.totalTokens", "Total Tokens")} ${latestDaily.totalTokens || 0} · ${t("table.cacheWriteTokens", "Cache Write Tokens")} ${formatCacheWriteTokens(latestDaily.cacheWrite, t)} · ${t("table.cacheWriteCost", "Cache Write Cost (included)")} ${formatCacheWriteCost(latestDaily.cacheWrite, t)}`}
+            note={<span title={runtimeTokenHelp(t)}>{`${t("table.warningCount", "Warnings")} ${latestDaily.warningCount || 0} · ${formatTokenSummary(latestDaily, t)}`}</span>}
           />
           <StatCard
             label={t("runtime.rollupWeekly", "Latest Week")}
             value={latestWeekly.requests || 0}
-            note={`${t("table.cost", "Estimated Cost")} ${formatEstimatedCost(latestWeekly, t, latestWeekly.estimatedCostCurrency)} · ${t("table.cacheWriteTokens", "Cache Write Tokens")} ${formatCacheWriteTokens(latestWeekly.cacheWrite, t)} · ${t("table.cacheWriteCost", "Cache Write Cost (included)")} ${formatCacheWriteCost(latestWeekly.cacheWrite, t)}`}
+            note={<span title={runtimeTokenHelp(t)}>{`${t("table.cost", "Estimated Cost")} ${formatEstimatedCost(latestWeekly, t, latestWeekly.estimatedCostCurrency)} · ${formatTokenSummary(latestWeekly, t)}`}</span>}
           />
         </div>
       </Section>
@@ -418,10 +464,7 @@ export default function RuntimeTab({
                 <th>{t("table.owner", "Owner")}</th>
                 <th>{t("table.requests", "Requests")}</th>
                 <th>{t("table.errors", "Errors")}</th>
-                <th>{t("table.totalTokens", "Total Tokens")}</th>
-                <th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
-                <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th>
-                <th>{t("table.cacheWriteCost", "Cache Write Cost (included)")}</th>
+                <TokenHeaders t={t} />
                 <th>{t("table.cost", "Estimated Cost")}</th>
                 <th>{t("table.concurrent", "Concurrency")}</th>
                 <th>{t("table.limits", "Limits")}</th>
@@ -444,10 +487,7 @@ export default function RuntimeTab({
                     <td>{entry.owner || "-"}</td>
                     <td>{perKey.requests || runtimeEntry.totalRequests || 0}</td>
                     <td>{perKey.errors || runtimeEntry.totalErrors || 0}</td>
-                    <td>{perKey.totalTokens || runtimeEntry.rateWindow?.totalTokens || 0}</td>
-                    <td>{perKey.cachedTokens || 0}</td>
-                    <td>{formatCacheWriteTokens(perKey.cacheWrite, t)}</td>
-                    <td>{formatCacheWriteCost(perKey.cacheWrite, t)}</td>
+                    <TokenCells stats={perKey} t={t} />
                     <td>{formatEstimatedCost({ ...perKey, estimatedCostAmount: perKey.estimatedCostAmount ?? budgetWindow.spentAmount ?? 0, textUnknownCostRequests: perKey.textUnknownCostRequests ?? budgetWindow.textUnknownCostRequests ?? 0 }, t)}</td>
                     <td>{runtimeEntry.currentConcurrent || 0}</td>
                     <td>{`rpm ${entry.rateLimit?.rpm || "-"} / tpm ${entry.rateLimit?.tpm || "-"} / con ${entry.rateLimit?.concurrency || "-"}`}</td>
@@ -470,13 +510,21 @@ export default function RuntimeTab({
                     <td>{runtimeEntry.lastSeenAt ? formatDateTime(runtimeEntry.lastSeenAt) : "-"}</td>
                   </tr>
                 );
-              }) : <tr><td colSpan="15">{t("table.noData", "No data yet")}</td></tr>}
+              }) : <tr><td colSpan="16">{t("table.noData", "No data yet")}</td></tr>}
             </tbody>
           </table>
         </div>
       </AccordionSection>
 
       <AccordionSection id="runtime-models" group="runtime-sections" title={t("runtime.modelStats", "Model Stats")} desc={t("runtime.modelStatsDesc", "Continue consuming the existing stats API in React.")}>
+        <div className="toolbar">
+          <button type="button" className="ghost danger" disabled={isResetBusy || !onResetModelStats} onClick={() => setResetDialogOpen(true)}>
+            {isResetBusy ? t("runtime.modelsResetPending", "Resetting model stats…") : t("runtime.modelsReset", "Reset all model stats")}
+          </button>
+          {modelsResetAt ? <span className="muted">{t("runtime.modelsResetAt", "Model stats reset at")}: {formatDateTime(modelsResetAt)}</span> : null}
+        </div>
+        {resetFeedback ? <p role={resetFeedback.success ? "status" : "alert"}>{resetFeedback.message}</p> : null}
+        <p className="field-hint">{runtimeTokenHelp(t)}</p>
         <div className="table-scroll">
           <table>
             <thead>
@@ -484,21 +532,14 @@ export default function RuntimeTab({
                 <th>{t("table.model", "Model")}</th>
                 <th>{t("table.requests", "Requests")}</th>
                 <th>{t("table.errors", "Errors")}</th>
-                <th>{t("table.inputTokens", "Input Tokens")}</th>
-                <th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
-                <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th>
-                <th>{t("table.cacheWriteCost", "Cache Write Cost (included)")}</th>
-                <th>{t("table.outputTokens", "Output Tokens")}</th>
-                <th>{t("table.totalTokens", "Total Tokens")}</th>
+                <TokenHeaders t={t} />
                 <th>{t("table.cost", "Estimated Cost")}</th>
               </tr>
             </thead>
             <tbody>
               {Object.entries(modelStats).length ? Object.entries(modelStats).map(([modelId, modelStat]) => {
-                const actualModels = Object.entries(modelStat.actualModels || {})
-                  .sort((left, right) => (right[1]?.requests || 0) - (left[1]?.requests || 0));
+                const billingRows = getModelBillingRows(modelId, modelStat);
                 const expanded = !!expandedModels[modelId];
-                const isModelRouter = modelId === "model-router";
 
                 return (
                   <Fragment key={modelId}>
@@ -506,69 +547,48 @@ export default function RuntimeTab({
                       <td>
                         <div className="model-cell">
                           <span>{modelId}</span>
-                          {actualModels.length ? (
+                          {billingRows.length ? (
                             <button
                               type="button"
                               className="table-expander"
                               onClick={() => toggleModelBreakdown(modelId)}
                               aria-expanded={expanded}
+                              aria-label={`${expanded ? t("runtime.collapseBreakdown", "Collapse") : t("runtime.expandBreakdown", "Expand")} ${modelId}`}
                             >
-                              {expanded ? t("runtime.collapseBreakdown", "收起") : t("runtime.expandBreakdown", "展开")}
+                              {expanded ? t("runtime.collapseBreakdown", "Collapse") : t("runtime.expandBreakdown", "Expand")}
                             </button>
                           ) : null}
                         </div>
                       </td>
                       <td>{modelStat.requests || 0}</td>
                       <td>{modelStat.errors || 0}</td>
-                      <td>{modelStat.promptTokens || 0}</td>
-                      <td>{modelStat.cachedTokens || 0}</td>
-                      <td>{formatCacheWriteTokens(modelStat.cacheWrite, t)}</td>
-                      <td>{formatCacheWriteCost(modelStat.cacheWrite, t)}</td>
-                      <td>{modelStat.completionTokens || 0}</td>
-                      <td>{modelStat.totalTokens || 0}</td>
-                      <td>{formatEstimatedCost(modelStat, t)}</td>
+                      <TokenCells stats={modelStat} t={t} />
+                      <td>{formatEstimatedCost(modelStat, t, modelStat.estimatedCostCurrency)}</td>
                     </tr>
-                    {expanded && actualModels.length ? (
+                    {expanded && billingRows.length ? (
                       <tr className="model-breakdown-row">
-                        <td colSpan="10">
+                        <td colSpan="9">
                           <div className="model-breakdown">
-                            <div className="model-breakdown-title">{t("runtime.actualModelBreakdown", "实际模型明细")}</div>
+                            <div className="model-breakdown-title">{t("runtime.actualModelBreakdown", "Actual Model Breakdown")}</div>
+                            <p className="field-hint">{t("runtime.billingTierHelp", "Tiers use recorded per-request billing context, not aggregate tokens or current model cards. Settled requests exclude errors; unavailable historical counts are shown as —.")}</p>
                             <div className="table-scroll">
                               <table>
                                 <thead>
                                   <tr>
-                                    <th>{t("table.actualModel", "实际模型")}</th>
-                                    <th>{t("table.requests", "Requests")}</th>
-                                    <th>{t("table.errors", "Errors")}</th>
-                                    <th>{t("table.inputTokens", "Input Tokens")}</th>
-                                    <th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
-                                    <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th>
-                                    <th>{t("table.cacheWriteCost", "Cache Write Cost (included)")}</th>
-                                    <th>{t("table.outputTokens", "Output Tokens")}</th>
-                                    <th>{t("table.totalTokens", "Total Tokens")}</th>
-                                    {isModelRouter ? <th>{t("table.modelRouterCost", "Model Router Cost")}</th> : null}
-                                    {isModelRouter ? <th>{t("table.actualModelCost", "Actual Model Cost")}</th> : null}
-                                    <th>{isModelRouter ? t("table.totalCost", "Total Cost") : t("table.cost", "Estimated Cost")}</th>
+                                    <th>{t("table.actualModel", "Actual Model")}</th>
+                                    <th>{t("table.billingTier", "Billing Tier")}</th>
+                                    <th>{t("table.settledRequests", "Settled Requests")}</th>
+                                    <TokenHeaders t={t} />
+                                    <th>{t("table.cost", "Estimated Cost")}</th>
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {actualModels.map(([actualModelId, actualStat]) => (
-                                    <tr key={actualModelId}>
-                                      <td>{actualModelId}</td>
-                                      <td>{actualStat.requests || 0}</td>
-                                      <td>{actualStat.errors || 0}</td>
-                                      <td>{actualStat.promptTokens || 0}</td>
-                                      <td>{actualStat.cachedTokens || 0}</td>
-                                      <td>{formatCacheWriteTokens(actualStat.cacheWrite, t)}</td>
-                                      <td>{formatCacheWriteCost(actualStat.cacheWrite, t)}</td>
-                                      <td>{actualStat.completionTokens || 0}</td>
-                                      <td>{actualStat.totalTokens || 0}</td>
-                                      {isModelRouter ? (
-                                        <td>{formatEstimatedCost({ ...actualStat, estimatedCostAmount: actualStat.modelRouterCostAmount }, t, actualStat.modelRouterCostCurrency)}</td>
-                                      ) : null}
-                                      {isModelRouter ? (
-                                        <td>{formatEstimatedCost({ ...actualStat, estimatedCostAmount: actualStat.actualModelCostAmount }, t, actualStat.actualModelCostCurrency)}</td>
-                                      ) : null}
+                                  {billingRows.map((actualStat, index) => (
+                                    <tr key={`${actualStat.actualModelId}-${actualStat.tier?.id || actualStat.tier?.kind}-${index}`}>
+                                      <td>{actualStat.actualModelId}</td>
+                                      <td>{formatBillingTier(actualStat.tier, t)}</td>
+                                      <td>{Number.isSafeInteger(actualStat.requests) && actualStat.requests >= 0 ? actualStat.requests : "—"}</td>
+                                      <TokenCells stats={actualStat} t={t} />
                                       <td>{formatEstimatedCost(actualStat, t, actualStat.estimatedCostCurrency)}</td>
                                     </tr>
                                   ))}
@@ -581,11 +601,24 @@ export default function RuntimeTab({
                     ) : null}
                   </Fragment>
                 );
-              }) : <tr><td colSpan="10">{t("table.noData", "No data yet")}</td></tr>}
+              }) : <tr><td colSpan="9">{t("table.noData", "No data yet")}</td></tr>}
             </tbody>
           </table>
         </div>
       </AccordionSection>
+      <Modal
+        title={t("runtime.modelsReset", "Reset all model stats")}
+        isOpen={resetDialogOpen}
+        onClose={() => { if (!resetPending.current) setResetDialogOpen(false); }}
+        onConfirm={confirmModelStatsReset}
+        confirmLabel={isResetBusy ? t("runtime.modelsResetPending", "Resetting model stats…") : t("runtime.modelsResetConfirm", "Reset all models")}
+        cancelLabel={t("common.cancel", "Cancel")}
+        closeLabel={t("common.close", "Close")}
+        disabled={isResetBusy}
+      >
+        <p>{t("runtime.modelsResetWarning", "Reset statistics for ALL models, including actual-model and billing-tier counts, tokens, and estimated costs? Active Key and time filters do not scope this reset: it always affects all models.")}</p>
+        <p>{t("runtime.modelsResetRetained", "Request logs, Key statistics, governance quotas, and global totals are retained. In database mode this reset is persisted. This cannot be undone.")}</p>
+      </Modal>
     </div>
   );
 }

@@ -15,7 +15,7 @@ import { registerWebRtcRoutes } from "./proxy/webrtc.js";
 import multipart from "@fastify/multipart";
 import { getMediaHttpLimits } from "./proxy/media-body.js";
 import { getStats } from "./stats.js";
-import { flushRuntimeEvents, getRuntimeStatsSnapshot } from "./runtime-store.js";
+import { flushRuntimeEvents, getRuntimeStatsSnapshot, resetRuntimeModelStats } from "./runtime-store.js";
 import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
@@ -1062,6 +1062,25 @@ app.get("/admin/api/stats", async (req) => {
     })),
     governance: await getGovernanceSnapshot(config)
   };
+});
+
+app.post("/admin/api/stats/models/reset", async (_req, reply) => {
+  try {
+    const result = await resetRuntimeModelStats(getConfig());
+    app.log.warn({
+      source: "admin",
+      event: "admin.model_stats_reset",
+      modelsResetAt: result.modelsResetAt
+    }, "model statistics reset; global, key and governance counters retained");
+    reply.header("Cache-Control", "no-store");
+    return { ok: true, ...result };
+  } catch (error) {
+    logAdminApiError("admin.model_stats_reset_failed", error, {
+      route: "/admin/api/stats/models/reset",
+      status: 503
+    });
+    return reply.code(503).send({ ok: false, error: error.message || "Model statistics reset failed" });
+  }
 });
 
 app.get("/admin/api/logs", async (req) => {

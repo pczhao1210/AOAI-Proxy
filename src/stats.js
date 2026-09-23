@@ -1,37 +1,6 @@
 import { getUsageTotals } from "./usage.js";
-
-export function normalizeCacheWrite(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const tokens = value.usageStatus === "observed" && Number.isInteger(value.tokens) && value.tokens >= 0 ? value.tokens : null;
-  const knownCostAmount = Number.isFinite(value.knownCostAmount) && value.knownCostAmount >= 0 ? value.knownCostAmount : 0;
-  const priced = value.costStatus === "priced" && Number.isFinite(value.estimatedCostAmount) && value.estimatedCostAmount >= 0;
-  return {
-    tokens,
-    usageStatus: tokens === null ? "unknown" : "observed",
-    knownCostAmount,
-    estimatedCostAmount: priced ? value.estimatedCostAmount : null,
-    costStatus: priced ? "priced" : value.costStatus === "partial" || knownCostAmount > 0 ? "partial" : "unknown"
-  };
-}
-
-export function summarizeCacheWrite({
-  requests = 0, observedRequests = 0, pricedRequests = 0, partialCostRequests = 0,
-  unreportedRequests = 0, observedTokens = null, knownCostAmount = null
-} = {}) {
-  const usageComplete = requests > 0 && unreportedRequests === 0 && observedRequests === requests;
-  const costComplete = requests > 0 && unreportedRequests === 0 && pricedRequests === requests;
-  return {
-    requests, observedRequests, pricedRequests, partialCostRequests, unreportedRequests,
-    unknownUsageRequests: requests - observedRequests,
-    unknownCostRequests: requests - pricedRequests,
-    observedTokens,
-    tokens: usageComplete ? observedTokens : null,
-    usageStatus: usageComplete ? "observed" : "unknown",
-    knownCostAmount,
-    estimatedCostAmount: costComplete ? knownCostAmount : null,
-    costStatus: costComplete ? "priced" : pricedRequests > 0 || partialCostRequests > 0 || knownCostAmount > 0 ? "partial" : "unknown"
-  };
-}
+import { normalizeCacheWrite, summarizeCacheWrite, billingTierIdentity, billingTierGroupKey, mergeBillingTierIntervals } from "./statistics.js";
+export { normalizeCacheWrite, summarizeCacheWrite } from "./statistics.js";
 
 function addCacheWrite(bucket, value) {
   const current = bucket.cacheWrite || summarizeCacheWrite();
@@ -72,6 +41,22 @@ const stats = {
   perModel: {},
   perKey: {}
 };
+let pendingModelStats = null;
+
+export function beginModelStatsReset(modelsResetAt) {
+  const pending = {};
+  pendingModelStats = pending;
+  return {
+    commit() {
+      stats.perModel = pending;
+      stats.modelsResetAt = modelsResetAt;
+      pendingModelStats = null;
+    },
+    rollback() {
+      pendingModelStats = null;
+    }
+  };
+}
 
 function normalizeActualModelName(model) {
   const normalized = String(model || "").trim();
@@ -79,9 +64,9 @@ function normalizeActualModelName(model) {
   return normalized.replace(/-(20\d{2}-\d{2}-\d{2})$/, "");
 }
 
-function getModelStats(model) {
-  if (!stats.perModel[model]) {
-    stats.perModel[model] = {
+function getModelStats(model, models = stats.perModel) {
+  if (!models[model]) {
+    models[model] = {
       requests: 0,
       errors: 0,
       promptTokens: 0,
@@ -96,10 +81,15 @@ function getModelStats(model) {
       actualModelCostCurrency: "USD",
       estimatedCostAmount: 0,
       estimatedCostCurrency: "USD",
-      actualModels: {}
+      actualModels: {},
+      billingTiers: []
     };
   }
-  return stats.perModel[model];
+  return models[model];
+}
+
+function modelBuckets(model) {
+  return [getModelStats(model), ...(pendingModelStats ? [getModelStats(model, pendingModelStats)] : [])];
 }
 
 function getActualModelStats(modelStats, actualModel) {
@@ -154,23 +144,22 @@ function resolveKeyId(context) {
 
 export function recordRequest(model, context = {}) {
   stats.totals.requests += 1;
-  getModelStats(model).requests += 1;
+  for (const bucket of modelBuckets(model)) bucket.requests += 1;
   getKeyStats(resolveKeyId(context)).requests += 1;
 }
 
 export function recordError(model, context = {}) {
   stats.totals.errors += 1;
-  const modelStats = getModelStats(model);
-  modelStats.errors += 1;
-  const actualModelStats = getActualModelStats(modelStats, context?.actualModelName);
-  if (actualModelStats) {
-    actualModelStats.errors += 1;
+  for (const modelStats of modelBuckets(model)) {
+    modelStats.errors += 1;
+    const actualModelStats = getActualModelStats(modelStats, context?.actualModelName);
+    if (actualModelStats) actualModelStats.errors += 1;
   }
   getKeyStats(resolveKeyId(context)).errors += 1;
 }
 
 export function recordMediaUsage(model, usage, context = {}) {
-  for (const bucket of [stats.totals, getModelStats(model), getKeyStats(resolveKeyId(context))]) {
+  for (const bucket of [stats.totals, ...modelBuckets(model), getKeyStats(resolveKeyId(context))]) {
     bucket.media ||= { requests: 0, observedRequests: 0, unknownUsageRequests: 0, unknownCostRequests: 0,
       counters: {}, estimatedCostAmount: null };
     bucket.media.requests += 1;
@@ -193,81 +182,44 @@ export function recordMediaUsage(model, usage, context = {}) {
 export function recordUsage(model, usage, context = {}) {
   if (!usage) return;
   const { promptTokens: prompt, completionTokens: completion, totalTokens: total, cachedTokens: cached } = getUsageTotals(usage);
-  stats.totals.promptTokens += prompt;
-  stats.totals.completionTokens += completion;
-  stats.totals.totalTokens += total;
-  stats.totals.cachedTokens += cached;
-  const modelStats = getModelStats(model);
-  modelStats.promptTokens += prompt;
-  modelStats.completionTokens += completion;
-  modelStats.totalTokens += total;
-  modelStats.cachedTokens += cached;
-
-  const actualModelStats = getActualModelStats(modelStats, context?.actualModelName);
-  if (actualModelStats) {
-    actualModelStats.requests += 1;
-    actualModelStats.promptTokens += prompt;
-    actualModelStats.completionTokens += completion;
-    actualModelStats.totalTokens += total;
-    actualModelStats.cachedTokens += cached;
-  }
-
-  const keyStats = getKeyStats(resolveKeyId(context));
-  keyStats.promptTokens += prompt;
-  keyStats.completionTokens += completion;
-  keyStats.totalTokens += total;
-  keyStats.cachedTokens += cached;
-
-  if (context.cost?.pricing || context.cost?.cacheWrite) {
-    const cacheWrite = normalizeCacheWrite(context.cost.cacheWrite);
-    for (const bucket of [stats.totals, modelStats, keyStats, actualModelStats]) {
-      if (bucket) addCacheWrite(bucket, cacheWrite);
+  const buckets = [stats.totals, getKeyStats(resolveKeyId(context))];
+  for (const modelStats of modelBuckets(model)) {
+    const identity = billingTierIdentity(model, context.actualModelName, context.cost?.pricing?.actual);
+    const key = billingTierGroupKey(identity);
+    let tier = modelStats.billingTiers.find(row => billingTierGroupKey(row) === key);
+    if (!tier) {
+      const { actualModels, billingTiers, ...empty } = getModelStats(model, {});
+      tier = { ...empty, ...identity };
+      modelStats.billingTiers.push(tier);
+    } else {
+      tier.tier = mergeBillingTierIntervals(tier.tier, identity.tier);
+    }
+    tier.requests += 1;
+    buckets.push(modelStats, tier);
+    const actual = getActualModelStats(modelStats, context.actualModelName);
+    if (actual) {
+      actual.requests += 1;
+      buckets.push(actual);
     }
   }
-
-  if (context.cost?.pricing && context.cost.costStatus && context.cost.costStatus !== "priced") {
-    for (const bucket of [stats.totals, modelStats, keyStats, actualModelStats]) {
-      if (bucket) bucket.textUnknownCostRequests += 1;
+  const cacheWrite = normalizeCacheWrite(context.cost?.cacheWrite);
+  for (const bucket of buckets) {
+    bucket.promptTokens += prompt;
+    bucket.completionTokens += completion;
+    bucket.totalTokens += total;
+    bucket.cachedTokens += cached;
+    if (context.cost?.pricing || context.cost?.cacheWrite) addCacheWrite(bucket, cacheWrite);
+    if (context.cost?.pricing && context.cost.costStatus && context.cost.costStatus !== "priced") bucket.textUnknownCostRequests += 1;
+    for (const [field, amount, currency] of [
+      ["estimatedCost", context.cost?.amount, context.cost?.currency],
+      ["modelRouterCost", context.cost?.modelRouterCostAmount, context.cost?.modelRouterCostCurrency],
+      ["actualModelCost", context.cost?.actualModelCostAmount, context.cost?.actualModelCostCurrency]
+    ]) {
+      if (Number.isFinite(amount) && amount > 0) {
+        bucket[`${field}Amount`] += amount;
+        bucket[`${field}Currency`] = currency || bucket[`${field}Currency`] || "USD";
+      }
     }
-  }
-
-  if (Number.isFinite(context?.cost?.amount) && context.cost.amount > 0) {
-    stats.totals.estimatedCostAmount += context.cost.amount;
-    stats.totals.estimatedCostCurrency = context.cost.currency || stats.totals.estimatedCostCurrency || "USD";
-    modelStats.estimatedCostAmount += context.cost.amount;
-    modelStats.estimatedCostCurrency = context.cost.currency || modelStats.estimatedCostCurrency || "USD";
-    if (actualModelStats) {
-      actualModelStats.estimatedCostAmount += context.cost.amount;
-      actualModelStats.estimatedCostCurrency = context.cost.currency || actualModelStats.estimatedCostCurrency || "USD";
-    }
-    keyStats.estimatedCostAmount += context.cost.amount;
-    keyStats.estimatedCostCurrency = context.cost.currency || keyStats.estimatedCostCurrency || "USD";
-  }
-
-  if (Number.isFinite(context?.cost?.modelRouterCostAmount) && context.cost.modelRouterCostAmount > 0) {
-    stats.totals.modelRouterCostAmount += context.cost.modelRouterCostAmount;
-    stats.totals.modelRouterCostCurrency = context.cost.modelRouterCostCurrency || stats.totals.modelRouterCostCurrency || "USD";
-    modelStats.modelRouterCostAmount += context.cost.modelRouterCostAmount;
-    modelStats.modelRouterCostCurrency = context.cost.modelRouterCostCurrency || modelStats.modelRouterCostCurrency || "USD";
-    if (actualModelStats) {
-      actualModelStats.modelRouterCostAmount += context.cost.modelRouterCostAmount;
-      actualModelStats.modelRouterCostCurrency = context.cost.modelRouterCostCurrency || actualModelStats.modelRouterCostCurrency || "USD";
-    }
-    keyStats.modelRouterCostAmount += context.cost.modelRouterCostAmount;
-    keyStats.modelRouterCostCurrency = context.cost.modelRouterCostCurrency || keyStats.modelRouterCostCurrency || "USD";
-  }
-
-  if (Number.isFinite(context?.cost?.actualModelCostAmount) && context.cost.actualModelCostAmount > 0) {
-    stats.totals.actualModelCostAmount += context.cost.actualModelCostAmount;
-    stats.totals.actualModelCostCurrency = context.cost.actualModelCostCurrency || stats.totals.actualModelCostCurrency || "USD";
-    modelStats.actualModelCostAmount += context.cost.actualModelCostAmount;
-    modelStats.actualModelCostCurrency = context.cost.actualModelCostCurrency || modelStats.actualModelCostCurrency || "USD";
-    if (actualModelStats) {
-      actualModelStats.actualModelCostAmount += context.cost.actualModelCostAmount;
-      actualModelStats.actualModelCostCurrency = context.cost.actualModelCostCurrency || actualModelStats.actualModelCostCurrency || "USD";
-    }
-    keyStats.actualModelCostAmount += context.cost.actualModelCostAmount;
-    keyStats.actualModelCostCurrency = context.cost.actualModelCostCurrency || keyStats.actualModelCostCurrency || "USD";
   }
 }
 
