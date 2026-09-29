@@ -1,7 +1,7 @@
 {
   "id": "DeepSeek-V4.1-Flash",
   "displayName": "DeepSeek V4.1 Flash",
-  "provider": "fireworks-ai",
+  "provider": "deepseek",
   "family": "deepseek-v4",
   "modelVersion": "2026-09-10",
   "status": "ga",
@@ -27,22 +27,20 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "fireworks-serverless",
+    "sourceType": "deepseek-official",
     "status": "published",
     "inputPer1mTokens": 0.3,
     "cachedInputPer1mTokens": 0.006,
     "outputPer1mTokens": 1.2
   },
-  "proxyTemplate": {
-    "targetModel": "accounts/fireworks/models/deepseek-v4p1-flash"
-  },
+  "proxyTemplate": {},
   "sources": {
-    "capabilities": "https://fireworks.ai/models/deepseek-ai/deepseek-v4p1-flash",
-    "limits": "https://fireworks.ai/models/deepseek-ai/deepseek-v4p1-flash",
-    "pricing": "https://docs.fireworks.ai/serverless/pricing"
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
+    "limits": "https://api-docs.deepseek.com/news/news260910/",
+    "pricing": "https://api-docs.deepseek.com/quick_start/pricing"
   },
   "notes": [
-    "Fireworks catalog lists 1040k context, image input, and Function Calling support; the page records Created on 9/10/2026.",
-    "Fireworks Serverless standard pricing is USD 0.30 input, USD 0.006 cached input, and USD 1.20 output per 1M tokens."
+    "This card selects the DeepSeek-V4.1-Flash model sold directly by Azure; the proxy template therefore uses the root model ID without a Fireworks deployment override.",
+    "The separate Fireworks-hosted Foundry deployment is named FW-DeepSeek-V4.1-Flash and is not represented by this card."
   ]
 }
