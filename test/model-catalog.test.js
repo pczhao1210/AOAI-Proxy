@@ -341,7 +341,7 @@ test("Grok Chat to Responses preserves explicit effort instead of treating Respo
       messages: [{ role: "user", content: "hello" }],
       reasoning_effort: effort
     }, "grok-deployment", descriptor);
-    assert.deepEqual(result.reasoning, { effort });
+    assert.deepEqual(result.reasoning, { effort, summary: "auto" });
     assert.equal(result.model, "grok-deployment");
   }
   const omitted = chatToResponsesRequest({ messages: [{ role: "user", content: "hello" }] }, "grok-deployment", descriptor);
