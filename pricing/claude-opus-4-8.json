@@ -28,6 +28,7 @@
       "reasoning": {
         "parameter": "output_config.effort",
         "levels": ["low", "medium", "high", "xhigh", "max"],
+        "default": "high",
         "validation": "passthrough"
       }
     }
@@ -43,12 +44,13 @@
   },
   "proxyTemplate": {},
   "sources": {
+    "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-claude#available-claude-models",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
     "pricing": "https://claude.com/pricing#api"
   },
   "notes": [
-    "Anthropic 公开页对 prompt caching 分别提供 write/read 价格；当前 schema 只有一个 cachedInput 字段，这里按 cache read 价格回填。",
+    "缓存读取费率已记录；TTL 缓存写入字段受支持，但本卡片的对应单价尚待来源核实，不按缺失值计为免费。",
     "Claude Opus 4.8 于 2026-05-28 发布，定价与 Opus 4.6 相同（$5/$25 per 1M tokens）。",
     "Claude 在 model-router 中仍需先单独部署到 Foundry 资源。"
   ]

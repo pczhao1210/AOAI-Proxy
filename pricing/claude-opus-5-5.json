@@ -40,6 +40,8 @@
     "status": "published",
     "inputPer1mTokens": 4,
     "cachedInputPer1mTokens": 0.2,
+    "cacheWrite5mPer1mTokens": 5,
+    "cacheWrite1hPer1mTokens": 8,
     "outputPer1mTokens": 20
   },
   "proxyTemplate": {},
@@ -52,7 +54,7 @@
   "notes": [
     "Hosted on Azure and Hosted on Anthropic infrastructure are both generally available in Microsoft Foundry. Both use the native Anthropic Messages API.",
     "Adaptive thinking is always on. Disabled thinking, manual budget_tokens, and forced tool_choice (any or tool) are rejected by the upstream; leave these requests to the provider for validation.",
-    "The cached-input price represents cache reads. Five-minute and one-hour cache writes cost USD 5 and USD 8 per 1M tokens, respectively, and are not represented by the single cached-input rate.",
+    "Cache reads and TTL-specific cache writes are separate input categories; the published write rates previously recorded in this note are now executable pricing fields.",
     "Foundry bills via Claude Consumption Units at standard Anthropic per-model rates before any discounts. US Data Zone inference adds a 1.1x multiplier not represented by this base price."
   ]
 }

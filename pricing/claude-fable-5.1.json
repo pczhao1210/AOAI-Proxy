@@ -39,6 +39,8 @@
     "status": "published",
     "inputPer1mTokens": 10,
     "cachedInputPer1mTokens": 0.25,
+    "cacheWrite5mPer1mTokens": 12.5,
+    "cacheWrite1hPer1mTokens": 20,
     "outputPer1mTokens": 50
   },
   "proxyTemplate": {},
@@ -48,7 +50,7 @@
     "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
-    "The cached-input price records cache reads. Five-minute and one-hour cache writes cost USD 12.50 and USD 20 per 1M tokens, respectively.",
+    "Cache reads and TTL-specific cache writes are separate input categories; the published write rates previously recorded in this note are now executable pricing fields.",
     "Microsoft Foundry offers Claude Fable 5.1 in preview, hosted on Anthropic infrastructure through the Messages API."
   ]
 }

@@ -5,6 +5,8 @@
   "family": "kimi-k2",
   "modelVersion": null,
   "status": "preview",
+  "maxInputTokens": 262144,
+  "maxOutputTokens": 262144,
   "interfaces": ["chat/completions"],
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
@@ -29,6 +31,7 @@
   },
   "proxyTemplate": {},
   "sources": {
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#moonshot-ai-models-sold-directly-by-azure",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },

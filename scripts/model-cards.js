@@ -31,6 +31,122 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+export function validateModelCard(card) {
+  const errors = [];
+  const warnings = [];
+  const text = value => typeof value === "string" && value.trim().length > 0;
+  const strings = value => Array.isArray(value) && value.length > 0 && value.every(text);
+  const source = field => {
+    try {
+      const url = new URL(card.sources?.[field]);
+      if (!["https:", "http:"].includes(url.protocol)) throw new Error();
+    } catch {
+      errors.push(`sources.${field}: expected an evidence URL`);
+    }
+  };
+  if (!isObject(card)) return { errors: ["card: expected an object"], warnings };
+  for (const field of ["id", "displayName", "provider", "family"]) {
+    if (!text(card[field])) errors.push(`${field}: required nonempty string`);
+  }
+  for (const field of ["interfaces", "inputModalities", "outputModalities", "capabilities"]) {
+    if (!strings(card[field])) errors.push(`${field}: required nonempty string array`);
+  }
+  source("capabilities");
+  source("pricing");
+  const limits = ["contextWindow", "maxInputTokens", "maxOutputTokens"];
+  for (const field of limits) {
+    if (card[field] == null) continue;
+    if (!Number.isSafeInteger(card[field]) || card[field] <= 0) {
+      errors.push(`${field}: expected a positive safe integer`);
+    } else if (field !== "contextWindow" && card.contextWindow != null && card[field] > card.contextWindow) {
+      errors.push(`${field}: must not exceed contextWindow`);
+    }
+  }
+  if (limits.some(field => card[field] != null)) source("limits");
+  const textModel = Array.isArray(card.interfaces)
+    && card.interfaces.some(protocol => ["chat/completions", "responses", "messages"].includes(protocol));
+  if (textModel) {
+    for (const field of limits) {
+      if (card[field] == null) warnings.push(`${field}: not recorded; add only with deployment-specific evidence`);
+    }
+  }
+  const profiles = isObject(card.protocolProfiles) ? card.protocolProfiles : {};
+  if (card.protocolProfiles != null && !isObject(card.protocolProfiles)) {
+    errors.push("protocolProfiles: expected an object");
+  }
+  if (Array.isArray(card.capabilities) && card.capabilities.includes("reasoning") && !Object.values(profiles).some(profile =>
+    profile?.reasoning?.parameter || profile?.reasoning?.configurable === false || profile?.thinking?.parameter)) {
+    errors.push("protocolProfiles: reasoning capability requires a reasoning or thinking profile");
+  }
+  for (const [protocol, profile] of Object.entries(profiles)) {
+    if (!isObject(profile)) {
+      errors.push(`protocolProfiles.${protocol}: expected an object`);
+      continue;
+    }
+    for (const [kind, choices] of [["reasoning", "levels"], ["thinking", "types"]]) {
+      const control = profile[kind];
+      const prefix = `protocolProfiles.${protocol}.${kind}`;
+      if (control == null) continue;
+      if (!isObject(control)) {
+        errors.push(`${prefix}: expected an object`);
+        continue;
+      }
+      if (control.configurable != null && typeof control.configurable !== "boolean") {
+        errors.push(`${prefix}.configurable: expected a boolean`);
+      }
+      if (control.configurable === false) continue;
+      if (!text(control.parameter)) errors.push(`${prefix}.parameter: required for configurable controls`);
+      if (control[choices] == null) warnings.push(`${prefix}.${choices}: not recorded; verify provider support`);
+      else if (!strings(control[choices])) errors.push(`${prefix}.${choices}: expected a nonempty string array`);
+      if (control.default == null) warnings.push(`${prefix}.default: not recorded; do not assume a family default`);
+      else if (!text(control.default) || (strings(control[choices]) && !control[choices].includes(control.default))) {
+        errors.push(`${prefix}.default: must be a nonempty string included in ${choices} when declared`);
+      }
+    }
+  }
+  if (!isObject(card.pricing)) errors.push("pricing: required object (unpublished rates must remain absent)");
+  for (const field of ["pricing", "pricingCatalogEntry"]) {
+    const pricing = card[field];
+    if (pricing == null) continue;
+    if (!isObject(pricing)) {
+      if (field !== "pricing") errors.push(`${field}: expected an object or null`);
+      continue;
+    }
+    if (field === "pricing") {
+      for (const key of ["currency", "billingUnit"]) {
+        if (key === "billingUnit" && pricing.status === "unavailable" && pricing[key] == null) {
+          warnings.push(`${field}.${key}: unpublished; verify together with rates`);
+          continue;
+        }
+        if (!text(pricing[key])) errors.push(`${field}.${key}: required nonempty string`);
+      }
+    }
+    try {
+      canonicalizeRates(pricing);
+      // Reference-only media tables are not executable token policies.
+      if (pricing.tiering || field === "pricingCatalogEntry" || card.pricingCatalogEntry !== null) {
+        compilePricingPolicy(pricing, field);
+      }
+    } catch (error) {
+      errors.push(`${field}: ${error.message}`);
+    }
+    if (pricing.tiering && Array.isArray(pricing.tiers)) {
+      for (const [index, tier] of pricing.tiers.entries()) {
+        if (!text(tier?.id)) errors.push(`${field}.tiers[${index}].id: explicit descriptive ID required`);
+      }
+    }
+    if (textModel && (field === "pricingCatalogEntry" || !Object.hasOwn(card, "pricingCatalogEntry"))) {
+      const rows = Array.isArray(pricing.tiers) ? pricing.tiers : [pricing];
+      for (const [index, row] of rows.entries()) {
+        for (const rate of ["inputPer1mTokens", "outputPer1mTokens"]) {
+          if (row?.[rate] == null) warnings.push(`${field}${pricing.tiers ? `.tiers[${index}]` : ""}.${rate}: not recorded; never substitute zero`);
+        }
+      }
+    }
+  }
+  return { errors, warnings };
+}
+
 function equivalent(left, right) {
   if (typeof left === "number" && typeof right === "number") {
     return left === right || (left !== 0 && right !== 0
@@ -154,8 +270,8 @@ export function formatModelCard(card) {
 
 async function main() {
   const mode = process.argv[2];
-  if (!["--check", "--write"].includes(mode) || process.argv.length !== 3) {
-    throw new Error("Usage: node scripts/model-cards.js --check|--write");
+  if (!["--check", "--write", "--validate"].includes(mode) || process.argv.length !== 3) {
+    throw new Error("Usage: node scripts/model-cards.js --check|--write|--validate");
   }
   const directory = new URL("../pricing/", import.meta.url);
   const names = (await fs.readdir(directory, { withFileTypes: true }))
@@ -163,8 +279,34 @@ async function main() {
   const candidates = await Promise.all(names.map(async name => {
     const url = new URL(name, directory);
     const text = await fs.readFile(url, "utf8");
-    return { name, url, text, formatted: formatModelCard(JSON.parse(text)) };
+    try {
+      const card = JSON.parse(text);
+      const validation = validateModelCard(card);
+      return { name, url, text, id: card?.id, ...validation,
+        formatted: validation.errors.length ? text : formatModelCard(card) };
+    } catch (error) {
+      return { name, url, text, formatted: text, errors: [error.message], warnings: [] };
+    }
   }));
+  const ids = new Set();
+  for (const entry of candidates) {
+    if (typeof entry.id === "string") {
+      const id = entry.id.trim().toLowerCase();
+      if (ids.has(id)) entry.errors.push(`id: duplicate ${entry.id}`);
+      ids.add(id);
+    }
+    for (const error of entry.errors) console.error(`pricing/${entry.name}: ${error}`);
+    if (mode === "--validate") {
+      for (const warning of entry.warnings) console.warn(`REVIEW pricing/${entry.name}: ${warning}`);
+    }
+  }
+  const errors = candidates.reduce((sum, entry) => sum + entry.errors.length, 0);
+  if (mode === "--validate" || errors) {
+    const warnings = candidates.reduce((sum, entry) => sum + entry.warnings.length, 0);
+    console.log(`${names.length} active cards validated; ${errors} errors; ${warnings} fields to review. Archives excluded.`);
+    if (errors) process.exitCode = 1;
+    return;
+  }
   const changed = candidates.filter(entry => entry.text !== entry.formatted);
   for (const entry of changed) {
     if (mode === "--write") await fs.writeFile(entry.url, entry.formatted);

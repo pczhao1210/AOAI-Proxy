@@ -5,6 +5,8 @@
   "family": "grok-4",
   "modelVersion": null,
   "status": "ga",
+  "maxInputTokens": 262000,
+  "maxOutputTokens": 8192,
   "interfaces": ["chat/completions"],
   "inputModalities": ["text"],
   "outputModalities": ["text"],
@@ -27,6 +29,7 @@
   },
   "proxyTemplate": {},
   "sources": {
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#xai-models-sold-directly-by-azure",
     "pricing": "https://docs.x.ai/developers/models"
   },

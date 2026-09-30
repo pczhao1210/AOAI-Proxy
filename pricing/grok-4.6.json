@@ -5,7 +5,8 @@
   "family": "grok-4.6",
   "modelVersion": null,
   "status": "preview",
-  "contextWindow": 500000,
+  "contextWindow": 200000,
+  "maxOutputTokens": 128000,
   "interfaces": ["chat/completions", "responses"],
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
@@ -21,7 +22,7 @@
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "configurable": false,
+        "levels": ["low", "medium", "high"],
         "default": "high"
       }
     }
@@ -55,11 +56,11 @@
   "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-grok",
-    "limits": "https://docs.x.ai/developers/models/grok-4.6",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-grok",
     "pricing": "https://docs.x.ai/developers/models/grok-4.6"
   },
   "notes": [
-    "Azure Foundry 将 Grok 4.6 列为支持 Chat Completions 和 Responses 的 preview deployment；Responses reasoning effort 固定为 high。",
+    "Azure Foundry documents a 200K context window and output capped at 128K or the remaining context budget. Responses supports low/medium/high effort, default high; Chat additionally supports xhigh.",
     "xAI 直连请求在 prompt 达到 200K tokens 时整次请求使用高档费率；pricingCatalogEntry 启用该分档。此处为 xAI 官方单价，不代表已验证的 Azure 托管价格，绑定前需核实实际计费来源。"
   ]
 }

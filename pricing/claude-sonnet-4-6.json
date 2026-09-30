@@ -27,6 +27,7 @@
       "reasoning": {
         "parameter": "output_config.effort",
         "levels": ["low", "medium", "high", "max"],
+        "default": "high",
         "aliases": {
           "xhigh": "max"
         },
@@ -45,12 +46,13 @@
   },
   "proxyTemplate": {},
   "sources": {
+    "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-from-partners#anthropic",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
     "pricing": "https://claude.com/pricing#api"
   },
   "notes": [
-    "Anthropic 公开页对 prompt caching 分别提供 write/read 价格；当前 schema 只有一个 cachedInput 字段，这里按 cache read 价格回填。",
+    "缓存读取费率已记录；TTL 缓存写入字段受支持，但本卡片的对应单价尚待来源核实，不按缺失值计为免费。",
     "Azure Foundry 可直接部署 Claude Sonnet 4.6，但微软文档当前说明 model-router 还不支持 claude-sonnet-4-6。"
   ]
 }

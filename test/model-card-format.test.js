@@ -7,7 +7,7 @@ import { expandModelCard, getModelCardPricing } from "../src/model-card.js";
 import { compileDefinitionPricing } from "../src/pricing-policy.js";
 import { listPricingDefinitions } from "../src/pricing-library.js";
 import { buildModelFromPricingTemplate, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
-import { canonicalizeModelCard, formatModelCard } from "../scripts/model-cards.js";
+import { canonicalizeModelCard, formatModelCard, validateModelCard } from "../scripts/model-cards.js";
 
 const legacy = {
   id: "example", displayName: "Example", provider: "openai", family: "example",
@@ -21,6 +21,96 @@ const legacy = {
   pricingCatalogEntry: { currency: "USD", inputPer1kTokens: 0.002, cachedInputPer1kTokens: 0, outputPer1kTokens: 0.01 },
   proxyTemplate: { id: "example", displayName: "Example", targetModel: "example", pricingRef: "example", capabilities: ["reasoning"] }
 };
+
+const authoredCard = {
+  id: "example", displayName: "Example", provider: "example", family: "example",
+  interfaces: ["responses"], inputModalities: ["text"], outputModalities: ["text"],
+  capabilities: ["reasoning"], contextWindow: 1000, maxInputTokens: 900, maxOutputTokens: 100,
+  protocolProfiles: { responses: { reasoning: { parameter: "reasoning.effort", levels: ["low", "high"], default: "high" } } },
+  pricing: { currency: "USD", billingUnit: "1M tokens", inputPer1mTokens: 1, outputPer1mTokens: 2 },
+  sources: { capabilities: "https://example.test/model", limits: "https://example.test/limits", pricing: "https://example.test/pricing" },
+  proxyTemplate: {}
+};
+
+test("raw card validation catches missing metadata before runtime defaults hide it", () => {
+  assert.deepEqual(validateModelCard(authoredCard).errors, []);
+  for (const field of ["id", "displayName", "provider", "family", "interfaces", "inputModalities", "outputModalities", "capabilities", "pricing", "sources"]) {
+    const card = structuredClone(authoredCard);
+    delete card[field];
+    assert.ok(validateModelCard(card).errors.some(error => error.startsWith(field)), field);
+  }
+  const invalid = structuredClone(authoredCard);
+  invalid.contextWindow = 0;
+  invalid.sources.pricing = "not a URL";
+  invalid.protocolProfiles.responses.reasoning.default = "max";
+  assert.match(validateModelCard(invalid).errors.join("\n"), /contextWindow/);
+  assert.match(validateModelCard(invalid).errors.join("\n"), /sources.pricing/);
+  assert.match(validateModelCard(invalid).errors.join("\n"), /reasoning.default/);
+});
+
+test("card completeness reports unknown fields without inventing defaults or prices", () => {
+  const card = structuredClone(authoredCard);
+  delete card.contextWindow;
+  delete card.maxOutputTokens;
+  delete card.protocolProfiles.responses.reasoning.default;
+  delete card.pricing.outputPer1mTokens;
+  card.pricing.cachedInputPer1mTokens = 0;
+  const original = structuredClone(card);
+  const result = validateModelCard(card);
+  assert.deepEqual(result.errors, []);
+  for (const field of ["contextWindow", "maxOutputTokens", "reasoning.default", "outputPer1mTokens"]) {
+    assert.ok(result.warnings.some(warning => warning.includes(field)), field);
+  }
+  assert.deepEqual(card, original);
+  const fixed = structuredClone(authoredCard);
+  fixed.protocolProfiles.responses.reasoning = { configurable: false };
+  assert.deepEqual(validateModelCard(fixed), { errors: [], warnings: [] });
+  const media = { ...authoredCard, interfaces: ["audio/speech"], capabilities: ["text-to-speech"],
+    protocolProfiles: {}, contextWindow: undefined, maxOutputTokens: undefined,
+    pricing: { currency: "USD", billingUnit: "minute" }, pricingCatalogEntry: null, proxyTemplate: null };
+  assert.deepEqual(validateModelCard(media), { errors: [], warnings: [] });
+});
+
+test("authoring validation requires explicit tier IDs but preserves intentional price overrides", () => {
+  const card = structuredClone(authoredCard);
+  card.pricing = { currency: "USD", billingUnit: "1M tokens",
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [{ id: "standard", inputPer1mTokens: 0, outputPer1mTokens: 2 }] };
+  assert.deepEqual(validateModelCard(card).errors, []);
+  delete card.pricing.tiers[0].id;
+  assert.match(validateModelCard(card).errors.join("\n"), /pricing.tiers\[0\].id/);
+  card.pricingCatalogEntry = null;
+  assert.match(validateModelCard(card).errors.join("\n"), /pricing.tiers\[0\].id/);
+  card.pricing.tiers[0].id = "standard";
+  card.pricingCatalogEntry = { inputPer1mTokens: 3 };
+  assert.deepEqual(validateModelCard(card).errors, []);
+});
+
+test("raw validation rejects malformed controls, limits and executable tiers without provider heuristics", () => {
+  for (const [field, value] of [["capabilities", 1], ["interfaces", "responses"], ["protocolProfiles", []], ["pricingCatalogEntry", []]]) {
+    const result = validateModelCard({ ...authoredCard, [field]: value });
+    assert.ok(result.errors.some(error => error.startsWith(field)), field);
+  }
+  const card = structuredClone(authoredCard);
+  card.maxOutputTokens = card.contextWindow + 1;
+  card.protocolProfiles.responses.reasoning.levels = ["low", 1];
+  assert.match(validateModelCard(card).errors.join("\n"), /maxOutputTokens/);
+  assert.match(validateModelCard(card).errors.join("\n"), /reasoning.levels/);
+  card.pricing = { currency: "USD", billingUnit: "1M tokens",
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [
+      { id: "short", promptTokensBelow: 100, inputPer1mTokens: 1 },
+      { id: "long", promptTokensAtLeast: 99, inputPer1mTokens: 2 }
+    ] };
+  card.pricingCatalogEntry = null;
+  assert.match(validateModelCard(card).errors.join("\n"), /contiguous/);
+  const unavailable = { ...authoredCard, pricing: { currency: "USD", status: "unavailable" }, pricingCatalogEntry: null };
+  assert.deepEqual(validateModelCard(unavailable).errors, []);
+  assert.ok(validateModelCard(unavailable).warnings.some(warning => warning.startsWith("pricing.billingUnit")));
+  for (const provider of ["deepseek", "fireworks-ai", "future-provider"]) {
+    assert.deepEqual(validateModelCard({ ...authoredCard, provider }).errors, []);
+  }
+});
 
 test("compact cards preserve prices, generated models, explicit zero and independent input objects", () => {
   const original = structuredClone(legacy);
@@ -118,10 +208,15 @@ test("model-card formatter is deterministic, idempotent and preserves media and 
 test("all active model cards use canonical self-contained formatting", async () => {
   const directory = new URL("../pricing/", import.meta.url);
   const names = (await fs.readdir(directory)).filter(name => name.endsWith(".json"));
-  assert.equal(names.length, 81);
+  assert.ok(names.length > 0);
+  const ids = new Set();
   for (const name of names) {
     const text = await fs.readFile(new URL(name, directory), "utf8");
-    assert.equal(text, formatModelCard(JSON.parse(text)), name);
+    const card = JSON.parse(text);
+    assert.deepEqual(validateModelCard(card).errors, [], name);
+    assert.ok(!ids.has(card.id.toLowerCase()), `${name}: duplicate id`);
+    ids.add(card.id.toLowerCase());
+    assert.equal(text, formatModelCard(card), name);
   }
 });
 

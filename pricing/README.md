@@ -46,6 +46,7 @@ Use the repository formatter rather than hand-minifying JSON:
 ```bash
 npm run cards:format
 npm run cards:check
+npm run cards:validate
 ```
 
 It uses two-space indentation, stable root/price/template field ordering, inline
@@ -54,6 +55,31 @@ equivalent duplicates, preserves differing overrides and explicit nulls, and
 refuses conflicting rate conversions. It only visits `pricing/*.json`, never
 archives or live/persisted configuration. Unit tests enforce canonical formatting
 and parity between the backend and bundled admin libraries.
+
+`cards:check` also checks required metadata on the **raw JSON**, before loader
+defaults can hide missing fields. `cards:validate` reports those errors plus
+`REVIEW` diagnostics for unrecorded text-token limits, configurable reasoning/
+thinking choices and defaults, token input/output rates, and unpublished billing
+units. It does not rewrite cards. Errors produce a nonzero exit status; review
+diagnostics do not, because an absent field may be unpublished, inapplicable, or
+deployment-dependent. Neither command verifies online availability or the truth
+of a cited source. Explicit zero prices, disabled automatic pricing, fixed
+reasoning, and deliberate pricing overrides remain supported.
+
+For open-source models, Foundry availability is the admission criterion. Prefer
+the Azure-direct offering for each exact model; use the Foundry Fireworks offering
+only when no Azure-direct offering exists. This is not a family-wide provider
+switch. Keep the selected deployment ID, protocol facts and price provenance
+aligned. DeepSeek V4.1 Flash uses the Azure-direct model; GLM 5.3/5.3 Flash and
+Kimi K3 retain their Fireworks offerings. Regression tests must not force an
+Azure-direct card back to its previous Fireworks target.
+
+When published, record reasoning levels and defaults, thinking controls, token
+limits, rates and billing intervals with evidence for the selected deployment.
+Do not infer an input maximum from context minus output, copy an effort default
+from a sibling model, or invent a long-context tier. Offline tests enforce
+structural consistency; provider research determines whether a missing value
+can actually be filled.
 
 **Rollout:** deploy the updated runtime and rebuilt admin assets before remotely
 syncing compact cards. Older template loaders do not fill their omitted fields.
@@ -85,13 +111,79 @@ controls, and unit prices. For example, `deepseek-v4p1-flash` is distinct from
 `deepseek-v4-flash`, and `glm-5p3-flash` is distinct from `glm-5p3`; family-name
 matching must not treat either pair as covered.
 
-The current limit audit intentionally leaves these active text cards unresolved
-until provider-specific limits are verified: `DeepSeek-V4-Flash`, `grok-4`, and
-`Kimi-K2.5`. The remaining active cards
-without `contextWindow`/input/output limits are image, audio, speech, or
-realtime-only cards whose provider contracts do not expose the same text-token
-window fields. The reviewed exception set is enforced by the Model Catalog unit
+The limit audit now records Azure-published input/output limits for
+`DeepSeek-V4-Flash`, `grok-4`, and `Kimi-K2.5`, without inferring total context.
+The remaining active cards without any `contextWindow`/input/output limits are
+image, audio, speech, or realtime-only cards whose corresponding limits have not
+been verified. The reviewed exception set is enforced by the Model Catalog unit
 test so a newly added card cannot silently introduce another missing limit.
+The exception list permits newly verified limits to be filled; it does not
+require reviewed cards to remain incomplete forever.
+
+#### Metadata audit (2026-09-30)
+
+Subsequent additions: `claude-sonnet-5-5` and `gpt-6.1-sol` bring the active
+catalog to 83 cards. Sonnet 5.5 uses native Messages on Azure or Anthropic
+hosting, a 1M context/128K output limit, adaptive thinking by default and effort
+`high`; `between_tools`, not `disabled`, is its provider-specific alternative
+with the constraints recorded in the card. Anthropic's maintained reference
+explicitly publishes USD 2 / 0.20 / 10 input/cache-read/output per 1M tokens.
+Its release date, independent input maximum and TTL cache-write rates remain
+unverified.
+
+GPT-6.1 Sol uses Microsoft's exact `2026-09-29` model version, native Chat and
+Responses, and independently published 1,050,000 / 922,000 / 128,000
+context/input/output limits. The provider documents function tools on Responses
+only. Exact effort defaults/lists and rates/tier thresholds are not copied from
+GPT-6 Sol: missing controls remain passthrough and `pricingCatalogEntry: null`
+disables automatic pricing until rates are verified. The pricing source URL is
+a follow-up reference, not a claim of successful retrieval.
+
+All 81 active raw cards were inspected. Reachable Microsoft documentation sources
+and Anthropic's own API reference supplied the following updates:
+
+- Azure input/output limits for DeepSeek V4 Flash, Kimi K2.5 and Grok 4/4.3;
+  GPT-5 Pro input/output corrected to 272K/128K. Grok 4.6 uses Azure's 200K
+  context and 128K output ceiling, not the xAI-direct 500K context.
+- FLUX.2 input limits and MAI-Image-2.6/Flash context limits are 32K. Media cards
+  are not categorically exempt from recording published token limits.
+- Seven Claude cards now record API effort default `high`; Opus 5.5 retains
+  `medium`. Evidence is Anthropic's reference cached September 25, not a claim
+  that the live product documentation was fetched successfully.
+- GPT-5.6 and GPT-6 Astra distinguish Responses-only `max` from Chat effort
+  levels. Grok 4.6 Responses records configurable low/medium/high, default high.
+  Catalog levels are descriptive, not a new proxy preflight rejection policy.
+- GLM 5.3 Flash and Kimi K3 templates use Foundry `FW-...` catalog IDs while
+  retaining Fireworks provider/price provenance. They do not use Fireworks-account
+  `accounts/fireworks/models/...` identifiers as Foundry deployment defaults.
+- Fable 5.1 and Opus 5.5 TTL cache-write rates already recorded in their sourced
+  notes were moved into executable price fields; those prices were not freshly
+  reverified online. Other Claude write rates remain unfilled pending evidence.
+
+Outstanding review items are intentionally not replaced with guesses:
+
+- DeepSeek V4.1 Flash's direct input/output maxima; GLM 5.2 effort choices/default;
+  older GPT/Codex and realtime effort defaults; missing independent input limits.
+- GLM 5/5.2 and MiniMax M2.5 still need exact direct-versus-Fireworks offering
+  reconciliation: their existing cards use vendor labels and FW retail-meter
+  notes. A Fireworks catalog listing alone does not prove that a direct offering
+  is absent, so this audit does not silently migrate those cards.
+- Conflicting Azure/OpenAI realtime limits and deployment-dependent GPT-4.1
+  windows; Grok 4.3 retains a separately sourced xAI context maximum alongside
+  the smaller Azure input/output limits, not a promise of Azure's context capacity.
+- Claude Fable effort support differs between Microsoft and Anthropic references.
+  Existing adaptive thinking defaults are proxy activation choices for explicit
+  cross-protocol reasoning, not proof that omitting thinking enables it upstream
+  (notably Opus 4.7/4.8). This audit does not change that conversion policy.
+- MAI and unpublished image rates, remaining Claude cache-write rates, and
+  Foundry-specific prices where cards use explicitly identified provider reference
+  prices. Pricing domains could not be reached during this audit, so existing
+  prices/tiers are not certified as current Azure invoice rates.
+
+Re-run `cards:validate` for the per-file missing-field inventory. Review warnings
+are not an exhaustive semantic audit: source conflicts, offering availability,
+and optional cache prices still require provider research. No live deployments
+were probed.
 
 The GPT-6 Astra, Sol, and Luna cards record only the published Global Standard
 short/long-context rates from the [Microsoft Azure GPT-6 launch post](https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/).

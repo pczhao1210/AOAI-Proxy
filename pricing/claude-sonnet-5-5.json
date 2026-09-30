@@ -1,0 +1,58 @@
+{
+  "id": "claude-sonnet-5-5",
+  "displayName": "Claude Sonnet 5.5",
+  "provider": "anthropic",
+  "family": "claude-5",
+  "modelVersion": null,
+  "status": "ga",
+  "contextWindow": 1000000,
+  "maxOutputTokens": 128000,
+  "hostingModes": ["azure", "anthropic"],
+  "defaultHostingMode": "azure",
+  "interfacesByHostingMode": {
+    "azure": ["messages"],
+    "anthropic": ["messages"]
+  },
+  "interfaces": ["messages"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling"],
+  "protocolProfiles": {
+    "messages": {
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": ["adaptive", "between_tools"],
+        "default": "adaptive",
+        "validation": "passthrough"
+      },
+      "reasoning": {
+        "parameter": "output_config.effort",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "default": "high",
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "anthropic-official",
+    "status": "published",
+    "inputPer1mTokens": 2,
+    "cachedInputPer1mTokens": 0.2,
+    "outputPer1mTokens": 10
+  },
+  "proxyTemplate": {},
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
+    "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
+    "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
+    "pricing": "https://github.com/anthropics/skills/blob/main/skills/claude-api/shared/models.md"
+  },
+  "notes": [
+    "Microsoft Foundry lists both Azure-hosted and Anthropic-hosted Sonnet 5.5 as GA through native Messages. Release date and an independent maximum input limit were not verified.",
+    "Adaptive thinking is the default. The upstream rejects disabled thinking and manual budget_tokens; between_tools is accepted only at high effort or below, with no additional thinking fields or per-message effort changes. These provider constraints remain upstream-validated.",
+    "Forced tool_choice any/tool and incompatible replayed thinking state can be rejected by the upstream; preserve native Messages objects rather than synthesizing thinking history.",
+    "Base token rates are explicitly published in Anthropic's maintained API reference, not inferred from Sonnet 5. TTL cache-write rates and deployment-specific surcharges remain unverified and are not filled with zero."
+  ]
+}
