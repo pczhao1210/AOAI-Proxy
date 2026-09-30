@@ -5,6 +5,7 @@
   "family": "mai-image",
   "modelVersion": "2026-07-31",
   "status": "preview",
+  "contextWindow": 32000,
   "hostingModes": ["azure"],
   "defaultHostingMode": "azure",
   "interfaces": ["images/generations", "images/edits"],
@@ -38,6 +39,7 @@
     }
   },
   "sources": {
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-mai-image",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/"
   },

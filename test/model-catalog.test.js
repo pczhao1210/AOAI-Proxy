@@ -244,8 +244,8 @@ test("Azure-direct DeepSeek replaces only its own Fireworks offering", () => {
   );
   const expected = [
     ["glm-5.3", "FW-GLM-5.3", 1.4, 0.26, 4.4],
-    ["glm-5.3-flash", "accounts/fireworks/models/glm-5p3-flash", 0.15, 0.03, 0.5],
-    ["kimi-k3", "accounts/fireworks/models/kimi-k3", 3, 0.3, 15]
+    ["glm-5.3-flash", "FW-GLM-5.3-Flash", 0.15, 0.03, 0.5],
+    ["kimi-k3", "FW-Kimi-K3", 3, 0.3, 15]
   ];
 
   for (const [id, targetModel, input, cachedInput, output] of expected) {
@@ -288,17 +288,68 @@ test("verified model cards preserve documented token limits without filling ambi
   }
 
   assert.equal(definitionsById.get("gpt-5-pro").contextWindow, 400000);
-  assert.equal(definitionsById.get("gpt-5-pro").maxOutputTokens, 272000);
+  assert.equal(definitionsById.get("gpt-5-pro").maxOutputTokens, 128000);
   assert.equal(definitionsById.get("grok-4.3").contextWindow, 1000000);
-  assert.equal(definitionsById.get("grok-4.6").contextWindow, 500000);
+  assert.equal(definitionsById.get("grok-4.6").contextWindow, 200000);
+});
 
+test("reviewed Azure limits and provider-specific effort metadata remain complete", () => {
+  const byId = new Map(listPricingDefinitions().map(card => [card.id, card]));
+  for (const [id, input, output] of [
+    ["DeepSeek-V4-Flash", 1000000, 384000],
+    ["Kimi-K2.5", 262144, 262144],
+    ["grok-4", 262000, 8192],
+    ["grok-4.3", 200000, 8192],
+    ["gpt-5-pro", 272000, 128000]
+  ]) {
+    const card = byId.get(id);
+    assert.deepEqual([card.maxInputTokens, card.maxOutputTokens], [input, output], id);
+    assert.equal(new URL(card.sources.limits).hostname, "learn.microsoft.com", id);
+  }
+  assert.equal(byId.get("grok-4.6").maxOutputTokens, 128000);
+  for (const id of ["flux-2-flex", "flux-2-pro"]) assert.equal(byId.get(id).maxInputTokens, 32000, id);
+  for (const id of ["mai-image-2.6", "mai-image-2.6-flash"]) assert.equal(byId.get(id).contextWindow, 32000, id);
+  const grok = byId.get("grok-4.6").protocolProfiles.responses.reasoning;
+  assert.notEqual(grok.configurable, false);
+  assert.deepEqual(grok.levels, ["low", "medium", "high"]);
+  assert.equal(grok.default, "high");
+  for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]) {
+    const profiles = byId.get(id).protocolProfiles;
+    assert.equal(profiles["chat/completions"].reasoning.levels.includes("max"), false, id);
+    assert.equal(profiles.responses.reasoning.levels.includes("max"), true, id);
+  }
+  for (const id of ["claude-fable-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+    "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5"]) {
+    assert.equal(byId.get(id).protocolProfiles.messages.reasoning.default, "high", id);
+    assert.ok(byId.get(id).sources.reasoning, id);
+  }
+  assert.equal(byId.get("claude-opus-5-5").protocolProfiles.messages.reasoning.default, "medium");
+  for (const [id, fiveMinutes, oneHour] of [["claude-opus-5-5", 5, 8], ["claude-fable-5-1", 12.5, 20]]) {
+    const pricing = byId.get(id).pricing;
+    assert.deepEqual([pricing.cacheWrite5mPer1mTokens, pricing.cacheWrite1hPer1mTokens], [fiveMinutes, oneHour], id);
+  }
+});
+
+test("Grok Chat to Responses preserves explicit effort instead of treating Responses as fixed", () => {
+  const snapshot = compileModelCatalog({
+    upstreams: config.upstreams,
+    models: [{ id: "public-grok", pricingRef: "grok-4.6", upstream: "azure" }]
+  });
+  const descriptor = resolveModelDescriptor("public-grok", snapshot);
+  for (const effort of ["low", "medium", "high", "xhigh"]) {
+    const result = chatToResponsesRequest({
+      messages: [{ role: "user", content: "hello" }],
+      reasoning_effort: effort
+    }, "grok-deployment", descriptor);
+    assert.deepEqual(result.reasoning, { effort });
+    assert.equal(result.model, "grok-deployment");
+  }
+  const omitted = chatToResponsesRequest({ messages: [{ role: "user", content: "hello" }] }, "grok-deployment", descriptor);
+  assert.equal(omitted.reasoning, undefined);
 });
 
 test("all active cards with unresolved token limits are explicitly reviewed", () => {
   const expectedUnresolvedIds = [
-    "DeepSeek-V4-Flash",
-    "flux-2-flex",
-    "flux-2-pro",
     "gpt-4o-mini-transcribe",
     "gpt-4o-mini-tts",
     "gpt-4o-transcribe-diarize",
@@ -307,10 +358,6 @@ test("all active cards with unresolved token limits are explicitly reviewed", ()
     "gpt-image-2",
     "gpt-realtime-translate",
     "gpt-realtime-whisper",
-    "grok-4",
-    "Kimi-K2.5",
-    "mai-image-2.6-flash",
-    "mai-image-2.6",
     "mai-transcribe-2",
     "mai-voice-2-flash",
     "mai-voice-2",
@@ -563,16 +610,20 @@ test("GPT-6 cards preserve the published Global Standard short/long-context pric
   }
 });
 
-test("active context-tier cards expose descriptive IDs with exact GPT and Grok boundaries", () => {
-  const tiered = listPricingDefinitions().filter(definition => definition.pricing?.tiering);
-  assert.equal(tiered.length, 11);
-  for (const definition of tiered) {
-    const grok = definition.id.startsWith("grok-");
-    const threshold = grok ? 200000 : 272001;
-    assert.deepEqual(definition.pricing.tiers.map(tier => tier.id),
-      grok ? ["short <200K", "long >=200K"] : ["short <=272K", "long >272K"], definition.id);
-    assert.equal(definition.pricing.tiers[0].promptTokensBelow, threshold, definition.id);
-    assert.equal(definition.pricing.tiers[1].promptTokensAtLeast, threshold, definition.id);
+test("reviewed GPT and Grok policies retain their explicit boundaries without constraining other models", () => {
+  const byId = new Map(listPricingDefinitions().map(definition => [definition.id, definition]));
+  const policies = [
+    { ids: ["gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+      "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"], threshold: 272001, labels: ["short <=272K", "long >272K"] },
+    { ids: ["grok-4.3", "grok-4.6"], threshold: 200000, labels: ["short <200K", "long >=200K"] }
+  ];
+  for (const { ids, threshold, labels } of policies) {
+    for (const id of ids) {
+      const definition = byId.get(id);
+      assert.deepEqual(definition.pricing.tiers.map(tier => tier.id), labels, id);
+      assert.equal(definition.pricing.tiers[0].promptTokensBelow, threshold, id);
+      assert.equal(definition.pricing.tiers[1].promptTokensAtLeast, threshold, id);
+    }
   }
 });
 

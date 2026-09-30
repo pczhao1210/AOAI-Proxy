@@ -27,6 +27,7 @@
       "reasoning": {
         "parameter": "output_config.effort",
         "levels": ["low", "medium", "high", "xhigh"],
+        "default": "high",
         "validation": "passthrough"
       }
     }
@@ -42,12 +43,13 @@
   },
   "proxyTemplate": {},
   "sources": {
+    "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-from-partners",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
     "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
-    "Anthropic 分别公布缓存写入与读取价格；当前 schema 只有一个 cachedInput 字段，因此此处记录缓存读取价格。",
+    "缓存读取费率已记录；TTL 缓存写入字段受支持，但本卡片的对应单价尚待来源核实，不按缺失值计为免费。",
     "Claude Fable 5 自 2026-06-09 起在 Claude API、Microsoft Foundry、Amazon Bedrock 和 Google Cloud 正式可用。"
   ]
 }

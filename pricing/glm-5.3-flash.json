@@ -29,14 +29,16 @@
     "outputPer1mTokens": 0.5
   },
   "proxyTemplate": {
-    "targetModel": "accounts/fireworks/models/glm-5p3-flash"
+    "targetModel": "FW-GLM-5.3-Flash"
   },
   "sources": {
-    "capabilities": "https://fireworks.ai/models/fireworks/glm-5p3-flash",
+    "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "providerModel": "https://fireworks.ai/models/fireworks/glm-5p3-flash",
     "limits": "https://fireworks.ai/models/fireworks/glm-5p3-flash",
     "pricing": "https://docs.fireworks.ai/serverless/pricing"
   },
   "notes": [
+    "The template selects Foundry's FW-GLM-5.3-Flash deployment, not a Fireworks-account model path. Prices remain Fireworks Serverless reference rates, not independently verified Foundry meter prices.",
     "Fireworks catalog lists 1040k context, image input, and Function Calling support; the page records Created on 8/26/2026.",
     "Fireworks Serverless standard pricing is USD 0.15 input, USD 0.03 cached input, and USD 0.50 output per 1M tokens."
   ]

@@ -5,6 +5,8 @@
   "family": "deepseek-v4",
   "modelVersion": "2026-04-23",
   "status": "ga",
+  "maxInputTokens": 1000000,
+  "maxOutputTokens": 384000,
   "interfaces": ["chat/completions"],
   "inputModalities": ["text"],
   "outputModalities": ["text"],
@@ -38,6 +40,7 @@
   },
   "proxyTemplate": {},
   "sources": {
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
     "pricing": "https://api-docs.deepseek.com/quick_start/pricing"
   },
