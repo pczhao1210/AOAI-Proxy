@@ -22,7 +22,8 @@
     "test:real:chat": "node test/routes/real-chat-completion.js",
     "test:real:response": "node test/routes/real-response.js",
     "test:real:openai-image": "node test/routes/real-openai-image.js",
-    "test:real:blackforest-image": "node test/routes/real-blackforest-image.js"
+    "test:real:blackforest-image": "node test/routes/real-blackforest-image.js",
+    "cards:validate": "node scripts/model-cards.js --validate"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1",

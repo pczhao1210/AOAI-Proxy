@@ -62,7 +62,9 @@ including duplicate terminals. These mocks establish internal accounting
 contracts, not provider invoices or production deployment acceptance.
 
 Model-card authoring checks: `npm run cards:check` verifies canonical active JSON
-without touching archives. `node --test test/model-card-format.test.js` covers
+and required raw metadata without touching archives. `npm run cards:validate`
+lists field-path errors and nonblocking missing-information review diagnostics;
+it does not infer provider facts or fill unknown values. `node --test test/model-card-format.test.js` covers
 compact/legacy equivalence, explicit null/zero/overrides, complete tier import,
 formatter idempotence and backend/admin loader parity. Use
 `npm run cards:format` to normalize active cards, then run the Catalog and sync suites.

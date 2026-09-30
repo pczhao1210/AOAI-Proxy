@@ -46,6 +46,7 @@ Use the repository formatter rather than hand-minifying JSON:
 ```bash
 npm run cards:format
 npm run cards:check
+npm run cards:validate
 ```
 
 It uses two-space indentation, stable root/price/template field ordering, inline
@@ -54,6 +55,31 @@ equivalent duplicates, preserves differing overrides and explicit nulls, and
 refuses conflicting rate conversions. It only visits `pricing/*.json`, never
 archives or live/persisted configuration. Unit tests enforce canonical formatting
 and parity between the backend and bundled admin libraries.
+
+`cards:check` also checks required metadata on the **raw JSON**, before loader
+defaults can hide missing fields. `cards:validate` reports those errors plus
+`REVIEW` diagnostics for unrecorded text-token limits, configurable reasoning/
+thinking choices and defaults, token input/output rates, and unpublished billing
+units. It does not rewrite cards. Errors produce a nonzero exit status; review
+diagnostics do not, because an absent field may be unpublished, inapplicable, or
+deployment-dependent. Neither command verifies online availability or the truth
+of a cited source. Explicit zero prices, disabled automatic pricing, fixed
+reasoning, and deliberate pricing overrides remain supported.
+
+For open-source models, Foundry availability is the admission criterion. Prefer
+the Azure-direct offering for each exact model; use the Foundry Fireworks offering
+only when no Azure-direct offering exists. This is not a family-wide provider
+switch. Keep the selected deployment ID, protocol facts and price provenance
+aligned. DeepSeek V4.1 Flash uses the Azure-direct model; GLM 5.3/5.3 Flash and
+Kimi K3 retain their Fireworks offerings. Regression tests must not force an
+Azure-direct card back to its previous Fireworks target.
+
+When published, record reasoning levels and defaults, thinking controls, token
+limits, rates and billing intervals with evidence for the selected deployment.
+Do not infer an input maximum from context minus output, copy an effort default
+from a sibling model, or invent a long-context tier. Offline tests enforce
+structural consistency; provider research determines whether a missing value
+can actually be filled.
 
 **Rollout:** deploy the updated runtime and rebuilt admin assets before remotely
 syncing compact cards. Older template loaders do not fill their omitted fields.
@@ -92,6 +118,8 @@ without `contextWindow`/input/output limits are image, audio, speech, or
 realtime-only cards whose provider contracts do not expose the same text-token
 window fields. The reviewed exception set is enforced by the Model Catalog unit
 test so a newly added card cannot silently introduce another missing limit.
+The exception list permits newly verified limits to be filled; it does not
+require reviewed cards to remain incomplete forever.
 
 The GPT-6 Astra, Sol, and Luna cards record only the published Global Standard
 short/long-context rates from the [Microsoft Azure GPT-6 launch post](https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/).
