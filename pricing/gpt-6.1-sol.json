@@ -1,0 +1,58 @@
+{
+  "id": "gpt-6.1-sol",
+  "displayName": "GPT-6.1 Sol",
+  "provider": "azure-openai",
+  "family": "gpt-6.1",
+  "modelVersion": "2026-09-29",
+  "status": "ga",
+  "contextWindow": 1050000,
+  "maxInputTokens": 922000,
+  "maxOutputTokens": 128000,
+  "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling",
+    "computer-use"
+  ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "unavailable"
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {},
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
+    "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
+    "hosting": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-region-availability",
+    "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
+    "pricing": "https://azure.microsoft.com/pricing/details/azure-openai/"
+  },
+  "notes": [
+    "Microsoft lists model version 2026-09-29 and Global Standard availability. Both Chat Completions and Responses are native; the exact-model capability table limits function tools and parallel tool calling to Responses. This is provider metadata, not a proxy preflight rejection policy.",
+    "The published input and output maxima are individual limits sharing the context budget with reasoning tokens; they are not additive allowances.",
+    "The exact-model reasoning matrix confirms effort support including none, but complete per-protocol effort lists and omitted-parameter defaults were not independently verified. Do not inherit them from GPT-6 Sol.",
+    "The pricing page could not be retrieved during authoring. Input, cached input, cache-write, output rates and short/long billing intervals remain unverified; automatic pricing is explicitly disabled rather than copying GPT-6 Sol prices or its administrator-defined 272K tier policy."
+  ]
+}

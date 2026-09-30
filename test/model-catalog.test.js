@@ -627,6 +627,58 @@ test("reviewed GPT and Grok policies retain their explicit boundaries without co
   }
 });
 
+test("Sonnet 5.5 preserves native hosting, distinct thinking controls and sourced prices", () => {
+  const card = listPricingDefinitions().find(definition => definition.id === "claude-sonnet-5-5");
+  assert.ok(card);
+  assert.equal(card.provider, "anthropic");
+  assert.deepEqual(card.hostingModes, ["azure", "anthropic"]);
+  assert.equal(card.defaultHostingMode, "azure");
+  assert.deepEqual(card.interfaces, ["messages"]);
+  assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1000000, null, 128000]);
+  assert.deepEqual(card.protocolProfiles.messages.thinking.types, ["adaptive", "between_tools"]);
+  assert.equal(card.protocolProfiles.messages.thinking.default, "adaptive");
+  assert.deepEqual(card.protocolProfiles.messages.reasoning.levels, ["low", "medium", "high", "xhigh", "max"]);
+  assert.equal(card.protocolProfiles.messages.reasoning.default, "high");
+  assert.deepEqual([card.pricing.inputPer1mTokens, card.pricing.cachedInputPer1mTokens, card.pricing.outputPer1mTokens], [2, 0.2, 10]);
+  assert.equal(card.proxyTemplate.targetModel, card.id);
+  const model = { ...card.proxyTemplate, upstream: "azure" };
+  const upstream = { ...config.upstreams[0], routes: { messages: "/anthropic/v1/messages" } };
+  const snapshot = compileModelCatalog({ upstreams: [upstream], models: [model] });
+  const descriptor = resolveModelDescriptor(model.id, snapshot);
+  assert.equal(resolveRoutePlan({ routeKey: "messages", model, upstream, descriptor }).backendRouteKey, "messages");
+});
+
+test("GPT-6.1 Sol keeps native interfaces and independent limits without inherited prices or defaults", () => {
+  const card = listPricingDefinitions().find(definition => definition.id === "gpt-6.1-sol");
+  assert.ok(card);
+  assert.equal(card.provider, "azure-openai");
+  assert.equal(card.modelVersion, "2026-09-29");
+  assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1050000, 922000, 128000]);
+  assert.deepEqual(card.interfaces, ["chat/completions", "responses"]);
+  assert.equal(card.defaultInterface, "responses");
+  assert.equal(card.pricing.status, "unavailable");
+  assert.equal(card.pricingCatalogEntry, null);
+  assert.equal(card.pricing.tiers, undefined);
+  assert.equal(card.pricing.inputPer1mTokens, undefined);
+  const model = { ...card.proxyTemplate, upstream: "azure" };
+  assert.equal(model.targetModel, "gpt-6.1-sol");
+  const snapshot = compileModelCatalog({ upstreams: config.upstreams, models: [model] });
+  const descriptor = resolveModelDescriptor(model.id, snapshot);
+  for (const protocol of card.interfaces) {
+    const profile = card.protocolProfiles[protocol].reasoning;
+    assert.equal(profile.parameter, protocol === "responses" ? "reasoning.effort" : "reasoning_effort");
+    assert.equal(profile.default, "");
+    assert.deepEqual(profile.levels, []);
+    const plan = resolveRoutePlan({ routeKey: protocol, model, upstream: config.upstreams[0], descriptor });
+    assert.equal(plan.backendRouteKey, protocol);
+    assert.equal(plan.targetUrl, `https://example.openai.azure.com/openai/v1/${protocol}`);
+  }
+  const converted = chatToResponsesRequest({
+    messages: [{ role: "user", content: "hello" }], reasoning_effort: "none"
+  }, model.targetModel, descriptor);
+  assert.equal(converted.reasoning.effort, "none");
+});
+
 test("GPT-6 Luna and Sol cards retain native routes and verified model pricing", () => {
   const bundledDefinitions = listPricingDefinitions();
   for (const id of ["gpt-6-luna", "gpt-6-sol"]) {

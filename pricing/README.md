@@ -122,6 +122,23 @@ require reviewed cards to remain incomplete forever.
 
 #### Metadata audit (2026-09-30)
 
+Subsequent additions: `claude-sonnet-5-5` and `gpt-6.1-sol` bring the active
+catalog to 83 cards. Sonnet 5.5 uses native Messages on Azure or Anthropic
+hosting, a 1M context/128K output limit, adaptive thinking by default and effort
+`high`; `between_tools`, not `disabled`, is its provider-specific alternative
+with the constraints recorded in the card. Anthropic's maintained reference
+explicitly publishes USD 2 / 0.20 / 10 input/cache-read/output per 1M tokens.
+Its release date, independent input maximum and TTL cache-write rates remain
+unverified.
+
+GPT-6.1 Sol uses Microsoft's exact `2026-09-29` model version, native Chat and
+Responses, and independently published 1,050,000 / 922,000 / 128,000
+context/input/output limits. The provider documents function tools on Responses
+only. Exact effort defaults/lists and rates/tier thresholds are not copied from
+GPT-6 Sol: missing controls remain passthrough and `pricingCatalogEntry: null`
+disables automatic pricing until rates are verified. The pricing source URL is
+a follow-up reference, not a claim of successful retrieval.
+
 All 81 active raw cards were inspected. Reachable Microsoft documentation sources
 and Anthropic's own API reference supplied the following updates:
 
