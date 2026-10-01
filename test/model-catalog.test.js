@@ -670,8 +670,8 @@ test("GPT-6.1 Sol keeps native interfaces and independent limits without inherit
     assert.equal(profile.default, "");
     assert.deepEqual(profile.levels, []);
     const plan = resolveRoutePlan({ routeKey: protocol, model, upstream: config.upstreams[0], descriptor });
-    assert.equal(plan.backendRouteKey, protocol);
-    assert.equal(plan.targetUrl, `https://example.openai.azure.com/openai/v1/${protocol}`);
+    assert.equal(plan.backendRouteKey, "responses");
+    assert.equal(plan.targetUrl, "https://example.openai.azure.com/openai/v1/responses");
   }
   const converted = chatToResponsesRequest({
     messages: [{ role: "user", content: "hello" }], reasoning_effort: "none"
@@ -679,7 +679,7 @@ test("GPT-6.1 Sol keeps native interfaces and independent limits without inherit
   assert.equal(converted.reasoning.effort, "none");
 });
 
-test("GPT-6 Luna and Sol cards retain native routes and verified model pricing", () => {
+test("GPT-6 Luna and Sol cards retain native interfaces, Responses template routes, and verified model pricing", () => {
   const bundledDefinitions = listPricingDefinitions();
   for (const id of ["gpt-6-luna", "gpt-6-sol"]) {
     const definition = bundledDefinitions.find((entry) => entry.id === id);
@@ -696,17 +696,64 @@ test("GPT-6 Luna and Sol cards retain native routes and verified model pricing",
       ["none", "low", "medium", "high", "xhigh", "max"]);
     assert.equal(definition.proxyTemplate.targetModel, id);
     assert.equal(definition.proxyTemplate.pricingRef, id);
-    assert.deepEqual(definition.proxyTemplate.routes, {});
+    assert.deepEqual(definition.proxyTemplate.routes, { "chat/completions": "responses" });
 
     const model = { ...definition.proxyTemplate, upstream: "azure" };
     const snapshot = compileModelCatalog({ upstreams: config.upstreams, models: [model] }, bundledDefinitions);
     const descriptor = resolveModelDescriptor(id, snapshot);
     for (const routeKey of definition.interfaces) {
       const plan = resolveRoutePlan({ routeKey, model, upstream: config.upstreams[0], descriptor });
-      assert.equal(plan.backendRouteKey, routeKey);
-      assert.equal(plan.targetUrl, `https://example.openai.azure.com/openai/v1/${routeKey}`);
+      assert.equal(plan.backendRouteKey, "responses");
+      assert.equal(plan.targetUrl, "https://example.openai.azure.com/openai/v1/responses");
     }
   }
+});
+
+test("GPT-5.5+ templates default to Responses and route Chat to Responses without overriding explicit bindings", () => {
+  const bundledDefinitions = listPricingDefinitions();
+  const cards = bundledDefinitions.filter((definition) => {
+    const version = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/.exec(definition.id);
+    return version
+      && (Number(version[1]) > 5 || (Number(version[1]) === 5 && Number(version[2] || 0) >= 5))
+      && definition.interfaces.includes("responses")
+      && definition.supportsProxyTemplate;
+  });
+  assert.ok(cards.length > 0);
+
+  for (const card of cards) {
+    assert.equal(card.defaultInterface, "responses", card.id);
+    assert.equal(card.proxyTemplate.routes["chat/completions"], "responses", card.id);
+    const model = buildModelFromPricingTemplate(card, "azure", { models: [] });
+    assert.equal(model.routes["chat/completions"], "responses", `${card.id}: admin import`);
+    const snapshot = compileModelCatalog({ upstreams: config.upstreams, models: [model] }, bundledDefinitions);
+    const descriptor = resolveModelDescriptor(model.id, snapshot);
+    assert.deepEqual(descriptor.interfaces, card.interfaces, `${card.id}: native interfaces`);
+    assert.equal(descriptor.defaultInterface, "responses", card.id);
+    assert.deepEqual(getConfiguredModelBindingIssues({ upstreams: config.upstreams, models: [model] }, snapshot), []);
+    for (const routeKey of ["chat/completions", "responses"]) {
+      const plan = resolveRoutePlan({ routeKey, model, upstream: config.upstreams[0], descriptor });
+      assert.equal(plan.backendRouteKey, "responses", `${card.id}: ${routeKey}`);
+      assert.equal(plan.targetUrl, "https://example.openai.azure.com/openai/v1/responses", card.id);
+    }
+    if (card.interfaces.includes("chat/completions")) {
+      const explicitModel = { ...model, routes: { ...model.routes, "chat/completions": "chat/completions" } };
+      const plan = resolveRoutePlan({
+        routeKey: "chat/completions", model: explicitModel, upstream: config.upstreams[0], descriptor
+      });
+      assert.equal(plan.backendRouteKey, "chat/completions", `${card.id}: explicit native binding`);
+      assert.equal(plan.targetUrl, "https://example.openai.azure.com/openai/v1/chat/completions", card.id);
+    }
+  }
+
+  const olderCard = bundledDefinitions.find((definition) => definition.id === "gpt-5.4");
+  const olderModel = buildModelFromPricingTemplate(olderCard, "azure", { models: [] });
+  const olderSnapshot = compileModelCatalog({ upstreams: config.upstreams, models: [olderModel] }, bundledDefinitions);
+  const olderDescriptor = resolveModelDescriptor(olderModel.id, olderSnapshot);
+  const olderPlan = resolveRoutePlan({
+    routeKey: "chat/completions", model: olderModel, upstream: config.upstreams[0], descriptor: olderDescriptor
+  });
+  assert.equal(olderPlan.backendRouteKey, "chat/completions");
+  assert.equal(olderPlan.targetUrl, "https://example.openai.azure.com/openai/v1/chat/completions");
 });
 
 test("GPT-5.6 Standard cards match the supplied short/long cache-write price table", () => {

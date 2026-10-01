@@ -70,7 +70,11 @@
       }
     ]
   },
-  "proxyTemplate": {},
+  "proxyTemplate": {
+    "routes": {
+      "chat/completions": "responses"
+    }
+  },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-6",
     "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-6",
@@ -78,7 +82,7 @@
     "pricing": "https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/"
   },
   "notes": [
-    "Azure OpenAI lists Chat Completions and Responses as native interfaces; the template does not force either through a protocol shim.",
+    "The Chat-to-Responses template override is a proxy policy for reasoning with function tools; Azure still lists both interfaces as native.",
     "The root rates represent Global Standard short-context pricing. The tier table records Global Standard short/long-context rates, including cache writes, per 1M tokens.",
     "The administrator-specified whole-request policy selects the long tier only when this request's input, including cache, exceeds 272000 tokens. Exactly 272000 remains short; session totals and output length do not select the tier.",
     "The cited Azure post supplies Global Standard prices but does not establish this numeric threshold or whole-request rule. These policy choices were explicitly supplied by the administrator, not independently verified from that source."

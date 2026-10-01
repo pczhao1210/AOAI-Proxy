@@ -41,6 +41,29 @@ For example, a template-only override is now:
 }
 ```
 
+### GPT-5.5 and newer routing defaults
+
+For GPT-5.5 and newer text cards with native Responses support, set
+`defaultInterface: "responses"`. Enabled proxy templates must also explicitly
+set `routes: { "chat/completions": "responses" }`. Native Responses requests
+stay native; Chat clients use the existing Chat-to-Responses shim.
+`defaultInterface` alone does not redirect a supported native Chat request.
+
+This is a project template policy for reasoning with tools, consistent with
+OpenAI's [Chat tool-calling restrictions](https://developers.openai.com/api/docs/guides/migrate-to-responses#additional-differences)
+and [GPT-6 migration guidance](https://developers.openai.com/api/docs/guides/latest-model#update-api-and-model-parameters).
+Preserve provider-native `interfaces`, protocol profiles, and independently
+sourced reasoning defaults; do not work around the restriction by forcing
+effort to `none` or inventing Responses support. Keep disabled templates disabled
+and leave older GPT cards outside this policy.
+
+The override is stored in each self-contained card, not inferred from model
+names at runtime. Updated templates apply to newly imported models; existing
+persisted model routes require an explicit configuration change and save/reload.
+Administrator route overrides remain authoritative.
+
+### Formatting and validation
+
 Use the repository formatter rather than hand-minifying JSON:
 
 ```bash

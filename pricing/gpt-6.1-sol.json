@@ -41,7 +41,11 @@
     "status": "unavailable"
   },
   "pricingCatalogEntry": null,
-  "proxyTemplate": {},
+  "proxyTemplate": {
+    "routes": {
+      "chat/completions": "responses"
+    }
+  },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
     "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
