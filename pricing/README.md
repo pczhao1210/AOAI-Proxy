@@ -145,8 +145,28 @@ require reviewed cards to remain incomplete forever.
 
 #### Metadata audit (2026-09-30)
 
-Subsequent additions: `claude-sonnet-5-5` and `gpt-6.1-sol` bring the active
-catalog to 83 cards. Sonnet 5.5 uses native Messages on Azure or Anthropic
+Subsequent additions: `claude-sonnet-5-5`, `gpt-6.1-sol`, `grok-4.7` and
+`claude-haiku-5-5` bring the active catalog to 85 cards.
+
+[Grok 4.7](./grok-4.7.json) is GA with native Chat/Responses and a 500K combined
+context budget. Azure independently lists 500K input and output ceilings; xAI's
+128K Responses output default is not an absolute limit. Both protocol profiles
+support `low`/`medium`/`high`/`xhigh`, default `high`. Its xAI-direct whole-request
+rates switch at **200,000** prompt tokens, including cache: USD 2 / 0.50 / 6
+input/cache-read/output below the threshold and 4 / 1 / 12 at or above it.
+These rates do not establish Azure hosting prices. Native Responses preserves
+the encrypted reasoning that xAI now returns by default.
+
+[Claude Haiku 5.5](./claude-haiku-5-5.json), released October 7, 2026, is GA
+with native Messages on Azure or Anthropic hosting, 1M context and 128K
+synchronous output. Adaptive thinking and `medium` effort are defaults;
+`disabled` thinking is supported at `high` effort or below. Its whole-request
+prices switch only **above 100,000** prompt tokens, including cache. Short/long
+USD rates per 1M tokens are 0.10/0.50 input, 0.01/0.05 cache reads,
+0.125/0.625 five-minute cache writes, 0.20/1 one-hour writes, and 0.50/2.50
+output. The separate batch-only 300K output beta is not a proxy Messages limit.
+
+Sonnet 5.5 uses native Messages on Azure or Anthropic
 hosting, a 1M context/128K output limit, adaptive thinking by default and effort
 `high`; `between_tools`, not `disabled`, is its provider-specific alternative
 with the constraints recorded in the card. Anthropic's maintained reference

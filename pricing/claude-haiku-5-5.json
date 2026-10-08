@@ -1,0 +1,81 @@
+{
+  "id": "claude-haiku-5-5",
+  "displayName": "Claude Haiku 5.5",
+  "provider": "anthropic",
+  "family": "claude-5",
+  "modelVersion": "2026-10-07",
+  "status": "ga",
+  "contextWindow": 1000000,
+  "maxOutputTokens": 128000,
+  "hostingModes": ["azure", "anthropic"],
+  "defaultHostingMode": "azure",
+  "interfacesByHostingMode": {
+    "azure": ["messages"],
+    "anthropic": ["messages"]
+  },
+  "interfaces": ["messages"],
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling"],
+  "protocolProfiles": {
+    "messages": {
+      "thinking": {
+        "parameter": "thinking.type",
+        "types": ["adaptive", "disabled"],
+        "default": "adaptive",
+        "validation": "passthrough"
+      },
+      "reasoning": {
+        "parameter": "output_config.effort",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "default": "medium",
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "anthropic-official",
+    "status": "published",
+    "tiering": {
+      "basis": "inputTokensIncludingCache",
+      "method": "whole-request"
+    },
+    "tiers": [
+      {
+        "id": "short <=100K",
+        "promptTokensBelow": 100001,
+        "inputPer1mTokens": 0.1,
+        "cachedInputPer1mTokens": 0.01,
+        "cacheWrite5mPer1mTokens": 0.125,
+        "cacheWrite1hPer1mTokens": 0.2,
+        "outputPer1mTokens": 0.5
+      },
+      {
+        "id": "long >100K",
+        "promptTokensAtLeast": 100001,
+        "inputPer1mTokens": 0.5,
+        "cachedInputPer1mTokens": 0.05,
+        "cacheWrite5mPer1mTokens": 0.625,
+        "cacheWrite1hPer1mTokens": 1,
+        "outputPer1mTokens": 2.5
+      }
+    ]
+  },
+  "proxyTemplate": {},
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
+    "limits": "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
+    "reasoning": "https://platform.claude.com/docs/en/build-with-claude/effort",
+    "thinking": "https://platform.claude.com/docs/en/models/haiku-5-5/whats-new-haiku-5-5",
+    "pricing": "https://platform.claude.com/docs/en/models/haiku-5-5/overview"
+  },
+  "notes": [
+    "Released October 7, 2026. Microsoft Foundry lists both Azure-hosted and Anthropic-hosted Haiku 5.5 as GA through native Messages. No independent maximum input limit is inferred from its context window.",
+    "Adaptive thinking defaults on with medium effort. Disabled thinking is supported at high effort or below; manual budget_tokens and non-default temperature/top_p/top_k are rejected by the upstream. Forced tool_choice any/tool is supported but produces no thinking block.",
+    "Thinking blocks are account-bound or usable by linked accounts; replay them unchanged through the producing account. The newer tokenizer can count approximately 30% more tokens than Haiku 4.5.",
+    "Prompts up to and including 100K tokens use the short rates; larger prompts use the long rates for the whole request, including cache reads and TTL-specific writes. Batch discounts and deployment-specific surcharges are not represented by these standard Anthropic prices.",
+    "The 128K output limit is for synchronous Messages. The separate Message Batches API supports 300K output with the output-300k-2026-03-24 beta header; that batch-only limit is not applied to proxy Messages routes."
+  ]
+}

@@ -16,7 +16,7 @@ import { resolveEffectiveRouteKey, resolveRoutePlan } from "../src/proxy/routing
 import { chatToResponsesRequest, responsesToMessagesRequest } from "../src/proxy/shim.js";
 import { buildModelFromPricingTemplate, buildUpstreamFromPricingTemplate } from "../admin-ui/src/utils.js";
 import { resolveRealtimeBinding } from "../src/proxy/realtime-policy.js";
-import { compilePricingPolicy } from "../src/token-pricing.js";
+import { calculateTokenCost, compilePricingPolicy } from "../src/token-pricing.js";
 
 const config = {
   upstreams: [{
@@ -185,7 +185,7 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
   for (const id of [
     "glm-5.3", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "claude-fable-5-1", "claude-opus-5-5",
     "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "mai-image-2.6", "mai-image-2.6-flash",
-    "deepseek-v4.1-flash", "glm-5.3-flash"
+    "deepseek-v4.1-flash", "glm-5.3-flash", "grok-4.7", "claude-haiku-5-5"
   ]) {
     assert.ok(ids.has(id), `missing bundled Model Catalog definition ${id}`);
   }
@@ -615,7 +615,7 @@ test("reviewed GPT and Grok policies retain their explicit boundaries without co
   const policies = [
     { ids: ["gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
       "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"], threshold: 272001, labels: ["short <=272K", "long >272K"] },
-    { ids: ["grok-4.3", "grok-4.6"], threshold: 200000, labels: ["short <200K", "long >=200K"] }
+    { ids: ["grok-4.3", "grok-4.6", "grok-4.7"], threshold: 200000, labels: ["short <200K", "long >=200K"] }
   ];
   for (const { ids, threshold, labels } of policies) {
     for (const id of ids) {
@@ -624,6 +624,98 @@ test("reviewed GPT and Grok policies retain their explicit boundaries without co
       assert.equal(definition.pricing.tiers[0].promptTokensBelow, threshold, id);
       assert.equal(definition.pricing.tiers[1].promptTokensAtLeast, threshold, id);
     }
+  }
+});
+
+test("Grok 4.7 preserves native protocols, independently sourced limits and xAI price boundaries", () => {
+  const card = listPricingDefinitions().find(definition => definition.id === "grok-4.7");
+  assert.ok(card);
+  assert.equal(card.provider, "xai");
+  assert.equal(card.status, "ga");
+  assert.deepEqual(card.interfaces, ["chat/completions", "responses"]);
+  assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [500000, 500000, 500000]);
+  assert.equal(card.pricing.sourceType, "xai-official");
+  assert.deepEqual(card.pricing.tiers.map(tier => [
+    tier.inputPer1mTokens, tier.cachedInputPer1mTokens, tier.outputPer1mTokens
+  ]), [[2, 0.5, 6], [4, 1, 12]]);
+  const model = { ...card.proxyTemplate, upstream: "azure" };
+  assert.equal(model.targetModel, card.id);
+  const snapshot = compileModelCatalog({ upstreams: config.upstreams, models: [model] });
+  const descriptor = resolveModelDescriptor(model.id, snapshot);
+  const policy = compilePricingPolicy(card.pricingCatalogEntry);
+  for (const protocol of card.interfaces) {
+    const profile = card.protocolProfiles[protocol].reasoning;
+    assert.equal(profile.parameter, protocol === "responses" ? "reasoning.effort" : "reasoning_effort");
+    assert.deepEqual(profile.levels, ["low", "medium", "high", "xhigh"]);
+    assert.equal(profile.default, "high");
+    assert.equal(profile.validation, "passthrough");
+    const plan = resolveRoutePlan({ routeKey: protocol, model, upstream: config.upstreams[0], descriptor });
+    assert.equal(plan.backendRouteKey, protocol);
+    assert.equal(plan.targetUrl, `https://example.openai.azure.com/openai/v1/${protocol}`);
+    for (const input of [199999, 200000, 200001]) {
+      const usage = protocol === "responses"
+        ? { input_tokens: input, output_tokens: 10, input_tokens_details: { cached_tokens: 100 } }
+        : { prompt_tokens: input, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 100 } };
+      const cost = calculateTokenCost(policy, usage, { backendProtocol: protocol });
+      const [inputRate, cacheRate, outputRate] = input < 200000 ? [2, 0.5, 6] : [4, 1, 12];
+      assert.equal(cost.costStatus, "priced");
+      assert.ok(Math.abs(cost.amount - ((input - 100) * inputRate + 100 * cacheRate + 10 * outputRate) / 1e6) < 1e-12);
+    }
+  }
+  assert.equal(buildModelFromPricingTemplate(card, "azure").pricingRef, card.id);
+  assert.deepEqual(card.pricingCatalogEntry, card.pricing);
+});
+
+test("Haiku 5.5 preserves native hosting, thinking controls and cache-inclusive 100K price boundaries", () => {
+  const card = listPricingDefinitions().find(definition => definition.id === "claude-haiku-5-5");
+  assert.ok(card);
+  assert.equal(card.provider, "anthropic");
+  assert.equal(card.modelVersion, "2026-10-07");
+  assert.equal(card.status, "ga");
+  assert.deepEqual(card.hostingModes, ["azure", "anthropic"]);
+  assert.equal(card.defaultHostingMode, "azure");
+  assert.deepEqual(card.interfaces, ["messages"]);
+  assert.deepEqual(card.interfacesByHostingMode, { azure: ["messages"], anthropic: ["messages"] });
+  assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1000000, null, 128000]);
+  assert.deepEqual(card.protocolProfiles.messages.thinking.types, ["adaptive", "disabled"]);
+  assert.equal(card.protocolProfiles.messages.thinking.default, "adaptive");
+  assert.equal(card.protocolProfiles.messages.thinking.validation, "passthrough");
+  assert.deepEqual(card.protocolProfiles.messages.reasoning.levels, ["low", "medium", "high", "xhigh", "max"]);
+  assert.equal(card.protocolProfiles.messages.reasoning.default, "medium");
+  assert.equal(card.protocolProfiles.messages.reasoning.validation, "passthrough");
+  assert.equal(card.pricing.sourceType, "anthropic-official");
+  assert.deepEqual(card.pricing.tiers.map(tier => [
+    tier.id, tier.promptTokensBelow ?? null, tier.promptTokensAtLeast ?? null,
+    tier.inputPer1mTokens, tier.cachedInputPer1mTokens, tier.cacheWrite5mPer1mTokens,
+    tier.cacheWrite1hPer1mTokens, tier.outputPer1mTokens
+  ]), [
+    ["short <=100K", 100001, null, 0.1, 0.01, 0.125, 0.2, 0.5],
+    ["long >100K", null, 100001, 0.5, 0.05, 0.625, 1, 2.5]
+  ]);
+  const model = { ...card.proxyTemplate, upstream: "azure" };
+  assert.equal(model.targetModel, card.id);
+  const upstream = { ...config.upstreams[0], routes: { messages: "/anthropic/v1/messages" } };
+  const snapshot = compileModelCatalog({ upstreams: [upstream], models: [model] });
+  const descriptor = resolveModelDescriptor(model.id, snapshot);
+  const plan = resolveRoutePlan({ routeKey: "messages", model, upstream, descriptor });
+  assert.equal(plan.backendRouteKey, "messages");
+  assert.equal(plan.targetUrl, "https://example.services.ai.azure.com/anthropic/v1/messages");
+  assert.equal(buildModelFromPricingTemplate(card, "azure").pricingRef, card.id);
+  assert.deepEqual(card.pricingCatalogEntry, card.pricing);
+  const policy = compilePricingPolicy(card.pricingCatalogEntry);
+  for (const input of [99999, 100000, 100001]) {
+    const usage = {
+      input_tokens: input - 60, output_tokens: 10, cache_read_input_tokens: 30,
+      cache_creation_input_tokens: 30,
+      cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 10 }
+    };
+    const cost = calculateTokenCost(policy, usage, { backendProtocol: "messages" });
+    const [inputRate, cacheRate, fiveMinutes, oneHour, outputRate] = input <= 100000
+      ? [0.1, 0.01, 0.125, 0.2, 0.5] : [0.5, 0.05, 0.625, 1, 2.5];
+    assert.equal(cost.costStatus, "priced");
+    assert.equal(cost.counters.inputTokens, input);
+    assert.ok(Math.abs(cost.amount - ((input - 60) * inputRate + 30 * cacheRate
+      + 20 * fiveMinutes + 10 * oneHour + 10 * outputRate) / 1e6) < 1e-12);
   }
 });
 
