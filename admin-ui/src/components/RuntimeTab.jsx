@@ -1,6 +1,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { AccordionSection, Modal, Section, StatCard } from "./ui.jsx";
-import { findPricingTemplateByHint, formatBillingTier, formatBudgetCost, formatCacheHitRatio, formatCacheWriteTokens, formatEstimatedCost, formatRuntimeNumber, getModelBillingRows, getModelTierPricing, runtimeTokenHelp } from "../utils.js";
+import { findPricingTemplateByHint, formatBillingTier, formatBudgetCost, formatCacheHitRatio, formatCacheWriteTokens, formatEstimatedCost, formatRuntimeNumber, formatTokenCountK, getModelBillingRows, getModelTierPricing, runtimeTokenHelp } from "../utils.js";
+
+function TokenValue({ value, t }) {
+  const formatted = formatTokenCountK(value);
+  return <span title={formatted === "—" ? undefined : `${formatRuntimeNumber(value)} ${t("runtime.tokenUnit", "tokens")}`}>{formatted}</span>;
+}
 
 function TokenHeaders({ t }) {
   const help = runtimeTokenHelp(t);
@@ -18,10 +23,10 @@ function TokenHeaders({ t }) {
 function TokenCells({ stats, t }) {
   return (
     <>
-      <td>{formatRuntimeNumber(stats.promptTokens)}</td>
+      <td><TokenValue value={stats.promptTokens} t={t} /></td>
       <td>{formatRuntimeNumber(stats.cachedTokens)}</td>
       <td>{formatCacheWriteTokens(stats.cacheWrite, t)}</td>
-      <td>{formatRuntimeNumber(stats.completionTokens)}</td>
+      <td><TokenValue value={stats.completionTokens} t={t} /></td>
       <td>{formatCacheHitRatio(stats)}</td>
     </>
   );
@@ -195,9 +200,9 @@ export default function RuntimeTab({
   const observedKeyCount = visibleGovernanceKeys.length;
   const persistenceMode = persistenceRuntime.activeMode || persistenceRuntime.mode || "file";
   const syncState = persistenceRuntime.pendingDatabaseSync ? "pending" : "clean";
-  const logAnalyticsEnabled = loggingRuntime.logAnalyticsEnabled ?? loggingRuntime.enabled;
+  const logAnalyticsEnabled = loggingRuntime.logAnalyticsEnabled ?? loggingRuntime.enabled ?? false;
   const logAnalyticsConfigured = loggingRuntime.logAnalyticsConfigured ?? loggingRuntime.configured;
-  const logSinkState = logAnalyticsConfigured ? "configured" : (logAnalyticsEnabled ? "incomplete" : "disabled");
+  const logSinkState = !logAnalyticsEnabled ? "disabled" : (logAnalyticsConfigured ? "configured" : "incomplete");
   const hourlyRollups = Array.isArray(analytics?.rollups?.hourly) ? analytics.rollups.hourly : [];
   const dailyRollups = Array.isArray(analytics?.rollups?.daily) ? analytics.rollups.daily : [];
   const weeklyRollups = Array.isArray(analytics?.rollups?.weekly) ? analytics.rollups.weekly : [];
@@ -278,35 +283,37 @@ export default function RuntimeTab({
         id="runtime-overview"
         title={t("runtime.overview", "Runtime Overview")}
         desc={t("runtime.overviewDesc", "Compare traffic and reference costs separately from system health.")}
-        actions={(
-          <div className="toolbar-cluster runtime-filter-toolbar">
-            {statsUpdatedAt ? <span className="field-hint">{t("runtime.updatedAt", "Updated")}: {formatDateTime(statsUpdatedAt)}</span> : null}
-            <button type="button" className="ghost" onClick={onSyncRuntime} disabled={runtimeSyncBusy}>
-              {runtimeSyncBusy
-                ? t("runtime.syncNowRunning", "Syncing...")
-                : t("runtime.syncNow", "Sync Now")}
-            </button>
-            <label className="field runtime-filter-field">
-              <span className="field-label">{t("runtime.filterKey", "Key")}</span>
-              <select value={runtimeFilters?.keyId || ""} onChange={(event) => onRuntimeFilterChange?.({ keyId: event.target.value })}>
-                <option value="">{t("option.all", "All")}</option>
-                {Array.isArray(runtimeKeyOptions) ? runtimeKeyOptions.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                )) : null}
-              </select>
-            </label>
-            <label className="field runtime-filter-field">
-              <span className="field-label">{t("runtime.filterRange", "Time Range")}</span>
-              <select value={runtimeFilters?.timeRange || "all"} onChange={(event) => onRuntimeFilterChange?.({ timeRange: event.target.value })}>
-                <option value="all">{t("option.all", "All")}</option>
-                <option value="24h">{t("option.last24h", "Last 24h")}</option>
-                <option value="7d">{t("option.last7d", "Last 7d")}</option>
-                <option value="30d">{t("option.last30d", "Last 30d")}</option>
-              </select>
-            </label>
-          </div>
-        )}
+        actions={statsUpdatedAt ? (
+          <span className="runtime-updated-at">
+            {t("runtime.updatedAt", "Updated")}: <time dateTime={statsUpdatedAt}>{formatDateTime(statsUpdatedAt)}</time>
+          </span>
+        ) : null}
       >
+        <div className="runtime-filter-toolbar">
+          <label className="field runtime-filter-field">
+            <span className="field-label">{t("runtime.filterKey", "Key")}</span>
+            <select value={runtimeFilters?.keyId || ""} onChange={(event) => onRuntimeFilterChange?.({ keyId: event.target.value })}>
+              <option value="">{t("option.all", "All")}</option>
+              {Array.isArray(runtimeKeyOptions) ? runtimeKeyOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              )) : null}
+            </select>
+          </label>
+          <label className="field runtime-filter-field">
+            <span className="field-label">{t("runtime.filterRange", "Time Range")}</span>
+            <select value={runtimeFilters?.timeRange || "all"} onChange={(event) => onRuntimeFilterChange?.({ timeRange: event.target.value })}>
+              <option value="all">{t("option.all", "All")}</option>
+              <option value="24h">{t("option.last24h", "Last 24h")}</option>
+              <option value="7d">{t("option.last7d", "Last 7d")}</option>
+              <option value="30d">{t("option.last30d", "Last 30d")}</option>
+            </select>
+          </label>
+          <button type="button" className="ghost" onClick={onSyncRuntime} disabled={runtimeSyncBusy}>
+            {runtimeSyncBusy
+              ? t("runtime.syncNowRunning", "Syncing...")
+              : t("runtime.syncNow", "Sync Now")}
+          </button>
+        </div>
         <div className="runtime-scope">
           <h3>{snapshotFilters ? t("runtime.scopedStats", "Selected Range") : t("runtime.cumulativeStats", "Cumulative Snapshot")}</h3>
           <span className="muted">
@@ -318,9 +325,9 @@ export default function RuntimeTab({
         <div className="runtime-metrics">
           <StatCard label={t("table.requests", "Requests")} value={formatRuntimeNumber(totals.requests)} />
           <StatCard label={t("table.errors", "Errors")} value={formatRuntimeNumber(totals.errors)} />
-          <StatCard label={t("table.cost", "Reference Cost")} value={Object.keys(totals).length ? formatEstimatedCost(totals, t, totals.estimatedCostCurrency) : "—"} />
-          <StatCard label={t("table.inputTokensIncludingCache", "Input Total (Including Cache)")} value={formatRuntimeNumber(totals.promptTokens)} />
-          <StatCard label={t("table.outputTokens", "Output Tokens")} value={formatRuntimeNumber(totals.completionTokens)} />
+          <StatCard label={t("table.cost", "Reference Cost")} value={Object.keys(totals).length ? formatEstimatedCost(totals, t, totals.estimatedCostCurrency) : "—"} note={t("runtime.costHint", "Cost estimates may be incomplete.")} />
+          <StatCard label={t("table.inputTokensIncludingCache", "Input Total (Including Cache)")} value={<TokenValue value={totals.promptTokens} t={t} />} />
+          <StatCard label={t("table.outputTokens", "Output Tokens")} value={<TokenValue value={totals.completionTokens} t={t} />} />
           <StatCard label={t("table.cacheHitRatio", "Cache Hit Ratio")} value={<span title={runtimeTokenHelp(t)}>{formatCacheHitRatio(totals)}</span>} />
         </div>
         <p className="field-hint">{`${t("runtime.modelsObserved", "Observed Models")}: ${formatRuntimeNumber(modelCount)} · ${t("runtime.observedKeys", "Observed Keys")}: ${formatRuntimeNumber(observedKeyCount)}`}</p>
@@ -344,8 +351,8 @@ export default function RuntimeTab({
                   <td>{row?.bucketStart ? formatDateTime(row.bucketStart) : "—"}</td>
                   <td>{formatRuntimeNumber(row?.requests)}</td>
                   <td>{formatRuntimeNumber(row?.errors)}</td>
-                  <td>{formatRuntimeNumber(row?.promptTokens)}</td>
-                  <td>{formatRuntimeNumber(row?.completionTokens)}</td>
+                  <td><TokenValue value={row?.promptTokens} t={t} /></td>
+                  <td><TokenValue value={row?.completionTokens} t={t} /></td>
                   <td>{row ? formatEstimatedCost(row, t, row.estimatedCostCurrency) : "—"}</td>
                 </tr>
               ))}</tbody>
@@ -359,10 +366,16 @@ export default function RuntimeTab({
             <div><dt>{t("runtime.persistence", "Persistence")}</dt><dd>{t(`option.${persistenceMode}`, persistenceMode)}</dd></div>
             <div><dt>{t("runtime.sync", "Sync")}</dt><dd>{t(`status.${syncState}`, syncState)}</dd></div>
             <div><dt>{t("runtime.database", "Database")}</dt><dd>{t(`runtime.databaseState.${persistenceRuntime.databaseAccessState || "disabled"}`, persistenceRuntime.databaseAccessState || "disabled")}</dd></div>
-            <div><dt>{t("runtime.logSink", "Log Sink")}</dt><dd>{t(`status.${logSinkState}`, logSinkState)}</dd><small>{t("runtime.logSinkNote", "Queue {count} / {bytes} B · Drops {drops} · Failures {failures}", {
-              count: loggingRuntime.queueLength ?? 0, bytes: loggingRuntime.queueBytes ?? 0,
-              drops: loggingRuntime.droppedEntries ?? 0, failures: loggingRuntime.flushFailures ?? 0
-            })}</small></div>
+            <div>
+              <dt>{t("runtime.logSink", "Log Analytics Upload")}</dt>
+              <dd>{logSinkState === "disabled"
+                ? t("runtime.logSinkDisabled", "Disabled")
+                : t(`status.${logSinkState}`, logSinkState)}</dd>
+              {logAnalyticsEnabled ? <small>{t("runtime.logSinkNote", "Queue {count} / {bytes} B · Drops {drops} · Failures {failures}", {
+                count: loggingRuntime.queueLength ?? 0, bytes: loggingRuntime.queueBytes ?? 0,
+                drops: loggingRuntime.droppedEntries ?? 0, failures: loggingRuntime.flushFailures ?? 0
+              })}</small> : null}
+            </div>
             <div><dt>{t("runtime.eventQueue", "Event Queue")}</dt><dd>{formatRuntimeNumber(runtimeStore.queueLength ?? 0)}</dd></div>
           </dl>
         </div>
@@ -619,7 +632,7 @@ export default function RuntimeTab({
                         <div className="model-cell">
                           <div className="runtime-cell-stack">
                             <span>{modelId}</span>
-                            {cardInfo ? <small className="model-card-tiers">{t("runtime.cardTiers", "Model Card Tiers")}: {cardInfo.cardTiers.map(tier => formatBillingTier({ ...tier, kind: "tier" }, t)).join(" / ")}</small> : null}
+                            {cardInfo ? <small className="model-tier-label">{t("runtime.tieredBilling", "Tiered billing")}</small> : null}
                           </div>
                           {billingRows.length ? (
                             <button

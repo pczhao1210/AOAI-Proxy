@@ -172,7 +172,7 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
       assert.equal(row.lastElementChild.textContent, "—");
       assert.equal(row.children[6].textContent, "7");
       assert.equal(row.children[7].textContent, "20 + Unknown");
-      assert.equal(row.children[8].textContent, "10");
+      assert.equal(row.children[8].textContent, "0.01 K");
       assert.equal(row.children[9].textContent, "7.0%");
     }
     for (const id of ["runtime-analytics", "runtime-models", "runtime-keys"]) {
@@ -186,13 +186,13 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
     }
     const keyCells = view.container.querySelector("#runtime-keys tbody tr").children;
     assert.equal(keyCells[6].textContent, "20 + Unknown");
-    assert.equal(keyCells[7].textContent, "10");
+    assert.equal(keyCells[7].textContent, "0.01 K");
     assert.equal(keyCells[8].textContent, "7.0%");
     assert.equal(keyCells[9].textContent, "—");
     assert.equal(keyCells[12].textContent, "— / 10.00 USD");
     const modelCells = view.container.querySelector("#runtime-models tbody tr").children;
     assert.equal(modelCells[5].textContent, "20 + Unknown");
-    assert.equal(modelCells[6].textContent, "10");
+    assert.equal(modelCells[6].textContent, "0.01 K");
     assert.equal(modelCells[7].textContent, "7.0%");
     assert.equal(modelCells[8].textContent, "—");
     const zeroCells = view.getByText("zero").closest("tr").children;
@@ -204,7 +204,7 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
     testing.fireEvent.click(view.getByRole("button", { name: "Expand model-router" }));
     const actualCells = view.container.querySelector(".model-breakdown tbody tr").children;
     assert.equal(actualCells[5].textContent, "20 + Unknown");
-    assert.equal(actualCells[6].textContent, "10");
+    assert.equal(actualCells[6].textContent, "0.01 K");
     assert.equal(actualCells[7].textContent, "7.0%");
     assert.equal(actualCells[8].textContent, "—");
     assert.equal(actualCells.length, 9);

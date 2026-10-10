@@ -5,7 +5,7 @@ import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 import toast from "react-hot-toast";
 import { resetModelStats } from "../admin-ui/src/api.js";
-import { formatBillingTier, formatCacheHitRatio, formatDateTime, formatRuntimeNumber, getModelBillingRows } from "../admin-ui/src/utils.js";
+import { formatBillingTier, formatCacheHitRatio, formatDateTime, formatRuntimeNumber, formatTokenCountK, formatTokenSummary, getModelBillingRows } from "../admin-ui/src/utils.js";
 
 let dom;
 let vite;
@@ -97,10 +97,82 @@ test("overview separates scoped metrics, dated buckets and unfiltered system hea
   assert.deepEqual([...metrics.querySelectorAll(".stat-label")].map(label => label.textContent), [
     "Requests", "Errors", "Reference Cost", "Input Total (Including Cache)", "Output Tokens", "Cache Hit Ratio"
   ]);
-  assert.match(metrics.textContent, /1,000/);
+  assert.ok(testing.within(metrics).getByText("1 K"));
+  assert.ok(testing.within(metrics).getByText("0.1 K"));
+  assert.equal(metrics.querySelector(".stat-note").textContent, "Cost estimates may be incomplete.");
   assert.match(overview.querySelector(".runtime-periods").textContent, /2026-01-01T00:00:00.000Z/);
   assert.ok(overview.querySelector(".runtime-health-grid"));
   assert.equal(overview.querySelector(".runtime-sync-details").open, false);
+});
+
+test("disabled Log Analytics upload hides historical counters without hiding the statistics event queue", () => {
+  for (const loggingRuntime of [
+    { logAnalyticsEnabled: false, logAnalyticsConfigured: false },
+    { logAnalyticsEnabled: false, logAnalyticsConfigured: true, enabled: true, configured: true },
+    { enabled: false, configured: false },
+    {}
+  ]) {
+    const view = renderRuntime({
+      loggingRuntime: { ...loggingRuntime, queueLength: 0, queueBytes: 0, droppedEntries: 73, flushFailures: 91 },
+      runtimeStore: { queueLength: 12 }
+    });
+    const card = view.getByText("Log Analytics Upload").closest("div");
+    assert.equal(card.querySelector("dd").textContent, "Disabled");
+    assert.equal(card.querySelector("small"), null);
+    assert.equal(card.textContent.includes("73"), false);
+    assert.equal(card.textContent.includes("91"), false);
+    assert.equal(view.getByText("Event Queue").closest("div").querySelector("dd").textContent, "12");
+    view.unmount();
+  }
+});
+
+test("enabled Log Analytics upload retains queue, drops and failures for configured and incomplete states", () => {
+  for (const loggingRuntime of [
+    { logAnalyticsEnabled: true, logAnalyticsConfigured: true },
+    { logAnalyticsEnabled: true, logAnalyticsConfigured: false },
+    { enabled: true, configured: true }
+  ]) {
+    const noteCalls = [];
+    const view = renderRuntime({
+      loggingRuntime: { ...loggingRuntime, queueLength: 2, queueBytes: 100, droppedEntries: 3, flushFailures: 4 },
+      t: (key, value, params) => {
+        if (key === "runtime.logSinkNote") noteCalls.push(params);
+        return value;
+      }
+    });
+    const card = view.getByText("Log Analytics Upload").closest("div");
+    assert.equal(card.querySelector("dd").textContent,
+      (loggingRuntime.logAnalyticsConfigured ?? loggingRuntime.configured) ? "configured" : "incomplete");
+    assert.ok(card.querySelector("small"));
+    assert.match(card.querySelector("small").textContent, /Queue.*Drops.*Failures/);
+    assert.deepEqual(noteCalls, [{ count: 2, bytes: 100, drops: 3, failures: 4 }]);
+    view.unmount();
+  }
+});
+
+test("overview keeps aligned filters below its heading and timestamp out of the filter row", () => {
+  const changes = [];
+  let syncs = 0;
+  const view = renderRuntime({
+    statsUpdatedAt: "2026-10-10T03:23:53.555Z",
+    runtimeKeyOptions: [{ value: "key", label: "Example Key" }],
+    onRuntimeFilterChange: patch => changes.push(patch),
+    onSyncRuntime: () => { syncs += 1; }
+  });
+  const overview = view.container.querySelector("#runtime-overview");
+  assert.equal(overview.querySelector(".panel-head .runtime-filter-toolbar"), null);
+  const toolbar = overview.querySelector(".section-body > .runtime-filter-toolbar");
+  assert.ok(toolbar);
+  assert.match(overview.querySelector(".panel-head").textContent, /Updated: 2026-10-10T03:23:53.555Z/);
+  assert.equal(toolbar.textContent.includes("Updated:"), false);
+  assert.deepEqual([...toolbar.querySelectorAll(".field-label")].map(label => label.textContent), ["Key", "Time Range"]);
+  testing.fireEvent.change(view.getByLabelText("Key"), { target: { value: "key" } });
+  testing.fireEvent.change(view.getByLabelText("Time Range"), { target: { value: "7d" } });
+  testing.fireEvent.click(view.getByRole("button", { name: "Sync Now" }));
+  assert.deepEqual(changes, [{ keyId: "key" }, { timeRange: "7d" }]);
+  assert.equal(syncs, 1);
+  view.rerender(React.createElement(RuntimeTab, runtimeProps({ runtimeSyncBusy: true })));
+  assert.equal(view.getByRole("button", { name: "Syncing..." }).disabled, true);
 });
 
 test("runtime numbers retain exact small rates and large integer token counters", () => {
@@ -108,6 +180,17 @@ test("runtime numbers retain exact small rates and large integer token counters"
   assert.equal(formatRuntimeNumber(0.0028), "0.0028");
   assert.equal(formatRuntimeNumber(0), "0");
   for (const value of [undefined, null, NaN, Infinity, -1, "100"]) assert.equal(formatRuntimeNumber(value), "—");
+});
+
+test("input and output K formatting preserves single-token precision and never rounds missing counts to zero", () => {
+  for (const [value, expected] of [
+    [0, "0 K"], [1, "0.001 K"], [10, "0.01 K"], [999, "0.999 K"],
+    [1000, "1 K"], [1001, "1.001 K"], [272001, "272.001 K"], [12458632, "12,458.632 K"],
+    [Number.MAX_SAFE_INTEGER, "9,007,199,254,740.991 K"]
+  ]) assert.equal(formatTokenCountK(value), expected);
+  for (const value of [undefined, null, NaN, Infinity, -1, 0.5, "1000", Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(formatTokenCountK(value), "—");
+  }
 });
 
 test("tiered cards expose flat history without fabricating short tiers and require explicit price repair", async () => {
@@ -126,7 +209,8 @@ test("tiered cards expose flat history without fabricating short tiers and requi
   assert.equal(repairs, 0);
   testing.fireEvent.click(view.getByRole("button", { name: "Expand gpt-6-astra" }));
   assert.equal(view.container.querySelector(".model-breakdown tbody tr").children[1].textContent, "Historical non-tiered");
-  assert.match(view.container.querySelector(".model-card-tiers").textContent, /short <=272K.*long >272K/);
+  assert.equal(view.container.querySelector(".model-tier-label").textContent, "Tiered billing");
+  assert.equal(view.container.querySelector(".model-cell").textContent.includes("short"), false);
   testing.fireEvent.click(view.getByRole("button", { name: "Review tier pricing" }));
   const dialog = testing.within(view.getByRole("dialog"));
   assert.match(dialog.getByText(/Replaces model-level prices/).textContent, /Save configuration/);
@@ -136,6 +220,39 @@ test("tiered cards expose flat history without fabricating short tiers and requi
   await testing.act(async () => testing.fireEvent.click(view.getByRole("button", { name: "Apply card prices to draft" })));
   assert.equal(repairs, 1);
   assert.equal(view.queryByRole("dialog"), null);
+});
+
+test("collapsed models show only a tiered marker while expansion preserves recorded tier statistics", () => {
+  const definition = { id: "tiered", pricing: {
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [{ id: "short <=272K", promptTokensBelow: 272001, inputPer1mTokens: 1 },
+      { id: "long >272K", promptTokensAtLeast: 272001, inputPer1mTokens: 2 }]
+  } };
+  const modelStats = {
+    "public-model": { ...tokens, billingTiers: [
+      row("tiered", { ...tier(0, 272001), id: "short <=272K" }),
+      row("tiered", { ...tier(272001, null), id: "long >272K" }, { promptTokens: 272001, completionTokens: 1 })
+    ] },
+    flat: { ...tokens, billingTiers: [row("flat", { kind: "flat" })] }
+  };
+  const before = structuredClone(modelStats);
+  const view = renderRuntime({
+    pricingLibrary: [definition],
+    config: { models: [{ id: "public-model", targetModel: "tiered" }] },
+    modelStats
+  });
+  assert.equal(view.container.querySelectorAll(".model-tier-label").length, 1);
+  assert.equal(view.container.querySelector(".model-tier-label").textContent, "Tiered billing");
+  assert.equal(view.container.querySelector(".model-breakdown"), null);
+  testing.fireEvent.click(view.getByRole("button", { name: "Expand public-model" }));
+  const rows = view.container.querySelectorAll(".model-breakdown tbody tr");
+  assert.equal(rows[0].children[1].textContent, "short <=272K");
+  assert.equal(rows[1].children[1].textContent, "long >272K");
+  assert.equal(rows[1].children[3].textContent, "272.001 K");
+  assert.equal(rows[1].children[3].querySelector("span").title, "272,001 tokens");
+  assert.equal(rows[1].children[6].textContent, "0.001 K");
+  assert.deepEqual(modelStats, before);
+  assert.match(formatTokenSummary(tokens), /Input Total \(Including Cache\) 1 K.*Output Tokens 0.1 K/);
 });
 
 test("cache hit ratio uses aggregate recorded input including cache without inventing coverage", () => {
@@ -220,7 +337,7 @@ test("model rows and horizontal tier breakdown expose four token counters, ratio
   const modelSection = view.container.querySelector("#runtime-models");
   const mainRow = modelSection.querySelector("tbody tr");
   assert.deepEqual([...mainRow.children].slice(1).map(cell => cell.textContent), [
-    "8", "2", "1,000", "250", "50", "100", "25.0%", "0.7500 USD"
+    "8", "2", "1 K", "250", "50", "0.1 K", "25.0%", "0.7500 USD"
   ]);
   testing.fireEvent.click(view.getByRole("button", { name: "Expand model-router" }));
   const breakdown = modelSection.querySelector(".model-breakdown");
@@ -324,6 +441,7 @@ test("Chinese runtime labels, tier statuses, reset explanation and timestamp are
       React.createElement("button", { onClick: () => setLanguage("zh-CN") }, "中文"),
       React.createElement(RuntimeTab, runtimeProps({
         t, onResetModelStats: async () => {},
+        loggingRuntime: { logAnalyticsEnabled: false, droppedEntries: 73, flushFailures: 91 },
         modelsResetAt: "2026-09-23T04:00:00.000Z",
         modelStats: { model: { ...tokens, billingTiers: [row("model", { kind: "flat" }), row("model", { kind: "unknown" }, { requests: null })] } }
       }))
@@ -336,6 +454,10 @@ test("Chinese runtime labels, tier statuses, reset explanation and timestamp are
   assert.ok(view.getByText("不分档"));
   assert.ok(view.getByText("未分类"));
   assert.ok(view.getByText("模型统计清空时间: 2026-09-23T04:00:00.000Z"));
+  assert.ok(view.getByText("费用估算可能不完整"));
+  const uploadCard = view.getByText("Log Analytics 上传").closest("div");
+  assert.equal(uploadCard.querySelector("dd").textContent, "未启用");
+  assert.equal(uploadCard.querySelector("small"), null);
   for (const label of ["输入总量（含缓存）", "缓存命中率", "计费档位", "已结算请求"]) {
     assert.ok(view.getAllByRole("columnheader", { name: label }).length);
   }
@@ -397,7 +519,8 @@ test("App reset refreshes with latest filters and fences pre-reset responses whi
   assert.ok(view.getByText(`Model stats reset at: ${formatDateTime(timestamp)}`));
   const summary = view.container.querySelector(".status-strip");
   assert.ok(testing.within(summary).getByText("99"));
-  assert.match(summary.textContent, /reference only.*Azure billing portal/);
+  assert.match(summary.textContent, /Cost estimates may be incomplete\./);
+  assert.equal(summary.textContent.includes("Azure"), false);
   assert.equal(summary.textContent.includes("Input Total (Including Cache)"), false);
   assert.equal(summary.textContent.includes("Cache Write Cost"), false);
   const mutation = fetchMock.mock.calls.find(call => String(call.arguments[0]).endsWith("/stats/models/reset"));

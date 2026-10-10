@@ -473,6 +473,11 @@ tables show write tokens, including partial or unreported usage labels. The
 reference cost already includes priced writes; no standalone write-cost column
 or extra budget charge is added.
 
+Reference-cost cards use only the short hint "Cost estimates may be incomplete."
+Input/output counters across the admin runtime views use K (1 K = 1,000 tokens),
+with up to three decimals and raw counts available on hover. Cache counters
+retain token units; stored usage, tier selection and costs are unchanged.
+
 The admin checks every configured model whose executable card defines tiers,
 including aliases and custom public IDs. Model-level pricing and persisted
 catalog entries still override the library. A library sync does not overwrite
@@ -483,6 +488,8 @@ and save the draft through the ordinary configuration workflow to activate it.
 Shared catalog entries, routes, other models and historical settlements remain
 unchanged. Non-tiered historical rows are labeled separately when the current
 card is tiered; current card tiers are never used to fabricate historical tiers.
+Collapsed model rows show only "Tiered billing" for executable tiered cards;
+recorded tier labels and per-tier statistics remain in the expanded breakdown.
 
 The new runtime must be deployed once (and admin assets built before building the
 container). Subsequent valid price policy changes apply to new requests after

@@ -1313,7 +1313,7 @@ export default function App() {
 
       <section className="summary-grid status-strip" aria-label={t("summary.title", "System status") }>
         <StatCard label={t("summary.requests", "Requests")} value={formatRuntimeNumber(summary.requests)} note={`${t("summary.errors", "Errors")} ${formatRuntimeNumber(summary.errors)}`} />
-        <StatCard label={t("summary.cost", "Reference Cost")} value={summary.cost} note={t("runtime.costReference", "Billing estimates may be incomplete and are for reference only. Final charges are determined by the Azure billing portal.")} />
+        <StatCard label={t("summary.cost", "Reference Cost")} value={summary.cost} note={t("runtime.costHint", "Cost estimates may be incomplete.")} />
         <StatCard label={t("summary.persistence", "Persistence")} value={t(`option.${summary.persistence}`, summary.persistence)} note={`${t("summary.logging", "Logging")} ${t(`status.${summary.logging}`, summary.logging)}`} />
         <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : t("summary.synced", "Synced")} />
       </section>

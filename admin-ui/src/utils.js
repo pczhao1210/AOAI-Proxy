@@ -28,6 +28,12 @@ export function formatRuntimeNumber(value) {
     ? value.toLocaleString("en-US", { maximumFractionDigits: 20 }) : "—";
 }
 
+export function formatTokenCountK(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return "—";
+  const fraction = String(value % 1000).padStart(3, "0").replace(/0+$/, "");
+  return `${formatRuntimeNumber(Math.floor(value / 1000))}${fraction ? `.${fraction}` : ""} K`;
+}
+
 export function formatCacheWriteTokens(cacheWrite, t = (_key, fallback) => fallback) {
   if (!cacheWrite || cacheWrite.requests === 0) return t("runtime.notReported", "Not reported");
   if (Number.isInteger(cacheWrite.tokens) && cacheWrite.tokens >= 0) return formatRuntimeNumber(cacheWrite.tokens);
@@ -54,15 +60,15 @@ export function formatCacheHitRatio(stats = {}) {
 }
 
 export function runtimeTokenHelp(t = (_key, fallback) => fallback) {
-  return t("runtime.tokenHelp", "Input includes cache read and cache write tokens; do not add them again. Cache hit ratio is cache read / input, based on recorded tokens. Legacy missing cache reads may already be recorded as 0.");
+  return t("runtime.tokenHelp", "Input and output use K: 1 K = 1,000 tokens; hover for raw counts. Input includes cache read and cache write tokens; do not add them again. Cache hit ratio is cache read / input, based on recorded tokens. Legacy missing cache reads may already be recorded as 0.");
 }
 
 export function formatTokenSummary(stats = {}, t = (_key, fallback) => fallback) {
   return [
-    `${t("table.inputTokensIncludingCache", "Input Total (Including Cache)")} ${formatRuntimeNumber(stats.promptTokens)}`,
+    `${t("table.inputTokensIncludingCache", "Input Total (Including Cache)")} ${formatTokenCountK(stats.promptTokens)}`,
     `${t("table.cacheReadTokens", "Cache Read Tokens")} ${formatRuntimeNumber(stats.cachedTokens)}`,
     `${t("table.cacheWriteTokens", "Cache Write Tokens")} ${formatCacheWriteTokens(stats.cacheWrite, t)}`,
-    `${t("table.outputTokens", "Output Tokens")} ${formatRuntimeNumber(stats.completionTokens)}`,
+    `${t("table.outputTokens", "Output Tokens")} ${formatTokenCountK(stats.completionTokens)}`,
     `${t("table.cacheHitRatio", "Cache Hit Ratio")} ${formatCacheHitRatio(stats)}`
   ].join(" · ");
 }
