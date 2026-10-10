@@ -1,7 +1,7 @@
 import { markErrorWithCode } from "./reliability.js";
 import { getProtocolShimStreamCompatibilityIssue } from "./shim.js";
 
-const MAX_SSE_BUFFER_CHARS = 8 * 1024 * 1024;
+const MAX_SSE_EVENT_BYTES = 8 * 1024 * 1024;
 
 function sseDataFromBlock(block) {
   const dataLines = [];
@@ -17,84 +17,60 @@ function sseDataFromBlock(block) {
 }
 
 function createSseDataParser() {
-  let buffer = "";
-
-  const drain = (final = false) => {
-    const payloads = [];
-    while (true) {
-      const match = /\r?\n\r?\n/.exec(buffer);
-      if (!match) break;
-      const payload = sseDataFromBlock(buffer.slice(0, match.index));
-      buffer = buffer.slice(match.index + match[0].length);
-      if (payload != null) payloads.push(payload);
-    }
-    if (final && buffer.trim()) {
-      const payload = sseDataFromBlock(buffer);
-      buffer = "";
-      if (payload != null) payloads.push(payload);
-    }
-    return payloads;
-  };
-
+  const parser = createRawSseParser();
+  function* payloads(events) {
+    for (const event of events) if (event.payload != null) yield event.payload;
+  }
   return {
-    feed(text) {
-      buffer += text;
-      return drain(false);
-    },
-    finish(text = "") {
-      buffer += text;
-      return drain(true);
-    },
-    get bufferedLength() {
-      return buffer.length;
-    }
+    feed: chunk => payloads(parser.feed(chunk)),
+    finish: () => payloads(parser.finish())
   };
 }
 
-export function createRawSseParser() {
+export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {}) {
   let buffer = Buffer.alloc(0);
   const lfDelimiter = Buffer.from("\n\n");
   const crlfDelimiter = Buffer.from("\r\n\r\n");
-
-  const nextEvent = () => {
-    const lfIndex = buffer.indexOf(lfDelimiter);
-    const crlfIndex = buffer.indexOf(crlfDelimiter);
-    if (lfIndex < 0 && crlfIndex < 0) return null;
-    const useCrlf = crlfIndex >= 0 && (lfIndex < 0 || crlfIndex < lfIndex);
-    const index = useCrlf ? crlfIndex : lfIndex;
-    const delimiter = useCrlf ? crlfDelimiter : lfDelimiter;
-    const raw = buffer.subarray(0, index + delimiter.length);
-    const block = buffer.subarray(0, index).toString("utf8");
-    buffer = buffer.subarray(index + delimiter.length);
-    return { raw, payload: sseDataFromBlock(block) };
-  };
-
-  const drain = () => {
-    const events = [];
-    while (true) {
-      const event = nextEvent();
-      if (!event) return events;
-      events.push(event);
+  const checkSize = length => {
+    if (length > maxEventBytes) {
+      throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
     }
   };
+
+  // Parse lazily so terminal evidence stops interpretation of trailing bytes.
+  // Enforce the complete raw frame size before UTF-8 or JSON decoding; checking
+  // only the remaining buffer misses oversized events ending in this chunk.
+  function* drain(final = false) {
+    while (buffer.length) {
+      const lfIndex = buffer.indexOf(lfDelimiter);
+      const crlfIndex = buffer.indexOf(crlfDelimiter);
+      if (lfIndex < 0 && crlfIndex < 0) {
+        checkSize(buffer.length);
+        if (final) {
+          const raw = buffer;
+          buffer = Buffer.alloc(0);
+          yield { raw, payload: sseDataFromBlock(raw.toString("utf8")) };
+        }
+        return;
+      }
+      const useCrlf = crlfIndex >= 0 && (lfIndex < 0 || crlfIndex < lfIndex);
+      const index = useCrlf ? crlfIndex : lfIndex;
+      const length = index + (useCrlf ? crlfDelimiter.length : lfDelimiter.length);
+      checkSize(length);
+      const raw = buffer.subarray(0, length);
+      const payload = sseDataFromBlock(buffer.subarray(0, index).toString("utf8"));
+      buffer = buffer.subarray(length);
+      yield { raw, payload };
+    }
+  }
 
   return {
     feed(chunk) {
-      buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
+      buffer = Buffer.concat([buffer, chunk]);
       return drain();
     },
-    finish() {
-      const events = drain();
-      if (buffer.length > 0) {
-        const raw = buffer;
-        buffer = Buffer.alloc(0);
-        events.push({ raw, payload: sseDataFromBlock(raw.toString("utf8")) });
-      }
-      return events;
-    },
-    get bufferedLength() {
-      return buffer.length;
-    }
+    finish: () => drain(true),
+    get bufferedLength() { return buffer.length; }
   };
 }
 
@@ -205,10 +181,15 @@ async function writeWithBackpressure(replyRaw, data, signal) {
 
 function createStreamCancellation(replyRaw, reader, onClientDisconnect) {
   const controller = new AbortController();
+  let closePromise;
+  const closeReader = reason => {
+    closePromise ||= Promise.resolve().then(() => reader.cancel(reason)).catch(() => {});
+    return closePromise;
+  };
   const cancel = (reason, code, message) => {
     if (controller.signal.aborted) return;
     controller.abort(markErrorWithCode(new Error(message), code));
-    reader.cancel(reason).catch(() => {});
+    void closeReader(reason);
   };
   const onClose = () => {
     if (replyRaw.writableEnded || controller.signal.aborted) return;
@@ -219,7 +200,12 @@ function createStreamCancellation(replyRaw, reader, onClientDisconnect) {
   return {
     signal: controller.signal,
     cancel,
-    cleanup() { replyRaw.removeListener?.("close", onClose); }
+    closeReader,
+    async finish() {
+      replyRaw.removeListener?.("close", onClose);
+      await closeReader("stream-finished");
+      reader.releaseLock?.();
+    }
   };
 }
 
@@ -530,12 +516,10 @@ export async function streamPassthrough({
         if (!providerError || forwardProviderErrors) {
           await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);
         }
-      }
-      if (sseParser.bufferedLength > MAX_SSE_BUFFER_CHARS) {
-        throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
+        if (reachedTerminal()) break;
       }
       if (reachedTerminal()) {
-        await reader.cancel(providerError ? "provider-error" : "terminal-event").catch(() => {});
+        await cancellation.closeReader(providerError ? "provider-error" : "terminal-event");
         break;
       }
     }
@@ -546,19 +530,17 @@ export async function streamPassthrough({
         if (!providerError || forwardProviderErrors) {
           await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);
         }
+        if (reachedTerminal()) break;
       }
     }
   } catch (error) {
+    return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
+  } finally {
     clearTimeout(firstByteTimer);
     clearIdle();
     clearMaxDuration();
-    cancellation.cleanup();
-    return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
+    await cancellation.finish();
   }
-  clearTimeout(firstByteTimer);
-  clearIdle();
-  clearMaxDuration();
-  cancellation.cleanup();
   if (clientDisconnected) {
     return {
       ok: false,
@@ -644,8 +626,6 @@ export async function streamShim({
   let maxDurationTimedOut = false;
   let idleTimer = null;
   let maxDurationTimer = null;
-  let buffer = "";
-  const decoder = new TextDecoder();
   const sourceSseParser = createSseDataParser();
   let providerError = null;
   let sourceTerminalSeen = false;
@@ -1304,27 +1284,12 @@ export async function streamShim({
         clearTimeout(firstByteTimer);
         onFirstChunk();
       }
-      if (!reachedEof) {
-        resetIdle();
-        for (const payload of sourceSseParser.feed(decoder.decode(value, { stream: true }))) {
-          buffer += `data: ${payload.replace(/\r?\n/g, " ")}\n`;
-        }
-      } else {
-        for (const payload of sourceSseParser.finish(decoder.decode())) {
-          buffer += `data: ${payload.replace(/\r?\n/g, " ")}\n`;
-        }
-      }
-      let idx;
-      while ((idx = buffer.indexOf("\n")) >= 0) {
-        if (providerError || sourceTerminalSeen) {
-          buffer = "";
-          break;
-        }
-        const rawLine = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 1);
-        const line = rawLine.trim();
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
+      if (!reachedEof) resetIdle();
+      const payloads = reachedEof ? sourceSseParser.finish() : sourceSseParser.feed(value);
+      while (!providerError && !sourceTerminalSeen) {
+        const next = payloads.next();
+        if (next.done) break;
+        const payload = next.value.replace(/\r?\n/g, " ").trim();
         if (!payload) continue;
         if (payload === "[DONE]") {
           if (backendRouteKey === "messages") {
@@ -1822,11 +1787,8 @@ export async function streamShim({
           if (choice?.finish_reason) reverseFinishReason = choice.finish_reason;
         }
       }
-      if (buffer.length > MAX_SSE_BUFFER_CHARS || sourceSseParser.bufferedLength > MAX_SSE_BUFFER_CHARS) {
-        throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
-      }
       if (providerError) {
-        await reader.cancel("provider-error").catch(() => {});
+        await cancellation.closeReader("provider-error");
         break;
       }
       if (reachedEof && !sourceTerminalSeen) {
@@ -1840,16 +1802,13 @@ export async function streamShim({
       if (sourceTerminalSeen || reachedEof) break;
     }
   } catch (error) {
+    return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
+  } finally {
     clearTimeout(firstByteTimer);
     clearIdle();
     clearMaxDuration();
-    cancellation.cleanup();
-    return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
+    await cancellation.finish();
   }
-  clearTimeout(firstByteTimer);
-  clearIdle();
-  clearMaxDuration();
-  cancellation.cleanup();
   if (clientDisconnected) {
     return {
       ok: false,

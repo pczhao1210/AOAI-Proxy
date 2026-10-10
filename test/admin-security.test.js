@@ -267,3 +267,62 @@ test("admin APIs redact secrets and preserve them on config save", async () => {
     }
   }
 });
+
+test("matched admin routes require administrator auth and CSRF even with encoded paths", async () => {
+  const ctx = await createTestContext();
+  try {
+    for (const prefix of ["/admin", "/%61dmin", "/a%64min", "/%61%64%6din"]) {
+      for (const request of [ctx.request, ctx.publicRequest]) {
+        const config = await request(`${prefix}/api/config`);
+        assert.equal(config.status, 401, `${prefix}: ${config.text}`);
+        const secret = await request(`${prefix}/api/keys/reveal`, {
+          method: "POST", headers: { "x-aoai-admin-csrf": "1" }, json: { id: "test-client" }
+        });
+        assert.equal(secret.status, 401, `${prefix}: ${secret.text}`);
+        assert.doesNotMatch(secret.text, /test-client-key/);
+      }
+      const loaded = await ctx.adminRequest(`${prefix}/api/config`);
+      assert.equal(loaded.status, 200, loaded.text);
+      assert.equal(loaded.json.apiKeys[0].key, REDACTED_SECRET_VALUE);
+      const noCsrf = await ctx.adminRequest(`${prefix}/api/keys/reveal`, {
+        method: "POST", json: { id: "test-client" }
+      });
+      assert.equal(noCsrf.status, 403, noCsrf.text);
+    }
+    const config = (await ctx.adminRequest("/admin/api/config")).json;
+    config.admin.basePath = "/control-panel";
+    const saved = await ctx.adminRequest("/admin/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal((await ctx.publicRequest("/control-panel/api/config")).status, 401);
+    assert.equal((await ctx.publicRequest("/%61dmin/api/config")).status, 401);
+    assert.equal((await ctx.adminRequest("/control-panel/api/config")).status, 200);
+    // An encoded static suffix still resolves to the protected admin handler.
+    assert.equal((await ctx.publicRequest("/control-panel/api/%63onfig")).status, 401);
+    config.admin.security.allowedIps = ["192.0.2.1"];
+    assert.equal((await ctx.adminRequest("/control-panel/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+    })).status, 200);
+    assert.equal((await ctx.adminRequest("/%61dmin/api/config")).status, 403);
+    assert.equal((await ctx.publicRequest("/v1/models")).status, 200);
+    assert.equal(ctx.upstreamRequests.length, 0);
+  } finally { await ctx.cleanup(); }
+});
+
+test("header authentication rejects unauthorized JSON before body parsing", async () => {
+  const ctx = await createTestContext();
+  try {
+    for (const endpoint of ["/v1/chat/completions", "/admin/api/config", "/%61dmin/api/config"]) {
+      const result = await ctx.request(endpoint, {
+        method: endpoint.includes("config") ? "PUT" : "POST",
+        headers: { "content-type": "application/json" }, body: '{"invalid":'
+      });
+      assert.equal(result.status, 401, `${endpoint}: ${result.text}`);
+    }
+    assert.equal((await ctx.publicRequest("/v1/chat/completions", {
+      method: "POST", headers: { "content-type": "application/json" }, body: '{"invalid":'
+    })).status, 400, "Authenticated malformed JSON must still be rejected by the parser");
+    assert.equal(ctx.upstreamRequests.length, 0);
+  } finally { await ctx.cleanup(); }
+});

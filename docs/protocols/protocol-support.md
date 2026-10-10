@@ -382,8 +382,8 @@ Claude Code 和 Anthropic SDK 会发送版本、运行时和 Stainless 生成器
 
 请求体进入协议处理前会进行基础规范化：
 
-- 删除值为 `undefined` 或字符串 `"undefined"` 的字段；
-- 非 Responses 路径通常删除无意义的 `null`，Responses 因部分字段以 `null` 表示显式状态而允许保留；
+- 清理可选控制参数中 JavaScript `undefined`、字符串 `"undefined"` / `"[undefined]"` 等客户端占位值；正文、instructions、工具参数/结果和 JSON Schema 的 enum/default/const 值不按占位值清理；
+- 非 Responses 路径仍清理无意义的控制参数 `null`，但保留正文、工具数据和 Schema 中的 `null`；Responses 的其他显式 `null` 状态继续保留；
 - 删除网关自己的超时、重试等控制字段；
 - 没有有效工具时，删除孤立的 `tool_choice`、`function_call`、`parallel_tool_calls` 等控制项；
 - 修复或删除无法与 assistant tool call 对应的 Chat tool message，避免把破损工具历史送到上游；
@@ -1494,6 +1494,13 @@ Foundry Claude 的 cache control 应只保留：
 ---
 
 ## 27. 重试、超时与可靠性
+
+上游 HTTP 重定向不属于自动跟随或重试范围。最终配置 URL 返回 3xx 时，文本/图片公共 HTTP 通道返回
+`502 / UPSTREAM_REDIRECT_NOT_ALLOWED`，不把凭据或请求体转发到 Location 指定的位置，即使目标同源。
+
+SSE 的 8 MiB 上限按单个原始事件的字节数计算（包含事件分隔符），在 UTF-8/JSON 解析前检查；
+不把多个合法事件合并在一个网络 chunk 的总大小误当作单事件大小。观察到源协议终态后不再解释尾随内容。
+正常终态、解析/写入异常和客户端取消都必须取消或结束上游读取并释放 reader。
 
 ### 27.1 可重试场景
 

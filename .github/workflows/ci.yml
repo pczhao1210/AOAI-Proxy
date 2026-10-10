@@ -1,0 +1,47 @@
+name: Contract and security checks
+
+on:
+  pull_request:
+  push:
+    branches: [aoai-nextgen, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: local-ci-only
+          POSTGRES_DB: aoai_test
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d aoai_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run cards:check
+      - run: npm run test:unit
+        env:
+          RUNTIME_MEDIA_TEST_DATABASE_URL: postgresql://postgres:local-ci-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/aoai_test
+      - run: npm run test:routes
+      - name: Check admin compilation without replacing committed assets
+        run: ./node_modules/.bin/vite build --config admin-ui/vite.config.js --outDir "$RUNNER_TEMP/aoai-admin-build"
+      - run: npm audit --audit-level=moderate

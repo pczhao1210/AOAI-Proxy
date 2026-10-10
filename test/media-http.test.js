@@ -326,3 +326,28 @@ test("media usage observation preserves JSON wire bytes and explicit zero withou
     return true;
   } });
 });
+test("oversized native media SSE events fail the request without terminating the proxy", { timeout: 15000 }, async () => {
+  let oversized = true;
+  await withTestContext(async ctx => {
+    const config = await ctx.readConfigFile();
+    config.upstreams[0].routes["audio/speech"] = "/v1/audio/speech";
+    config.models.push({ id: "speech", targetModel: "gpt-4o-mini-tts", pricingRef: "gpt-4o-mini-tts", upstream: config.upstreams[0].name });
+    config.media = { http: { enabled: true, maxResponseBytes: 16 * 1024 * 1024 } };
+    assert.equal((await ctx.adminRequest("/admin/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+    })).status, 200);
+    const request = () => ctx.publicRequest("/v1/audio/speech", {
+      method: "POST", json: { model: "speech", input: "Speak", voice: "alloy", stream_format: "sse" }, signal: AbortSignal.timeout(5000)
+    });
+    await assert.rejects(request());
+    assert.equal((await ctx.request("/healthz")).status, 200);
+    oversized = false;
+    assert.equal((await request()).status, 200);
+  }, { upstreamHandler({ req, res }) {
+    if (req.url !== "/v1/audio/speech") return false;
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(oversized ? `data: {"type":"speech.audio.delta","audio":"${"x".repeat(8 * 1024 * 1024)}"}\n\n`
+      : 'data: {"type":"speech.audio.done"}\n\n');
+    return true;
+  } });
+});

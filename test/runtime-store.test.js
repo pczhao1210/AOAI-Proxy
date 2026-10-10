@@ -384,7 +384,10 @@ test("media and text ledgers restore known subtotals and durable completeness fr
   }
 });
 
-test("cache-write event and rollup SQL bind every column and retain partial dimensions", async () => {
+test("cache-write event and rollup SQL bind every column and retain partial dimensions", async (t) => {
+  t.mock.method(pg.Pool.prototype, "connect", async function () {
+    return { query: (...args) => this.query(...args), release() {} };
+  });
   const fixtureDir = path.resolve(`.cache-write-sql-test-${process.pid}-${Date.now()}`);
   await fs.mkdir(fixtureDir);
   const originalQuery = pg.Pool.prototype.query;
@@ -400,7 +403,7 @@ test("cache-write event and rollup SQL bind every column and retain partial dime
     if (insert) {
       const columns = insert[2].split(",").map(name => name.trim());
       assert.equal(new Set(columns).size, columns.length);
-      assert.equal(columns.length, insert[1] === "events" ? 28 : 27);
+      assert.equal(columns.length, insert[1] === "events" ? 29 : 27);
       assert.equal(values.length % columns.length, 0);
       const placeholders = [...text.matchAll(/\$(\d+)/g)].map(match => Number(match[1]));
       assert.equal(Math.max(...placeholders), values.length);
@@ -584,7 +587,10 @@ function mockStatisticsDatabase() {
   return state;
 }
 
-    test("billing scopes survive restart and reset excludes pending/replayed history without changing global scopes", async () => {
+    test("billing scopes survive restart and reset excludes pending/replayed history without changing global scopes", async (t) => {
+      t.mock.method(pg.Pool.prototype, "connect", async function () {
+        return { query: (...args) => this.query(...args), release() {} };
+      });
       const fixtureDir = path.resolve(`.model-stats-test-${process.pid}-${Date.now()}`);
       await fs.mkdir(fixtureDir);
       const originalQuery = pg.Pool.prototype.query;

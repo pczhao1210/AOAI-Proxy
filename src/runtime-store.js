@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
 import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
@@ -183,6 +184,7 @@ async function ensureLocalBufferDirectory(settings) {
 
 function normalizeBufferedEvent(entry = {}) {
   return buildEventRow(String(entry.eventType || entry.event_type || "warning").trim() || "warning", {
+    eventUid: entry.eventUid ?? entry.event_uid,
     signalName: entry.signalName ?? entry.signal_name,
     requestId: entry.requestId ?? entry.request_id,
     occurredAt: entry.occurredAt ?? entry.occurred_at,
@@ -279,18 +281,22 @@ async function appendLocalBufferEvents(settings, events) {
 async function peekLocalBufferBatch(settings, limit) {
   return queueLocalBufferOperation(async () => {
     const existingEvents = await readLocalBufferEventsUnsafe(settings);
+    // Persist generated identities for legacy records BEFORE any database write,
+    // so a lost acknowledgement or restart cannot assign them new identities.
+    await writeLocalBufferEventsUnsafe(settings, existingEvents);
     updateLocalBufferState(settings, existingEvents);
     return existingEvents.slice(0, limit);
   });
 }
 
-async function ackLocalBufferBatch(settings, count) {
-  if (count <= 0) {
+async function ackLocalBufferBatch(settings, batchItems) {
+  if (!batchItems.length) {
     return { persistedEventCount: runtimeStoreState.persistedEventCount };
   }
   return queueLocalBufferOperation(async () => {
     const existingEvents = await readLocalBufferEventsUnsafe(settings);
-    const nextEvents = existingEvents.slice(count);
+    const acknowledged = new Set(batchItems.map(event => event.eventUid));
+    const nextEvents = existingEvents.filter(event => !acknowledged.has(event.eventUid));
     await writeLocalBufferEventsUnsafe(settings, nextEvents);
     updateLocalBufferState(settings, nextEvents);
     return { persistedEventCount: nextEvents.length };
@@ -344,6 +350,7 @@ async function ensureRuntimeTables(settings) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${schemaName}.${eventsTableName} (
       event_id BIGSERIAL PRIMARY KEY,
+      event_uid UUID,
       event_type TEXT NOT NULL,
       signal_name TEXT NOT NULL DEFAULT '',
       request_id TEXT,
@@ -367,6 +374,9 @@ async function ensureRuntimeTables(settings) {
       payload JSONB NOT NULL DEFAULT '{}'::jsonb
     )
   `);
+  await pool.query(`ALTER TABLE ${schemaName}.${eventsTableName} ADD COLUMN IF NOT EXISTS event_uid UUID`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${settings.eventsTableName}_event_uid_idx`, "runtime event identity index")}
+    ON ${schemaName}.${eventsTableName} (event_uid)`);
   await pool.query(`ALTER TABLE ${schemaName}.${eventsTableName} ADD COLUMN IF NOT EXISTS signal_name TEXT NOT NULL DEFAULT ''`);
   await pool.query(`ALTER TABLE ${schemaName}.${eventsTableName} ADD COLUMN IF NOT EXISTS text_unknown_cost_requests BIGINT NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE ${schemaName}.${eventsTableName} ${CACHE_WRITE_COLUMN_DEFINITIONS.map(([name, type]) => `ADD COLUMN IF NOT EXISTS ${name} ${type}`).join(", ")}`);
@@ -443,11 +453,11 @@ async function cleanupRuntimeData(settings) {
   );
 }
 
-function scheduleFlush(settings) {
+function scheduleFlush(settings, { retry = false } = {}) {
   if (!settings.configured || (runtimeEventQueue.length === 0 && runtimeStoreState.persistedEventCount === 0) || flushRunning || flushTimer) {
     return;
   }
-  const delay = runtimeStoreState.persistedEventCount > 0 || runtimeEventQueue.length >= settings.batchSize
+  const delay = !retry && (runtimeStoreState.persistedEventCount > 0 || runtimeEventQueue.length >= settings.batchSize)
     ? 0
     : settings.flushIntervalMs;
   updateRuntimeStoreState({ nextFlushAt: toIsoString(Date.now() + delay) });
@@ -463,6 +473,7 @@ function buildEventRow(eventType, fields = {}) {
   const cacheWrite = textUsage ? normalizeCacheWrite(fields.payload?.cacheWrite) : null;
   return {
     eventType,
+    eventUid: fields.eventUid || randomUUID(),
     signalName: String(fields.signalName || fields.eventName || fields.event || "").trim(),
     requestId: String(fields.requestId || "").trim() || null,
     occurredAt: typeof fields.occurredAt === "string" && fields.occurredAt ? fields.occurredAt : toIsoString(),
@@ -545,6 +556,7 @@ async function insertRuntimeEvents(settings, batchItems) {
   const pool = getRuntimeStorePool(settings);
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const columns = [
+    "event_uid",
     "event_type",
     "signal_name",
     "request_id",
@@ -572,6 +584,7 @@ async function insertRuntimeEvents(settings, batchItems) {
   const rows = batchItems.map((item, index) => {
     const offset = index * columns.length;
     values.push(
+      item.eventUid,
       item.eventType,
       item.signalName,
       item.requestId,
@@ -598,7 +611,8 @@ async function insertRuntimeEvents(settings, batchItems) {
   });
 
   await pool.query(
-    `INSERT INTO ${schemaName}.${eventsTableName} (${columns.join(", ")}) VALUES ${rows.join(", ")}`,
+    `INSERT INTO ${schemaName}.${eventsTableName} (${columns.join(", ")}) VALUES ${rows.join(", ")}
+     ON CONFLICT (event_uid) DO NOTHING`,
     values
   );
 }
@@ -766,11 +780,10 @@ function buildRollupRows(events, modelsResetAt) {
   return Array.from(rows.values());
 }
 
-async function upsertRollupRows(settings, rollupRows) {
+async function upsertRollupRows(settings, rollupRows, pool = getRuntimeStorePool(settings)) {
   if (!rollupRows.length) {
     return;
   }
-  const pool = getRuntimeStorePool(settings);
   const { schemaName, rollupsTableName } = getQualifiedTableNames(settings);
   const columns = [
     "grain",
@@ -858,8 +871,7 @@ async function upsertRollupRows(settings, rollupRows) {
   );
 }
 
-async function getMetaValue(settings, metaKey) {
-  const pool = getRuntimeStorePool(settings);
+async function getMetaValue(settings, metaKey, pool = getRuntimeStorePool(settings)) {
   const { schemaName, metaTableName } = getQualifiedTableNames(settings);
   const result = await pool.query(
     `SELECT meta_value FROM ${schemaName}.${metaTableName} WHERE meta_key = $1`,
@@ -868,8 +880,7 @@ async function getMetaValue(settings, metaKey) {
   return result.rows[0]?.meta_value || "";
 }
 
-async function setMetaValue(settings, metaKey, metaValue) {
-  const pool = getRuntimeStorePool(settings);
+async function setMetaValue(settings, metaKey, metaValue, pool = getRuntimeStorePool(settings)) {
   const { schemaName, metaTableName } = getQualifiedTableNames(settings);
   await pool.query(
     `INSERT INTO ${schemaName}.${metaTableName} (meta_key, meta_value, updated_at)
@@ -880,8 +891,7 @@ async function setMetaValue(settings, metaKey, metaValue) {
   );
 }
 
-async function fetchUnrolledEvents(settings, afterEventId) {
-  const pool = getRuntimeStorePool(settings);
+async function fetchUnrolledEvents(settings, afterEventId, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const result = await pool.query(
     `SELECT
@@ -922,22 +932,37 @@ async function rollupRuntimeEvents(settings) {
   }
 
   let processed = 0;
-  let lastEventId = resolveInt(await getMetaValue(settings, META_LAST_ROLLED_EVENT_ID), 0, 0);
-  const modelsResetAt = await getMetaValue(settings, META_MODELS_RESET_AT);
+  let lastEventId = 0;
   try {
     while (true) {
-      const batch = await fetchUnrolledEvents(settings, lastEventId);
-      if (!batch.length) {
-        break;
+      // A dedicated client is essential: pool.query cannot keep BEGIN, updates
+      // and COMMIT on the same PostgreSQL connection.
+      const client = await getRuntimeStorePool(settings).connect();
+      let batch;
+      let transactionError;
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+          `${settings.schemaName}.${settings.metaTableName}:rollup`
+        ]);
+        lastEventId = resolveInt(await getMetaValue(settings, META_LAST_ROLLED_EVENT_ID, client), 0, 0);
+        const modelsResetAt = await getMetaValue(settings, META_MODELS_RESET_AT, client);
+        batch = await fetchUnrolledEvents(settings, lastEventId, client);
+        if (batch.length) {
+          await upsertRollupRows(settings, buildRollupRows(batch, modelsResetAt), client);
+          lastEventId = batch[batch.length - 1].eventId;
+          await setMetaValue(settings, META_LAST_ROLLED_EVENT_ID, lastEventId, client);
+        }
+        await client.query("COMMIT");
+      } catch (error) {
+        transactionError = error;
+        await client.query("ROLLBACK").catch(() => {});
+        throw error;
+      } finally {
+        client.release(transactionError);
       }
-      const rollupRows = buildRollupRows(batch, modelsResetAt);
-      await upsertRollupRows(settings, rollupRows);
-      lastEventId = batch[batch.length - 1].eventId;
-      await setMetaValue(settings, META_LAST_ROLLED_EVENT_ID, lastEventId);
       processed += batch.length;
-      if (batch.length < settings.rollupBatchSize) {
-        break;
-      }
+      if (batch.length < settings.rollupBatchSize) break;
     }
     updateRuntimeStoreState({
       lastRolledEventId: lastEventId,
@@ -956,7 +981,7 @@ async function rollupRuntimeEvents(settings) {
       failureReason: error?.message || "Runtime store rollup failed",
       target: describeRuntimeTarget(settings)
     });
-    return { processed, error };
+    throw error;
   }
 }
 
@@ -1026,42 +1051,33 @@ async function flushRuntimeEventsInternal() {
 
   let batchItems = [];
   let batchSource = "memory";
-  if (runtimeStoreState.persistedEventCount > 0) {
-    batchItems = await peekLocalBufferBatch(settings, settings.batchSize);
-    batchSource = "local";
-  } else {
-    batchItems = runtimeEventQueue.splice(0, settings.batchSize);
-    updateRuntimeStoreState({});
-  }
-
-  if (!batchItems.length) {
-    updateRuntimeStoreState({ flushing: false });
-    flushRunning = false;
-    if (runtimeEventQueue.length > 0 || runtimeStoreState.persistedEventCount > 0) {
-      scheduleFlush(settings);
-    }
-    return { flushed: 0 };
-  }
-
+  let retry = false;
   try {
+    if (runtimeStoreState.persistedEventCount > 0) {
+      batchSource = "local";
+      batchItems = await peekLocalBufferBatch(settings, settings.batchSize);
+    } else {
+      batchItems = runtimeEventQueue.splice(0, settings.batchSize);
+      updateRuntimeStoreState({});
+    }
+    if (!batchItems.length) return { flushed: 0 };
+
     await ensureRuntimeTables(settings);
     await insertRuntimeEvents(settings, batchItems);
-    if (batchSource === "local") {
-      await ackLocalBufferBatch(settings, batchItems.length);
-    }
     await rollupRuntimeEvents(settings);
     await cleanupRuntimeData(settings);
+    if (batchSource === "local") {
+      await ackLocalBufferBatch(settings, batchItems);
+    }
     updateRuntimeStoreState({
       lastSuccessTs: toIsoString(),
       lastError: null,
       flushing: false,
       spilloverActive: runtimeStoreState.persistedEventCount > 0
     });
-    if (runtimeEventQueue.length > 0 || runtimeStoreState.persistedEventCount > 0) {
-      scheduleFlush(settings);
-    }
     return { flushed: batchItems.length };
   } catch (error) {
+    retry = true;
     if (batchSource === "memory") {
       const backlog = batchItems.concat(runtimeEventQueue.splice(0, runtimeEventQueue.length));
       try {
@@ -1096,13 +1112,13 @@ async function flushRuntimeEventsInternal() {
       failureReason: error?.message || "Runtime store flush failed",
       target: describeRuntimeTarget(settings)
     });
-    if (runtimeEventQueue.length > 0 || runtimeStoreState.persistedEventCount > 0) {
-      scheduleFlush(settings);
-    }
     return { flushed: 0, error };
   } finally {
     flushRunning = false;
     updateRuntimeStoreState({ flushing: false });
+    // Scheduling while flushRunning is true is a no-op. Re-arm only after
+    // releasing it, including retries and the remaining queued batches.
+    scheduleFlush(resolveRuntimeStoreSettings(runtimeStoreConfig), { retry });
   }
 }
 
@@ -2033,15 +2049,37 @@ async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
   }
 }
 
-export async function hydrateGovernanceRuntime(config, keyId, rateWindowStartedAt, budgetWindowStartedAt) {
+export function hydrateGovernanceRuntime(config, keyId, rateWindowStartedAt, budgetWindowStartedAt, options = {}) {
+  return serializeDatabaseOperation(() => hydrateGovernanceRuntimeInternal(config, keyId, rateWindowStartedAt, budgetWindowStartedAt, options));
+}
+
+async function hydrateGovernanceRuntimeInternal(config, keyId, rateWindowStartedAt, budgetWindowStartedAt, { onSnapshot } = {}) {
   const settings = resolveRuntimeStoreSettings(config);
-  if (!settings.configured || !keyId) {
-    return null;
-  }
+  if (!settings.enabled || !keyId) return null;
 
   try {
-    await flushRuntimeEvents();
+    if (!settings.configured) throw new Error("Runtime governance storage is not configured");
+    // Drain the backlog present at entry; do not wait indefinitely for new
+    // traffic. If it keeps growing, defer admission instead of loading a partial
+    // balance and marking it hydrated.
+    await localBufferOperation;
+    const pending = runtimeEventQueue.length + runtimeStoreState.persistedEventCount;
+    for (let flushed = 0; flushed < pending;) {
+      const result = await flushRuntimeEventsInternal();
+      if (result.error) throw result.error;
+      if (!result.flushed) break;
+      flushed += result.flushed;
+    }
+    if (runtimeEventQueue.length || runtimeStoreState.persistedEventCount) {
+      throw new Error("Runtime event backlog is not yet persisted");
+    }
     await ensureRuntimeTables(settings);
+    await rollupRuntimeEvents(settings);
+    await localBufferOperation;
+    if (runtimeEventQueue.length || runtimeStoreState.persistedEventCount) {
+      throw new Error("Runtime event backlog changed during hydration");
+    }
+    onSnapshot?.();
     const pool = getRuntimeStorePool(settings);
     const { schemaName, eventsTableName, rollupsTableName } = getQualifiedTableNames(settings);
     const result = await pool.query(`
@@ -2125,6 +2163,6 @@ export async function hydrateGovernanceRuntime(config, keyId, rateWindowStartedA
       keyId,
       failureReason: error?.message || "Runtime governance hydrate failed"
     });
-    return null;
+    throw error;
   }
 }

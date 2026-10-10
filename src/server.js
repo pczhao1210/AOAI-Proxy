@@ -102,6 +102,13 @@ function isAdminRoute(url, adminPath) {
   return false;
 }
 
+// Authorize the matched route, not just the raw URL: the router decodes static
+// path segments (e.g. /%61dmin), and custom admin paths are rewritten to /admin.
+function isAdminRequest(req, config) {
+  return isAdminRoute(req.routeOptions?.url, STATIC_ADMIN_PATH)
+    || isAdminRoute(req.raw?.url || req.url, config.server.adminPath);
+}
+
 function shouldSkipSuccessfulAccessLog(url, method, status, adminPath) {
   if (status >= 400) return false;
   const pathOnly = String(url || "").split("?")[0];
@@ -615,8 +622,7 @@ app.addHook("onRequest", async (req) => {
 
 app.addHook("preParsing", async (req, reply, payload) => {
   const config = getConfig();
-  const rawUrl = req.raw?.url || req.url;
-  if (isAdminRoute(rawUrl, config.server.adminPath)) return payload;
+  if (isAdminRequest(req, config)) return payload;
   if (req.routeOptions.config.httpMediaUpload) return payload;
 
   const configuredLimit = getPositiveInteger(config?.proxy?.guards?.maxRequestBodyBytes);
@@ -629,7 +635,7 @@ app.addHook("preParsing", async (req, reply, payload) => {
   return limitRequestBodyStream(payload, configuredLimit);
 });
 
-app.addHook("preHandler", async (req, reply) => {
+app.addHook("onRequest", async (req, reply) => {
   const config = getConfig();
   const rawUrl = req.raw?.url || req.url;
   const pathOnly = (rawUrl || "").split("?")[0];
@@ -639,7 +645,7 @@ app.addHook("preHandler", async (req, reply) => {
   if (pathOnly === "/favicon.ico") {
     return reply.code(204).send();
   }
-  if (isAdminRoute(rawUrl, config.server.adminPath)) {
+  if (isAdminRequest(req, config)) {
     if (!verifyAdminIpAccess(config, req)) {
       return reply.code(403).send({ error: "AdminForbidden", message: "Admin access is not allowed from this IP address" });
     }
@@ -671,7 +677,7 @@ app.addHook("onResponse", async (req, reply) => {
   const level = status >= 500 ? "error" : status >= 400 ? "warn" : "info";
   const networkContext = getRequestNetworkContext(config, req);
   const payload = {
-    source: isAdminRoute(rawUrl, config.server.adminPath) ? "http.admin" : "http",
+    source: isAdminRequest(req, config) ? "http.admin" : "http",
     event: "http.request_completed",
     message: status >= 400 ? "request completed with error" : "request completed",
     ...getRequestContext(req),

@@ -1084,6 +1084,7 @@ export async function proxyRequest({
     sendProxyError(governanceResult.status || 429, {
       code: governanceResult.code || "REQUEST_REJECTED",
       exposedCode: governanceResult.error || governanceResult.code || "RequestRejected",
+      retryable: governanceResult.retryable === true,
       message: governanceResult.message
     });
     finishTiming({

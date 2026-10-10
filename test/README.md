@@ -12,6 +12,9 @@ Focused reliability and policy regressions:
 node --test test/media-policy.test.js
 node --test test/stream-backpressure.test.js
 node --test test/governance-pricing.test.js
+node --test test/admin-security.test.js test/upstream-redirect.test.js
+node --test test/sse-lifecycle.test.js test/request-cleanup.test.js
+node --test test/runtime-recovery.test.js
 node --test test/token-pricing.test.js test/context-pricing-integration.test.js test/context-pricing-routes.test.js test/text-cost-observability.test.js
 node --test test/model-statistics.test.js test/runtime-store.test.js test/model-stats-routes.test.js test/admin-runtime-stats.test.js
 node --test test/request-policy.test.js
@@ -28,6 +31,21 @@ node --test test/image-optimization.test.js test/image-work-queue.test.js test/i
 node --test test/mai-routes.test.js test/media-http.test.js test/azure-speech.test.js
 node --test test/realtime.test.js test/webrtc.test.js
 ```
+
+Security regressions cover percent-encoded matched admin routes, custom admin paths,
+CSRF/IP policy and header authentication before body parsing. Redirect tests freeze all
+three native JSON/SSE protocols: no 3xx response may forward credentials or content to
+a different target, including a same-origin target. SSE lifecycle checks enforce raw
+per-event byte limits before decoding and cancel/unlock readers on all exits.
+Request cleanup keeps client placeholder adaptation for optional controls while
+preserving literal text, tool data and JSON Schema enum/default/const values.
+
+Runtime recovery tests inject failed checkpoints, lost insert/commit acknowledgements,
+legacy spool replay/restart, and failed budget hydration. They assert transactional
+rollups, stable event identities and preservation of settlements during recovery.
+These mocks complement, rather than replace, the disposable PostgreSQL gate below.
+The CI workflow runs Node 24 unit/routes/card/build/security checks and that database
+gate; it never runs real providers, modifies a deployment, or rebuilds committed UI assets.
 
 Feature-flag contracts reject non-boolean JSON before legacy upgrades, defaults
 or environment overrides can hide it. Failed legacy upgrades retain the source
@@ -51,7 +69,7 @@ transport gates, limits, client-secret confirmation and known/unknown cost label
 Optional local integration gates (never point these at production):
 
 ```bash
-RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger node --test test/runtime-store.test.js
+RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger node --test test/runtime-store.test.js test/runtime-recovery.test.js
 REALTIME_CADDY_TEST_IMAGE=LOCAL_IMAGE_WITH_CADDY node --test --test-name-pattern='generated Caddy' test/realtime.test.js
 ```
 

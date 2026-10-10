@@ -46,7 +46,7 @@ JSON 中的所有有效布尔开关及被迁移的旧布尔别名只接受 `true
 | `proxy.guards.maxResponseBodyBytes` | `52428800` | 需要缓冲的上游 JSON 响应上限；不作为 SSE 总流量上限。 | JSON；热 |
 | `proxy.guards.rejectUnknownProxyParams` | `false` | 拒绝未知的代理专属超时控制字段；不是通用 OpenAI 字段白名单。 | JSON；热 |
 | `proxy.guards.dropUnsupportedOpenAiParams` | `false` | 将请求策略判定为不允许的 OpenAI 字段静默删除；关闭时返回错误。 | JSON；热 |
-| `proxy.guards.sanitizeMeaninglessValues` | `true` | 删除目标协议没有意义的空值，减少上游参数校验失败。 | JSON；热 |
+| `proxy.guards.sanitizeMeaninglessValues` | `true` | 清理可选控制参数的空值和 `"undefined"` / `"[undefined]"` 占位值；保留正文、工具数据和 JSON Schema 中有意义的原值。 | JSON；热 |
 | `models[*].requestPolicy.dropUnsupportedParams` | `false` | 模型级参数策略命中时丢弃字段，而不是拒绝请求。 | JSON；热 |
 | `upstreams[*].requestPolicy.dropUnsupportedParams` | `false` | 上游级参数策略命中时丢弃字段，而不是拒绝请求。 | JSON；热 |
 
@@ -225,6 +225,18 @@ Key/时间筛选与同步按钮。「Log Analytics 上传」只表示 Azure 日�
 | `persistence.compatibilityExport.enabled` | `true` | 保存变更时允许把规范配置额外写到兼容路径；不关闭主配置存储。 | Workspace；保存时生效 |
 | `access.defaults.requireApiKey` | `true` | 要求公共代理请求通过已配置的客户端 API Key。 | Workspace；热 |
 | `access.budgets.enabled` | `false` | 启用全局预算治理。具有正数独立额度的 Key 仍可进入 Key 级预算逻辑。 | Workspace；热 |
+
+### Runtime 账务恢复与准入
+
+启用 Runtime 数据库时，新事件使用独立 UUID 去重；本地旧缓冲记录在重放前补写稳定 UUID。
+汇总累加与事件检查点在同一 PostgreSQL 事务内提交，失败重试不重复计费。
+升级自动为事件表增加可空 `event_uid` 列和唯一索引；既有历史记录不重新计价，也不自动修正旧版已产生的重复统计。
+
+首次恢复 Key 历史用量失败不会被当作零余额或恢复成功。后续访问间隔至少 1 秒重试；
+恢复期间带 RPM、TPM 或正数硬预算的 Key 返回 `503 / KEY_GOVERNANCE_UNAVAILABLE`，不访问上游。
+没有这些历史额度约束的 Key 仍可按本地并发限制运行，事件继续使用原有缓冲机制。
+恢复时先持久化待写事件，并保留读取期间新结算的用量；文件模式和 minimum 的内存治理不依赖数据库。
+这不新增预算预留，也不承诺跨进程共享配额。
 
 ### 客户端兼容与协议 Shim
 

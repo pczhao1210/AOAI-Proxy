@@ -137,14 +137,37 @@ function isMeaninglessValue(value, options = {}) {
   );
 }
 
-function pruneMeaningless(value, options = {}) {
+function isSemanticRequestData(path, parent, value) {
+  const root = path[0];
+  const field = path.at(-1);
+  const isText = typeof value === "string";
+  if (path.length === 1 && isText && ["input", "instructions", "system", "prompt"].includes(field)) return true;
+  if (["tools", "functions"].includes(root)) {
+    // JSON Schema enum/default/const values are data, including null and the
+    // literal strings "undefined" / "[undefined]". Tool control flags are not.
+    if (["parameters", "input_schema", "schema"].includes(field)) return true;
+    if (typeof value === "string" && ["name", "description"].includes(field)) return true;
+  }
+  if ((root === "response_format" || root === "text") && field === "schema") return true;
+  if (["messages", "input", "system"].includes(root)) {
+    if (isText && ["content", "text", "refusal", "name"].includes(field)) return true;
+    if (field === "content" && parent?.role === "assistant" && value === null) return true;
+    if (field === "input" && parent?.type === "tool_use") return true;
+    if (field === "output" && parent?.type === "function_call_output") return true;
+    if (field === "arguments" && (parent?.type === "function_call" || path.includes("tool_calls") || path.includes("function_call"))) return true;
+  }
+  return false;
+}
+
+function pruneMeaningless(value, options = {}, path = [], parent = null) {
+  if (isSemanticRequestData(path, parent, value)) return value;
   if (isMeaninglessValue(value, options)) return undefined;
   if (value === null) return value;
   if (Array.isArray(value)) {
     let changed = false;
     const out = [];
-    for (const item of value) {
-      const pruned = pruneMeaningless(item, options);
+    for (const [index, item] of value.entries()) {
+      const pruned = pruneMeaningless(item, options, [...path, String(index)], value);
       if (pruned === undefined) {
         changed = true;
         continue;
@@ -163,7 +186,7 @@ function pruneMeaningless(value, options = {}) {
     let changed = false;
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      const pruned = pruneMeaningless(v, options);
+      const pruned = pruneMeaningless(v, options, [...path, k], value);
       if (pruned === undefined) {
         changed = true;
         continue;

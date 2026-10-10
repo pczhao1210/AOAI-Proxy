@@ -119,6 +119,7 @@ function ensureKeyRuntime(keyId) {
       lastBlockedReason: "",
       hydratedAt: "",
       hydrationPromise: null,
+      hydrationRetryAt: 0,
       rateWindow: buildRateWindow(Date.now()),
       budgetWindow: buildBudgetWindow({ windowType: "monthly" }, Date.now())
     });
@@ -127,53 +128,71 @@ function ensureKeyRuntime(keyId) {
 }
 
 async function hydrateRuntimeStateIfNeeded(config, consumer, runtime, rateLimitSettings, budgetSettings, now) {
-  if (!consumer?.keyId || runtime.hydratedAt) {
-    return;
-  }
+  if (!consumer?.keyId || runtime.hydratedAt) return true;
+  if (runtime.hydrationRetryAt > now) return false;
   if (!runtime.hydrationPromise) {
     runtime.hydrationPromise = (async () => {
       const rateWindowStart = toIsoString(getRateWindowStart(rateLimitSettings.windowSeconds, now));
       const budgetWindowStart = toIsoString(getBudgetWindowStart(budgetSettings.windowType, now));
-      const persisted = await hydrateGovernanceRuntime(config, consumer.keyId, rateWindowStart, budgetWindowStart);
-      runtime.rateWindow.startedAt = rateWindowStart;
-      runtime.budgetWindow.startedAt = budgetWindowStart;
-      runtime.budgetWindow.key = getBudgetWindowKey(budgetSettings.windowType, now);
+      let snapshot;
+      const persisted = await hydrateGovernanceRuntime(config, consumer.keyId, rateWindowStart, budgetWindowStart, {
+        onSnapshot() {
+          snapshot = { ...runtime, rateWindow: { ...runtime.rateWindow }, budgetWindow: { ...runtime.budgetWindow } };
+        }
+      });
+      // Storage serializes and drains writes before the snapshot callback. Any
+      // settlement during the subsequent read is not in that DB snapshot yet.
+      const merge = (stored, current, before = current, normalize = toNonNegativeInteger) => (
+        Math.max(current, normalize(stored, before) + Math.max(0, current - before))
+      );
       if (persisted) {
         runtime.lastSeenAt = persisted.last_seen_at ? new Date(persisted.last_seen_at).toISOString() : runtime.lastSeenAt;
-        runtime.totalRequests = toNonNegativeInteger(persisted.total_requests, runtime.totalRequests);
-        runtime.totalErrors = toNonNegativeInteger(persisted.total_errors, runtime.totalErrors);
-        runtime.totalBlockedRequests = toNonNegativeInteger(persisted.total_blocked_requests, runtime.totalBlockedRequests);
+        runtime.totalRequests = merge(persisted.total_requests, runtime.totalRequests, snapshot?.totalRequests);
+        runtime.totalErrors = merge(persisted.total_errors, runtime.totalErrors, snapshot?.totalErrors);
+        runtime.totalBlockedRequests = merge(persisted.total_blocked_requests, runtime.totalBlockedRequests, snapshot?.totalBlockedRequests);
         runtime.lastBlockedAt = persisted.last_blocked_at ? new Date(persisted.last_blocked_at).toISOString() : runtime.lastBlockedAt;
         runtime.lastBlockedReason = String(persisted.last_blocked_reason || runtime.lastBlockedReason || "");
-        runtime.rateWindow.requests = toNonNegativeInteger(persisted.rate_requests, runtime.rateWindow.requests);
-        runtime.rateWindow.promptTokens = toNonNegativeInteger(persisted.rate_prompt_tokens, runtime.rateWindow.promptTokens);
-        runtime.rateWindow.completionTokens = toNonNegativeInteger(persisted.rate_completion_tokens, runtime.rateWindow.completionTokens);
-        runtime.rateWindow.totalTokens = toNonNegativeInteger(persisted.rate_total_tokens, runtime.rateWindow.totalTokens);
-        runtime.rateWindow.cachedTokens = toNonNegativeInteger(persisted.rate_cached_tokens, runtime.rateWindow.cachedTokens);
-        runtime.rateWindow.blockedRequests = toNonNegativeInteger(persisted.rate_blocked_requests, runtime.rateWindow.blockedRequests);
-        runtime.budgetWindow.requests = toNonNegativeInteger(persisted.budget_requests, runtime.budgetWindow.requests);
-        runtime.budgetWindow.mediaUnknownCostRequests = toNonNegativeInteger(persisted.budget_media_unknown_cost_requests, runtime.budgetWindow.mediaUnknownCostRequests || 0);
-        runtime.budgetWindow.textUnknownCostRequests = toNonNegativeInteger(persisted.budget_text_unknown_cost_requests, runtime.budgetWindow.textUnknownCostRequests || 0);
-        runtime.budgetWindow.promptTokens = toNonNegativeInteger(persisted.budget_prompt_tokens, runtime.budgetWindow.promptTokens);
-        runtime.budgetWindow.completionTokens = toNonNegativeInteger(persisted.budget_completion_tokens, runtime.budgetWindow.completionTokens);
-        runtime.budgetWindow.totalTokens = toNonNegativeInteger(persisted.budget_total_tokens, runtime.budgetWindow.totalTokens);
-        runtime.budgetWindow.cachedTokens = toNonNegativeInteger(persisted.budget_cached_tokens, runtime.budgetWindow.cachedTokens);
-        runtime.budgetWindow.spentAmount = Math.max(0, toFiniteNumber(persisted.budget_spent_amount, runtime.budgetWindow.spentAmount));
-        runtime.budgetWindow.blockedRequests = toNonNegativeInteger(persisted.budget_blocked_requests, runtime.budgetWindow.blockedRequests);
-        if (budgetSettings.limitAmount > 0) {
-          const softLimitAmount = budgetSettings.limitAmount * budgetSettings.softLimitRatio;
-          runtime.budgetWindow.softLimitReached = softLimitAmount > 0 && runtime.budgetWindow.spentAmount >= softLimitAmount;
-          if (runtime.budgetWindow.softLimitReached && !runtime.budgetWindow.softLimitReachedAt) {
-            runtime.budgetWindow.softLimitReachedAt = runtime.lastSeenAt || toIsoString(now);
+        if (runtime.rateWindow.startedAt === rateWindowStart) {
+          runtime.rateWindow.requests = merge(persisted.rate_requests, runtime.rateWindow.requests, snapshot?.rateWindow?.requests);
+          runtime.rateWindow.promptTokens = merge(persisted.rate_prompt_tokens, runtime.rateWindow.promptTokens, snapshot?.rateWindow?.promptTokens);
+          runtime.rateWindow.completionTokens = merge(persisted.rate_completion_tokens, runtime.rateWindow.completionTokens, snapshot?.rateWindow?.completionTokens);
+          runtime.rateWindow.totalTokens = merge(persisted.rate_total_tokens, runtime.rateWindow.totalTokens, snapshot?.rateWindow?.totalTokens);
+          runtime.rateWindow.cachedTokens = merge(persisted.rate_cached_tokens, runtime.rateWindow.cachedTokens, snapshot?.rateWindow?.cachedTokens);
+          runtime.rateWindow.blockedRequests = merge(persisted.rate_blocked_requests, runtime.rateWindow.blockedRequests, snapshot?.rateWindow?.blockedRequests);
+        }
+        // A request may settle across midnight while this read is pending.
+        // Never resurrect an expired window or mix its balance into the new one.
+        if (runtime.budgetWindow.key === getBudgetWindowKey(budgetSettings.windowType, now)) {
+          runtime.budgetWindow.requests = merge(persisted.budget_requests, runtime.budgetWindow.requests, snapshot?.budgetWindow?.requests);
+          runtime.budgetWindow.mediaUnknownCostRequests = merge(persisted.budget_media_unknown_cost_requests, runtime.budgetWindow.mediaUnknownCostRequests || 0, snapshot?.budgetWindow.mediaUnknownCostRequests || 0);
+          runtime.budgetWindow.textUnknownCostRequests = merge(persisted.budget_text_unknown_cost_requests, runtime.budgetWindow.textUnknownCostRequests || 0, snapshot?.budgetWindow.textUnknownCostRequests || 0);
+          runtime.budgetWindow.promptTokens = merge(persisted.budget_prompt_tokens, runtime.budgetWindow.promptTokens, snapshot?.budgetWindow?.promptTokens);
+          runtime.budgetWindow.completionTokens = merge(persisted.budget_completion_tokens, runtime.budgetWindow.completionTokens, snapshot?.budgetWindow?.completionTokens);
+          runtime.budgetWindow.totalTokens = merge(persisted.budget_total_tokens, runtime.budgetWindow.totalTokens, snapshot?.budgetWindow?.totalTokens);
+          runtime.budgetWindow.cachedTokens = merge(persisted.budget_cached_tokens, runtime.budgetWindow.cachedTokens, snapshot?.budgetWindow?.cachedTokens);
+          runtime.budgetWindow.spentAmount = merge(persisted.budget_spent_amount, runtime.budgetWindow.spentAmount, snapshot?.budgetWindow.spentAmount, toFiniteNumber);
+          runtime.budgetWindow.blockedRequests = merge(persisted.budget_blocked_requests, runtime.budgetWindow.blockedRequests, snapshot?.budgetWindow?.blockedRequests);
+          if (budgetSettings.limitAmount > 0) {
+            const softLimitAmount = budgetSettings.limitAmount * budgetSettings.softLimitRatio;
+            runtime.budgetWindow.softLimitReached = softLimitAmount > 0 && runtime.budgetWindow.spentAmount >= softLimitAmount;
+            if (runtime.budgetWindow.softLimitReached && !runtime.budgetWindow.softLimitReachedAt) {
+              runtime.budgetWindow.softLimitReachedAt = runtime.lastSeenAt || toIsoString(now);
+            }
           }
         }
       }
       runtime.hydratedAt = toIsoString(now);
-    })().finally(() => {
+      runtime.hydrationRetryAt = 0;
+      return true;
+    })().catch(() => {
+      // Failed reads are not empty balances. Keep memory intact and retry later.
+      runtime.hydrationRetryAt = now + 1000;
+      return false;
+    }).finally(() => {
       runtime.hydrationPromise = null;
     });
   }
-  await runtime.hydrationPromise;
+  return runtime.hydrationPromise;
 }
 
 function getRateLimitSettings(config, apiKey) {
@@ -508,7 +527,13 @@ export async function acquireRequestGovernance(config, consumer, model, now = Da
   const budgetSettings = getBudgetSettings(config, consumer.apiKey);
   resetRateWindowIfNeeded(runtime, rateLimitSettings, now);
   resetBudgetWindowIfNeeded(runtime, budgetSettings, now);
-  await hydrateRuntimeStateIfNeeded(config, consumer, runtime, rateLimitSettings, budgetSettings, now);
+  const hydrated = await hydrateRuntimeStateIfNeeded(config, consumer, runtime, rateLimitSettings, budgetSettings, now);
+  const requiresHistory = rateLimitSettings.rpm > 0 || rateLimitSettings.tpm > 0
+    || (budgetSettings.enabled && budgetSettings.limitAmount > 0 && budgetSettings.hardLimitAction === "block");
+  if (!hydrated && requiresHistory) {
+    return { ok: false, status: 503, retryable: true, error: "GovernanceUnavailable", code: "KEY_GOVERNANCE_UNAVAILABLE",
+      message: "Historical key usage is temporarily unavailable; retry after runtime storage recovers" };
+  }
 
   if (rateLimitSettings.concurrency > 0 && runtime.currentConcurrent >= rateLimitSettings.concurrency) {
     markBlocked(runtime, "concurrency_limit_exceeded", now);
