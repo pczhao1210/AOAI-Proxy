@@ -29,9 +29,11 @@ node --test test/mai-routes.test.js test/media-http.test.js test/azure-speech.te
 node --test test/realtime.test.js test/webrtc.test.js
 ```
 
-Feature-flag contracts reject non-boolean JSON before defaults or environment
-overrides can hide it. They freeze legacy export/image AND migration, all three
-beta policies, database-mode precedence, inactive-field diagnostics, ordinary v3
+Feature-flag contracts reject non-boolean JSON before legacy upgrades, defaults
+or environment overrides can hide it. Failed legacy upgrades retain the source
+file, active/persisted configuration, Catalog and deprecation diagnostics.
+They freeze legacy export/image AND migration, all three beta policies,
+database-mode precedence, inactive-field diagnostics, ordinary v3
 reload without file rewrites, canonical save/reload, failed-save state retention,
 and minimum/environment-managed persistence. Form checks require one image gate,
 one export toggle, mode-based database controls and non-editable forced redaction.

@@ -2072,6 +2072,8 @@ export function getConfigPath() {
 async function loadConfig() {
   const rawText = await readPersistedConfigText();
   const raw = JSON.parse(rawText);
+  // Legacy upgrades can replace explicit invalid values before normalization.
+  validateRawBooleanFlags(raw);
   const optimized = optimizeV2Config(raw);
   const normalizedPersistedConfig = normalizeConfig(optimized.config, { applyEnvironment: false });
   const { config: cfg, modelCatalogSnapshot } = validateConfig(

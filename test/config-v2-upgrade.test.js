@@ -68,11 +68,61 @@ test("reload upgrades a v2 config to validated v3 persistence without environmen
     assert.equal(persisted.proxy.guards.maxResponseBodyBytes, 12 * 1024 * 1024);
     assert.equal(persisted.proxy.timeouts.requestMs, 123456);
     assert.equal(persisted.admin.basePath, "/legacy-admin");
+    assert.equal(persisted.media.inputCompression.enabled, true);
     assert.equal(persisted.media.inputCompression.outputFormat, "webp");
     assert.deepEqual(migratedModel.routes, {});
     assert.equal(getPersistedConfig().version, 3);
     assert.doesNotMatch(JSON.stringify(persisted), /environment-admin-secret|environment-proxy-secret/);
     assert.equal(effectiveConfig.server.adminAuth.password, "environment-admin-secret");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    restoreEnvironment(previousEnvironment);
+  }
+});
+
+test("reload rejects non-boolean flags before legacy upgrades and retains configuration state", async () => {
+  const previousEnvironment = captureEnvironment();
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-config-v2-invalid-boolean-"));
+  const configPath = path.join(tempDir, "config.json");
+  const config = await readSampleConfig();
+  config.server.host = "127.0.0.1";
+  config.persistence.configStore.filePath = configPath;
+  config.persistence.compatibilityExport.enabled = false;
+  config.persistence.compatibilityExport.legacyConfigPath = configPath;
+  config.compatibility.anthropic.betaAllowlistEnabled = false;
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+  process.env.CONFIG_PATH = configPath;
+
+  try {
+    const { getConfig, getConfigRuntimeInfo, getPersistedConfig, reloadConfig, saveConfig } = await import("../src/config.js");
+    const { getModelCatalogPricingContext } = await import("../src/model-catalog.js");
+    const activeConfig = await reloadConfig();
+    const persistedConfig = getPersistedConfig();
+    const catalog = getModelCatalogPricingContext();
+    const diagnostics = getConfigRuntimeInfo().configuration;
+    assert.equal(diagnostics.cleanupRequired, true);
+
+    for (const version of [2, undefined]) {
+      for (const legacyEnabled of [true, false]) {
+        for (const invalidValue of [null, "false", 0, []]) {
+          const invalid = structuredClone(config);
+          invalid.version = version;
+          invalid.server.imageCompression = { enabled: legacyEnabled };
+          invalid.media.inputCompression.enabled = invalidValue;
+          const originalText = `${JSON.stringify(invalid, null, 2)}\n`;
+          await fs.writeFile(configPath, originalText, "utf8");
+
+          const expectedError = { message: "media.inputCompression.enabled must be a boolean" };
+          await assert.rejects(saveConfig(invalid), expectedError);
+          await assert.rejects(reloadConfig(), expectedError);
+          assert.equal(await fs.readFile(configPath, "utf8"), originalText);
+          assert.equal(getConfig(), activeConfig);
+          assert.deepEqual(getPersistedConfig(), persistedConfig);
+          assert.equal(getModelCatalogPricingContext(), catalog);
+          assert.deepEqual(getConfigRuntimeInfo().configuration, diagnostics);
+        }
+      }
+    }
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
     restoreEnvironment(previousEnvironment);
