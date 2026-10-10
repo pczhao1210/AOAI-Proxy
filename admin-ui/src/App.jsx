@@ -184,6 +184,7 @@ export default function App() {
   const loggingRuntime = runtime?.logging || {};
   const runtimeStore = runtime?.runtimeStore || {};
   const distributionCapabilities = runtime?.distribution?.capabilities || {};
+  const configCleanupRequired = runtime?.configuration?.cleanupRequired === true;
   const logLevelKey = logFilters.level.join(",");
   const caddyPreview = useMemo(
     () => buildCaddyPreview(config?.server?.caddy || {}, config?.server?.port),
@@ -1290,7 +1291,7 @@ export default function App() {
   }
 
   return (
-    <div className={dirty ? "app-shell has-save-dock" : "app-shell"}>
+    <div className={dirty || configCleanupRequired ? "app-shell has-save-dock" : "app-shell"}>
       <header className="app-header">
         <div className="app-identity">
           <span className="app-logo" aria-hidden="true">AP</span>
@@ -1315,7 +1316,7 @@ export default function App() {
         <StatCard label={t("summary.requests", "Requests")} value={formatRuntimeNumber(summary.requests)} note={`${t("summary.errors", "Errors")} ${formatRuntimeNumber(summary.errors)}`} />
         <StatCard label={t("summary.cost", "Reference Cost")} value={summary.cost} note={t("runtime.costHint", "Cost estimates may be incomplete.")} />
         <StatCard label={t("summary.persistence", "Persistence")} value={t(`option.${summary.persistence}`, summary.persistence)} note={`${t("summary.logging", "Logging")} ${t(`status.${summary.logging}`, summary.logging)}`} />
-        <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : t("summary.synced", "Synced")} />
+        <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : configCleanupRequired ? t("config.flagCleanupPending", "Configuration cleanup pending") : t("summary.synced", "Synced")} />
       </section>
 
       <Modal 
@@ -1329,6 +1330,14 @@ export default function App() {
         disabled={saving}
       >
         <p>{t("config.save.desc", "You are about to hit Save. Please review the configuration changes below:")}</p>
+        {configCleanupRequired ? (
+          <div className="config-deprecations">
+            <p>{t("config.flagCleanupSave", "Saving will persist the normalized flags and remove the deprecated fields listed below. Existing disabled states are retained.")}</p>
+            <ul>{(runtime?.configuration?.deprecatedFlags || []).map(warning => (
+              <li key={warning.path}><code>{warning.path}</code>{warning.replacement ? <> → <code>{warning.replacement}</code></> : null}</li>
+            ))}</ul>
+          </div>
+        ) : null}
         <div style={{ marginTop: '16px', marginBottom: '16px' }}>
           <strong>{t("config.diff.summary", "Changed paths:")} {configDiffCount}</strong>
         </div>
@@ -1337,7 +1346,7 @@ export default function App() {
             {configDiffPreview}
           </pre>
         ) : (
-          <p className="muted">{t("config.diff.none", "No local diff")}</p>
+          configCleanupRequired ? null : <p className="muted">{t("config.diff.none", "No local diff")}</p>
         )}
       </Modal>
 
@@ -1503,6 +1512,9 @@ export default function App() {
         <WorkspaceTab
           config={config}
           capabilities={distributionCapabilities}
+          effectiveProfile={runtime?.distribution?.profile}
+          configDeprecations={runtime?.configuration?.deprecatedFlags || []}
+          configCleanupRequired={configCleanupRequired}
           updateField={updateField}
           pricingCatalogText={pricingCatalogText}
           updatePricingCatalog={updatePricingCatalog}
@@ -1658,14 +1670,15 @@ export default function App() {
           </Suspense>
             </main>
       </div>
-      {dirty ? (
+      {dirty || configCleanupRequired ? (
         <aside className="save-dock" role="status" aria-live="polite">
           <div className="save-dock-copy">
-            <strong>{t("changes.unsaved", "Unsaved changes")}</strong>
-            <span>{t("changes.count", "{count} changed paths", { count: configDiffCount })}</span>
+            <strong>{dirty ? t("changes.unsaved", "Unsaved changes") : t("config.flagCleanupPending", "Configuration cleanup pending")}</strong>
+            <span>{dirty ? t("changes.count", "{count} changed paths", { count: configDiffCount })
+              : t("config.flagCleanupCount", "{count} deprecated configuration entries", { count: runtime?.configuration?.deprecatedFlags?.length || 0 })}</span>
           </div>
           <div className="toolbar save-dock-actions">
-            <button type="button" className="ghost" onClick={handleDiscardChanges}>{t("changes.discard", "Discard")}</button>
+            {dirty ? <button type="button" className="ghost" onClick={handleDiscardChanges}>{t("changes.discard", "Discard")}</button> : null}
             <button type="button" onClick={handleSave} disabled={saving || !config}>
               {saving ? t("hero.saving", "Saving...") : t("changes.reviewSave", "Review & Save")}
             </button>

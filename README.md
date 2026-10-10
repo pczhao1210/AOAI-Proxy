@@ -170,6 +170,16 @@ Guidance:
 
 Non-loopback listeners fail closed when admin authentication is disabled or known placeholder credentials are active. `ALLOW_INSECURE_PUBLIC_ADMIN=true` is an explicit compatibility escape hatch and is not recommended for normal deployments.
 
+JSON feature flags require literal booleans, not strings such as `"false"` or
+numbers such as `0`. Legacy export/image gates retain their effective AND
+semantics when migrated to one canonical switch; disabled beta filtering becomes
+`compatibility.anthropic.unknownBetaPolicy: "passthrough"`. Inactive flags are
+removed from the editable configuration and reported in Workspace, runtime
+`configuration.deprecatedFlags`, and `config.deprecated_flags` logs. Ordinary v3
+reloads do not rewrite the file: review and save to persist cleanup. Environment
+overrides and profile-disabled persisted settings remain protected. See the
+[flag and migration guide](docs/configuration/feature-flags.zh-CN.md).
+
 ## Environment Variables
 
 ### General

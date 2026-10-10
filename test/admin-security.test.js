@@ -244,7 +244,7 @@ test("admin APIs redact secrets and preserve them on config save", async () => {
     assert.match(duplicateUpstreamSave.json?.error || "", /duplicates upstream name/);
 
     const unsupportedConfig = imageSave.json.config;
-    unsupportedConfig.routing.fallbacks.enabled = true;
+    unsupportedConfig.routing.fallbacks = { enabled: true };
     const unsupportedSave = await context.adminRequest("/admin/api/config", {
       method: "PUT",
       headers: { "x-aoai-admin-csrf": "1" },

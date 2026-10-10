@@ -17,6 +17,7 @@ node --test test/model-statistics.test.js test/runtime-store.test.js test/model-
 node --test test/request-policy.test.js
 node --test test/request-body-policy.test.js test/anthropic-body-policy.test.js
 node --test test/admin-runtime-loader.test.js
+node --test test/config-feature-flags.test.js test/config-environment.test.js test/config-v2-upgrade.test.js
 node --test test/admin-media-form.test.js
 node --test test/admin-routing-form.test.js
 node --test test/admin-log-content.test.js
@@ -27,6 +28,15 @@ node --test test/image-optimization.test.js test/image-work-queue.test.js test/i
 node --test test/mai-routes.test.js test/media-http.test.js test/azure-speech.test.js
 node --test test/realtime.test.js test/webrtc.test.js
 ```
+
+Feature-flag contracts reject non-boolean JSON before defaults or environment
+overrides can hide it. They freeze legacy export/image AND migration, all three
+beta policies, database-mode precedence, inactive-field diagnostics, ordinary v3
+reload without file rewrites, canonical save/reload, failed-save state retention,
+and minimum/environment-managed persistence. Form checks require one image gate,
+one export toggle, mode-based database controls and non-editable forced redaction.
+The full App contract also permits cleanup-only reviewed saves with no unrelated
+configuration edit and clears the pending-cleanup marker only after persistence.
 
 MAI/media tests freeze provider-specific URLs, authentication, multipart file/field fidelity, SSML,
 binary/text/SSE errors and terminal events. Realtime/WebRTC tests use local mock upstreams and

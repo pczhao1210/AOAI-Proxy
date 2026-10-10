@@ -535,9 +535,9 @@ claude
 
 模型 ID 必须唯一，避免模型发现元数据与运行时路由把同一个公开 ID 解析到不同配置项。
 
-代理默认开启 `compatibility.anthropic` 下的三项 Foundry 专属兼容策略：
+代理提供 `compatibility.anthropic` 下的以下兼容策略：
 
-- `betaAllowlistEnabled`：只转发已审查的 beta token；默认包含细粒度工具流、交错 thinking 与上下文管理。
+- `unknownBetaPolicy`：默认 `allow-direct-anthropic` 只对直连 Anthropic 放行未知 beta，其他上游执行白名单；`allowlist` 始终执行白名单，`passthrough` 全部透传。旧 `betaAllowlistEnabled: false` 会迁移成 `passthrough`，不再保留第二个 checkbox。默认白名单包含细粒度工具流、交错 thinking 与上下文管理。
 - `normalizeManualThinkingToolChoice`：仅当 `thinking.type="enabled"` 为手动模式时，把强制 `any` / 指定工具改为 `auto`；adaptive thinking 不受影响。
 - `sanitizeCacheControl`：保留合法 ephemeral cache control 以及 Foundry 支持的 `5m` / `1h` TTL，移除不支持的字段和位置。
 - `validateThinkingByModel`：Model Catalog 提供 Claude thinking 类型、默认值和别名，但默认采用 passthrough；可在 `thinkingTypesByModel` 中添加 deployment 专属严格列表。未被显式严格策略覆盖的 thinking 值继续透传。

@@ -679,7 +679,6 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
         mode: "file",
         filePath: configPath,
         database: {
-          enabled: false,
           provider: "postgresql",
           connectionRef: "",
           schema: "public",
@@ -690,7 +689,6 @@ function buildTestConfig({ proxyPort, upstreamPort, configPath }) {
       },
       compatibilityExport: {
         enabled: true,
-        exportLegacyConfigOnChange: true,
         legacyConfigPath: configPath
       }
     },

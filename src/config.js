@@ -49,6 +49,7 @@ const DEFAULTS = {
   server: {
     host: "0.0.0.0",
     port: 3000,
+    trustProxy: false,
     gracefulShutdownMs: 30000,
     adminPath: "/admin",
     adminAuth: {
@@ -111,20 +112,14 @@ const DEFAULTS = {
       username: "admin",
       password: "change-me",
       passwordRef: "",
-      sessionTtlMs: 86400000,
-      allowBasicAuth: true,
-      allowOidc: false
+      sessionTtlMs: 86400000
     },
     security: {
       allowedIps: [],
-      csrfProtection: true,
-      auditAllWrites: true,
-      maskSecretsInUi: true
+      csrfProtection: true
     },
     features: {
-      enableLegacyJsonEditor: true,
-      enableConfigImportExport: true,
-      enableDangerousActions: false
+      enableLegacyJsonEditor: true
     }
   },
   proxy: {
@@ -207,29 +202,6 @@ const DEFAULTS = {
           timeoutMs: 600000
         }
       }
-    },
-    fallbacks: {
-      enabled: false,
-      maxFallbacks: 0,
-      byModel: {},
-      byErrorCode: {}
-    },
-    cooldowns: {
-      enabled: false,
-      allowedFails: 3,
-      cooldownTimeMs: 30000,
-      byErrorType: {}
-    },
-    healthChecks: {
-      enabled: false,
-      intervalMs: 300000,
-      timeoutMs: 60000,
-      trackLatency: true
-    },
-    preCallChecks: {
-      validateModelCapabilities: true,
-      validateContextWindow: false,
-      validateImageInput: true
     }
   },
   media: {
@@ -263,11 +235,9 @@ const DEFAULTS = {
       maxBase64Bytes: 20 * 1024 * 1024,
       maxImages: 0,
       maxTotalBytes: 0,
-      redactInLogs: true,
       logPreviewChars: 64
     },
     generation: {
-      enabled: true,
       defaultModel: "",
       requestTimeoutMs: 600000,
       pollIntervalMs: 2000,
@@ -283,7 +253,6 @@ const DEFAULTS = {
       sinks: ["memory", "console"],
       bufferSize: 100,
       maxBufferBytes: 16777216,
-      redactSecrets: true,
       redactApiKeyInfo: true,
       messageContentMode: "summary",
       maxPayloadLogBytes: 102400,
@@ -334,16 +303,7 @@ const DEFAULTS = {
       maxQueueSize: 5000,
       maxPersistedEvents: 50000
     },
-    metrics: {
-      enabled: false,
-      exposePrometheus: false,
-      includePerKeyMetrics: true,
-      includePerModelMetrics: true
-    },
     audit: {
-      enabled: true,
-      recordReadActions: false,
-      recordWriteActions: true,
       retentionDays: 30
     }
   },
@@ -352,7 +312,6 @@ const DEFAULTS = {
       mode: "file",
       filePath: "./config/config.json",
       database: {
-        enabled: false,
         provider: "postgresql",
         connectionRef: "",
         schema: "public",
@@ -368,7 +327,6 @@ const DEFAULTS = {
     },
     compatibilityExport: {
       enabled: true,
-      exportLegacyConfigOnChange: true,
       legacyConfigPath: "./config/config.json"
     }
   },
@@ -376,9 +334,7 @@ const DEFAULTS = {
     defaults: {
       requireApiKey: true,
       keyHeaderNames: ["Authorization", "x-api-key"],
-      defaultKeyStatus: "active",
-      enforceUserField: false,
-      rejectClientSideMetadataTags: false
+      defaultKeyStatus: "active"
     },
     rateLimits: {
       windowSeconds: 60,
@@ -401,13 +357,6 @@ const DEFAULTS = {
     }
   },
   compatibility: {
-    enableLegacyConfigRead: true,
-    enableLegacyConfigWrite: true,
-    mapServerAdminPathToAdminBasePath: true,
-    mapImageCompressionToMediaInputCompression: true,
-    mapServerUpstreamToProxyDefaults: true,
-    warnOnDeprecatedFields: true,
-    failOnDeprecatedFieldsAfterVersion: 3,
     claudeCode: {
       enabled: true
     },
@@ -421,7 +370,6 @@ const DEFAULTS = {
     anthropic: {
       forwardSdkMetadataHeaders: true,
       unknownBetaPolicy: "allow-direct-anthropic",
-      betaAllowlistEnabled: true,
       betaAllowlist: [
         "fine-grained-tool-streaming-2025-05-14",
         "interleaved-thinking-2025-05-14",
@@ -442,6 +390,39 @@ const DEFAULTS = {
 let currentConfig = null;
 let persistedConfig = null;
 let currentDistributionProfile = null;
+let configDeprecations = [];
+let configCleanupRequired = false;
+const DEPRECATED_FLAG_REPLACEMENTS = {
+  "admin.auth.allowBasicAuth": null,
+  "admin.auth.allowOidc": null,
+  "admin.security.auditAllWrites": null,
+  "admin.security.maskSecretsInUi": null,
+  "admin.features.enableConfigImportExport": null,
+  "admin.features.enableDangerousActions": null,
+  "routing.fallbacks": null,
+  "routing.cooldowns": null,
+  "routing.healthChecks": null,
+  "routing.preCallChecks": null,
+  "media.inlineImages.redactInLogs": null,
+  "media.generation.enabled": "routing.routeProfiles.imageGenerations.enabled",
+  "observability.logs.redactSecrets": null,
+  "observability.metrics": null,
+  "observability.audit.enabled": null,
+  "observability.audit.recordReadActions": null,
+  "observability.audit.recordWriteActions": null,
+  "persistence.configStore.database.enabled": "persistence.configStore.mode",
+  "persistence.compatibilityExport.exportLegacyConfigOnChange": "persistence.compatibilityExport.enabled",
+  "access.defaults.enforceUserField": null,
+  "access.defaults.rejectClientSideMetadataTags": null,
+  "compatibility.enableLegacyConfigRead": null,
+  "compatibility.enableLegacyConfigWrite": null,
+  "compatibility.mapServerAdminPathToAdminBasePath": null,
+  "compatibility.mapImageCompressionToMediaInputCompression": null,
+  "compatibility.mapServerUpstreamToProxyDefaults": null,
+  "compatibility.warnOnDeprecatedFields": null,
+  "compatibility.failOnDeprecatedFieldsAfterVersion": null,
+  "compatibility.anthropic.betaAllowlistEnabled": "compatibility.anthropic.unknownBetaPolicy"
+};
 const INSECURE_SECRET_VALUES = new Set([
   "admin",
   "password",
@@ -639,6 +620,82 @@ function deepMerge(base, override) {
 
 function asPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function getConfigField(config, field) {
+  return field.split(".").reduce((value, key) => value?.[key], config);
+}
+
+function collectConfigDeprecations(raw) {
+  const warnings = Object.entries(DEPRECATED_FLAG_REPLACEMENTS)
+    .filter(([field]) => getConfigField(raw, field) !== undefined)
+    .map(([field, replacement]) => ({
+      path: field, kind: replacement ? "migrated" : "ignored", replacement
+    }));
+  for (const [index, upstream] of (Array.isArray(raw?.upstreams) ? raw.upstreams : []).entries()) {
+    if (upstream?.healthCheck !== undefined) {
+      warnings.push({ path: `upstreams[${index}].healthCheck`, kind: "ignored", replacement: null });
+    }
+  }
+  return warnings;
+}
+
+function validateRawBooleanFlags(raw) {
+  function validate(defaults, values, prefix = "") {
+    if (!values || typeof values !== "object" || Array.isArray(values)) return;
+    for (const [key, value] of Object.entries(defaults)) {
+      if (!Object.hasOwn(values, key)) continue;
+      const field = prefix ? `${prefix}.${key}` : key;
+      if (typeof value === "boolean" && typeof values[key] !== "boolean") {
+        throw new Error(`${field} must be a boolean`);
+      }
+      if (value && typeof value === "object" && !Array.isArray(value)) validate(value, values[key], field);
+    }
+  }
+  validate(DEFAULTS, raw);
+  for (const field of [
+    "media.generation.enabled", "persistence.configStore.database.enabled",
+    "persistence.compatibilityExport.exportLegacyConfigOnChange",
+    "compatibility.anthropic.betaAllowlistEnabled",
+    "routing.fallbacks.enabled", "routing.cooldowns.enabled", "routing.healthChecks.enabled"
+  ]) {
+    const value = getConfigField(raw, field);
+    if (value !== undefined && typeof value !== "boolean") throw new Error(`${field} must be a boolean`);
+  }
+  for (const feature of ["fallbacks", "cooldowns", "healthChecks"]) {
+    if (raw?.routing?.[feature]?.enabled === true) {
+      throw new Error(`routing.${feature}.enabled is not supported by this proxy version`);
+    }
+  }
+  const betaPolicy = raw?.compatibility?.anthropic?.unknownBetaPolicy;
+  if (betaPolicy !== undefined && !["passthrough", "allow-direct-anthropic", "allowlist"].includes(betaPolicy)) {
+    throw new Error("compatibility.anthropic.unknownBetaPolicy must be passthrough, allow-direct-anthropic, or allowlist");
+  }
+  for (const [index, model] of (Array.isArray(raw?.models) ? raw.models : []).entries()) {
+    validate({ clientCompatibility: { claudeCode: false, codex: false } }, model, `models[${index}]`);
+  }
+}
+
+function migrateConfigFlags(raw, merged) {
+  const store = raw?.persistence?.configStore;
+  if ((store?.mode == null || store.mode === "") && store?.database?.enabled !== undefined) {
+    merged.persistence.configStore.mode = store.database.enabled ? "database" : "file";
+  }
+  if (raw?.persistence?.compatibilityExport?.exportLegacyConfigOnChange === false) {
+    merged.persistence.compatibilityExport.enabled = false;
+  }
+  if (raw?.media?.generation?.enabled === false) {
+    merged.routing.routeProfiles.imageGenerations.enabled = false;
+  }
+  if (raw?.compatibility?.anthropic?.betaAllowlistEnabled === false) {
+    merged.compatibility.anthropic.unknownBetaPolicy = "passthrough";
+  }
+  for (const field of Object.keys(DEPRECATED_FLAG_REPLACEMENTS)) {
+    const parts = field.split(".");
+    const parent = getConfigField(merged, parts.slice(0, -1).join("."));
+    if (parent && typeof parent === "object") delete parent[parts.at(-1)];
+  }
+  for (const upstream of merged.upstreams) delete upstream.healthCheck;
 }
 
 function validateRawCompatibilityShape(raw) {
@@ -1115,13 +1172,7 @@ function applySchemaCompatibility(rawConfig, merged) {
         errorPolicy: {
           nativePassthrough: false
         },
-        headersTemplate: {},
-        healthCheck: {
-          enabled: false,
-          path: "/healthz",
-          intervalMs: 300000,
-          timeoutMs: 10000
-        }
+        headersTemplate: {}
       }, upstream || {});
       if (configuredRoutes != null && (typeof configuredRoutes !== "object" || Array.isArray(configuredRoutes))) {
         next.routes = configuredRoutes;
@@ -1164,6 +1215,7 @@ function applySchemaCompatibility(rawConfig, merged) {
 }
 
 function normalizeConfig(raw, options = {}) {
+  validateRawBooleanFlags(raw);
   validateRawCompatibilityShape(raw);
   validateRawPolicyShape(raw);
   const merged = deepMerge(DEFAULTS, raw || {});
@@ -1171,6 +1223,7 @@ function normalizeConfig(raw, options = {}) {
   merged.upstreams = Array.isArray(merged.upstreams) ? merged.upstreams : [];
   merged.models = Array.isArray(merged.models) ? merged.models : [];
   applySchemaCompatibility(raw || {}, merged);
+  migrateConfigFlags(raw, merged);
   if (options.applyEnvironment !== false) {
     applyConfigEnvironmentOverrides(merged);
   }
@@ -1569,9 +1622,9 @@ function validateConfig(cfg) {
     }
     if (
       anthropic?.unknownBetaPolicy != null
-      && !["allow-direct-anthropic", "allowlist"].includes(anthropic.unknownBetaPolicy)
+      && !["passthrough", "allow-direct-anthropic", "allowlist"].includes(anthropic.unknownBetaPolicy)
     ) {
-      throw new Error("compatibility.anthropic.unknownBetaPolicy must be allow-direct-anthropic or allowlist");
+      throw new Error("compatibility.anthropic.unknownBetaPolicy must be passthrough, allow-direct-anthropic, or allowlist");
     }
   }
   if (cfg.persistence != null) {
@@ -2028,6 +2081,8 @@ async function loadConfig() {
     await writePersistedConfigText(JSON.stringify(normalizedPersistedConfig, null, 2), cfg);
   }
   persistedConfig = normalizedPersistedConfig;
+  configDeprecations = collectConfigDeprecations(raw);
+  configCleanupRequired = configDeprecations.length > 0 && !optimized.upgraded;
   currentConfig = cfg;
   currentDistributionProfile = resolveDistributionProfile(cfg);
   installModelCatalogSnapshot(modelCatalogSnapshot);
@@ -2075,6 +2130,8 @@ export async function saveConfig(nextConfig) {
     );
     await writePersistedConfigText(JSON.stringify(normalized, null, 2), validated);
     persistedConfig = normalized;
+    configDeprecations = collectConfigDeprecations(nextConfig);
+    configCleanupRequired = false;
     currentConfig = validated;
     currentDistributionProfile = resolveDistributionProfile(validated);
     installModelCatalogSnapshot(modelCatalogSnapshot);
@@ -2090,6 +2147,7 @@ export async function reloadConfig() {
 
 export function getConfigRuntimeInfo() {
   return {
+    configuration: { deprecatedFlags: cloneConfig(configDeprecations), cleanupRequired: configCleanupRequired },
     distribution: {
       profile: resolveDistributionProfile(currentConfig),
       capabilities: getDistributionCapabilities(currentConfig)

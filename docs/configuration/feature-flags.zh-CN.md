@@ -1,6 +1,6 @@
 # Feature Flag 与布尔开关目录
 
-本文是当前用户可配置布尔开关的统一中文索引，适用于配置 schema version 3。它同时列出真正的 Feature Flag、运行策略开关、环境门禁，以及配置中存在但尚未实现的预留字段。
+本文是当前用户可配置布尔开关的统一中文索引，适用于配置 schema version 3。它同时列出真正的 Feature Flag、运行策略开关、环境门禁，以及兼容读取但不再生成的弃用字段。
 
 ## 去哪里配置
 
@@ -10,6 +10,10 @@
 - 环境变量：由容器或进程环境设置，优先于持久化配置。
 
 本文中的“热生效”指通过管理页保存，或编辑持久化配置后调用 `/admin/api/reload`。直接修改磁盘 JSON 不会自动重载。环境变量始终需要重启进程或容器。
+
+JSON 中的所有有效布尔开关及被迁移的旧布尔别名只接受 `true` / `false`。
+字符串 `"false"`、数值 `0/1`、`null`、数组不能代替布尔值；保存或重载会返回包含字段路径的错误，
+失败时保留原配置和 Model Catalog。下文环境变量的字符串解析规则不适用于 JSON。
 
 标记说明：
 
@@ -27,7 +31,7 @@
 | `admin.auth.enabled` | `false` | 启用管理端 Basic Auth。非回环监听还会执行 fail-closed 安全校验。示例配置为 `true`。 | Workspace；热；可被环境变量覆盖 |
 | `admin.security.csrfProtection` | `true` | 要求管理端写请求携带 CSRF header。 | JSON；热 |
 | `admin.features.enableLegacyJsonEditor` | `true` | 显示 Advanced JSON Editor；不影响专用表单。 | Workspace；热 |
-| `server.trustProxy` | 未设置等同 `false` | 信任受控反向代理提供的转发 IP header。只有 Node 无法被客户端直接访问时才应开启。 | Workspace；热；可被环境变量覆盖 |
+| `server.trustProxy` | `false` | 信任受控反向代理提供的转发 IP header。只有 Node 无法被客户端直接访问时才应开启。 | Workspace；热；可被环境变量覆盖 |
 | `server.caddy.enabled` | `false` | 生成并 reload Caddyfile。若容器启动时没有运行 Caddy，首次启用仍需重启容器。 | Ops；参数热，启停可能需重启 |
 
 ### 代理、超时与请求策略
@@ -60,7 +64,9 @@ HTTP 状态码重试只依据最终解析出的 `statuses` 列表；显式空列
 | `routing.routeProfiles.<route>.nativeErrorPassthrough` | `false` | 在入口协议与后端协议相同且无需 shim 时，透传上游原生错误 body。 | JSON；热 |
 | `upstreams[*].errorPolicy.nativePassthrough` | `false` | 上游级原生错误透传。与 route profile 开关为 OR 关系，仍只适用于原生协议路径。 | JSON；热 |
 
-图片生成还同时受 `media.generation.enabled` 控制；两个开关都为 `true` 时路由才可用。
+图片生成统一由 `routing.routeProfiles.imageGenerations.enabled` 控制，入口位于 Workspace 的路由域；
+媒体策略中保留生成参数，不再放置第二个启用 checkbox。旧 `media.generation.enabled` 在归一化时
+与旧路由开关按 AND 合并，任意一方为 `false` 都保留关闭状态。
 
 ### 媒体处理
 
@@ -70,7 +76,6 @@ HTTP 状态码重试只依据最终解析出的 `statuses` 列表；显式空列
 | `media.inputCompression.progressive` | `false` | JPEG 输出使用 progressive 编码；仅在压缩启用且输出为 JPEG 时有效。 | Workspace；热 |
 | `media.inputCompression.useMozJpeg` | `true` | JPEG 输出优先使用 mozjpeg 编码参数。 | Workspace；热 |
 | `media.remoteImages.allow` | `false` | 允许向上游透传远程图片 URL，并检查 `allowedHosts`；代理不下载图片，也不验证远端文件的 MIME、大小或像素。 | Workspace；热 |
-| `media.generation.enabled` | `true` | 启用图片生成能力；还需要对应 route profile 开启。 | Workspace；热 |
 | `media.http.enabled` | `false` | 启用独立音频、图片 multipart 编辑、MAI Speech 原生入口及显式绑定的 Responses Speech 适配器；不改变既有图片生成开关。 | Workspace；热 |
 | `media.realtime.enabled` | `false` | 启用 Realtime WebSocket 对话、转写和翻译。 | Workspace；热，仅新连接 |
 | `media.webrtc.enabled` | `false` | 启用 WebRTC 建连及所有权校验后的 sideband/hangup；媒体和 data channel 直连 provider。 | Workspace；热，仅新请求 |
@@ -217,8 +222,7 @@ Key/时间筛选与同步按钮。「Log Analytics 上传」只表示 Azure 日�
 
 | 配置项 | 默认值 | 功能 | 入口与生效方式 |
 | --- | --- | --- | --- |
-| `persistence.compatibilityExport.enabled` | `true` | 允许把规范配置额外导出到兼容路径。 | Workspace；保存时生效 |
-| `persistence.compatibilityExport.exportLegacyConfigOnChange` | `true` | 配置变更时执行兼容导出；与上一开关同时为 `true` 才会写出。 | Workspace；保存时生效 |
+| `persistence.compatibilityExport.enabled` | `true` | 保存变更时允许把规范配置额外写到兼容路径；不关闭主配置存储。 | Workspace；保存时生效 |
 | `access.defaults.requireApiKey` | `true` | 要求公共代理请求通过已配置的客户端 API Key。 | Workspace；热 |
 | `access.budgets.enabled` | `false` | 启用全局预算治理。具有正数独立额度的 Key 仍可进入 Key 级预算逻辑。 | Workspace；热 |
 
@@ -231,8 +235,7 @@ Key/时间筛选与同步按钮。「Log Analytics 上传」只表示 Azure 日�
 | `compatibility.protocolShim.rejectLossyRequests` | `false` | 默认尽力转换并记录 warning；开启后，跨协议请求无法无损表示时返回 400。 | Workspace；热 |
 | `compatibility.protocolShim.rejectLossyResponses` | `false` | 默认尽力转换并记录 warning；开启后，JSON 或 SSE 响应无法无损表示时拒绝/终止转换。 | Workspace；热 |
 | `compatibility.anthropic.forwardSdkMetadataHeaders` | `true` | 在 Messages 路径转发安全的 `anthropic-*`、`x-anthropic-*`、`x-claude-*`、`x-stainless-*` 元数据；凭据类 header 始终阻断。 | Workspace；热 |
-| `compatibility.anthropic.unknownBetaPolicy` | `allow-direct-anthropic` | `allow-direct-anthropic` 仅对直连 Anthropic 上游保留未知 beta；`allowlist` 对所有上游执行白名单。 | Workspace；热 |
-| `compatibility.anthropic.betaAllowlistEnabled` | `true` | 对 Azure/Foundry Messages 上游过滤未审核的 `anthropic-beta`；直接 Anthropic 上游保留未知值。 | Workspace；热 |
+| `compatibility.anthropic.unknownBetaPolicy` | `allow-direct-anthropic` | `passthrough` 透传全部 beta 值；`allow-direct-anthropic` 仅对直连 Anthropic 上游保留未知 beta；`allowlist` 对所有上游执行白名单。凭据和 hop-by-hop header 的硬过滤不受影响。 | Workspace；热 |
 | `compatibility.anthropic.normalizeManualThinkingToolChoice` | `true` | 修正 manual thinking 与强制工具选择的不兼容组合。 | Workspace；热 |
 | `compatibility.anthropic.sanitizeCacheControl` | `true` | 清理目标 Messages 实现不支持的 `cache_control` 位置或属性。 | Workspace；热 |
 | `compatibility.anthropic.validateThinkingByModel` | `true` | 按模型元数据校验 Claude thinking type 与 effort。 | Workspace；热 |
@@ -257,36 +260,55 @@ Responses 源流始终必须出现顶层 `response.completed` 或 `response.inco
 | --- | --- |
 | `server.adminAuth.enabled` | 由规范字段 `admin.auth.enabled` 重建的运行时兼容镜像。 |
 | `server.imageCompression.enabled` | 由 `media.inputCompression.enabled` 重建的旧版兼容镜像。 |
-| `persistence.configStore.database.enabled` | 仅当原始配置没有 `persistence.configStore.mode` 时作为旧版启动回退。新配置应设置 `mode`；示例配置已有 `mode` 时切换此 checkbox 不会改变活动模式。 |
+| `persistence.configStore.database.enabled` | 仅在原始配置缺少或为空的 `persistence.configStore.mode` 时迁移为 `database` / `file`；显式 mode 优先。UI 只保留模式选择，保存后移除旧字段。 |
+| `media.generation.enabled` | 与原路由开关按 AND 迁移到 `routing.routeProfiles.imageGenerations.enabled`，随后移除旧字段。 |
+| `persistence.compatibilityExport.exportLegacyConfigOnChange` | 与原 `enabled` 按 AND 迁移到 `persistence.compatibilityExport.enabled`；原来关闭的额外导出不会被开启。 |
+| `compatibility.anthropic.betaAllowlistEnabled` | 原值 `false` 迁移为 `unknownBetaPolicy: "passthrough"`；`true` 保留原来的策略。旧布尔值随后移除，新编辑不再被旧字段覆盖。 |
 
-## 预留或当前未接线字段
+## 弃用与未实现字段
 
-以下字段存在于默认 schema，但当前版本不会按名称提供对应功能。不要依赖它们控制生产行为。
+以下字段不再进入新默认配置。读取旧字段会在运行状态的
+`configuration.deprecatedFlags` 中报告路径、是否迁移及替代字段，并记录
+`config.deprecated_flags` warning；管理页 Workspace 显示相同提示，不记录旧字段值。
+归一化后可编辑配置不含这些字段，但不会仅因普通 v3 重载而改写原文件；
+检查并保存后才持久化清理。v2 和已有的必要结构修复仍遵循原来的升级写入流程。
+`configuration.cleanupRequired` 标记旧 v3 文件是否仍待规范化；即使没有普通编辑差异，
+管理页也提供「配置规范化待保存」的检查/保存入口，弹窗列出弃用路径与替代字段。
+已在保存或升级中写入规范配置时不再提示待保存，但保留本次迁移说明直到重载。
+失败的保存/重载不替换旧配置、旧 Catalog 或原弃用提示。
 
 ### 启用即被拒绝
 
-- `routing.fallbacks.enabled`（默认 `false`）
-- `routing.cooldowns.enabled`（默认 `false`）
-- `routing.healthChecks.enabled`（默认 `false`）
+- `routing.fallbacks.enabled`
+- `routing.cooldowns.enabled`
+- `routing.healthChecks.enabled`
 
-这三项是预留能力；设置为 `true` 会被配置校验明确拒绝。
+这三项不再生成默认块。旧配置设置为 `true` 仍被明确拒绝；
+关闭或未启用的旧块会带提示移除，不会补做 fallback、cooldown 或健康检查。
 
-### 当前没有运行时读取点
+### 保留行为、移除无效开关
 
 | 字段 | 当前状态 |
 | --- | --- |
 | `admin.auth.allowBasicAuth`、`admin.auth.allowOidc` | Basic Auth 仍由 `admin.auth.enabled` 控制；当前没有 OIDC 实现。 |
 | `admin.security.auditAllWrites`、`admin.security.maskSecretsInUi` | 管理写日志和 UI secret 脱敏当前为强制行为。 |
 | `admin.features.enableConfigImportExport`、`admin.features.enableDangerousActions` | 当前不控制导入导出、restart API 或对应按钮。 |
-| `routing.healthChecks.trackLatency` | 健康检查调度器尚未实现。 |
-| `routing.preCallChecks.validateModelCapabilities`、`routing.preCallChecks.validateContextWindow`、`routing.preCallChecks.validateImageInput` | 当前没有 pre-call check 消费路径。 |
-| `media.inlineImages.redactInLogs` | 内联二进制日志清洗当前始终强制执行；管理页中的同名 checkbox 不改变行为。 |
+| `routing.healthChecks`、`routing.preCallChecks` | 健康检查和 pre-call check 调度器没有实现；不能据此宣称会校验模型能力、上下文或图片。 |
+| `media.inlineImages.redactInLogs` | 内联二进制日志清洗始终强制执行；UI 改为不可关闭的说明。 |
 | `observability.logs.redactSecrets` | secret 清洗始终强制执行；管理页将其显示为不可关闭。 |
-| `observability.metrics.enabled`、`observability.metrics.exposePrometheus`、`observability.metrics.includePerKeyMetrics`、`observability.metrics.includePerModelMetrics` | 当前没有 metrics collector 或 Prometheus 路由。 |
-| `observability.audit.enabled`、`observability.audit.recordReadActions`、`observability.audit.recordWriteActions` | 当前没有由这些布尔值控制的审计模块；同组 retention 数值可能被 runtime store 使用。 |
+| `observability.metrics` | 当前没有 metrics collector 或 Prometheus 路由，移除整个预留块。 |
+| `observability.audit.enabled`、`observability.audit.recordReadActions`、`observability.audit.recordWriteActions` | 当前没有由这些布尔值控制的审计模块；同组 `retentionDays` 仍保留给原有 runtime store 兼容路径。 |
 | `access.defaults.enforceUserField`、`access.defaults.rejectClientSideMetadataTags` | 当前没有治理消费路径。 |
-| `compatibility.enableLegacyConfigRead`、`compatibility.enableLegacyConfigWrite`、`compatibility.mapServerAdminPathToAdminBasePath`、`compatibility.mapImageCompressionToMediaInputCompression`、`compatibility.mapServerUpstreamToProxyDefaults`、`compatibility.warnOnDeprecatedFields` | 旧配置归一化目前无条件执行，这些开关不改变迁移行为。 |
-| `upstreams[*].healthCheck.enabled` | 上游健康检查调度器尚未实现。 |
+| `compatibility.enableLegacyConfigRead`、`compatibility.enableLegacyConfigWrite`、`compatibility.mapServerAdminPathToAdminBasePath`、`compatibility.mapImageCompressionToMediaInputCompression`、`compatibility.mapServerUpstreamToProxyDefaults`、`compatibility.warnOnDeprecatedFields`、`compatibility.failOnDeprecatedFieldsAfterVersion` | 旧配置兼容归一化继续执行，不再生成不生效的控制字段。 |
+| `upstreams[*].healthCheck` | 上游健康检查调度器尚未实现，移除预留块并提示路径。 |
+
+`minimum/nextgen` 仍是同一代码基线的运行 Profile。minimum 禁用的 Log Analytics、
+Runtime Store 和预算只作用于运行时克隆，保存时仍保留对应持久化配置。
+环境管理的值和 secret 也不会因规范化或 UI 保存而回写；新媒体入口与凭据导出仍默认关闭。
+
+部署时先升级支持这些迁移的 runtime 和管理端，再检查/保存规范配置。
+`unknownBetaPolicy: "passthrough"` 是新增取值，旧 runtime 不接受；
+若需回滚到旧版本，应同时恢复升级前的配置备份，不能只回滚容器镜像。
 
 ## 布尔环境门禁
 

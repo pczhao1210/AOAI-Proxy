@@ -20,7 +20,6 @@ const switches = [
   ["Reject lossy shim requests", "compatibility.protocolShim.rejectLossyRequests", false],
   ["Reject lossy shim responses", "compatibility.protocolShim.rejectLossyResponses", false],
   ["Forward Anthropic SDK metadata headers", "compatibility.anthropic.forwardSdkMetadataHeaders", true],
-  ["Filter Anthropic beta headers", "compatibility.anthropic.betaAllowlistEnabled", true],
   ["Normalize manual thinking tool choice", "compatibility.anthropic.normalizeManualThinkingToolChoice", true],
   ["Sanitize Anthropic cache controls", "compatibility.anthropic.sanitizeCacheControl", true],
   ["Validate thinking mode by model", "compatibility.anthropic.validateThinkingByModel", true],
@@ -67,16 +66,18 @@ test("unknown beta policy preserves its default, options and unrelated allowlist
   const select = view.fields.getByLabelText("Unknown Anthropic Beta Policy", { exact: true });
   assert.equal(select.value, "allow-direct-anthropic");
   assert.deepEqual([...select.options].map(option => [option.value, option.textContent]), [
+    ["passthrough", "Forward all beta values"],
     ["allow-direct-anthropic", "Allow for direct Anthropic upstreams"],
     ["allowlist", "Require allowlist for every upstream"]
   ]);
-  for (const value of ["allowlist", "allow-direct-anthropic"]) {
+  for (const value of ["passthrough", "allowlist", "allow-direct-anthropic"]) {
     fireEvent.change(select, { target: { value } });
     assert.deepEqual(view.changes.at(-1), ["compatibility.anthropic.unknownBetaPolicy", value]);
     assert.equal(select.value, value);
     assert.equal(view.fields.getByLabelText("Anthropic Beta Allowlist").value, "Beta-A");
   }
-  assert.equal(view.changes.length, 2);
+  assert.equal(view.changes.length, 3);
+  assert.equal(view.fields.queryByLabelText("Filter Anthropic beta headers"), null);
 });
 
 test("routing switches retain missing defaults and exact boolean update paths", () => {
@@ -126,7 +127,7 @@ test("disabled routes and beta filtering keep policy fields editable without cle
   const config = {};
   for (const [, path] of listFields) setValueByPath(config, path, ["kept"]);
   const view = renderWorkspace(config, "workspace-routing");
-  for (const label of ["Enable chat/completions", "Enable responses", "Enable messages", "Enable image generations", "Filter Anthropic beta headers"]) {
+  for (const label of ["Enable chat/completions", "Enable responses", "Enable messages", "Enable image generations"]) {
     fireEvent.click(view.fields.getByLabelText(label, { exact: true }));
   }
   for (const [label] of listFields) {
@@ -137,5 +138,39 @@ test("disabled routes and beta filtering keep policy fields editable without cle
   assert.equal(view.fields.getByLabelText("Unknown Anthropic Beta Policy").disabled, false);
   assert.equal(view.fields.getByLabelText("Image Poll Interval ms").disabled, false);
   assert.equal(view.fields.getByLabelText("Image Poll Timeout ms").disabled, false);
-  assert.equal(view.changes.length, 5);
+  assert.equal(view.changes.length, 4);
+});
+
+test("persistence form uses mode instead of the legacy database toggle and exposes one export switch", () => {
+  const config = { persistence: {
+    configStore: { mode: "file", database: { enabled: true, provider: "postgresql" } },
+    compatibilityExport: { enabled: true, exportLegacyConfigOnChange: true, legacyConfigPath: "/tmp/legacy" }
+  } };
+  const original = structuredClone(config);
+  const view = renderWorkspace(config, "workspace-persistence");
+  assert.equal(view.fields.queryByLabelText("Enable Database Store"), null);
+  assert.equal(view.fields.queryByLabelText("Export legacy config on change"), null);
+  assert.equal(view.fields.queryByLabelText("Database Provider"), null);
+  fireEvent.change(view.fields.getByLabelText("Persistence Mode"), { target: { value: "database" } });
+  assert.deepEqual(view.changes.at(-1), ["persistence.configStore.mode", "database"]);
+  assert.ok(view.fields.getAllByLabelText("Database Provider").length);
+  fireEvent.click(view.fields.getByLabelText("Enable compatibility export"));
+  assert.deepEqual(view.changes.at(-1), ["persistence.compatibilityExport.enabled", false]);
+  assert.deepEqual(config, original);
+});
+
+test("workspace reports migration paths without values and explains active minimum restrictions", () => {
+  const view = renderWorkspace({}, "workspace-core", {
+    effectiveProfile: "minimum", capabilities: { budgets: false },
+    configDeprecations: [
+      { path: "media.generation.enabled", replacement: "routing.routeProfiles.imageGenerations.enabled", kind: "migrated" },
+      { path: "admin.features.enableDangerousActions", replacement: null, kind: "ignored" }
+    ]
+  });
+  assert.ok(view.getByText("Legacy configuration flags"));
+  assert.ok(view.getByText("media.generation.enabled"));
+  assert.ok(view.getByText("routing.routeProfiles.imageGenerations.enabled"));
+  assert.ok(view.getByText(/Inactive; removed/));
+  assert.ok(view.getByText(/active minimum profile disables/));
+  assert.equal(view.fields.getByLabelText("Enable Budgets").disabled, true);
 });

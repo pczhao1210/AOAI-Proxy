@@ -14,7 +14,7 @@ test("media reference costs show the settled USD subtotal without unknown-fee su
 });
 
 function mediaConfig({ enabled = true, mode = "adaptive", remote = false, generation = false } = {}) {
-  return { media: {
+  return { routing: { routeProfiles: { imageGenerations: { enabled: generation } } }, media: {
     inputCompression: {
       enabled, mode, maxLongSidePx: 1600, quality: 0.85, minQuality: 0.1, outputFormat: "jpeg",
       minBytes: 0, minSavingsRatio: 0, maxPixels: 40000000, maxConcurrent: 2, maxQueue: 0, timeoutMs: 5000,
@@ -22,7 +22,7 @@ function mediaConfig({ enabled = true, mode = "adaptive", remote = false, genera
     },
     remoteImages: { allow: remote, allowedHosts: ["images.example"], allowedMimeTypes: ["image/png"] },
     inlineImages: { maxBase64Bytes: 20971520, maxImages: 0, maxTotalBytes: 0, logPreviewChars: 0, redactInLogs: true },
-    generation: { enabled: generation, defaultModel: "image-model", maxImages: 4 }
+    generation: { defaultModel: "image-model", maxImages: 4 }
   } };
 }
 
@@ -45,7 +45,7 @@ test("media form keeps its navigation anchor, accordion group and four mode stat
       ["Output Format", scenario.output], ["Minimum Input Bytes", scenario.adaptive]
     ]) assert.equal(!!view.fields.queryByLabelText(label, { exact: true }), present, `${scenario.mode}: ${label}`);
     assert.ok(view.fields.getByLabelText("Inline Max Base64 Bytes"));
-    assert.equal(view.section.querySelectorAll('input[type="checkbox"]').length, 9);
+    assert.equal(view.section.querySelectorAll('input[type="checkbox"]').length, 7);
   }
   assert.deepEqual(view.changes, []);
 });
@@ -122,8 +122,6 @@ test("media switches retain their exact boolean configuration paths", () => {
     ["Progressive", "media.inputCompression.progressive"],
     ["Prefer mozjpeg", "media.inputCompression.useMozJpeg"],
     ["Allow Remote Images", "media.remoteImages.allow"],
-    ["Redact Inline Image Logs", "media.inlineImages.redactInLogs"],
-    ["Enable Image Generation Route", "media.generation.enabled"],
     ["Enable HTTP Audio and Image Edits", "media.http.enabled"],
     ["Enable Realtime WebSocket", "media.realtime.enabled"],
     ["Enable WebRTC Setup and Control", "media.webrtc.enabled"]
@@ -133,6 +131,20 @@ test("media switches retain their exact boolean configuration paths", () => {
     fireEvent.click(checkbox);
     assert.deepEqual(view.changes.at(-1), [path, expected]);
   }
+});
+
+test("media form makes forced redaction read-only and uses the single routing image gate", () => {
+  const config = mediaConfig({ generation: false });
+  config.media.inlineImages.redactInLogs = false;
+  const view = renderWorkspace(config);
+  assert.equal(view.fields.queryByLabelText("Redact Inline Image Logs"), null);
+  assert.equal(view.fields.queryByLabelText("Enable Image Generation Route"), null);
+  assert.ok(view.fields.getByText(/always redacted from logs/));
+  assert.ok(view.fields.getByText(/controlled by Enable image generations/));
+  assert.equal(view.fields.queryByLabelText("Default Generation Model"), null);
+  view.updateConfig(mediaConfig({ generation: true }));
+  assert.equal(view.fields.getByLabelText("Default Generation Model").value, "image-model");
+  assert.deepEqual(view.changes, []);
 });
 
 test("audio transport limits retain hidden settings and require confirmation for provider credential export", context => {

@@ -41,7 +41,7 @@ export default function MediaPolicySection({ config, updateField, t }) {
   const compressionEnabled = getValueByPath(config, "media.inputCompression.enabled") === true;
   const compressionMode = getValueByPath(config, "media.inputCompression.mode") || "legacy";
   const remoteImagesEnabled = getValueByPath(config, "media.remoteImages.allow") === true;
-  const generationEnabled = getValueByPath(config, "media.generation.enabled") === true;
+  const generationEnabled = getValueByPath(config, "routing.routeProfiles.imageGenerations.enabled") !== false;
 
   return (
     <AccordionSection id="workspace-media" title={t("workspace.media.title", "Media Policy")} desc={t("workspace.media.desc", "Control input compression, remote images, inline images, and image generation defaults.") } group="workspace-sections">
@@ -144,9 +144,9 @@ export default function MediaPolicySection({ config, updateField, t }) {
         <label><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.progressive") === true} onChange={(event) => updateField("media.inputCompression.progressive", event.target.checked)} /> {t("field.mediaProgressive", "Progressive")}</label>
         <label><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.useMozJpeg") === true} onChange={(event) => updateField("media.inputCompression.useMozJpeg", event.target.checked)} /> {t("field.mediaMozJpeg", "Prefer mozjpeg")}</label>
         <label><input type="checkbox" checked={getValueByPath(config, "media.remoteImages.allow") === true} onChange={(event) => updateField("media.remoteImages.allow", event.target.checked)} /> {t("field.remoteImagesAllow", "Allow Remote Images")}</label>
-        <label><input type="checkbox" checked={getValueByPath(config, "media.inlineImages.redactInLogs") === true} onChange={(event) => updateField("media.inlineImages.redactInLogs", event.target.checked)} /> {t("field.inlineImagesRedact", "Redact Inline Image Logs")}</label>
-        <label><input type="checkbox" checked={getValueByPath(config, "media.generation.enabled") === true} onChange={(event) => updateField("media.generation.enabled", event.target.checked)} /> {t("field.mediaGenerationEnabled", "Enable Image Generation Route")}</label>
       </div>
+      <p className="field-hint">{t("field.inlineImagesRedactEnforced", "Inline image content is always redacted from logs; this protection cannot be disabled.")}</p>
+      <p className="field-hint">{t("field.imageGenerationGate", "Image generation is controlled by Enable image generations in the Routing section.")}</p>
     </AccordionSection>
   );
 }

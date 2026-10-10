@@ -22,6 +22,9 @@ function formatBool(value, t) {
 export default function WorkspaceTab({
   config,
   capabilities,
+  effectiveProfile,
+  configDeprecations = [],
+  configCleanupRequired = false,
   updateField,
   pricingCatalogText,
   updatePricingCatalog,
@@ -61,8 +64,7 @@ export default function WorkspaceTab({
   const budgetsEnabled = budgetsAvailable && getValueByPath(config, "access.budgets.enabled") === true;
   const persistenceMode = getValueByPath(config, "persistence.configStore.mode") || "file";
   const fileSettingsVisible = persistenceMode !== "database";
-  const databaseSettingsVisible = persistenceMode.includes("database")
-    || getValueByPath(config, "persistence.configStore.database.enabled") === true;
+  const databaseSettingsVisible = persistenceMode.includes("database");
   const compatibilityExportEnabled = getValueByPath(config, "persistence.compatibilityExport.enabled") !== false;
   const logAnalyticsEnabled = getValueByPath(config, "observability.logAnalytics.enabled") === true;
 
@@ -70,6 +72,24 @@ export default function WorkspaceTab({
     <div className="stack-lg">
       <Section title={t("workspace.title", "Configuration Workspace")} desc={t("workspace.desc", "Bring persistence, Log Analytics, media, and routing domains into structured editing.")}>
         <div className="stack-lg">
+          {configDeprecations.length ? (
+            <aside className="code-block config-deprecations" role="note">
+              <div className="code-block-head">{t("config.deprecatedFlagsTitle", "Legacy configuration flags")}</div>
+              <p className="field-hint">{configCleanupRequired
+                ? t("config.deprecatedFlagsDesc", "Legacy switches were normalized or ignored. Review and save to persist the canonical configuration; reloading alone does not rewrite existing v3 files.")
+                : t("config.deprecatedFlagsApplied", "The canonical configuration has already been persisted. Reload to clear this migration notice.")}</p>
+              <ul>{configDeprecations.map(warning => (
+                <li key={warning.path}>
+                  <code>{warning.path}</code>
+                  {warning.replacement ? <> → <code>{warning.replacement}</code></>
+                    : ` · ${t("config.deprecatedFlagIgnored", "Inactive; removed from the editable configuration")}`}
+                </li>
+              ))}</ul>
+            </aside>
+          ) : null}
+          {effectiveProfile === "minimum" ? (
+            <p className="field-hint">{t("config.minimumFlagsNote", "The active minimum profile disables database administration, Log Analytics upload, runtime database statistics and budgets. Persisted settings are retained when saving.")}</p>
+          ) : null}
           <AccordionSection id="workspace-core" title={t("workspace.core.title", "Core And Governance Defaults")} desc={t("workspace.core.desc", "Host, admin path, proxy timeouts, API key defaults, and budget defaults.")} defaultOpen group="workspace-sections">
             <div className="form-grid">
               <Field label={t("field.distributionProfile", "Distribution Profile")}>
@@ -196,9 +216,7 @@ export default function WorkspaceTab({
               ) : null}
             </div>
             <div className="checkbox-row">
-              <label><input type="checkbox" checked={getValueByPath(config, "persistence.configStore.database.enabled") === true} onChange={(event) => updateField("persistence.configStore.database.enabled", event.target.checked)} /> {t("field.databaseEnabled", "Enable Database Store")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "persistence.compatibilityExport.enabled") !== false} onChange={(event) => updateField("persistence.compatibilityExport.enabled", event.target.checked)} /> {t("field.compatibilityExportEnabled", "Enable compatibility export")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "persistence.compatibilityExport.exportLegacyConfigOnChange") !== false} onChange={(event) => updateField("persistence.compatibilityExport.exportLegacyConfigOnChange", event.target.checked)} /> {t("field.compatibilityExportLegacy", "Export legacy config on change")}</label>
             </div>
 
             {databaseSettingsVisible && databaseAdminAvailable ? <div className="database-probe-panel">

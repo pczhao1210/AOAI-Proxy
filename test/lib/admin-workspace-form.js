@@ -44,19 +44,19 @@ export function setupWorkspaceFormTests() {
   });
 }
 
-export function renderWorkspace(config, sectionId = "workspace-media") {
+export function renderWorkspace(config, sectionId = "workspace-media", overrides = {}) {
   const changes = [];
   let currentConfig = config;
   const updateConfig = next => {
     currentConfig = next;
     view.rerender(React.createElement(WorkspaceTab, { ...props, config: currentConfig }));
   };
-  const props = { config, updateField: (path, value) => {
+  const props = { ...overrides, config, updateField: (path, value) => {
     changes.push([path, value]);
     const next = structuredClone(currentConfig);
     setValueByPath(next, path, value);
     updateConfig(next);
-  }, t: (_key, fallback) => fallback };
+  }, t: overrides.t || ((_key, fallback) => fallback) };
   const view = render(React.createElement(WorkspaceTab, props));
   const section = view.container.querySelector(`#${sectionId}`);
   section.open = true;

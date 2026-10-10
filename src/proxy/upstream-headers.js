@@ -18,8 +18,9 @@ function isDirectAnthropicUpstream(upstream, targetUrl) {
 
 function applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl }) {
   const policy = config?.compatibility?.anthropic || {};
-  const allowUnknownBetas = policy.unknownBetaPolicy !== "allowlist"
-    && isDirectAnthropicUpstream(upstream, targetUrl);
+  const allowUnknownBetas = policy.unknownBetaPolicy === "passthrough"
+    || policy.betaAllowlistEnabled === false
+    || (policy.unknownBetaPolicy !== "allowlist" && isDirectAnthropicUpstream(upstream, targetUrl));
   const allowed = new Set(Array.isArray(policy.betaAllowlist)
     ? policy.betaAllowlist.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
     : []);
@@ -34,7 +35,7 @@ function applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl }) {
       const value = rawValue.trim();
       if (!value || seen.has(value)) continue;
       seen.add(value);
-      if (!allowUnknownBetas && policy.betaAllowlistEnabled !== false && !allowed.has(value)) {
+      if (!allowUnknownBetas && !allowed.has(value)) {
         filtered.push(value);
         continue;
       }

@@ -579,3 +579,47 @@ test("App tier repair stays in the draft until reviewed save and preserves share
   assert.equal(fetchMock.mock.calls.filter(call => call.arguments[1]?.method === "PUT").length, 1);
   await testing.waitFor(() => assert.ok(testing.within(view.container.querySelector(".status-strip")).getByText("Synced")));
 });
+
+test("App allows reviewed canonical cleanup without editing unrelated settings", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  const canonical = { models: [], upstreams: [], persistence: { compatibilityExport: { enabled: false } } };
+  const deprecatedFlags = [{
+    path: "persistence.compatibilityExport.exportLegacyConfigOnChange",
+    replacement: "persistence.compatibilityExport.enabled", kind: "migrated"
+  }];
+  let saved = false;
+  context.mock.method(window, "confirm", () => true);
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/config")) {
+      if (options.method === "PUT") {
+        assert.deepEqual(JSON.parse(options.body), canonical);
+        assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+        saved = true;
+        return Response.json({ config: canonical });
+      }
+      return Response.json(canonical);
+    }
+    if (path.endsWith("/runtime")) return Response.json({ runtime: {
+      configuration: { cleanupRequired: !saved, deprecatedFlags: saved ? [] : deprecatedFlags }
+    } });
+    if (path.endsWith("/stats")) return Response.json({});
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "unused" }] });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.getByRole("button", { name: "Review & Save" })));
+  const dock = testing.within(view.container.querySelector(".save-dock"));
+  assert.ok(dock.getByText("Configuration cleanup pending"));
+  assert.equal(dock.queryByRole("button", { name: "Discard" }), null);
+  testing.fireEvent.click(dock.getByRole("button", { name: "Review & Save" }));
+  const dialog = testing.within(view.getByRole("dialog"));
+  assert.ok(dialog.getByText(/Existing disabled states are retained/));
+  assert.ok(dialog.getByText(deprecatedFlags[0].path));
+  assert.equal(saved, false);
+  await testing.act(async () => testing.fireEvent.click(dialog.getByRole("button", { name: "Save", exact: true })));
+  await testing.waitFor(() => assert.ok(testing.within(view.container.querySelector(".status-strip")).getByText("Synced")));
+  assert.equal(view.container.querySelector(".save-dock"), null);
+  assert.equal(saved, true);
+});

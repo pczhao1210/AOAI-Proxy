@@ -472,6 +472,15 @@ function attachAuth(config) {
 
 function applyLogConfig(config) {
   setLogConfig(config);
+  const deprecatedFlags = getConfigRuntimeInfo().configuration.deprecatedFlags;
+  if (deprecatedFlags.length) {
+    appendStructuredLog("warn", {
+      source: "config",
+      event: "config.deprecated_flags",
+      message: "Legacy configuration flags were normalized or ignored; review and save the canonical configuration",
+      deprecatedFlags
+    });
+  }
   if (process.env.LOG_LEVEL) return;
   const configuredLevel = String(config?.observability?.logs?.level || "info").trim().toLowerCase();
   if (["trace", "debug", "info", "warn", "error", "fatal", "silent"].includes(configuredLevel)) {
