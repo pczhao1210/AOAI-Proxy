@@ -5,12 +5,12 @@ import { formatEstimatedCost } from "../admin-ui/src/utils.js";
 
 setupWorkspaceFormTests();
 
-test("media cost labels show the settled USD subtotal once and preserve unknown usage", () => {
+test("media reference costs show the settled USD subtotal without unknown-fee suffixes", () => {
   assert.equal(formatEstimatedCost({ estimatedCostAmount: 0 }), "0.0000 USD");
   assert.equal(formatEstimatedCost({ estimatedCostAmount: 0.006, media: { costAmounts: { USD: 0.006 }, unknownCostRequests: 0 } }), "0.0060 USD");
   const stats = { estimatedCostAmount: 0.008, estimatedCostCurrency: "EUR", media: { costAmounts: { USD: 0.008 }, unknownCostRequests: 1 } };
-  assert.equal(formatEstimatedCost(stats), "0.0080 USD + Unknown");
-  assert.equal(formatEstimatedCost(stats, () => "unpriced"), "0.0080 USD + unpriced");
+  assert.equal(formatEstimatedCost(stats), "0.0080 USD");
+  assert.equal(formatEstimatedCost(stats, () => "unpriced"), "0.0080 USD");
 });
 
 function mediaConfig({ enabled = true, mode = "adaptive", remote = false, generation = false } = {}) {

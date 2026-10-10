@@ -27,6 +27,7 @@ import { createRuntimeLoader } from "./runtime-loader.js";
 import toast from "react-hot-toast";
 import {
   applyCompressionPresetToConfig,
+  applyModelCardTierPricing,
   buildLogSummaryText,
   buildConfigDiffPreview,
   buildImagePlaceholderPayload,
@@ -48,7 +49,7 @@ import {
   formatDateTime,
   formatBytes,
   formatEstimatedCost,
-  formatTokenSummary,
+  formatRuntimeNumber,
   getSuggestedModelRouteValues,
   getPayloadEditorNote,
   getLogDetails,
@@ -62,7 +63,8 @@ import {
   REDACTED_SECRET_VALUE,
   runtimeTokenHelp,
   supportsPricingTemplate,
-  setValueByPath
+  setValueByPath,
+  upsertPricingCatalogEntry
 } from "./utils.js";
 
 const AdvancedTab = lazy(() => import("./components/AdvancedTab.jsx"));
@@ -119,6 +121,7 @@ export default function App() {
   const [lastLoadedText, setLastLoadedText] = useState("");
   const [runtime, setRuntime] = useState(null);
   const [stats, setStats] = useState(null);
+  const [statsUpdatedAt, setStatsUpdatedAt] = useState(null);
   const [pricingLibrary, setPricingLibrary] = useState([]);
   const [pricingLibraryStatus, setPricingLibraryStatus] = useState(null);
   const [modelValidationResult, setModelValidationResult] = useState(null);
@@ -319,6 +322,7 @@ export default function App() {
       startTransition(() => {
         setRuntime(runtimeJson.runtime || null);
         setStats(statsJson || null);
+        setStatsUpdatedAt(new Date().toISOString());
       });
     } catch (loadError) {
       if (request.isCurrent()) throw loadError;
@@ -370,6 +374,7 @@ export default function App() {
         }
         if (statsResult.status === "fulfilled") {
           setStats(statsResult.value || null);
+          setStatsUpdatedAt(new Date().toISOString());
         } else {
           errors.push(statsResult.reason);
         }
@@ -831,13 +836,7 @@ export default function App() {
       }
       next.models.push(modelEntry);
 
-      if (templateImportPricing && selectedPricingTemplate.pricingCatalogEntry && modelEntry.pricingRef) {
-        next.access = next.access && typeof next.access === "object" ? next.access : {};
-        next.access.pricingCatalog = next.access.pricingCatalog && typeof next.access.pricingCatalog === "object"
-          ? next.access.pricingCatalog
-          : {};
-        next.access.pricingCatalog[modelEntry.pricingRef] = cloneJson(selectedPricingTemplate.pricingCatalogEntry);
-      }
+      if (templateImportPricing) upsertPricingCatalogEntry(next, selectedPricingTemplate);
 
       const upstream = next.upstreams.find((item) => item?.name === upstreamName);
       if (upstream && (!Array.isArray(upstream.capabilities) || upstream.capabilities.length === 0)) {
@@ -1113,13 +1112,10 @@ export default function App() {
 
   const summary = useMemo(() => {
     const totals = stats?.totals || {};
-    const blocked = governanceKeys.reduce((sum, item) => sum + Number(item?.runtime?.totalBlockedRequests || 0), 0);
     return {
       requests: totals.requests || 0,
       errors: totals.errors || 0,
       cost: formatEstimatedCost(totals, t),
-      tokens: formatTokenSummary(totals, t),
-      blocked,
       persistence: runtime?.persistence?.activeMode || runtime?.persistence?.mode || "file",
       logging: statusLabel(
         runtime?.logging?.memoryEnabled || runtime?.logging?.consoleEnabled || runtime?.logging?.logAnalyticsConfigured,
@@ -1127,7 +1123,7 @@ export default function App() {
       ),
       caddy: caddyStatus?.state || (config?.server?.caddy?.enabled ? "unknown" : "disabled")
     };
-  }, [runtime, stats, governanceKeys, caddyStatus, config?.server?.caddy?.enabled, t]);
+  }, [runtime, stats, caddyStatus, config?.server?.caddy?.enabled, t]);
 
   const categories = [
     {
@@ -1316,8 +1312,8 @@ export default function App() {
       </header>
 
       <section className="summary-grid status-strip" aria-label={t("summary.title", "System status") }>
-        <StatCard label={t("summary.requests", "Requests")} value={summary.requests} note={`${t("summary.errors", "Errors")} ${summary.errors}`} />
-        <StatCard label={t("summary.cost", "Estimated Cost")} value={summary.cost} note={<span title={runtimeTokenHelp(t)}>{`${t("summary.blocked", "Blocked")} ${summary.blocked} · ${summary.tokens}`}</span>} />
+        <StatCard label={t("summary.requests", "Requests")} value={formatRuntimeNumber(summary.requests)} note={`${t("summary.errors", "Errors")} ${formatRuntimeNumber(summary.errors)}`} />
+        <StatCard label={t("summary.cost", "Reference Cost")} value={summary.cost} note={t("runtime.costReference", "Billing estimates may be incomplete and are for reference only. Final charges are determined by the Azure billing portal.")} />
         <StatCard label={t("summary.persistence", "Persistence")} value={t(`option.${summary.persistence}`, summary.persistence)} note={`${t("summary.logging", "Logging")} ${t(`status.${summary.logging}`, summary.logging)}`} />
         <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : t("summary.synced", "Synced")} />
       </section>
@@ -1559,9 +1555,15 @@ export default function App() {
 
       {activeTab === "runtime" ? (
         <RuntimeTab
+          config={config}
+          pricingLibrary={pricingLibrary}
+          onApplyCardPricing={(modelIds) => updateConfig((next) => applyModelCardTierPricing(next, modelIds, pricingLibrary))}
+          totals={stats?.totals}
+          snapshotFilters={stats?.filters}
+          statsUpdatedAt={statsUpdatedAt}
           persistenceRuntime={persistenceRuntime}
           loggingRuntime={loggingRuntime}
-                runtimeStore={runtimeStore}
+          runtimeStore={runtimeStore}
           persistenceRuntimeText={persistenceRuntimeText}
           loggingRuntimeText={loggingRuntimeText}
           governanceKeys={governanceKeys}
@@ -1575,8 +1577,8 @@ export default function App() {
           runtimeFilters={runtimeFilters}
           runtimeKeyOptions={runtimeKeyOptions}
           onRuntimeFilterChange={handleRuntimeFilterChange}
-                onSyncRuntime={handleRuntimeSync}
-                runtimeSyncBusy={diagnosticsBusy.runtimeSync === true}
+          onSyncRuntime={handleRuntimeSync}
+          runtimeSyncBusy={diagnosticsBusy.runtimeSync === true}
           formatDateTime={formatDateTime}
           t={t}
         />

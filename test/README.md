@@ -85,7 +85,14 @@ contract checks admin authentication, CSRF, custom admin paths, all-model scope
 regardless of active filters, and preservation of global/key/governance counters.
 UI checks distinguish settled tier requests from admitted model requests, derive
 cache-read ratios from aggregated token counts, remove standalone write costs,
-and require confirmation before the model-only reset. No ratio is persisted.
+and require confirmation before the model-only reset. All executable tiered
+cards are also checked through import, override precedence, exact interval
+boundaries and explicit scoped price repair. UI regressions separate card tiers
+from historical non-tiered rows, preserve shared prices and routes, require a
+price-review confirmation and keep repair in the config draft until save.
+Reference costs omit unknown-fee suffixes without changing backend completeness;
+overview contracts cover scoped totals, dated calendar buckets, empty data and
+instance-wide health. No ratio is persisted.
 Mock storage checks cover restart, reset failure, queued/spilled pre-reset events,
 serialized flush/reset/snapshot operations, nullable history and media accounting.
 Requests already in flight are not cancelled: post-reset settlements remain

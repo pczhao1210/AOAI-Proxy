@@ -4,9 +4,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { expandModelCard, getModelCardPricing } from "../src/model-card.js";
-import { compileDefinitionPricing } from "../src/pricing-policy.js";
+import { compileDefinitionPricing, resolveConfiguredPricing } from "../src/pricing-policy.js";
+import { calculateTokenCost } from "../src/token-pricing.js";
 import { listPricingDefinitions } from "../src/pricing-library.js";
-import { buildModelFromPricingTemplate, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
+import { applyModelCardTierPricing, buildModelFromPricingTemplate, getModelTierPricing, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
 import { canonicalizeModelCard, formatModelCard, validateModelCard } from "../scripts/model-cards.js";
 
 const legacy = {
@@ -182,6 +183,67 @@ test("tier tables are stored once without inventing missing rates or flattening 
   assert.deepEqual(named.pricing.tiers.map(row => row.id), ["short", "long"]);
   assert.deepEqual(compileDefinitionPricing(named).pricing, compileDefinitionPricing(card).pricing);
   assert.throws(() => canonicalizeModelCard({ ...card, pricing: { ...card.pricing, inputPer1mTokens: 99 } }), /Conflicting whole-request/);
+});
+
+test("every executable tiered card survives import, override review and explicit scoped price repair", () => {
+  const definitions = listPricingDefinitions();
+  const tiered = definitions.filter(card => compileDefinitionPricing(card).pricing?.tiering);
+  assert.ok(tiered.some(card => card.id === "gpt-6-astra"));
+  assert.ok(tiered.some(card => card.id === "gpt-5.6-sol"));
+  const config = {
+    models: tiered.map(card => ({
+      id: `public-${card.id}`, targetModel: card.id, pricingRef: `custom-${card.id}`,
+      routes: { "*": "responses" }, pricing: { inputPer1mTokens: 1, outputPer1mTokens: 2 }
+    })),
+    access: { pricingCatalog: { shared: { inputPer1mTokens: 99 } } }
+  };
+  const original = structuredClone(config);
+  const reviews = getModelTierPricing(config, definitions);
+  assert.equal(reviews.length, tiered.length);
+  assert.ok(reviews.every(review => review.needsUpdate && review.source === "model.pricing"));
+  assert.deepEqual(config, original);
+  const first = reviews[0];
+  applyModelCardTierPricing(config, [first.modelId], definitions);
+  assert.deepEqual(config.models.slice(1), original.models.slice(1));
+  assert.deepEqual(config.access, original.access);
+  assert.deepEqual(config.models[0].routes, original.models[0].routes);
+  applyModelCardTierPricing(config, reviews.map(review => review.modelId), definitions);
+  assert.ok(getModelTierPricing(config, definitions).every(review => !review.needsUpdate));
+  for (const [index, card] of tiered.entries()) {
+    const imported = {};
+    upsertPricingCatalogEntry(imported, card);
+    assert.deepEqual(imported.access.pricingCatalog[card.proxyTemplate?.pricingRef || card.id], getModelCardPricing(card));
+    const policy = resolveConfiguredPricing(config, config.models[index], () => compileDefinitionPricing(card)).pricing;
+    for (const tier of policy.tiers) {
+      const input = tier.promptTokensAtLeast;
+      for (const prompt of [input, ...(tier.promptTokensBelow === null ? [] : [tier.promptTokensBelow - 1])]) {
+        const cost = calculateTokenCost(policy, {
+          input_tokens: prompt, output_tokens: 0,
+          input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }
+        }, { backendProtocol: "responses" });
+        assert.equal(cost.tier.id, tier.id, card.id);
+        assert.equal(cost.costStatus, "priced", card.id);
+      }
+    }
+  }
+  assert.deepEqual(config.access, original.access);
+  assert.throws(() => applyModelCardTierPricing(config, ["missing"], definitions), /unavailable/);
+});
+
+test("tier review uses runtime override precedence and never enables card pricing opt-outs", () => {
+  const definition = { id: "example", pricing: {
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [{ id: "short", promptTokensBelow: 100, inputPer1mTokens: 1 },
+      { id: "long", promptTokensAtLeast: 100, inputPer1mTokens: 2 }]
+  } };
+  const config = { models: [{ id: "alias", targetModel: "example", pricingRef: "custom" }],
+    access: { pricingCatalog: { custom: { inputPer1mTokens: 0 } } } };
+  assert.equal(getModelTierPricing(config, [definition])[0].source, "access.pricingCatalog.custom");
+  config.models[0].pricing = structuredClone(definition.pricing);
+  config.models[0].pricing.tiers[0].inputPer1mTokens = 0;
+  assert.equal(getModelTierPricing(config, [definition])[0].needsUpdate, false);
+  assert.deepEqual(getModelTierPricing(config, [{ ...definition, pricingCatalogEntry: null }]), []);
+  assert.throws(() => resolveConfiguredPricing({}, { pricing: "invalid" }, () => null), /token pricing must be an object/);
 });
 
 test("model-card formatter is deterministic, idempotent and preserves media and evidence", () => {

@@ -444,7 +444,10 @@ the pricing source, policy digest, selected tier/rates and `costStatus`:
 Missing/invalid input usage and locally estimated token counts cannot select an
 exact context tier. Statistics and budgets keep numerical **known subtotals** for
 compatibility, with `textUnknownCostRequests` marking incompleteness; the admin
-UI does not label those subtotals as a complete/free bill. Detail events retain
+UI presents these as reference costs without an unknown-fee suffix, with a
+single disclaimer below the model-statistics heading: estimates may be incomplete
+and the Azure billing portal determines final charges. Unavailable amounts show
+`—`; confirmed zero-cost requests still show `0.0000 USD`. Detail events retain
 the audit and unknown reason, while rollups retain the unknown-request count.
 Existing historical events are not retroactively repriced or reclassified.
 This remains post-hoc estimated accounting, not a guaranteed prepaid hard cap:
@@ -466,9 +469,20 @@ PostgreSQL event and rollup tables add `cache_write_tokens`,
 `cache_write_unreported_requests`. The additive migration does not manufacture
 zero usage/cost for old rows. Spill/replay and aggregate queries preserve the
 same nullable coverage. The admin overview, trend and model/key/actual-model
-tables show write tokens and write cost separately, including partial or
-unreported labels. Write cost is a component of the existing total, not an extra
-budget charge.
+tables show write tokens, including partial or unreported usage labels. The
+reference cost already includes priced writes; no standalone write-cost column
+or extra budget charge is added.
+
+The admin checks every configured model whose executable card defines tiers,
+including aliases and custom public IDs. Model-level pricing and persisted
+catalog entries still override the library. A library sync does not overwrite
+prices previously copied into configuration. When configured tier intervals
+differ, the model-statistics price review can explicitly replace the listed
+models' prices with complete card snapshots, including all cache rates. Review
+and save the draft through the ordinary configuration workflow to activate it.
+Shared catalog entries, routes, other models and historical settlements remain
+unchanged. Non-tiered historical rows are labeled separately when the current
+card is tiered; current card tiers are never used to fabricate historical tiers.
 
 The new runtime must be deployed once (and admin assets built before building the
 container). Subsequent valid price policy changes apply to new requests after

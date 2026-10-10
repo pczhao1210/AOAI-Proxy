@@ -13,6 +13,17 @@ export function getModelCardPricing(definition) {
   return definition.pricing ?? null;
 }
 
+export function getConfiguredPricingEntry(config, model) {
+  if (model?.pricing && Object.keys(model.pricing).length) {
+    return { entry: model.pricing, source: "model.pricing" };
+  }
+  const ref = String(model?.pricingRef || "").trim();
+  const entry = config?.access?.pricingCatalog?.[ref];
+  return entry && Object.keys(entry).length
+    ? { entry, source: `access.pricingCatalog.${ref}` }
+    : null;
+}
+
 export function getModelCardTemplateDefaults(definition) {
   return {
     id: definition.id,

@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { AccordionSection, Modal, Section, StatCard } from "./ui.jsx";
-import { formatBillingTier, formatBudgetCost, formatCacheHitRatio, formatCacheWriteTokens, formatEstimatedCost, formatTokenSummary, getModelBillingRows, runtimeTokenHelp } from "../utils.js";
+import { findPricingTemplateByHint, formatBillingTier, formatBudgetCost, formatCacheHitRatio, formatCacheWriteTokens, formatEstimatedCost, formatRuntimeNumber, getModelBillingRows, getModelTierPricing, runtimeTokenHelp } from "../utils.js";
 
 function TokenHeaders({ t }) {
   const help = runtimeTokenHelp(t);
@@ -18,10 +18,10 @@ function TokenHeaders({ t }) {
 function TokenCells({ stats, t }) {
   return (
     <>
-      <td>{stats.promptTokens ?? "—"}</td>
-      <td>{stats.cachedTokens ?? "—"}</td>
+      <td>{formatRuntimeNumber(stats.promptTokens)}</td>
+      <td>{formatRuntimeNumber(stats.cachedTokens)}</td>
       <td>{formatCacheWriteTokens(stats.cacheWrite, t)}</td>
-      <td>{stats.completionTokens ?? "—"}</td>
+      <td>{formatRuntimeNumber(stats.completionTokens)}</td>
       <td>{formatCacheHitRatio(stats)}</td>
     </>
   );
@@ -94,15 +94,15 @@ function TrendTable({ title, rows, formatDateTime, t }) {
               <th>{t("table.blockedCount", "Blocked")}</th>
               <th>{t("table.warningCount", "Warnings")}</th>
               <TokenHeaders t={t} />
-              <th>{t("table.cost", "Estimated Cost")}</th>
+              <th>{t("table.cost", "Reference Cost")}</th>
             </tr>
           </thead>
           <tbody>
             {rows.length ? rows.map((row) => (
               <tr key={row.bucketStart}>
                 <td>{formatDateTime(row.bucketStart)}</td>
-                <td>{row.requests || 0}</td>
-                <td>{row.errors || 0}</td>
+                <td>{formatRuntimeNumber(row.requests ?? 0)}</td>
+                <td>{formatRuntimeNumber(row.errors ?? 0)}</td>
                 <td>{row.blockedCount || 0}</td>
                 <td>{row.warningCount || 0}</td>
                 <TokenCells stats={row} t={t} />
@@ -138,6 +138,12 @@ function formatCountdown(targetValue, nowTs, t) {
 }
 
 export default function RuntimeTab({
+  config = {},
+  pricingLibrary = [],
+  onApplyCardPricing,
+  totals = {},
+  snapshotFilters,
+  statsUpdatedAt,
   persistenceRuntime,
   loggingRuntime,
   runtimeStore,
@@ -160,6 +166,22 @@ export default function RuntimeTab({
   t
 }) {
   const [expandedModels, setExpandedModels] = useState({});
+  const [pricingDialogOpen, setPricingDialogOpen] = useState(false);
+  const [pricingBusy, setPricingBusy] = useState(false);
+  const [pricingFeedback, setPricingFeedback] = useState(null);
+  const pricingPending = useRef(false);
+  const pricingReview = useMemo(() => {
+    try {
+      return {
+        configured: getModelTierPricing(config, pricingLibrary),
+        library: getModelTierPricing({ models: pricingLibrary.map(card => ({ id: card.id })) }, pricingLibrary),
+        error: null
+      };
+    } catch (error) {
+      return { configured: [], library: [], error: error.message };
+    }
+  }, [config, pricingLibrary]);
+  const pricingMismatches = pricingReview.configured.filter(review => review.needsUpdate);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [resetFeedback, setResetFeedback] = useState(null);
@@ -183,9 +205,11 @@ export default function RuntimeTab({
   const warningEvents = Array.isArray(analytics?.warningEvents) ? analytics.warningEvents : [];
   const recentWarnings = Array.isArray(recentSignals?.warnings) ? recentSignals.warnings : [];
   const recentBlocked = Array.isArray(recentSignals?.blocked) ? recentSignals.blocked : [];
-  const latestHourly = hourlyRollups[hourlyRollups.length - 1] || {};
-  const latestDaily = dailyRollups[dailyRollups.length - 1] || {};
-  const latestWeekly = weeklyRollups[weeklyRollups.length - 1] || {};
+  const periods = [
+    [t("runtime.periodHour", "Hour"), hourlyRollups.at(-1)],
+    [t("runtime.periodDay", "Day"), dailyRollups.at(-1)],
+    [t("runtime.periodWeek", "Week"), weeklyRollups.at(-1)]
+  ];
   const recoveryIntervalText = formatDurationMs(persistenceRuntime.databaseRecoveryIntervalMs, t);
   const runtimeFlushIntervalText = formatDurationMs(runtimeStore.flushIntervalMs, t);
   const nextRecoveryCountdown = formatCountdown(persistenceRuntime.nextDatabaseRecoveryAttemptAt, nowTs, t);
@@ -203,6 +227,30 @@ export default function RuntimeTab({
       ...current,
       [modelId]: !current[modelId]
     }));
+  }
+
+  function cardTierInfo(modelId) {
+    const configured = pricingReview.configured.find(review => review.modelId === modelId);
+    if (configured) return configured;
+    const definition = findPricingTemplateByHint(pricingLibrary, modelId);
+    return pricingReview.library.find(review => review.definition === definition);
+  }
+
+  async function confirmCardPricing() {
+    if (pricingPending.current) return;
+    pricingPending.current = true;
+    setPricingBusy(true);
+    setPricingFeedback(null);
+    try {
+      await onApplyCardPricing(pricingMismatches.map(review => review.modelId));
+      setPricingDialogOpen(false);
+      setPricingFeedback({ success: true, message: t("runtime.cardPricingApplied", "Card prices were applied to the draft. Review and save configuration to activate them; historical statistics were retained.") });
+    } catch (error) {
+      setPricingFeedback({ success: false, message: error.message });
+    } finally {
+      pricingPending.current = false;
+      setPricingBusy(false);
+    }
   }
 
   async function confirmModelStatsReset() {
@@ -225,13 +273,14 @@ export default function RuntimeTab({
   }
 
   return (
-    <div className="stack-lg">
+    <div className="stack-lg runtime-dashboard">
       <Section
         id="runtime-overview"
         title={t("runtime.overview", "Runtime Overview")}
-        desc={t("runtime.overviewDesc", "Watch persistence health, logging state, active governance activity, and model traffic from one place.")}
+        desc={t("runtime.overviewDesc", "Compare traffic and reference costs separately from system health.")}
         actions={(
           <div className="toolbar-cluster runtime-filter-toolbar">
+            {statsUpdatedAt ? <span className="field-hint">{t("runtime.updatedAt", "Updated")}: {formatDateTime(statsUpdatedAt)}</span> : null}
             <button type="button" className="ghost" onClick={onSyncRuntime} disabled={runtimeSyncBusy}>
               {runtimeSyncBusy
                 ? t("runtime.syncNowRunning", "Syncing...")
@@ -258,7 +307,68 @@ export default function RuntimeTab({
           </div>
         )}
       >
-        <div className="code-block runtime-mini-panel">
+        <div className="runtime-scope">
+          <h3>{snapshotFilters ? t("runtime.scopedStats", "Selected Range") : t("runtime.cumulativeStats", "Cumulative Snapshot")}</h3>
+          <span className="muted">
+            {snapshotFilters
+              ? `${runtimeKeyOptions.find(option => option.value === snapshotFilters.keyId)?.label || snapshotFilters.keyId || t("option.all", "All")} · ${t(`option.${{ "24h": "last24h", "7d": "last7d", "30d": "last30d" }[snapshotFilters.timeRange] || "all"}`, "All")}`
+              : t("runtime.filterCoverage", "Key and time filtering requires database statistics.")}
+          </span>
+        </div>
+        <div className="runtime-metrics">
+          <StatCard label={t("table.requests", "Requests")} value={formatRuntimeNumber(totals.requests)} />
+          <StatCard label={t("table.errors", "Errors")} value={formatRuntimeNumber(totals.errors)} />
+          <StatCard label={t("table.cost", "Reference Cost")} value={Object.keys(totals).length ? formatEstimatedCost(totals, t, totals.estimatedCostCurrency) : "—"} />
+          <StatCard label={t("table.inputTokensIncludingCache", "Input Total (Including Cache)")} value={formatRuntimeNumber(totals.promptTokens)} />
+          <StatCard label={t("table.outputTokens", "Output Tokens")} value={formatRuntimeNumber(totals.completionTokens)} />
+          <StatCard label={t("table.cacheHitRatio", "Cache Hit Ratio")} value={<span title={runtimeTokenHelp(t)}>{formatCacheHitRatio(totals)}</span>} />
+        </div>
+        <p className="field-hint">{`${t("runtime.modelsObserved", "Observed Models")}: ${formatRuntimeNumber(modelCount)} · ${t("runtime.observedKeys", "Observed Keys")}: ${formatRuntimeNumber(observedKeyCount)}`}</p>
+        <div className="runtime-periods">
+          <h3>{t("runtime.periodStats", "Period Statistics")}</h3>
+          <p className="field-hint">{t("runtime.periodHelp", "Latest recorded calendar buckets, not rolling windows. Bucket timestamps may precede the current period.")}</p>
+          <div className="table-scroll">
+            <table>
+              <thead><tr>
+                <th>{t("runtime.period", "Period")}</th>
+                <th>{t("runtime.bucketStart", "Bucket Start")}</th>
+                <th>{t("table.requests", "Requests")}</th>
+                <th>{t("table.errors", "Errors")}</th>
+                <th>{t("table.inputTokensIncludingCache", "Input Total (Including Cache)")}</th>
+                <th>{t("table.outputTokens", "Output Tokens")}</th>
+                <th>{t("table.cost", "Reference Cost")}</th>
+              </tr></thead>
+              <tbody>{periods.map(([label, row]) => (
+                <tr key={label}>
+                  <td>{label}</td>
+                  <td>{row?.bucketStart ? formatDateTime(row.bucketStart) : "—"}</td>
+                  <td>{formatRuntimeNumber(row?.requests)}</td>
+                  <td>{formatRuntimeNumber(row?.errors)}</td>
+                  <td>{formatRuntimeNumber(row?.promptTokens)}</td>
+                  <td>{formatRuntimeNumber(row?.completionTokens)}</td>
+                  <td>{row ? formatEstimatedCost(row, t, row.estimatedCostCurrency) : "—"}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+        <div className="runtime-health">
+          <h3>{t("runtime.systemHealth", "System Health")}</h3>
+          <p className="field-hint">{t("runtime.healthScope", "Instance-wide state; Key and time filters do not apply.")}</p>
+          <dl className="runtime-health-grid">
+            <div><dt>{t("runtime.persistence", "Persistence")}</dt><dd>{t(`option.${persistenceMode}`, persistenceMode)}</dd></div>
+            <div><dt>{t("runtime.sync", "Sync")}</dt><dd>{t(`status.${syncState}`, syncState)}</dd></div>
+            <div><dt>{t("runtime.database", "Database")}</dt><dd>{t(`runtime.databaseState.${persistenceRuntime.databaseAccessState || "disabled"}`, persistenceRuntime.databaseAccessState || "disabled")}</dd></div>
+            <div><dt>{t("runtime.logSink", "Log Sink")}</dt><dd>{t(`status.${logSinkState}`, logSinkState)}</dd><small>{t("runtime.logSinkNote", "Queue {count} / {bytes} B · Drops {drops} · Failures {failures}", {
+              count: loggingRuntime.queueLength ?? 0, bytes: loggingRuntime.queueBytes ?? 0,
+              drops: loggingRuntime.droppedEntries ?? 0, failures: loggingRuntime.flushFailures ?? 0
+            })}</small></div>
+            <div><dt>{t("runtime.eventQueue", "Event Queue")}</dt><dd>{formatRuntimeNumber(runtimeStore.queueLength ?? 0)}</dd></div>
+          </dl>
+        </div>
+        <details className="runtime-sync-details">
+          <summary>{t("runtime.syncPlan", "Recovery & Sync")}</summary>
+          <div className="code-block runtime-mini-panel">
           <div className="code-block-head">{t("runtime.syncPlan", "Recovery & Sync")}</div>
           <p className="muted">
             {t("runtime.syncPlanRecovery", "Database recovery probes run every {interval}. Next attempt: {countdown}.", {
@@ -275,59 +385,8 @@ export default function RuntimeTab({
           <p className="field-hint">
             {t("runtime.syncPlanManual", "Manual sync triggers an immediate database recovery probe and a runtime queue flush, then the page refreshes the latest stats.")}
           </p>
-        </div>
-        <div className="panel-summary-grid">
-          <StatCard
-            label={t("runtime.persistence", "Persistence")}
-            value={t(`option.${persistenceMode}`, persistenceMode)}
-            note={`${t("runtime.configured", "Configured")} ${t(`option.${persistenceRuntime.mode || "file"}`, persistenceRuntime.mode || "file")}`}
-          />
-          <StatCard
-            label={t("runtime.sync", "Sync")}
-            value={t(`status.${syncState}`, syncState)}
-            note={t("runtime.nextRecoveryShort", "Next recovery: {countdown}", { countdown: nextRecoveryCountdown })}
-          />
-          <StatCard
-            label={t("runtime.database", "Database")}
-            value={persistenceRuntime.databaseAccessState || "disabled"}
-            note={`${persistenceRuntime.databaseProvider || "postgresql"} · ${t("runtime.recoveryEvery", "probe every {interval}", { interval: recoveryIntervalText })}`}
-          />
-          <StatCard
-            label={t("runtime.logSink", "Log Sink")}
-            value={t(`status.${logSinkState}`, logSinkState)}
-            note={t("runtime.logSinkNote", "Queue {count} / {bytes} B · Drops {drops} · Failures {failures}", {
-              count: loggingRuntime.queueLength ?? 0,
-              bytes: loggingRuntime.queueBytes ?? 0,
-              drops: loggingRuntime.droppedEntries ?? 0,
-              failures: loggingRuntime.flushFailures ?? 0
-            })}
-          />
-          <StatCard
-            label={t("runtime.observedKeys", "Observed Keys")}
-            value={observedKeyCount}
-            note={t("runtime.observedKeysNote", "Keys with governance runtime data")}
-          />
-          <StatCard
-            label={t("runtime.modelsObserved", "Observed Models")}
-            value={modelCount}
-            note={t("runtime.modelsObservedNote", "Models with traffic in current stats snapshot")}
-          />
-          <StatCard
-            label={t("runtime.rollupHourly", "Latest Hour")}
-            value={latestHourly.requests || 0}
-            note={<span title={runtimeTokenHelp(t)}>{`${t("table.errors", "Errors")} ${latestHourly.errors || 0} · ${t("runtime.nextFlushShort", "Next flush: {countdown}", { countdown: nextFlushCountdown })} · ${formatTokenSummary(latestHourly, t)}`}</span>}
-          />
-          <StatCard
-            label={t("runtime.rollupDaily", "Latest Day")}
-            value={formatEstimatedCost(latestDaily, t, latestDaily.estimatedCostCurrency)}
-            note={<span title={runtimeTokenHelp(t)}>{`${t("table.warningCount", "Warnings")} ${latestDaily.warningCount || 0} · ${formatTokenSummary(latestDaily, t)}`}</span>}
-          />
-          <StatCard
-            label={t("runtime.rollupWeekly", "Latest Week")}
-            value={latestWeekly.requests || 0}
-            note={<span title={runtimeTokenHelp(t)}>{`${t("table.cost", "Estimated Cost")} ${formatEstimatedCost(latestWeekly, t, latestWeekly.estimatedCostCurrency)} · ${formatTokenSummary(latestWeekly, t)}`}</span>}
-          />
-        </div>
+          </div>
+        </details>
       </Section>
 
       <AccordionSection id="runtime-persistence" group="runtime-sections" defaultOpen title={t("runtime.title", "Persistence / Logging Runtime")} desc={t("runtime.desc", "Read runtime API directly to inspect file, Azure Files, and database state plus Log Analytics sink health.")}>
@@ -465,7 +524,7 @@ export default function RuntimeTab({
                 <th>{t("table.requests", "Requests")}</th>
                 <th>{t("table.errors", "Errors")}</th>
                 <TokenHeaders t={t} />
-                <th>{t("table.cost", "Estimated Cost")}</th>
+                <th>{t("table.cost", "Reference Cost")}</th>
                 <th>{t("table.concurrent", "Concurrency")}</th>
                 <th>{t("table.limits", "Limits")}</th>
                 <th>{t("table.budget", "Budget")}</th>
@@ -485,8 +544,8 @@ export default function RuntimeTab({
                   <tr key={entry.keyId}>
                     <td>{entry.displayName || entry.keyId}</td>
                     <td>{entry.owner || "-"}</td>
-                    <td>{perKey.requests || runtimeEntry.totalRequests || 0}</td>
-                    <td>{perKey.errors || runtimeEntry.totalErrors || 0}</td>
+                    <td>{formatRuntimeNumber(perKey.requests ?? runtimeEntry.totalRequests ?? 0)}</td>
+                    <td>{formatRuntimeNumber(perKey.errors ?? runtimeEntry.totalErrors ?? 0)}</td>
                     <TokenCells stats={perKey} t={t} />
                     <td>{formatEstimatedCost({ ...perKey, estimatedCostAmount: perKey.estimatedCostAmount ?? budgetWindow.spentAmount ?? 0, textUnknownCostRequests: perKey.textUnknownCostRequests ?? budgetWindow.textUnknownCostRequests ?? 0 }, t)}</td>
                     <td>{runtimeEntry.currentConcurrent || 0}</td>
@@ -516,7 +575,7 @@ export default function RuntimeTab({
         </div>
       </AccordionSection>
 
-      <AccordionSection id="runtime-models" group="runtime-sections" title={t("runtime.modelStats", "Model Stats")} desc={t("runtime.modelStatsDesc", "Continue consuming the existing stats API in React.")}>
+      <AccordionSection id="runtime-models" group="runtime-sections" title={t("runtime.modelStats", "Model Stats")} desc={t("runtime.costReference", "Billing estimates may be incomplete and are for reference only. Final charges are determined by the Azure billing portal.")}>
         <div className="toolbar">
           <button type="button" className="ghost danger" disabled={isResetBusy || !onResetModelStats} onClick={() => setResetDialogOpen(true)}>
             {isResetBusy ? t("runtime.modelsResetPending", "Resetting model stats…") : t("runtime.modelsReset", "Reset all model stats")}
@@ -524,7 +583,18 @@ export default function RuntimeTab({
           {modelsResetAt ? <span className="muted">{t("runtime.modelsResetAt", "Model stats reset at")}: {formatDateTime(modelsResetAt)}</span> : null}
         </div>
         {resetFeedback ? <p role={resetFeedback.success ? "status" : "alert"}>{resetFeedback.message}</p> : null}
+        {pricingReview.error ? <p role="alert">{pricingReview.error}</p> : null}
+        {pricingFeedback ? <p role={pricingFeedback.success ? "status" : "alert"}>{pricingFeedback.message}</p> : null}
+        {pricingMismatches.length ? (
+          <div className="runtime-pricing-review">
+            <span>{t("runtime.tierPricingMismatch", "{count} tiered model cards differ from the editable pricing configuration.", { count: pricingMismatches.length })}</span>
+            <button type="button" className="ghost" onClick={() => setPricingDialogOpen(true)} disabled={!onApplyCardPricing || pricingBusy}>
+              {t("runtime.reviewTierPricing", "Review tier pricing")}
+            </button>
+          </div>
+        ) : null}
         <p className="field-hint">{runtimeTokenHelp(t)}</p>
+        <p className="field-hint">{t("runtime.billingTierHelp", "Tiers use recorded per-request billing context, not aggregate tokens or current model cards. Settled requests exclude errors; unavailable historical counts are shown as —.")}</p>
         <div className="table-scroll">
           <table>
             <thead>
@@ -533,20 +603,24 @@ export default function RuntimeTab({
                 <th>{t("table.requests", "Requests")}</th>
                 <th>{t("table.errors", "Errors")}</th>
                 <TokenHeaders t={t} />
-                <th>{t("table.cost", "Estimated Cost")}</th>
+                <th>{t("table.cost", "Reference Cost")}</th>
               </tr>
             </thead>
             <tbody>
               {Object.entries(modelStats).length ? Object.entries(modelStats).map(([modelId, modelStat]) => {
                 const billingRows = getModelBillingRows(modelId, modelStat);
                 const expanded = !!expandedModels[modelId];
+                const cardInfo = cardTierInfo(modelId);
 
                 return (
                   <Fragment key={modelId}>
                     <tr>
                       <td>
                         <div className="model-cell">
-                          <span>{modelId}</span>
+                          <div className="runtime-cell-stack">
+                            <span>{modelId}</span>
+                            {cardInfo ? <small className="model-card-tiers">{t("runtime.cardTiers", "Model Card Tiers")}: {cardInfo.cardTiers.map(tier => formatBillingTier({ ...tier, kind: "tier" }, t)).join(" / ")}</small> : null}
+                          </div>
                           {billingRows.length ? (
                             <button
                               type="button"
@@ -560,8 +634,8 @@ export default function RuntimeTab({
                           ) : null}
                         </div>
                       </td>
-                      <td>{modelStat.requests || 0}</td>
-                      <td>{modelStat.errors || 0}</td>
+                      <td>{formatRuntimeNumber(modelStat.requests ?? 0)}</td>
+                      <td>{formatRuntimeNumber(modelStat.errors ?? 0)}</td>
                       <TokenCells stats={modelStat} t={t} />
                       <td>{formatEstimatedCost(modelStat, t, modelStat.estimatedCostCurrency)}</td>
                     </tr>
@@ -570,7 +644,6 @@ export default function RuntimeTab({
                         <td colSpan="9">
                           <div className="model-breakdown">
                             <div className="model-breakdown-title">{t("runtime.actualModelBreakdown", "Actual Model Breakdown")}</div>
-                            <p className="field-hint">{t("runtime.billingTierHelp", "Tiers use recorded per-request billing context, not aggregate tokens or current model cards. Settled requests exclude errors; unavailable historical counts are shown as —.")}</p>
                             <div className="table-scroll">
                               <table>
                                 <thead>
@@ -579,15 +652,17 @@ export default function RuntimeTab({
                                     <th>{t("table.billingTier", "Billing Tier")}</th>
                                     <th>{t("table.settledRequests", "Settled Requests")}</th>
                                     <TokenHeaders t={t} />
-                                    <th>{t("table.cost", "Estimated Cost")}</th>
+                                    <th>{t("table.cost", "Reference Cost")}</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {billingRows.map((actualStat, index) => (
                                     <tr key={`${actualStat.actualModelId}-${actualStat.tier?.id || actualStat.tier?.kind}-${index}`}>
                                       <td>{actualStat.actualModelId}</td>
-                                      <td>{formatBillingTier(actualStat.tier, t)}</td>
-                                      <td>{Number.isSafeInteger(actualStat.requests) && actualStat.requests >= 0 ? actualStat.requests : "—"}</td>
+                                      <td>{actualStat.tier?.kind === "flat" && cardTierInfo(actualStat.actualModelId)
+                                        ? t("runtime.tierHistoricalFlat", "Historical non-tiered")
+                                        : formatBillingTier(actualStat.tier, t)}</td>
+                                      <td>{Number.isSafeInteger(actualStat.requests) && actualStat.requests >= 0 ? formatRuntimeNumber(actualStat.requests) : "—"}</td>
                                       <TokenCells stats={actualStat} t={t} />
                                       <td>{formatEstimatedCost(actualStat, t, actualStat.estimatedCostCurrency)}</td>
                                     </tr>
@@ -606,6 +681,36 @@ export default function RuntimeTab({
           </table>
         </div>
       </AccordionSection>
+      <Modal
+        title={t("runtime.reviewTierPricing", "Review tier pricing")}
+        isOpen={pricingDialogOpen}
+        onClose={() => { if (!pricingPending.current) setPricingDialogOpen(false); }}
+        onConfirm={confirmCardPricing}
+        confirmLabel={t("runtime.applyCardPricing", "Apply card prices to draft")}
+        cancelLabel={t("common.cancel", "Cancel")}
+        closeLabel={t("common.close", "Close")}
+        disabled={pricingBusy || !pricingMismatches.length}
+      >
+        <p>{t("runtime.cardPricingConfirm", "Replaces model-level prices for the listed models with complete model-card prices, including tiers and cache rates. Shared catalog entries and other settings are unchanged. Save configuration to activate; historical costs are not recalculated.")}</p>
+        {pricingFeedback && !pricingFeedback.success ? <p role="alert">{pricingFeedback.message}</p> : null}
+        <ul className="runtime-price-preview">{pricingMismatches.map(review => (
+          <li key={review.modelId}>
+            <strong>{review.modelId}</strong> · {review.source}
+            <ul>{review.cardTiers.map(tier => (
+              <li key={tier.id}>
+                {formatBillingTier({ ...tier, kind: "tier" }, t)}
+                <p className="field-hint">{t("runtime.cardRateSummary", "Input {input} · Cache read {read} · Cache write {write} · Output {output} USD / 1M tokens", {
+                  input: formatRuntimeNumber(tier.rates.inputPer1mTokens),
+                  read: formatRuntimeNumber(tier.rates.cachedInputPer1mTokens),
+                  write: tier.rates.cacheWritePer1mTokens !== undefined ? formatRuntimeNumber(tier.rates.cacheWritePer1mTokens)
+                    : `5m ${formatRuntimeNumber(tier.rates.cacheWrite5mPer1mTokens)} / 1h ${formatRuntimeNumber(tier.rates.cacheWrite1hPer1mTokens)}`,
+                  output: formatRuntimeNumber(tier.rates.outputPer1mTokens)
+                })}</p>
+              </li>
+            ))}</ul>
+          </li>
+        ))}</ul>
+      </Modal>
       <Modal
         title={t("runtime.modelsReset", "Reset all model stats")}
         isOpen={resetDialogOpen}

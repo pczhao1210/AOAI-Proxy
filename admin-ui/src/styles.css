@@ -1244,6 +1244,165 @@ th {
   min-width: 180px;
 }
 
+.runtime-dashboard,
+.runtime-dashboard .section-body,
+.runtime-dashboard .accordion-body {
+  min-width: 0;
+}
+
+.runtime-scope,
+.runtime-pricing-review {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.runtime-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.runtime-metrics .stat-card {
+  min-height: 100px;
+}
+
+.runtime-dashboard .stat-value,
+.runtime-dashboard td,
+.runtime-health-grid dd {
+  font-variant-numeric: tabular-nums;
+}
+
+.runtime-metrics .stat-value {
+  font-size: clamp(1.15rem, 2vw, 1.7rem);
+  overflow-wrap: normal;
+}
+
+.runtime-periods,
+.runtime-health {
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.runtime-dashboard h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.runtime-dashboard .table-scroll {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.runtime-periods th:nth-child(n+3),
+.runtime-periods td:nth-child(n+3),
+#runtime-models > .accordion-body > .table-scroll > table th:not(:first-child),
+#runtime-models > .accordion-body > .table-scroll > table td:not(:first-child),
+.runtime-dashboard .model-breakdown th:nth-child(n+3),
+.runtime-dashboard .model-breakdown td:nth-child(n+3),
+.runtime-compact-table th:not(:first-child),
+.runtime-compact-table td:not(:first-child) {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.runtime-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0 0;
+}
+
+.runtime-health-grid > div {
+  min-width: 0;
+}
+
+.runtime-health-grid dt,
+.runtime-health-grid small,
+.model-card-tiers {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.runtime-health-grid dd {
+  margin: 0.4rem 0;
+  font-weight: 600;
+}
+
+.runtime-health-grid small {
+  overflow-wrap: anywhere;
+}
+
+.runtime-sync-details {
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+}
+
+.runtime-sync-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.runtime-sync-details .code-block {
+  margin-top: 0.75rem;
+}
+
+.runtime-pricing-review {
+  padding: 0.75rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
+.runtime-dashboard .model-cell {
+  min-width: 200px;
+}
+
+.runtime-dashboard .table-expander,
+.runtime-dashboard .model-breakdown th:nth-child(-n+2),
+.runtime-dashboard .model-breakdown td:nth-child(-n+2) {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.runtime-dashboard .model-cell > .runtime-cell-stack {
+  min-width: 0;
+}
+
+.model-card-tiers {
+  max-width: 260px;
+  line-height: 1.5;
+}
+
+.runtime-price-preview {
+  padding-left: 1.25rem;
+}
+
+.runtime-price-preview > li + li {
+  margin-top: 1rem;
+}
+
+@media (max-width: 1000px) {
+  .runtime-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .runtime-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-filter-toolbar,
+  .runtime-filter-field,
+  .runtime-filter-field select {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

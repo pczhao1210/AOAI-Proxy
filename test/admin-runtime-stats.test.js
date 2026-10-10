@@ -3,8 +3,9 @@ import test, { after, afterEach, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
+import toast from "react-hot-toast";
 import { resetModelStats } from "../admin-ui/src/api.js";
-import { formatBillingTier, formatCacheHitRatio, formatDateTime, getModelBillingRows } from "../admin-ui/src/utils.js";
+import { formatBillingTier, formatCacheHitRatio, formatDateTime, formatRuntimeNumber, getModelBillingRows } from "../admin-ui/src/utils.js";
 
 let dom;
 let vite;
@@ -49,8 +50,11 @@ before(async () => {
   ({ I18nProvider, useI18n } = await vite.ssrLoadModule("/admin-ui/src/i18n.jsx"));
 });
 
-afterEach(() => {
-  testing.cleanup();
+afterEach(async () => {
+  await testing.act(async () => {
+    toast.remove();
+    testing.cleanup();
+  });
   window.history.replaceState(null, "", "/admin/");
   window.localStorage.clear();
 });
@@ -79,6 +83,60 @@ function renderRuntime(overrides = {}) {
   view.container.querySelector("#runtime-models").open = true;
   return view;
 }
+
+test("overview separates scoped metrics, dated buckets and unfiltered system health", () => {
+  const view = renderRuntime({
+    totals: { ...tokens, requests: 12, errors: 2 },
+    snapshotFilters: { keyId: "key", timeRange: "24h" },
+    runtimeFilters: { keyId: "key", timeRange: "24h" },
+    persistenceRuntime: { databaseAccessState: "ready" },
+    analytics: { rollups: { hourly: [{ ...tokens, bucketStart: "2026-01-01T00:00:00.000Z" }] } }
+  });
+  const overview = view.container.querySelector("#runtime-overview");
+  const metrics = overview.querySelector(".runtime-metrics");
+  assert.deepEqual([...metrics.querySelectorAll(".stat-label")].map(label => label.textContent), [
+    "Requests", "Errors", "Reference Cost", "Input Total (Including Cache)", "Output Tokens", "Cache Hit Ratio"
+  ]);
+  assert.match(metrics.textContent, /1,000/);
+  assert.match(overview.querySelector(".runtime-periods").textContent, /2026-01-01T00:00:00.000Z/);
+  assert.ok(overview.querySelector(".runtime-health-grid"));
+  assert.equal(overview.querySelector(".runtime-sync-details").open, false);
+});
+
+test("runtime numbers retain exact small rates and large integer token counters", () => {
+  assert.equal(formatRuntimeNumber(123456789), "123,456,789");
+  assert.equal(formatRuntimeNumber(0.0028), "0.0028");
+  assert.equal(formatRuntimeNumber(0), "0");
+  for (const value of [undefined, null, NaN, Infinity, -1, "100"]) assert.equal(formatRuntimeNumber(value), "—");
+});
+
+test("tiered cards expose flat history without fabricating short tiers and require explicit price repair", async () => {
+  const definition = { id: "gpt-6-astra", pricing: {
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [{ id: "short <=272K", promptTokensBelow: 272001, inputPer1mTokens: 10 },
+      { id: "long >272K", promptTokensAtLeast: 272001, inputPer1mTokens: 20 }]
+  } };
+  let repairs = 0;
+  const view = renderRuntime({
+    pricingLibrary: [definition],
+    config: { models: [{ id: "gpt-6-astra", pricing: { inputPer1mTokens: 10 } }] },
+    modelStats: { "gpt-6-astra": { ...tokens, billingTiers: [row("gpt-6-astra", { kind: "flat" })] } },
+    onApplyCardPricing: ids => { repairs += 1; assert.deepEqual(ids, ["gpt-6-astra"]); }
+  });
+  assert.equal(repairs, 0);
+  testing.fireEvent.click(view.getByRole("button", { name: "Expand gpt-6-astra" }));
+  assert.equal(view.container.querySelector(".model-breakdown tbody tr").children[1].textContent, "Historical non-tiered");
+  assert.match(view.container.querySelector(".model-card-tiers").textContent, /short <=272K.*long >272K/);
+  testing.fireEvent.click(view.getByRole("button", { name: "Review tier pricing" }));
+  const dialog = testing.within(view.getByRole("dialog"));
+  assert.match(dialog.getByText(/Replaces model-level prices/).textContent, /Save configuration/);
+  testing.fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+  assert.equal(repairs, 0);
+  testing.fireEvent.click(view.getByRole("button", { name: "Review tier pricing" }));
+  await testing.act(async () => testing.fireEvent.click(view.getByRole("button", { name: "Apply card prices to draft" })));
+  assert.equal(repairs, 1);
+  assert.equal(view.queryByRole("dialog"), null);
+});
 
 test("cache hit ratio uses aggregate recorded input including cache without inventing coverage", () => {
   assert.equal(formatCacheHitRatio({ promptTokens: 1000, cachedTokens: 250 }), "25.0%");
@@ -109,7 +167,7 @@ test("billing tier labels preserve integer inclusivity and arbitrary intervals w
     [[0, 1], "<1"], [[1, 2], "≥1 · <2"],
     [[0, null], "≥0"], [[null, 100], "<100"]
   ]) assert.equal(formatBillingTier(tier(...bounds)), label);
-  assert.equal(formatBillingTier({ kind: "flat" }), "Single rate");
+  assert.equal(formatBillingTier({ kind: "flat" }), "Not tiered");
   assert.equal(formatBillingTier({ kind: "unknown" }), "Unclassified");
   for (const invalid of [undefined, tier(null, null), tier(3, 3), tier(-1, 3), tier(0, 1.5), tier("0", 10)]) {
     assert.equal(formatBillingTier(invalid), "Unclassified");
@@ -127,7 +185,7 @@ test("billing rows preserve recorded tiers and settlement counts and sort unknow
   const before = structuredClone(stats);
   const rows = getModelBillingRows("router", stats);
   assert.deepEqual(rows.map(item => [item.actualModelId, formatBillingTier(item.tier), item.requests]), [
-    ["a", "≤272K", 0], ["a", ">272K", 1], ["a", "Unclassified", null], ["z", "Single rate", 1]
+    ["a", "≤272K", 0], ["a", ">272K", 1], ["a", "Unclassified", null], ["z", "Not tiered", 1]
   ]);
   assert.deepEqual(stats, before);
   for (const legacy of [
@@ -162,19 +220,19 @@ test("model rows and horizontal tier breakdown expose four token counters, ratio
   const modelSection = view.container.querySelector("#runtime-models");
   const mainRow = modelSection.querySelector("tbody tr");
   assert.deepEqual([...mainRow.children].slice(1).map(cell => cell.textContent), [
-    "8", "2", "1000", "250", "50", "100", "25.0%", "0.7500 USD"
+    "8", "2", "1,000", "250", "50", "100", "25.0%", "0.7500 USD"
   ]);
   testing.fireEvent.click(view.getByRole("button", { name: "Expand model-router" }));
   const breakdown = modelSection.querySelector(".model-breakdown");
   assert.deepEqual([...breakdown.querySelectorAll("th")].map(th => th.textContent), [
     "Actual Model", "Billing Tier", "Settled Requests", "Input Total (Including Cache)",
-    "Cache Read Tokens", "Cache Write Tokens", "Output Tokens", "Cache Hit Ratio", "Estimated Cost"
+    "Cache Read Tokens", "Cache Write Tokens", "Output Tokens", "Cache Hit Ratio", "Reference Cost"
   ]);
   assert.deepEqual([...breakdown.querySelectorAll(":scope table > tbody > tr")].map(tr => [...tr.children].slice(0, 3).map(td => td.textContent)), [
     ["gpt", "short <=272K", "3"], ["gpt", "long >272K", "1"], ["gpt", "Unclassified", "—"],
     ["grok", "<200K", "1"], ["grok", "≥200K", "1"]
   ]);
-  assert.equal(breakdown.querySelectorAll(":scope table > tbody > tr")[2].lastElementChild.textContent, "0.7500 USD + Unknown");
+  assert.equal(breakdown.querySelectorAll(":scope table > tbody > tr")[2].lastElementChild.textContent, "0.7500 USD");
   for (const label of ["Total Tokens", "Cache Write Cost", "Model Router Cost", "Actual Model Cost"]) {
     assert.equal(modelSection.textContent.includes(label), false);
   }
@@ -182,7 +240,9 @@ test("model rows and horizontal tier breakdown expose four token counters, ratio
   assert.match(help, /do not add them again/);
   assert.match(help, /Legacy missing cache reads may already be recorded as 0/);
   testing.fireEvent.click(view.getByRole("button", { name: "Expand direct" }));
-  assert.ok(view.getByText("Single rate"));
+  assert.ok(view.getByText("Not tiered"));
+  assert.equal(modelSection.querySelectorAll(".model-breakdown .field-hint").length, 0);
+  assert.match(modelSection.querySelector(".accordion-copy p").textContent, /incomplete.*reference.*Azure/);
 });
 
 test("legacy model expansion stays unclassified and does not infer tiers or settled requests", () => {
@@ -273,7 +333,7 @@ test("Chinese runtime labels, tier statuses, reset explanation and timestamp are
   testing.fireEvent.click(view.getByRole("button", { name: "中文" }));
   view.container.querySelector("#runtime-models").open = true;
   testing.fireEvent.click(view.getByRole("button", { name: "展开 model" }));
-  assert.ok(view.getByText("统一费率"));
+  assert.ok(view.getByText("不分档"));
   assert.ok(view.getByText("未分类"));
   assert.ok(view.getByText("模型统计清空时间: 2026-09-23T04:00:00.000Z"));
   for (const label of ["输入总量（含缓存）", "缓存命中率", "计费档位", "已结算请求"]) {
@@ -316,6 +376,7 @@ test("App reset refreshes with latest filters and fences pre-reset responses whi
     if (parsed.pathname.endsWith("/config")) return Response.json({});
     throw new Error(`Unexpected request ${url}`);
   });
+
   const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
   await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
   testing.fireEvent.click(view.getByRole("button", { name: "Runtime" }));
@@ -336,9 +397,62 @@ test("App reset refreshes with latest filters and fences pre-reset responses whi
   assert.ok(view.getByText(`Model stats reset at: ${formatDateTime(timestamp)}`));
   const summary = view.container.querySelector(".status-strip");
   assert.ok(testing.within(summary).getByText("99"));
-  assert.match(summary.textContent, /Input Total \(Including Cache\) 1000/);
-  assert.match(summary.textContent, /Cache Hit Ratio 25.0%/);
+  assert.match(summary.textContent, /reference only.*Azure billing portal/);
+  assert.equal(summary.textContent.includes("Input Total (Including Cache)"), false);
   assert.equal(summary.textContent.includes("Cache Write Cost"), false);
   const mutation = fetchMock.mock.calls.find(call => String(call.arguments[0]).endsWith("/stats/models/reset"));
   assert.equal(mutation.arguments[1].headers["x-aoai-admin-csrf"], "1");
+});
+
+test("App tier repair stays in the draft until reviewed save and preserves shared prices and historical tiers", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  const pricing = {
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [{ id: "short", promptTokensBelow: 101, inputPer1mTokens: 1, cachedInputPer1mTokens: 0, cacheWritePer1mTokens: 1.25, outputPer1mTokens: 2 },
+      { id: "long", promptTokensAtLeast: 101, inputPer1mTokens: 2, cachedInputPer1mTokens: 0, cacheWritePer1mTokens: 2.5, outputPer1mTokens: 3 }]
+  };
+  const original = {
+    models: [{ id: "public-model", targetModel: "tiered", pricingRef: "shared", upstream: "mock",
+      pricing: { inputPer1mTokens: 7 }, routes: { "*": "responses" }, defaultParams: { temperature: 0 } }],
+    upstreams: [{ name: "mock", baseUrl: "http://localhost" }],
+    access: { pricingCatalog: { shared: { inputPer1mTokens: 9 } } }
+  };
+  let saved;
+  context.mock.method(window, "confirm", () => true);
+  const fetchMock = context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/config")) {
+      if (options.method === "PUT") {
+        saved = JSON.parse(options.body);
+        assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+        return Response.json({ config: saved });
+      }
+      return Response.json(original);
+    }
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "tiered", pricing }] });
+    if (path.endsWith("/stats")) return Response.json({
+      totals: tokens, perModel: { "public-model": { ...tokens, billingTiers: [row("tiered", { kind: "flat" })] } }
+    });
+    if (path.endsWith("/runtime")) return Response.json({ runtime: {} });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
+  testing.fireEvent.click(view.getByRole("button", { name: "Runtime" }));
+  await testing.waitFor(() => assert.ok(view.container.querySelector("#runtime-models")));
+  view.container.querySelector("#runtime-models").open = true;
+  testing.fireEvent.click(view.getByRole("button", { name: "Review tier pricing" }));
+  testing.fireEvent.click(view.getByRole("button", { name: "Apply card prices to draft" }));
+  assert.equal(saved, undefined);
+  await testing.waitFor(() => assert.match(testing.within(view.container.querySelector("#runtime-models")).getByRole("status").textContent, /applied to the draft/));
+  testing.fireEvent.click(view.getByRole("button", { name: "Review & Save" }));
+  testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true }));
+  await testing.waitFor(() => assert.ok(saved));
+  assert.deepEqual(saved.models[0].pricing, pricing);
+  assert.deepEqual(saved.access, original.access);
+  assert.deepEqual(saved.models[0].routes, original.models[0].routes);
+  assert.deepEqual(saved.models[0].defaultParams, { temperature: 0 });
+  assert.equal(fetchMock.mock.calls.filter(call => call.arguments[1]?.method === "PUT").length, 1);
+  await testing.waitFor(() => assert.ok(testing.within(view.container.querySelector(".status-strip")).getByText("Synced")));
 });

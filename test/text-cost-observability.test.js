@@ -58,17 +58,17 @@ test("cache-write formatting distinguishes measured zero from absent, invalid an
   assert.equal(historical.tokens, null);
   assert.equal(historical.estimatedCostAmount, null);
   assert.equal(formatCacheWriteTokens(historical), "0 + Unknown");
-  assert.equal(formatCacheWriteCost(historical), "0.0000 USD + Unknown");
+  assert.equal(formatCacheWriteCost(historical), "—");
   const partial = summarizeCacheWrite({ requests: 1, observedRequests: 1, partialCostRequests: 1, observedTokens: 3, knownCostAmount: 0 });
   assert.equal(formatCacheWriteTokens(partial), "3");
-  assert.equal(formatCacheWriteCost(partial), "0.0000 USD + Unknown");
+  assert.equal(formatCacheWriteCost(partial), "—");
   for (const tokens of [null, undefined, -1, 1.5, "0", NaN]) {
     const entry = normalizeCacheWrite({ tokens, usageStatus: "observed", knownCostAmount: 0, estimatedCostAmount: null, costStatus: "unknown", raw: "private" });
     assert.equal(entry.tokens, null);
     assert.equal(entry.usageStatus, "unknown");
     assert.equal(entry.raw, undefined);
     assert.equal(formatCacheWriteTokens(entry), "Unknown");
-    assert.equal(formatCacheWriteCost(entry), "Unknown");
+    assert.equal(formatCacheWriteCost(entry), "—");
   }
 });
 
@@ -98,27 +98,30 @@ test("text cost completeness reaches every stats bucket without discarding known
   assert.equal(stats.totals.estimatedCostAmount - before.estimatedCostAmount, 0.85);
 });
 
-test("cost formatting never calls unknown text costs free and preserves legacy media output", () => {
+test("reference cost formatting retains known subtotals and distinguishes unavailable costs from real zero", () => {
   assert.equal(formatEstimatedCost({ estimatedCostAmount: 0 }), "0.0000 USD");
-  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0, textUnknownCostRequests: 1 }), "Unknown");
-  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0.25, textUnknownCostRequests: 2 }), "0.2500 USD + Unknown");
-  assert.equal(formatEstimatedCost({ amount: 0.25, estimatedCostAmount: null, costStatus: "partial", pricing: {} }), "0.2500 USD + Unknown");
-  assert.equal(formatEstimatedCost({ amount: 0, estimatedCostAmount: null, costStatus: "unknown", pricing: {} }), "Unknown");
+  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0, textUnknownCostRequests: 1 }), "—");
+  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0.25, textUnknownCostRequests: 2 }), "0.2500 USD");
+  assert.equal(formatEstimatedCost({ amount: 0.25, estimatedCostAmount: null, costStatus: "partial", pricing: {} }), "0.2500 USD");
+  assert.equal(formatEstimatedCost({ amount: 0, estimatedCostAmount: null, costStatus: "unknown", pricing: {} }), "—");
   assert.equal(formatEstimatedCost({ amount: 0, estimatedCostAmount: 0, costStatus: "priced", pricing: {} }), "0.0000 USD");
-  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0, media: { unknownCostRequests: 1 } }), "0.0000 USD + Unknown");
-  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0.5, textUnknownCostRequests: 1, media: { unknownCostRequests: 1 } }), "0.5000 USD + Unknown");
-  assert.equal(formatEstimatedCost({ textUnknownCostRequests: 1 }, () => "未知费用"), "未知费用");
+  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0, media: { unknownCostRequests: 1 } }), "—");
+  assert.equal(formatEstimatedCost({ estimatedCostAmount: 0.5, textUnknownCostRequests: 1, media: { unknownCostRequests: 1 } }), "0.5000 USD");
+  assert.equal(formatEstimatedCost({ textUnknownCostRequests: 1 }, () => "未知费用"), "—");
+  for (const amount of [NaN, Infinity, -1, "invalid"]) {
+    assert.equal(formatEstimatedCost({ amount }), "—");
+  }
 });
 
-test("budget formatting marks unknown text costs with or without a limit", () => {
+test("budget reference costs retain limits without unknown-fee suffixes", () => {
   assert.equal(formatBudgetCost({ spentAmount: 0 }, {}), "0.0000 USD");
   assert.equal(formatBudgetCost({ spentAmount: 0 }, { limitAmount: 10 }), "0.0000 / 10.00 USD");
-  assert.equal(formatBudgetCost({ spentAmount: 0, textUnknownCostRequests: 1 }, {}), "Unknown");
-  assert.equal(formatBudgetCost({ spentAmount: 0, textUnknownCostRequests: 1 }, { limitAmount: 10 }), "Unknown / 10.00 USD");
-  assert.equal(formatBudgetCost({ spentAmount: 0.25, textUnknownCostRequests: 1 }, { limitAmount: 10 }), "0.2500 USD + Unknown / 10.00 USD");
+  assert.equal(formatBudgetCost({ spentAmount: 0, textUnknownCostRequests: 1 }, {}), "—");
+  assert.equal(formatBudgetCost({ spentAmount: 0, textUnknownCostRequests: 1 }, { limitAmount: 10 }), "— / 10.00 USD");
+  assert.equal(formatBudgetCost({ spentAmount: 0.25, textUnknownCostRequests: 1 }, { limitAmount: 10 }), "0.2500 / 10.00 USD");
 });
 
-test("runtime views mark incomplete costs in trends, key budgets and actual-model breakdowns", async () => {
+test("runtime reference costs remove unknown fees while preserving incomplete token coverage and a single model disclaimer", async () => {
   const { JSDOM } = await import("jsdom");
   const { createServer } = await import("vite");
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
@@ -161,12 +164,12 @@ test("runtime views mark incomplete costs in trends, key budgets and actual-mode
     }));
     for (const section of view.container.querySelectorAll("details")) section.open = true;
     const overview = testing.within(view.container.querySelector("#runtime-overview"));
-    assert.ok(overview.getByText("Unknown"));
-    assert.ok(overview.getByText(/^Estimated Cost Unknown · Input Total \(Including Cache\) 100 · Cache Read Tokens 7 · Cache Write Tokens 20 \+ Unknown · Output Tokens 10 · Cache Hit Ratio 7\.0%/));
+    assert.equal(overview.queryAllByText("Unknown").length, 0);
+    assert.equal(overview.getAllByText("Reference Cost").length, 2);
     const trends = view.container.querySelectorAll("#runtime-analytics tbody tr");
     assert.equal(trends.length, 3);
     for (const row of trends) {
-      assert.equal(row.lastElementChild.textContent, "Unknown");
+      assert.equal(row.lastElementChild.textContent, "—");
       assert.equal(row.children[6].textContent, "7");
       assert.equal(row.children[7].textContent, "20 + Unknown");
       assert.equal(row.children[8].textContent, "10");
@@ -185,13 +188,13 @@ test("runtime views mark incomplete costs in trends, key budgets and actual-mode
     assert.equal(keyCells[6].textContent, "20 + Unknown");
     assert.equal(keyCells[7].textContent, "10");
     assert.equal(keyCells[8].textContent, "7.0%");
-    assert.equal(keyCells[9].textContent, "Unknown");
-    assert.equal(keyCells[12].textContent, "Unknown / 10.00 USD");
+    assert.equal(keyCells[9].textContent, "—");
+    assert.equal(keyCells[12].textContent, "— / 10.00 USD");
     const modelCells = view.container.querySelector("#runtime-models tbody tr").children;
     assert.equal(modelCells[5].textContent, "20 + Unknown");
     assert.equal(modelCells[6].textContent, "10");
     assert.equal(modelCells[7].textContent, "7.0%");
-    assert.equal(modelCells[8].textContent, "Unknown");
+    assert.equal(modelCells[8].textContent, "—");
     const zeroCells = view.getByText("zero").closest("tr").children;
     assert.equal(zeroCells[5].textContent, "0");
     assert.equal(zeroCells[8].textContent, "0.0000 USD");
@@ -203,8 +206,9 @@ test("runtime views mark incomplete costs in trends, key budgets and actual-mode
     assert.equal(actualCells[5].textContent, "20 + Unknown");
     assert.equal(actualCells[6].textContent, "10");
     assert.equal(actualCells[7].textContent, "7.0%");
-    assert.equal(actualCells[8].textContent, "Unknown");
+    assert.equal(actualCells[8].textContent, "—");
     assert.equal(actualCells.length, 9);
+    assert.equal(testing.within(view.container.querySelector("#runtime-models")).getAllByText(/Billing estimates may be incomplete/).length, 1);
   } finally {
     cleanup?.();
     await vite?.close();
