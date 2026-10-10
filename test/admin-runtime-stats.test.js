@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test, { after, afterEach, before } from "node:test";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
@@ -255,6 +256,58 @@ test("collapsed models show only a tiered marker while expansion preserves recor
   assert.match(formatTokenSummary(tokens), /Input Total \(Including Cache\) 1 K.*Output Tokens 0.1 K/);
 });
 
+test("GPT-6.1 Sol card updates explain unrecorded tiers without reclassifying historical usage", () => {
+  const definition = JSON.parse(readFileSync(new URL("../pricing/gpt-6.1-sol.json", import.meta.url), "utf8"));
+  const modelStats = {
+    "gpt-6.1-sol": { ...tokens, billingTiers: [row("gpt-6.1-sol", { kind: "unknown" }, { requests: null })] }
+  };
+  const before = structuredClone(modelStats);
+  const view = renderRuntime({
+    pricingLibrary: [definition],
+    config: { models: [{ id: definition.id }] },
+    modelStats
+  });
+  assert.equal(view.container.querySelector(".model-tier-label").textContent, "Tiered billing");
+  testing.fireEvent.click(view.getByRole("button", { name: "Expand gpt-6.1-sol" }));
+  const unknown = view.getByText("Tier not recorded");
+  assert.match(unknown.title, /pricing was unavailable or disabled.*historical/);
+  assert.equal(unknown.closest("tr").children[2].textContent, "—");
+  assert.deepEqual(modelStats, before);
+});
+
+test("billing breakdown aligns labels and numbers separately and allows headers and long labels to wrap", context => {
+  const style = document.createElement("style");
+  style.textContent = readFileSync(new URL("../admin-ui/src/styles.css", import.meta.url), "utf8");
+  document.head.append(style);
+  context.after(() => style.remove());
+  const actualModelId = "a-very-long-provider-deployment-name-without-short-aliases";
+  const id = "a-long-custom-billing-tier-name <=272K";
+  const view = renderRuntime({ modelStats: {
+    model: { ...tokens, billingTiers: [row(actualModelId, { ...tier(0, 272001), id })] }
+  } });
+  testing.fireEvent.click(view.getByRole("button", { name: "Expand model" }));
+  const breakdown = view.container.querySelector(".model-breakdown");
+  assert.equal(window.getComputedStyle(breakdown).textAlign, "left");
+  for (const header of breakdown.querySelectorAll("th")) {
+    assert.equal(window.getComputedStyle(header).whiteSpace, "normal");
+  }
+  const cells = breakdown.querySelectorAll("tbody tr > td");
+  for (const cell of [...cells].slice(0, 2)) {
+    const computed = window.getComputedStyle(cell);
+    assert.equal(computed.textAlign, "left");
+    assert.equal(computed.whiteSpace, "normal");
+    assert.equal(computed.overflowWrap, "anywhere");
+    assert.ok(cell.querySelector(".model-billing-label"));
+  }
+  for (const cell of [...cells].slice(2)) {
+    const computed = window.getComputedStyle(cell);
+    assert.equal(computed.textAlign, "right");
+    assert.equal(computed.whiteSpace, "nowrap");
+  }
+  assert.equal(cells[0].textContent, actualModelId);
+  assert.equal(cells[1].textContent, id);
+});
+
 test("cache hit ratio uses aggregate recorded input including cache without inventing coverage", () => {
   assert.equal(formatCacheHitRatio({ promptTokens: 1000, cachedTokens: 250 }), "25.0%");
   assert.equal(formatCacheHitRatio({ promptTokens: 3, cachedTokens: 1 }), "33.3%");
@@ -285,9 +338,9 @@ test("billing tier labels preserve integer inclusivity and arbitrary intervals w
     [[0, null], "≥0"], [[null, 100], "<100"]
   ]) assert.equal(formatBillingTier(tier(...bounds)), label);
   assert.equal(formatBillingTier({ kind: "flat" }), "Not tiered");
-  assert.equal(formatBillingTier({ kind: "unknown" }), "Unclassified");
+  assert.equal(formatBillingTier({ kind: "unknown" }), "Tier not recorded");
   for (const invalid of [undefined, tier(null, null), tier(3, 3), tier(-1, 3), tier(0, 1.5), tier("0", 10)]) {
-    assert.equal(formatBillingTier(invalid), "Unclassified");
+    assert.equal(formatBillingTier(invalid), "Tier not recorded");
   }
 });
 
@@ -302,7 +355,7 @@ test("billing rows preserve recorded tiers and settlement counts and sort unknow
   const before = structuredClone(stats);
   const rows = getModelBillingRows("router", stats);
   assert.deepEqual(rows.map(item => [item.actualModelId, formatBillingTier(item.tier), item.requests]), [
-    ["a", "≤272K", 0], ["a", ">272K", 1], ["a", "Unclassified", null], ["z", "Not tiered", 1]
+    ["a", "≤272K", 0], ["a", ">272K", 1], ["a", "Tier not recorded", null], ["z", "Not tiered", 1]
   ]);
   assert.deepEqual(stats, before);
   for (const legacy of [
@@ -313,7 +366,7 @@ test("billing rows preserve recorded tiers and settlement counts and sort unknow
     const [entry] = getModelBillingRows("model", legacy);
     assert.equal(entry.actualModelId, "model");
     assert.equal(entry.requests, null);
-    assert.equal(formatBillingTier(entry.tier), "Unclassified");
+    assert.equal(formatBillingTier(entry.tier), "Tier not recorded");
     assert.equal(entry.promptTokens, 1000);
   }
 });
@@ -346,7 +399,7 @@ test("model rows and horizontal tier breakdown expose four token counters, ratio
     "Cache Read Tokens", "Cache Write Tokens", "Output Tokens", "Cache Hit Ratio", "Reference Cost"
   ]);
   assert.deepEqual([...breakdown.querySelectorAll(":scope table > tbody > tr")].map(tr => [...tr.children].slice(0, 3).map(td => td.textContent)), [
-    ["gpt", "short <=272K", "3"], ["gpt", "long >272K", "1"], ["gpt", "Unclassified", "—"],
+    ["gpt", "short <=272K", "3"], ["gpt", "long >272K", "1"], ["gpt", "Tier not recorded", "—"],
     ["grok", "<200K", "1"], ["grok", "≥200K", "1"]
   ]);
   assert.equal(breakdown.querySelectorAll(":scope table > tbody > tr")[2].lastElementChild.textContent, "0.7500 USD");
@@ -373,7 +426,7 @@ test("legacy model expansion stays unclassified and does not infer tiers or sett
   const rows = view.container.querySelectorAll(".model-breakdown tbody tr");
   assert.equal(rows.length, 2);
   for (const entry of rows) {
-    assert.equal(entry.children[1].textContent, "Unclassified");
+    assert.equal(entry.children[1].textContent, "Tier not recorded");
     assert.equal(entry.children[2].textContent, "—");
   }
 });
@@ -452,7 +505,7 @@ test("Chinese runtime labels, tier statuses, reset explanation and timestamp are
   view.container.querySelector("#runtime-models").open = true;
   testing.fireEvent.click(view.getByRole("button", { name: "展开 model" }));
   assert.ok(view.getByText("不分档"));
-  assert.ok(view.getByText("未分类"));
+  assert.ok(view.getByText("未记录档位"));
   assert.ok(view.getByText("模型统计清空时间: 2026-09-23T04:00:00.000Z"));
   assert.ok(view.getByText("费用估算可能不完整"));
   const uploadCard = view.getByText("Log Analytics 上传").closest("div");

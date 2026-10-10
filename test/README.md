@@ -120,6 +120,11 @@ cards are also checked through import, override precedence, exact interval
 boundaries and explicit scoped price repair. UI regressions separate card tiers
 from historical non-tiered rows, preserve shared prices and routes, require a
 price-review confirmation and keep repair in the config draft until save.
+Billing breakdown UI checks allow headers and long model/tier labels to wrap,
+align text left and numeric cells right, and explain unrecorded tiers without
+reclassifying history. GPT-6.1 Sol checks freeze the administrator-approved
+OpenAI reference rates, import behavior and cache-inclusive 272K boundary;
+these estimates do not establish verified Azure deployment prices.
 Reference costs omit unknown-fee suffixes without changing backend completeness;
 overview contracts cover scoped totals, dated calendar buckets, empty data and
 instance-wide health. No ratio is persisted.

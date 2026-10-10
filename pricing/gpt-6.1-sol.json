@@ -37,10 +37,31 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "azure-openai-global",
-    "status": "unavailable"
+    "sourceType": "openai-standard-reference",
+    "status": "reference",
+    "tiering": {
+      "basis": "inputTokensIncludingCache",
+      "method": "whole-request"
+    },
+    "tiers": [
+      {
+        "id": "short <=272K",
+        "promptTokensBelow": 272001,
+        "inputPer1mTokens": 2,
+        "cachedInputPer1mTokens": 0.1,
+        "cacheWritePer1mTokens": 2.5,
+        "outputPer1mTokens": 10
+      },
+      {
+        "id": "long >272K",
+        "promptTokensAtLeast": 272001,
+        "inputPer1mTokens": 4,
+        "cachedInputPer1mTokens": 0.2,
+        "cacheWritePer1mTokens": 5,
+        "outputPer1mTokens": 15
+      }
+    ]
   },
-  "pricingCatalogEntry": null,
   "proxyTemplate": {
     "routes": {
       "chat/completions": "responses"
@@ -51,12 +72,15 @@
     "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
     "hosting": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-region-availability",
     "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
-    "pricing": "https://azure.microsoft.com/pricing/details/azure-openai/"
+    "pricing": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
   },
   "notes": [
     "Microsoft lists model version 2026-09-29 and Global Standard availability. Both Chat Completions and Responses are native; the exact-model capability table limits function tools and parallel tool calling to Responses. This is provider metadata, not a proxy preflight rejection policy.",
     "The published input and output maxima are individual limits sharing the context budget with reasoning tokens; they are not additive allowances.",
     "The exact-model reasoning matrix confirms effort support including none, but complete per-protocol effort lists and omitted-parameter defaults were not independently verified. Do not inherit them from GPT-6 Sol.",
-    "The pricing page could not be retrieved during authoring. Input, cached input, cache-write, output rates and short/long billing intervals remain unverified; automatic pricing is explicitly disabled rather than copying GPT-6 Sol prices or its administrator-defined 272K tier policy."
+    "OpenAI Standard prices are administrator-approved reference estimates for this Azure card, not verified Azure Global Standard quotes. The Azure page lists short/long context rows but returned price placeholders; verify the actual deployment's charges in the Azure billing portal. Other service tiers and regional premiums are not included.",
+    "OpenAI's exact-model documentation independently establishes the whole-request threshold: input including cache above 272000 tokens selects long-context rates for the entire request. Exactly 272000 remains short; session totals and output length do not select the tier. These rates and bounds are not inherited from GPT-6 Sol.",
+    "Automatic reference pricing is enabled for new imports. Existing administrator prices require explicit review and save; historical unclassified usage and recorded costs are not recalculated."
   ]
 }

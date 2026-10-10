@@ -318,7 +318,7 @@ code {
   color: var(--accent-warm);
 }
 
-.model-breakdown-row td {
+.model-breakdown-row > td {
   padding-top: 0;
 }
 
@@ -327,6 +327,8 @@ code {
   border-radius: var(--radius-sm);
   background: rgba(5, 14, 28, 0.76);
   padding: 0.95rem 1rem;
+  text-align: left;
+  white-space: normal;
 }
 
 .model-breakdown-title {
@@ -1327,9 +1329,8 @@ th {
 
 .runtime-periods th:nth-child(n+3),
 .runtime-periods td:nth-child(n+3),
-#runtime-models > .accordion-body > .table-scroll > table th:not(:first-child),
-#runtime-models > .accordion-body > .table-scroll > table td:not(:first-child),
-.runtime-dashboard .model-breakdown th:nth-child(n+3),
+#runtime-models > .accordion-body > .table-scroll > table > thead > tr > th:not(:first-child),
+#runtime-models > .accordion-body > .table-scroll > table > tbody > tr > td:not(:first-child),
 .runtime-dashboard .model-breakdown td:nth-child(n+3),
 .runtime-compact-table th:not(:first-child),
 .runtime-compact-table td:not(:first-child) {
@@ -1389,11 +1390,30 @@ th {
   min-width: 200px;
 }
 
-.runtime-dashboard .table-expander,
-.runtime-dashboard .model-breakdown th:nth-child(-n+2),
-.runtime-dashboard .model-breakdown td:nth-child(-n+2) {
+.runtime-dashboard .table-expander {
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.runtime-dashboard .model-breakdown th {
+  white-space: normal;
+}
+
+.runtime-dashboard .model-breakdown th:nth-child(n+3) {
+  text-align: right;
+}
+
+.runtime-dashboard .model-breakdown th:nth-child(-n+2),
+.runtime-dashboard .model-breakdown td:nth-child(-n+2) {
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.model-billing-label {
+  display: block;
+  min-width: 8rem;
+  max-width: 14rem;
 }
 
 .runtime-dashboard .model-cell > .runtime-cell-stack {

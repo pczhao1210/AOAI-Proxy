@@ -607,7 +607,7 @@ export default function RuntimeTab({
           </div>
         ) : null}
         <p className="field-hint">{runtimeTokenHelp(t)}</p>
-        <p className="field-hint">{t("runtime.billingTierHelp", "Tiers use recorded per-request billing context, not aggregate tokens or current model cards. Settled requests exclude errors; unavailable historical counts are shown as —.")}</p>
+        <p className="field-hint">{t("runtime.billingTierHelp", "Tiers use recorded per-request billing context, not aggregate tokens or current model cards. Tier not recorded means pricing was unavailable or disabled, usage could not select a tier, or historical tier evidence is missing; it does not mean free usage. Updating prices does not reclassify history. Settled requests exclude errors; unavailable historical counts are shown as —.")}</p>
         <div className="table-scroll">
           <table>
             <thead>
@@ -671,10 +671,16 @@ export default function RuntimeTab({
                                 <tbody>
                                   {billingRows.map((actualStat, index) => (
                                     <tr key={`${actualStat.actualModelId}-${actualStat.tier?.id || actualStat.tier?.kind}-${index}`}>
-                                      <td>{actualStat.actualModelId}</td>
-                                      <td>{actualStat.tier?.kind === "flat" && cardTierInfo(actualStat.actualModelId)
-                                        ? t("runtime.tierHistoricalFlat", "Historical non-tiered")
-                                        : formatBillingTier(actualStat.tier, t)}</td>
+                                      <td><span className="model-billing-label">{actualStat.actualModelId}</span></td>
+                                      <td>
+                                        <span className="model-billing-label" title={actualStat.tier?.kind === "unknown"
+                                          ? t("runtime.tierUnknownHelp", "No billing tier was captured for these requests: pricing was unavailable or disabled, usage could not select a tier, or historical tier evidence is missing. Current model cards cannot determine their past tier.")
+                                          : undefined}>
+                                          {actualStat.tier?.kind === "flat" && cardTierInfo(actualStat.actualModelId)
+                                            ? t("runtime.tierHistoricalFlat", "Historical non-tiered")
+                                            : formatBillingTier(actualStat.tier, t)}
+                                        </span>
+                                      </td>
                                       <td>{Number.isSafeInteger(actualStat.requests) && actualStat.requests >= 0 ? formatRuntimeNumber(actualStat.requests) : "—"}</td>
                                       <TokenCells stats={actualStat} t={t} />
                                       <td>{formatEstimatedCost(actualStat, t, actualStat.estimatedCostCurrency)}</td>

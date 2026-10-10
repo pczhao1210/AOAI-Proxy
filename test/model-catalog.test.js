@@ -14,7 +14,8 @@ import { listPricingDefinitions } from "../src/pricing-library.js";
 import { prepareImageGenerationRequest } from "../src/proxy/image-adapter.js";
 import { resolveEffectiveRouteKey, resolveRoutePlan } from "../src/proxy/routing.js";
 import { chatToResponsesRequest, responsesToMessagesRequest } from "../src/proxy/shim.js";
-import { buildModelFromPricingTemplate, buildUpstreamFromPricingTemplate } from "../admin-ui/src/utils.js";
+import { buildModelFromPricingTemplate, buildUpstreamFromPricingTemplate, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
+import { getConfiguredPricingEntry } from "../src/model-card.js";
 import { resolveRealtimeBinding } from "../src/proxy/realtime-policy.js";
 import { calculateTokenCost, compilePricingPolicy } from "../src/token-pricing.js";
 
@@ -740,7 +741,7 @@ test("Sonnet 5.5 preserves native hosting, distinct thinking controls and source
   assert.equal(resolveRoutePlan({ routeKey: "messages", model, upstream, descriptor }).backendRouteKey, "messages");
 });
 
-test("GPT-6.1 Sol keeps native interfaces and independent limits without inherited prices or defaults", () => {
+test("GPT-6.1 Sol keeps native interfaces and independent limits and reasoning defaults", () => {
   const card = listPricingDefinitions().find(definition => definition.id === "gpt-6.1-sol");
   assert.ok(card);
   assert.equal(card.provider, "azure-openai");
@@ -748,9 +749,8 @@ test("GPT-6.1 Sol keeps native interfaces and independent limits without inherit
   assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1050000, 922000, 128000]);
   assert.deepEqual(card.interfaces, ["chat/completions", "responses"]);
   assert.equal(card.defaultInterface, "responses");
-  assert.equal(card.pricing.status, "unavailable");
-  assert.equal(card.pricingCatalogEntry, null);
-  assert.equal(card.pricing.tiers, undefined);
+  assert.equal(card.pricing.status, "reference");
+  assert.deepEqual(card.pricingCatalogEntry, card.pricing);
   assert.equal(card.pricing.inputPer1mTokens, undefined);
   const model = { ...card.proxyTemplate, upstream: "azure" };
   assert.equal(model.targetModel, "gpt-6.1-sol");
@@ -769,6 +769,41 @@ test("GPT-6.1 Sol keeps native interfaces and independent limits without inherit
     messages: [{ role: "user", content: "hello" }], reasoning_effort: "none"
   }, model.targetModel, descriptor);
   assert.equal(converted.reasoning.effort, "none");
+});
+
+test("GPT-6.1 Sol reference pricing imports complete rates and selects exact cache-inclusive boundaries", () => {
+  const card = listPricingDefinitions().find(definition => definition.id === "gpt-6.1-sol");
+  assert.equal(card.pricing.sourceType, "openai-standard-reference");
+  assert.equal(card.pricing.status, "reference");
+  assert.equal(card.sources.pricing, "https://developers.openai.com/api/docs/models/gpt-6.1-sol");
+  assert.match(card.notes.join(" "), /not verified Azure/);
+  const importedConfig = { models: [] };
+  const model = buildModelFromPricingTemplate(card, "azure", importedConfig);
+  importedConfig.models.push(model);
+  upsertPricingCatalogEntry(importedConfig, card);
+  const importedPricing = getConfiguredPricingEntry(importedConfig, model);
+  assert.deepEqual(importedPricing.entry, card.pricingCatalogEntry);
+  const policy = compilePricingPolicy(importedPricing.entry);
+  assert.deepEqual(policy.tiering, { basis: "inputTokensIncludingCache", method: "whole-request" });
+  assert.deepEqual(policy.tiers.map(tier => tier.rates), [
+    { inputPer1mTokens: 2, cachedInputPer1mTokens: 0.1, cacheWritePer1mTokens: 2.5, outputPer1mTokens: 10 },
+    { inputPer1mTokens: 4, cachedInputPer1mTokens: 0.2, cacheWritePer1mTokens: 5, outputPer1mTokens: 15 }
+  ]);
+  for (const [input, id, rates] of [
+    [271999, "short <=272K", policy.tiers[0].rates],
+    [272000, "short <=272K", policy.tiers[0].rates],
+    [272001, "long >272K", policy.tiers[1].rates]
+  ]) {
+    const usage = { input_tokens: input, output_tokens: 1000,
+      input_tokens_details: { cached_tokens: 1000, cache_write_tokens: 2000 } };
+    const cost = calculateTokenCost(policy, usage, { backendProtocol: "responses" });
+    assert.equal(cost.tier.id, id);
+    assert.equal(cost.costStatus, "priced");
+    const expected = ((input - 3000) * rates.inputPer1mTokens
+      + 1000 * rates.cachedInputPer1mTokens + 2000 * rates.cacheWritePer1mTokens
+      + 1000 * rates.outputPer1mTokens) / 1e6;
+    assert.ok(Math.abs(cost.amount - expected) < 1e-12);
+  }
 });
 
 test("GPT-6 Luna and Sol cards retain native interfaces, Responses template routes, and verified model pricing", () => {

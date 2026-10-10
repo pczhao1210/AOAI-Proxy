@@ -177,10 +177,20 @@ unverified.
 GPT-6.1 Sol uses Microsoft's exact `2026-09-29` model version, native Chat and
 Responses, and independently published 1,050,000 / 922,000 / 128,000
 context/input/output limits. The provider documents function tools on Responses
-only. Exact effort defaults/lists and rates/tier thresholds are not copied from
-GPT-6 Sol: missing controls remain passthrough and `pricingCatalogEntry: null`
-disables automatic pricing until rates are verified. The pricing source URL is
-a follow-up reference, not a claim of successful retrieval.
+only. Exact effort defaults/lists are not copied from GPT-6 Sol: missing
+controls remain passthrough. Its pricing now uses administrator-approved
+[OpenAI Standard reference rates](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
+not verified Azure Global Standard quotes: `sourceType` is
+`openai-standard-reference` and `status` is `reference`. Azure's pricing page
+lists short/long rows but returned price placeholders. The exact OpenAI model
+page independently supplies all four token rates and the whole-request
+threshold: input including cache at 272,000 tokens remains `short <=272K`;
+272,001 selects `long >272K`. No GPT-6 Sol prices or thresholds are inherited.
+Service-tier discounts/premiums and regional surcharges are not included.
+New imports include the complete reference pricing. Existing model prices
+require explicit review and save, and historical unknown-tier rows and costs
+are not reconstructed from the new card. “Tier not recorded” in model
+statistics means request-time pricing/tier evidence is missing, not free usage.
 
 All 81 active raw cards were inspected. Reachable Microsoft documentation sources
 and Anthropic's own API reference supplied the following updates:

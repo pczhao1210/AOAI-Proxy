@@ -78,7 +78,7 @@ function formatTokenBoundary(value) {
 }
 
 export function formatBillingTier(tier, t = (_key, fallback) => fallback) {
-  const unknown = t("runtime.tierUnknown", "Unclassified");
+  const unknown = t("runtime.tierUnknown", "Tier not recorded");
   if (tier?.kind === "flat") return t("runtime.tierFlat", "Not tiered");
   if (tier?.kind !== "tier") return unknown;
   if (typeof tier.id === "string" && tier.id.trim()) return tier.id.trim();
