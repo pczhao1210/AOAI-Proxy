@@ -8,14 +8,15 @@
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,
   "hostingModes": ["azure", "anthropic"],
-  "defaultHostingMode": "anthropic",
+  "defaultHostingMode": "azure",
   "interfacesByHostingMode": {
     "azure": ["messages"],
     "anthropic": ["messages"]
   },
   "interfaces": ["messages"],
-  "inputModalities": ["text", "image", "code"],
-  "outputModalities": ["text", "image", "code"],
+  "defaultInterface": "messages",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "messages": {
@@ -40,6 +41,8 @@
     "status": "published",
     "inputPer1mTokens": 2,
     "cachedInputPer1mTokens": 0.2,
+    "cacheWrite5mPer1mTokens": 2.5,
+    "cacheWrite1hPer1mTokens": 4,
     "outputPer1mTokens": 10
   },
   "proxyTemplate": {},
@@ -47,10 +50,14 @@
     "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-from-partners",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
+    "modalities": "https://platform.claude.com/docs/en/models/sonnet-5/overview",
+    "hosting": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models-hosting-comparison",
     "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
-    "价格为截至 2026-08-31 的首发价；自 2026-09-01 起，输入、缓存命中输入和输出价格将调整为 3、0.3 和 15 USD 每 1M tokens。",
-    "缓存读取费率已记录；TTL 缓存写入字段受支持，但本卡片的对应单价尚待来源核实，不按缺失值计为免费。"
+    "Anthropic cancelled the scheduled September 1, 2026 price increase; the former introductory input/output prices are now the standard prices.",
+    "Anthropic's exact-model pricing table, checked 2026-10-11, publishes cache-read and both TTL-specific cache-write rates. Regional surcharges and discounts are not included.",
+    "maxInputTokens has not been independently verified for this deployment; no input ceiling is inferred from contextWindow minus maxOutputTokens.",
+    "Microsoft Foundry defaults to Version 2 (Hosted on Azure) when both Claude hosting versions are available; Anthropic hosting remains selectable."
   ]
 }

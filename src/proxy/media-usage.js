@@ -1,3 +1,5 @@
+import { compilePricingPolicy } from "../token-pricing.js";
+
 const TOKEN_FIELDS = Object.freeze({
   inputTokens: ["input_tokens", "prompt_tokens"],
   outputTokens: ["output_tokens", "completion_tokens"],
@@ -36,6 +38,7 @@ export function normalizeMediaUsage(raw) {
 export function estimateMediaCost(usage, pricing) {
   const unknown = { costStatus: "unknown", estimatedCostAmount: null, currency: "USD" };
   if (usage?.usageStatus !== "observed" || !pricing || pricing.status === "unavailable") return unknown;
+  if (Object.hasOwn(pricing, "billingIncrementSeconds")) compilePricingPolicy(pricing);
   const counters = usage.counters;
   const valid = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
   let amount = 0;
@@ -52,7 +55,10 @@ export function estimateMediaCost(usage, pricing) {
     const perMinute = pricing.perMinute ?? pricing.realtimeAudioDurationPerMinute;
     const perSecond = pricing.perSecond ?? pricing.realtimeAudioDurationPerSecond;
     const byMinute = pricing.billingUnit === "minute" && valid(perMinute);
-    if (!charge("durationSeconds", counters.durationSeconds, byMinute ? perMinute : perSecond, byMinute ? 60 : 1)) return unknown;
+    const seconds = counters.durationSeconds;
+    const increment = pricing.billingIncrementSeconds;
+    const billedSeconds = increment === undefined ? seconds : Math.ceil(seconds / increment) * increment;
+    if (!valid(seconds) || !charge("durationSeconds", billedSeconds, byMinute ? perMinute : perSecond, byMinute ? 60 : 1)) return unknown;
   } else if (pricing.billingUnit === "1M characters") {
     if (!charge("inputCharacters", counters.inputCharacters, pricing.per1mCharacters, 1000000)) return unknown;
   } else if (pricing.billingUnit === "1M tokens" || pricing.billingUnit === "1K tokens") {

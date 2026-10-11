@@ -5,7 +5,11 @@
   "family": "gpt-realtime",
   "modelVersion": null,
   "status": "ga",
+  "contextWindow": 16000,
+  "maxInputTokens": 2000,
+  "maxOutputTokens": 2000,
   "interfaces": ["realtime/translations"],
+  "defaultInterface": "realtime/translations",
   "inputModalities": ["audio"],
   "outputModalities": ["audio", "text"],
   "capabilities": ["realtime", "translation", "speech-to-speech", "streaming"],
@@ -14,8 +18,7 @@
     "billingUnit": "minute",
     "sourceType": "openai-official",
     "status": "published",
-    "realtimeAudioDurationPerMinute": 0.034,
-    "realtimeAudioDurationPerSecond": 0.00057
+    "realtimeAudioDurationPerMinute": 0.034
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
@@ -25,10 +28,12 @@
   },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-translate",
+    "limits": "https://developers.openai.com/api/docs/models/gpt-realtime-translate",
     "pricing": "https://developers.openai.com/api/docs/pricing"
   },
   "notes": [
     "OpenAI 官方说明 gpt-realtime-translate 按实时音频时长计费，而不是按文本 token 计费。",
-    "官方公开价格为 0.034 USD/分钟，约 0.00057 USD/秒。"
+    "OpenAI publishes a 16K context, 2K maximum input and 2K maximum output. The exact billing rate is USD 0.034 per minute; a rounded per-second duplicate is intentionally omitted.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

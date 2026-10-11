@@ -118,6 +118,9 @@ function normalizeProtocolProfile(value, profileName) {
   const thinkingTypes = [...new Set(normalizeStringArray(thinkingSource.types).map((type) => type.toLowerCase()))];
   const reasoningDefault = String(reasoningSource.default || "").trim().toLowerCase();
   const thinkingDefault = String(thinkingSource.default || "").trim().toLowerCase();
+  const thinkingShimDefault = typeof thinkingSource.shimDefault === "string"
+    ? thinkingSource.shimDefault.trim().toLowerCase()
+    : "";
   const reasoningAliases = normalizeValueMap(reasoningSource.aliases);
   const reasoningParameter = String(reasoningSource.parameter || "").trim();
   const thinkingParameter = String(thinkingSource.parameter || "").trim();
@@ -142,6 +145,14 @@ function normalizeProtocolProfile(value, profileName) {
   }
   if (thinkingDefault && thinkingTypes.length > 0 && !thinkingTypes.includes(thinkingDefault)) {
     throw new Error(`Model Catalog protocolProfiles.${profileName}.thinking.default must be included in types`);
+  }
+  if (thinkingSource.shimDefault != null && (
+    !thinkingShimDefault
+    || !Array.isArray(thinkingSource.types)
+    || !thinkingSource.types.every(type => typeof type === "string" && type.trim())
+    || !thinkingSource.types.includes(thinkingSource.shimDefault)
+  )) {
+    throw new Error(`Model Catalog protocolProfiles.${profileName}.thinking.shimDefault must be a nonempty string included in types`);
   }
   if (profile.request != null && (typeof profile.request !== "object" || Array.isArray(profile.request))) {
     throw new Error(`Model Catalog protocolProfiles.${profileName}.request must be an object`);
@@ -182,6 +193,7 @@ function normalizeProtocolProfile(value, profileName) {
       parameter: thinkingParameter,
       types: thinkingTypes,
       default: thinkingDefault,
+      ...(thinkingShimDefault ? { shimDefault: thinkingShimDefault } : {}),
       validation: thinkingSource.validation === "strict" ? "strict" : "passthrough"
     },
     request: {

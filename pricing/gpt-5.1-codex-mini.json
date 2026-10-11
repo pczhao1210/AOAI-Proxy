@@ -9,6 +9,7 @@
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
   "interfaces": ["responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": [
@@ -23,7 +24,8 @@
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": ["low", "medium", "high"]
+        "levels": ["none", "low", "medium", "high"],
+        "validation": "passthrough"
       }
     }
   },
@@ -45,5 +47,8 @@
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-51",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+  },
+  "notes": [
+    "protocolProfiles.responses.reasoning.default remains independently unverified for this exact provider deployment. Client controls remain passthrough; no omitted-parameter default or effort list is inferred from a sibling model."
+  ]
 }

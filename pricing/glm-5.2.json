@@ -1,25 +1,30 @@
 {
   "id": "GLM-5.2",
   "displayName": "GLM 5.2",
-  "provider": "zhipu-ai",
+  "provider": "fireworks-ai",
   "family": "glm-5.2",
   "modelVersion": null,
   "status": "ga",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "function-calling", "json-output"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
-        "parameter": "reasoning_effort"
+        "parameter": "reasoning_effort",
+        "validation": "passthrough"
       },
       "thinking": {
         "parameter": "thinking.type",
         "types": ["enabled", "disabled"],
-        "default": "enabled"
+        "default": "enabled",
+        "validation": "passthrough"
       }
     }
   },
@@ -28,18 +33,27 @@
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
     "status": "published",
+    "deploymentType": "datazone-standard",
     "inputPer1mTokens": 1.54,
     "cachedInputPer1mTokens": 0.15,
     "outputPer1mTokens": 4.84
   },
-  "proxyTemplate": {},
+  "proxyTemplate": {
+    "targetModel": "FW-GLM-5.2"
+  },
   "sources": {
-    "capabilities": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
+    "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "modelReference": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
     "limits": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
-    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
+    "hosting": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "pricing": "https://prices.azure.com/api/retail/prices"
   },
   "notes": [
     "Azure Retail Prices API 的 Foundry Models 计量 FW GLM 5.2 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00015、0.00154、0.00484 USD 每 1K tokens，自 2026-07-01 生效。",
-    "智谱官方文档声明 GLM-5.2 支持思考模式、Function Calling、结构化输出和 reasoning_effort；thinking 默认开启，可通过 thinking.type 在 enabled 与 disabled 间切换。"
+    "智谱官方文档声明 GLM-5.2 支持思考模式、Function Calling、结构化输出和 reasoning_effort；thinking 默认开启，可通过 thinking.type 在 enabled 与 disabled 间切换。",
+    "The template selects Foundry's FW-GLM-5.2 offering, for which Microsoft still lists pay-per-token and PTU. The exact non-Fast Data Zone retail meters were checked on 2026-10-11; their token rates are not PTU or Global Standard quotes.",
+    "Limits and thinking controls retain separately cited vendor reference metadata. protocolProfiles.chat/completions.reasoning.levels and protocolProfiles.chat/completions.reasoning.default remain unverified for this Foundry offering; explicit client values stay passthrough.",
+    "maxInputTokens remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

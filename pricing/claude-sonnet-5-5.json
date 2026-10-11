@@ -3,7 +3,7 @@
   "displayName": "Claude Sonnet 5.5",
   "provider": "anthropic",
   "family": "claude-5",
-  "modelVersion": null,
+  "modelVersion": "2026-09-28",
   "status": "ga",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,
@@ -14,6 +14,7 @@
     "anthropic": ["messages"]
   },
   "interfaces": ["messages"],
+  "defaultInterface": "messages",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
@@ -39,7 +40,9 @@
     "sourceType": "anthropic-official",
     "status": "published",
     "inputPer1mTokens": 2,
-    "cachedInputPer1mTokens": 0.2,
+    "cachedInputPer1mTokens": 0.1,
+    "cacheWrite5mPer1mTokens": 2.5,
+    "cacheWrite1hPer1mTokens": 4,
     "outputPer1mTokens": 10
   },
   "proxyTemplate": {},
@@ -47,12 +50,14 @@
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
     "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
     "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
-    "pricing": "https://github.com/anthropics/skills/blob/main/skills/claude-api/shared/models.md"
+    "release": "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
     "Microsoft Foundry lists both Azure-hosted and Anthropic-hosted Sonnet 5.5 as GA through native Messages. Release date and an independent maximum input limit were not verified.",
     "Adaptive thinking is the default. The upstream rejects disabled thinking and manual budget_tokens; between_tools is accepted only at high effort or below, with no additional thinking fields or per-message effort changes. These provider constraints remain upstream-validated.",
     "Forced tool_choice any/tool and incompatible replayed thinking state can be rejected by the upstream; preserve native Messages objects rather than synthesizing thinking history.",
-    "Base token rates are explicitly published in Anthropic's maintained API reference, not inferred from Sonnet 5. TTL cache-write rates and deployment-specific surcharges remain unverified and are not filled with zero."
+    "Anthropic's exact-model pricing table, checked 2026-10-11, publishes cache reads at 5% of base input and both TTL-specific cache-write rates. These rates are not inferred from Sonnet 5; deployment-specific surcharges and discounts are not included.",
+    "modelVersion records Anthropic's verified 2026-09-28 release date; the canonical dateless Claude API ID is already pinned to its provider snapshot. maxInputTokens remains unpublished and is not inferred from contextWindow."
   ]
 }

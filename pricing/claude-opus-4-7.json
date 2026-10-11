@@ -4,7 +4,7 @@
   "provider": "anthropic",
   "family": "claude-4",
   "modelVersion": "2026-04-16",
-  "status": "preview",
+  "status": "ga",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,
   "hostingModes": ["anthropic"],
@@ -13,15 +13,16 @@
     "anthropic": ["messages"]
   },
   "interfaces": ["messages"],
-  "inputModalities": ["text", "image", "code"],
-  "outputModalities": ["text", "code"],
+  "defaultInterface": "messages",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "messages": {
       "thinking": {
         "parameter": "thinking.type",
         "types": ["adaptive", "disabled"],
-        "default": "adaptive",
+        "shimDefault": "adaptive",
         "validation": "passthrough"
       },
       "reasoning": {
@@ -39,6 +40,8 @@
     "status": "published",
     "inputPer1mTokens": 5,
     "cachedInputPer1mTokens": 0.5,
+    "cacheWrite5mPer1mTokens": 6.25,
+    "cacheWrite1hPer1mTokens": 10,
     "outputPer1mTokens": 25
   },
   "proxyTemplate": {},
@@ -46,10 +49,14 @@
     "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-claude#available-claude-models",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
-    "pricing": "https://claude.com/pricing#api"
+    "modalities": "https://platform.claude.com/docs/en/models/opus-4-7/overview",
+    "lifecycle": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
-    "缓存读取费率已记录；TTL 缓存写入字段受支持，但本卡片的对应单价尚待来源核实，不按缺失值计为免费。",
+    "Anthropic's exact-model pricing table, checked 2026-10-11, publishes cache-read and both TTL-specific cache-write rates. Regional surcharges and discounts are not included.",
+    "Microsoft Foundry lists the Anthropic-infrastructure offering as GA. maxInputTokens remains independently unverified; contextWindow minus maxOutputTokens is not an input limit.",
+    "protocolProfiles.messages.thinking.default remains unset because Anthropic's native omitted-field behavior is thinking off. shimDefault=adaptive is a proxy-only conversion policy that activates thinking only for cross-protocol requests asking for visible reasoning, not as an Anthropic default.",
     "Claude Opus 4.7 于 2026-04-16 发布，定价与 Opus 4.6 相同（$5/$25 per 1M tokens）。",
     "Claude Opus 4.7 采用新版 tokenizer，对相同文本（尤其是代码或结构化数据）的 token 计数可能比 4.6 高出最多 35%。",
     "Claude 在 model-router 中仍需先单独部署到 Foundry 资源。"

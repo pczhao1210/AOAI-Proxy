@@ -26,10 +26,13 @@
   },
   "pricing": {
     "currency": "USD",
+    "billingUnit": "1M tokens",
     "sourceType": "azure-official",
-    "status": "unavailable"
+    "status": "published",
+    "inputPer1mTokens": 2,
+    "cachedInputPer1mTokens": 0.2,
+    "outputPer1mTokens": 8
   },
-  "pricingCatalogEntry": null,
   "proxyTemplate": {
     "targetModel": "MAI-Thinking-1",
     "routes": {
@@ -39,12 +42,14 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-mai-thinking",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#microsoft-models-sold-by-azure",
-    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/"
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/"
   },
   "notes": [
     "Microsoft Foundry Global Standard preview. Native Chat JSON and SSE use /mai/v1/chat/completions on the services.ai.azure.com endpoint; targetModel is the deployment name.",
     "Use max_completion_tokens. Set reasoning_display to encrypted to receive opaque reasoning.encrypted_content, then return the complete assistant message unchanged on subsequent turns. Never decode, log or display the encrypted state.",
     "Streaming terminates with [DONE]. An output safety block can emit a terminal SafetyBlockedError event before [DONE]. Tool calls can use finish_reason stop; inspect the message tool_calls field.",
-    "Exact model-specific pricing has not been verified as of 2026-09-11. pricingCatalogEntry remains null."
+    "Microsoft currently publishes MAI-Thinking-1 Global token rates of USD 2/$0.20/$8 per 1M input/cached-input/output tokens. No PTU rate is inferred.",
+    "maxInputTokens remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "The Azure price table publishes a six-region Global rate; region-specific availability and invoice terms still depend on the selected deployment."
   ]
 }

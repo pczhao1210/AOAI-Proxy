@@ -41,6 +41,78 @@ For example, a template-only override is now:
 }
 ```
 
+### Complete model-card requirements
+
+A model card is a complete deployment descriptor, not just a price table.
+When adding or completing a card, audit the entire raw JSON against the
+checklist below. Use a complete card for the same provider and protocol as a
+structural reference; do not stop after filling prices or rely on loader
+defaults to hide missing metadata. An explicitly price-only edit stays
+price-only, but report any other incomplete fields discovered.
+
+Declare `defaultInterface` explicitly, including single-interface cards.
+When making an existing implicit default explicit, preserve the Catalog's
+previous resolution and administrator route overrides; do not infer a new
+routing policy from a model name. `modelVersion` is the provider's opaque
+deployment revision, which can be `"1"` rather than a date. Unknown revisions
+must remain unknown, not be synthesized from a release announcement.
+
+| Area | Required review |
+| --- | --- |
+| Identity and deployment | Exact `id`, `displayName`, `provider`, `family`, published `modelVersion` and `status`; hosting modes and deployment target overrides when applicable. |
+| Limits | Independently sourced `contextWindow`, `maxInputTokens` and `maxOutputTokens` where published, with `sources.limits`; never infer input from context minus output. |
+| Native support | `interfaces`, `defaultInterface`, input/output modalities and capabilities; distinguish native provider support, protocol-specific tool restrictions and proxy routing policy. |
+| Reasoning and thinking | For every applicable native protocol, record the correct parameter path, complete supported `levels`/`types`, omitted-parameter `default`, validation policy and relevant aliases or budget constraints when provider evidence establishes them. Keep unknown choices/defaults unset with field-path notes; do not claim a control is fixed just because support is undocumented. |
+| Pricing | Currency, billing unit, source type/status, all published input/output/cache-read/cache-write rates, applicable TTL/media/hosting units and complete whole-request tiers with IDs, bounds and selection policy. |
+| Import and evidence | Correct enabled/disabled template semantics and route overrides, independent `sources` URLs, and concise `notes` for missing fields, provider disagreements and administrator-approved reference policies. |
+
+For configurable reasoning, a profile containing only `parameter` and
+`validation: "passthrough"` is incomplete when effort choices and defaults can
+be established. Chat's `reasoning_effort` and Responses' `reasoning.effort`
+are separate profiles; never flatten their lists or assume `max` is available
+on both. Keep `passthrough` where established: descriptive metadata must not
+become a new local rejection policy.
+
+Do not leave an applicable native protocol's profile absent: that can expose
+generic fallback choices/defaults as apparent model facts. If the protocol
+parameter path is known but its deployment-specific support, choices or default
+are not, declare the path and passthrough policy without adding guessed
+levels/defaults, and document the unresolved
+`protocolProfiles.<protocol>.<control>.<field>` paths in that card's notes.
+Only source a `configurable: false` profile when the provider documents a fixed
+request-level control. Keep proxy-only `shimDefault` activation separate from
+the provider's omitted-parameter `default`. A declared thinking `shimDefault`
+must be a nonempty string in that profile's nonempty `types` list. Remote sync
+rejects an invalid candidate before replacing the active files or Catalog.
+
+Prefer exact-model, selected-provider evidence over sibling cards. If the
+administrator explicitly requests a sibling reference to complete reasoning
+metadata, record the model names and approval in `notes`, materialize the
+values in the new self-contained card, and identify what remains a reference
+rather than an independently verified deployment fact. Preserve contradictory
+provider evidence rather than presenting a family default as universal.
+This exception does not authorize inferred token limits, copied prices or
+runtime family inheritance.
+
+GPT-6.1 Sol's Azure card follows the administrator-approved
+[GPT-6 Astra](gpt-6-astra.json)/[GPT-6 Luna](gpt-6-luna.json) profiles:
+Chat lists `none`, `low`, `medium`, `high`, `xhigh`; Responses additionally
+lists `max`; both record the reference default `medium`. Azure documents
+`none` and restricts `max` to Responses, while OpenAI's exact-model page
+excludes `none` and publishes `medium` as default. These provider/reference
+distinctions remain in the card's evidence and notes, not hidden by blank
+lists or defaults.
+
+Run `cards:check` and `cards:validate` on raw cards and review every diagnostic
+for the changed card. A fully completed card with available evidence should
+have no `REVIEW` diagnostics. A genuinely unpublished, inapplicable or
+deployment-dependent value remains absent, with its field path and reason
+documented in `notes` and the change summary; never invent a value or zero
+just to clear a diagnostic. Focused tests must freeze declared reasoning
+choices/defaults, their compiled Catalog profiles and template import, plus
+pricing boundaries when applicable. Offline validation checks completeness
+and structure, not the truth or live acceptance of provider documentation.
+
 ### GPT-5.5 and newer routing defaults
 
 For GPT-5.5 and newer text cards with native Responses support, set
@@ -93,14 +165,18 @@ For open-source models, Foundry availability is the admission criterion. Prefer
 the Azure-direct offering for each exact model; use the Foundry Fireworks offering
 only when no Azure-direct offering exists. This is not a family-wide provider
 switch. Keep the selected deployment ID, protocol facts and price provenance
-aligned. DeepSeek V4.1 Flash uses the Azure-direct model; GLM 5.3/5.3 Flash and
-Kimi K3 retain their Fireworks offerings. Regression tests must not force an
-Azure-direct card back to its previous Fireworks target.
+aligned. DeepSeek V4.1 Flash has no current Azure-direct roster entry; GLM
+5.3/5.3 Flash and Kimi K3 use their exact Fireworks Foundry targets. The
+current Azure-direct roster does **not** list DeepSeek V4.1 Flash; its active
+Foundry offering is `FW-DeepSeek-V4.1-Flash`. Regression tests must compare the
+exact model ID and selected hosting surface, not force a direct target when it
+is absent from the current roster.
 
 When published, record reasoning levels and defaults, thinking controls, token
 limits, rates and billing intervals with evidence for the selected deployment.
-Do not infer an input maximum from context minus output, copy an effort default
-from a sibling model, or invent a long-context tier. Offline tests enforce
+Do not infer an input maximum from context minus output, silently copy an
+effort default from a sibling model without the explicit reference approval
+described above, or invent a long-context tier. Offline tests enforce
 structural consistency; provider research determines whether a missing value
 can actually be filled.
 
@@ -143,19 +219,181 @@ test so a newly added card cannot silently introduce another missing limit.
 The exception list permits newly verified limits to be filled; it does not
 require reviewed cards to remain incomplete forever.
 
-#### Metadata audit (2026-09-30)
+#### Catalog repairs (2026-10-11)
+
+All 87 active cards now declare their native default interface. Existing
+defaults and explicit template routes were retained; adding metadata did not
+redirect existing Chat requests to Responses. Unverified limits, versions,
+control defaults and billing units are identified by field path in each
+self-contained card, not hidden behind loader defaults or explained only here.
+`cards:validate` still reports evidence-qualified review items; a note explains
+an unknown value, it does not turn that value into a verified provider fact.
+
+- Anthropic's live [pricing table](https://platform.claude.com/docs/en/about-claude/pricing)
+  supplied all eight previously missing Claude TTL-write tables and corrected
+  Sonnet 5.5 cache reads. Sonnet 5's scheduled price increase was cancelled;
+  its old introductory amounts are now standard, so only its obsolete note
+  needed correction.
+- Claude transport modalities are text/image input and text output. Code is
+  text content, not a separate wire modality; image understanding does not
+  imply image generation. Opus 4.6/4.7 and Sonnet 4.6 are GA in the cited
+  Anthropic-infrastructure Foundry offering. Fable 5/5.1 are Preview in that
+  offering; a model's release date is not proof of GA on every hosting surface.
+- Grok 4/4.3/4.6/4.7 cards select the Azure Foundry offering, not xAI-direct
+  endpoints. Their individual Azure limits, versions and lifecycle labels are
+  kept separate from xAI facts. Azure's exact-model table lists Chat Completions
+  only for 4/4.3/4.6, while its broader deployment how-to mentions Responses;
+  native Responses is therefore recorded only for 4.7, whose Azure how-to
+  documents it. The 4.3/4.6 xAI rates remain reference data with
+  `pricingCatalogEntry: null`; Grok 4 has no verified Azure or current xAI
+  numeric price. Azure's effort parameters/defaults are not inferred from xAI.
+  GLM 5.3's established Responses interface is retained with its parameter
+  path, but its exact Foundry effort choices/default remain unverified, rather
+  than falling back to generic medium reasoning. No new local capability
+  rejection or omitted-effort injection was introduced.
+- The [current Fireworks catalog](https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models)
+  supplies the `FW-GLM-5`, `FW-GLM-5.2` and `FW-MiniMax-M2.5` deployment
+  identifiers. GLM 5.2 retains the independently checked exact non-Fast Data
+  Zone retail prices, not Fireworks-account, Global Standard or PTU rates.
+  GLM 5 and MiniMax M2.5 retain active **PTU-only** templates at the
+  administrator's request: their pay-per-token offerings are deprecated,
+  old token prices are `reference`, and `pricingCatalogEntry: null` disables
+  automatic text pricing. A visible historic retail meter is not evidence
+  that its offering can still be deployed. PTU charges are not invented from
+  token prices.
+- Azure-direct DeepSeek V3.2, V3.2 Speciale, V4 Flash and V4 Pro use the
+  current Global Standard rates. Azure-direct Kimi K2.5/K2.6 retain historical
+  FW meter amounts as `reference` only, with automatic pricing disabled; a
+  matching meter name does not prove an Azure-direct Kimi charge.
+- GPT-4.1 cards distinguish the OpenAI context maximum from smaller Azure
+  Standard/provisioned/batch deployment windows. Codex cards retain the
+  Azure/OpenAI `xhigh` documentation discrepancy explicitly; passthrough still
+  lets the upstream decide an explicit value. No missing input ceiling,
+  deployment default or service-tier price is inferred from a sibling.
+
+Template target/provider changes apply to new imports. Existing deployment
+names, routes and administrator pricing overrides are not rewritten, including
+overrides on the two PTU cards. Historical cost/tier snapshots are not repriced.
+No archive, live configuration or generated admin asset was changed.
+
+#### Full official-source verification (2026-10-11)
+
+The full pass compared **all 85 pre-existing active cards** with exact-model
+documentation for the selected provider/hosting; two current MAI Voice 2.1
+cards were added separately after Microsoft documented those exact targets.
+The active catalog now contains **87 cards**. The source review separated model
+publisher facts, API surface facts, hosting/version facts, and billable meters
+instead of treating a family name or identical price as proof of equivalence.
+The audit distinguishes:
+
+- **verified deployment facts** (exact catalog IDs/versions, interfaces,
+  modalities, individual limits, current lifecycle labels and service meters);
+- **provider-direct references** that are not Azure Foundry quotes;
+- **proxy policies** (routes, conversion defaults, non-configurable controls);
+- **unknown or conflicting values**, which remain unset or are explicitly
+  identified in each card's `notes`.
+
+It does not claim invoice acceptance or live availability in every region. The
+Azure OpenAI public price page currently renders `$-` for several multimodal
+rows, and Azure Retail Prices API calls for some products were throttled with
+HTTP 429. Existing numerical amounts without a current exact-host record remain
+marked/reported as references; OpenAI/xAI/DeepSeek/BFL direct rates are not
+silently represented as Azure charges. Unknown values are not cleared with a
+zero or a sibling-model default.
+
+The source-backed corrections in this pass include:
+
+- **Azure-direct DeepSeek:** use the current Azure Global prices for V3.2,
+  V3.2 Speciale, V4 Flash and V4 Pro, add the documented tool-calling
+  capability, and omit an unsupported combined context total for V4 models.
+  V4.1 Flash is not on the direct Azure roster; its exact Foundry target is
+  `FW-DeepSeek-V4.1-Flash`. Its DeepSeek API price is not a Foundry price, its
+  Foundry meter remains unverified, and automatic pricing is disabled.
+  Azure Global per-1M input/cached-input/output prices verified in the current
+  DeepSeek table are V3.2/Speciale **0.58/—/1.68**, V4 Flash
+  **0.19/0.028/0.51**, and V4 Pro **1.74/0.145/3.48**. V4 input/output
+  limits are separate ceilings, not a combined context value.
+- **Fireworks Foundry:** GLM-5.3 now uses the current FW-GLM-5.3 Azure Global
+  meters (effective 2026-09-01). GLM-5, Kimi K2.5 and MiniMax M2.5's old
+  pay-per-token SKUs are deprecated/PTU-only; their historical meters no longer
+  enable automatic token billing. GLM-5.2 Data Zone rates remain distinct from
+  Global/PTU prices. GLM-5.3 Flash Serverless references are not asserted to
+  be its Foundry price.
+- **OpenAI and Azure:** add Azure-supported `none` to GPT-5.1 Codex/Codex Mini,
+  record the conflicting Codex Max `none` evidence without rejecting requests,
+  and include GPT-5.4 Nano computer use. GPT-5.6 version/status sources
+  conflict; Azure GPT-6.1 tool calling is Responses-only. GPT-4.1 deployment
+  limits, Azure Realtime 2.x limits, and OpenAI-direct Realtime snapshots are
+  kept distinct rather than combining host-specific context values.
+- **OpenAI/Azure price boundaries:** OpenAI Standard rates on Azure-bound cards
+  remain explicitly identified as provider-direct references, not Azure
+  invoice quotes. Azure OpenAI's current public price page renders `$-` for
+  several audio/realtime rows and some Retail Prices API calls returned 429.
+  Existing Azure-rate amounts whose current exact meter could not be reproduced
+  remain estimates/references; no OpenAI direct audio-channel price is copied
+  over a potentially different Azure meter.
+- **Grok/Azure price boundaries:** the xAI-direct tier tables for Grok 4.3,
+  4.6 and 4.7 remain reference-only on Azure cards; `pricingCatalogEntry: null`
+  prevents them from generating automatic Azure costs. Grok 4 has neither a
+  verified Azure meter nor a current exact xAI price row, so its pricing is
+  unavailable rather than copied from another model.
+- **Model Router:** its exact pool has no single input/context/output limit or
+  guaranteed union of route features. `contextWindow` is left unset; Codex
+  discovery uses the existing 128K/95% compatibility fallback, not a declared
+  router-provider cap. The input-only $0.14 SKU is restricted to its published
+  regions; underlying model charges remain separate.
+- **Retired and lifecycle-uncertain models:** o1-preview is retired and its new
+  template is disabled while historical pricing is retained as reference.
+  GPT-5.6/GPT-6 lifecycle labels are set to unknown where the current Azure
+  table publishes a version but not an explicit GA/Preview label; version/matrix
+  conflicts remain recorded instead of guessing.
+- **Claude:** effort lists/defaults now match the exact Anthropic model docs.
+  For Opus 4.6/4.7/4.8 and Sonnet 4.6, native omitted `thinking` means off;
+  the shim's explicit adaptive activation is recorded as a proxy policy, not
+  an upstream default. Sonnet 5.5 release date and Sonnet 5 Foundry default
+  hosting are corrected. Anthropic token/cache rates describe Anthropic
+  standard pricing; CCU conversion, negotiated terms, and Azure Data Zone
+  surcharges are separate.
+- **MAI:** MAI-Thinking-1 Global token rates and MAI-Transcribe-2's limited
+  $0.10/audio-hour offer through 2026-12-31 are recorded in native units.
+  Transcription uses one-second billing increments; the release capsule also
+  publishes a standard $0.36/audio-hour rate, requiring price review when the
+  offer ends. Its 2026-09-03 release date is not a verified deployment revision.
+  The legacy 2.0 voice targets remain for existing configs but their new
+  templates are disabled because current Microsoft docs list only 2.1 and do
+  not establish a 2.0 retirement/price. Separate 2.1 cards use the documented
+  $22/$15 per-million-character prices. Proxy synthesis does not expose voice
+  cloning.
+- **FLUX:** FLUX.2 flex/pro are Azure Foundry Preview; direct BFL megapixel
+  rates/formulas are reference-only, not Azure prices. BFL sources conflict
+  between $0.05 and $0.06 per MP for Flex; neither current price table proves
+  separate reference-image billing. Pro's local first/additional-MP formula is
+  not established by the current BFL table. Automatic image pricing stays off.
+Remaining limitations are explicit rather than hidden: exact current Azure
+OpenAI multimodal invoice amounts, several deployment-specific effort defaults,
+Azure lifecycle labels omitted from model rows, the legacy MAI Voice 2.0
+availability/price, and a few Foundry meters. The verification source/date and
+field-path caveats are recorded in the affected card notes. `cards:check` and
+`cards:validate` verify structure and documented unknowns; neither resolves
+these provider-side uncertainties.
+
+#### Metadata audit (2026-09-30) and subsequent additions
+
+The September audit observations below are historical. Its outstanding Claude
+cache-write and GLM/MiniMax offering-reconciliation gaps are superseded by the
+October repairs above; the remaining independently unverified values still
+require provider evidence.
 
 Subsequent additions: `claude-sonnet-5-5`, `gpt-6.1-sol`, `grok-4.7` and
-`claude-haiku-5-5` bring the active catalog to 85 cards.
+`claude-haiku-5-5` brought the active catalog to 85 cards at that point. The
+full October source verification above added two separate MAI Voice 2.1 cards,
+bringing the current active catalog to 87.
 
-[Grok 4.7](./grok-4.7.json) is GA with native Chat/Responses and a 500K combined
-context budget. Azure independently lists 500K input and output ceilings; xAI's
-128K Responses output default is not an absolute limit. Both protocol profiles
-support `low`/`medium`/`high`/`xhigh`, default `high`. Its xAI-direct whole-request
-rates switch at **200,000** prompt tokens, including cache: USD 2 / 0.50 / 6
-input/cache-read/output below the threshold and 4 / 1 / 12 at or above it.
-These rates do not establish Azure hosting prices. Native Responses preserves
-the encrypted reasoning that xAI now returns by default.
+The initial Grok 4.7 card mixed Azure deployment limits with xAI-direct effort
+controls and prices. The October source pass selected Azure Foundry: its current
+card records GA/version 1, native Chat/Responses and the combined 500K context.
+xAI prices remain reference-only with automatic Azure pricing disabled; Azure
+effort defaults are not published. See [Grok 4.7](./grok-4.7.json).
 
 [Claude Haiku 5.5](./claude-haiku-5-5.json), released October 7, 2026, is GA
 with native Messages on Azure or Anthropic hosting, 1M context and 128K
@@ -169,16 +407,22 @@ output. The separate batch-only 300K output beta is not a proxy Messages limit.
 Sonnet 5.5 uses native Messages on Azure or Anthropic
 hosting, a 1M context/128K output limit, adaptive thinking by default and effort
 `high`; `between_tools`, not `disabled`, is its provider-specific alternative
-with the constraints recorded in the card. Anthropic's maintained reference
-explicitly publishes USD 2 / 0.20 / 10 input/cache-read/output per 1M tokens.
-Its release date, independent input maximum and TTL cache-write rates remain
-unverified.
+with the constraints recorded in the card. Anthropic's current pricing table
+explicitly publishes USD 2 / 0.10 / 10 input/cache-read/output and USD 2.50 / 4
+five-minute/one-hour cache writes per 1M tokens, verified on 2026-10-11.
+The official release date is 2026-09-28; an independent input maximum remains
+unpublished.
 
 GPT-6.1 Sol uses Microsoft's exact `2026-09-29` model version, native Chat and
 Responses, and independently published 1,050,000 / 922,000 / 128,000
 context/input/output limits. The provider documents function tools on Responses
-only. Exact effort defaults/lists are not copied from GPT-6 Sol: missing
-controls remain passthrough. Its pricing now uses published
+only. Its complete per-protocol reasoning profiles use the administrator-approved
+Astra/Luna reference: Chat accepts `none`, `low`, `medium`, `high`, `xhigh`;
+Responses additionally lists `max`; both use the reference default `medium`
+and retain passthrough validation. Azure's exact-model matrix includes `none`,
+but OpenAI's model page excludes it; OpenAI independently publishes the
+`medium` default, which remains a reference for Azure rather than a
+live-verified omission default. Its pricing now uses published
 [Azure Retail Prices API](https://prices.azure.com/api/retail/prices)
 Global Standard consumption rates: `sourceType` is `azure-retail-prices-api`
 and `status` is `published`. The eight exact-model `Std Gl` meters are
@@ -198,8 +442,9 @@ require explicit review and save, and historical unknown-tier rows and costs
 are not reconstructed from the new card. “Tier not recorded” in model
 statistics means request-time pricing/tier evidence is missing, not free usage.
 
-All 81 active raw cards were inspected. Reachable Microsoft documentation sources
-and Anthropic's own API reference supplied the following updates:
+At the September audit, all 81 then-active raw cards were inspected. Reachable
+Microsoft documentation sources and Anthropic's own API reference supplied
+the following updates:
 
 - Azure input/output limits for DeepSeek V4 Flash, Kimi K2.5 and Grok 4/4.3;
   GPT-5 Pro input/output corrected to 272K/128K. Grok 4.6 uses Azure's 200K
@@ -210,33 +455,37 @@ and Anthropic's own API reference supplied the following updates:
   `medium`. Evidence is Anthropic's reference cached September 25, not a claim
   that the live product documentation was fetched successfully.
 - GPT-5.6 and GPT-6 Astra distinguish Responses-only `max` from Chat effort
-  levels. Grok 4.6 Responses records configurable low/medium/high, default high.
-  Catalog levels are descriptive, not a new proxy preflight rejection policy.
+  levels. The September Grok 4.6 xAI effort findings are not Azure defaults:
+  its current Azure card records only the documented Chat interface and leaves
+  Azure-specific effort choices/defaults unset. Catalog levels are descriptive,
+  not a new proxy preflight rejection policy.
 - GLM 5.3 Flash and Kimi K3 templates use Foundry `FW-...` catalog IDs while
   retaining Fireworks provider/price provenance. They do not use Fireworks-account
   `accounts/fireworks/models/...` identifiers as Foundry deployment defaults.
 - Fable 5.1 and Opus 5.5 TTL cache-write rates already recorded in their sourced
   notes were moved into executable price fields; those prices were not freshly
-  reverified online. Other Claude write rates remain unfilled pending evidence.
+  reverified online at that time. The remaining Claude write rates were filled
+  from the live exact-model table during the October follow-up.
 
-Outstanding review items are intentionally not replaced with guesses:
+The September review items were not replaced with guesses:
 
 - DeepSeek V4.1 Flash's direct input/output maxima; GLM 5.2 effort choices/default;
   older GPT/Codex and realtime effort defaults; missing independent input limits.
-- GLM 5/5.2 and MiniMax M2.5 still need exact direct-versus-Fireworks offering
-  reconciliation: their existing cards use vendor labels and FW retail-meter
-  notes. A Fireworks catalog listing alone does not prove that a direct offering
-  is absent, so this audit does not silently migrate those cards.
+- GLM 5/5.2 and MiniMax M2.5 needed exact direct-versus-Fireworks offering
+  reconciliation. The October follow-up reconciled the current Azure-direct
+  and Fireworks tables and explicit targets; PTU-only retention/pricing opt-out
+  was separately approved by the administrator.
 - Conflicting Azure/OpenAI realtime limits and deployment-dependent GPT-4.1
-  windows; Grok 4.3 retains a separately sourced xAI context maximum alongside
-  the smaller Azure input/output limits, not a promise of Azure's context capacity.
+  windows. The September Grok 4.3 card mixed xAI context with Azure ceilings;
+  the October source pass removed the xAI 1M context from the Azure card and
+  retains only Azure's documented input/output limits.
 - Claude Fable effort support differs between Microsoft and Anthropic references.
   Existing adaptive thinking defaults are proxy activation choices for explicit
   cross-protocol reasoning, not proof that omitting thinking enables it upstream
   (notably Opus 4.7/4.8). This audit does not change that conversion policy.
-- MAI and unpublished image rates, remaining Claude cache-write rates, and
+- MAI and unpublished image rates, then-missing Claude cache-write rates, and
   Foundry-specific prices where cards use explicitly identified provider reference
-  prices. Pricing domains could not be reached during this audit, so existing
+  prices. Pricing domains could not be reached during the September audit, so existing
   prices/tiers are not certified as current Azure invoice rates.
 
 Re-run `cards:validate` for the per-file missing-field inventory. Review warnings
@@ -260,11 +509,11 @@ rates are included. Existing `models[].pricing` and `access.pricingCatalog`
 overrides are not removed by catalog sync and may need deliberate replacement
 or removal before the new card policies apply.
 
-Grok 4.3 and 4.6 now enable their **xAI-official** whole-request tables at
-`promptTokensAtLeast: 200000`. Both xAI model pages explicitly apply the higher
-rate to all tokens when the prompt reaches 200K. These are not independently
-verified Azure-hosted prices; administrators must bind a matching price source
-or supply a verified override for their deployment.
+Grok 4.3, 4.6 and 4.7 retain their **xAI-official** whole-request tier tables at
+`promptTokensAtLeast: 200000` as reference data. The xAI model pages explicitly
+apply the higher rate to all tokens when the prompt reaches 200K. These are not
+Azure prices; `pricingCatalogEntry: null` disables automatic Azure cost
+calculation until the selected Azure meter is verified.
 
 OpenAI's published standard pricing also has 272K prompt-context tiers for
 `gpt-5.5`, `gpt-5.4`, and `gpt-5.4-pro`. Their `pricing.tiers` list per-million
@@ -404,7 +653,8 @@ rate.
 Each executable tier should have a unique, descriptive `id`. Runtime breakdowns
 display the captured ID verbatim and group by actual model plus ID, not by price
 or interval alone. The active GPT cards use `short <=272K` / `long >272K`;
-Grok 4.3/4.6 use `short <200K` / `long >=200K`. `K` means 1,000 tokens.
+Grok 4.3/4.6/4.7 use `short <200K` / `long >=200K` for their xAI reference
+tiers. `K` means 1,000 tokens.
 Numeric bounds select rates; the ID is never parsed to determine billing.
 Keep IDs stable for price-only changes and update their boundary text when a
 threshold changes. Reusing an ID across different historical bounds merges those
@@ -541,6 +791,15 @@ Supported fields (all rates must be finite and nonnegative; currency metadata is
 | `second` | `perSecond` or `realtimeAudioDurationPerSecond` | Reported duration in seconds |
 | `1M characters` | `per1mCharacters` | Reported `input_characters`, not locally counted input |
 | `1M tokens` / `1K tokens` | `inputPer1mTokens`, `cachedInputPer1mTokens`, `outputPer1mTokens`, or their `Per1kTokens` equivalents | Complete input/output totals, text/audio/image channel counts and cached channel counts |
+
+Duration prices may declare `billingIncrementSeconds`, a positive safe integer
+supported only for `minute` or `second` billing. Each response/item's billed
+duration is rounded up to that increment before applying its rate; reported
+duration counters remain unchanged, including explicit zero. Cumulative updates
+round the latest total for the same item, not each delta, and duplicate terminals
+do not add a charge. Without this field, fractional durations retain their
+existing continuous pricing. MAI-Transcribe-2 declares `1` to match Speech's
+one-second increments; this is not a global rounding rule for audio or Realtime.
 
 Token rates for text live at the price root; audio/image rates use the same names
 under `channels.audio` / `channels.image`. Per-million rates take precedence.

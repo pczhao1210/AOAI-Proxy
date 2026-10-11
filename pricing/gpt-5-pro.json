@@ -9,6 +9,7 @@
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
   "interfaces": ["responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs"],

@@ -21,6 +21,7 @@ test("adaptive images freeze all nine JSON/SSE directions and preflight budgets"
   await withTestContext(async ctx => {
     const config = await ctx.readConfigFile();
     config.media = { ...config.media, inputCompression: settings };
+    config.observability.logs.bufferSize = 1000;
     const models = ["gpt-5-mini", "gpt-5.6-luna", "claude-native"];
     for (const [index, protocol] of protocols.entries()) {
       config.models.find(model => model.id === models[index]).routes = { "*": protocol };

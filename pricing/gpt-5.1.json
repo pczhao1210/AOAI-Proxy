@@ -9,6 +9,7 @@
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
   "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs", "parallel-tool-calling"],
@@ -17,14 +18,16 @@
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["none", "low", "medium", "high"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     },
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
         "levels": ["none", "low", "medium", "high"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     }
   },

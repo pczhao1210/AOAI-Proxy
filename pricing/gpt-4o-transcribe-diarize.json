@@ -6,6 +6,7 @@
   "modelVersion": "2025-10-15",
   "status": "preview",
   "interfaces": ["audio/transcriptions"],
+  "defaultInterface": "audio/transcriptions",
   "inputModalities": ["audio", "text"],
   "outputModalities": ["text"],
   "capabilities": ["transcription", "speech-to-text", "speaker-diarization"],
@@ -13,7 +14,7 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-openai-global",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 2.5,
     "outputPer1mTokens": 10,
     "channels": {
@@ -25,6 +26,11 @@
   "pricingCatalogEntry": null,
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "openAiReference": "https://developers.openai.com/api/docs/models/gpt-4o-transcribe-diarize",
+    "azureLimits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+  },
+  "notes": [
+    "Azure documents a 25 MB maximum input file; this is a file limit, not a token ceiling. OpenAI direct audio-token prices and Azure channel rates differ, while the current Azure public pricing page renders no numeric model price; these Azure estimates remain references."
+  ]
 }

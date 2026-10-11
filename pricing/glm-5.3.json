@@ -22,18 +22,26 @@
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["low", "high", "max"],
-        "default": "max"
+        "default": "max",
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "validation": "passthrough"
       }
     }
   },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "fireworks-serverless",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
-    "inputPer1mTokens": 1.4,
-    "cachedInputPer1mTokens": 0.26,
-    "outputPer1mTokens": 4.4
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 1.75,
+    "cachedInputPer1mTokens": 0.325,
+    "outputPer1mTokens": 5.5
   },
   "proxyTemplate": {
     "targetModel": "FW-GLM-5.3"
@@ -41,11 +49,17 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
     "limits": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3",
-    "pricing": "https://docs.fireworks.ai/serverless/pricing",
+    "reasoningReference": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3",
+    "responses": "https://docs.fireworks.ai/guides/response-api",
+    "pricing": "https://prices.azure.com/api/retail/prices",
     "azurePricing": "https://prices.azure.com/api/retail/prices"
   },
   "notes": [
-    "Microsoft Foundry exposes this Azure Fireworks catalog model as FW-GLM-5.3 through Chat Completions and Responses APIs.",
-    "Azure Retail Prices API did not expose a FW-GLM-5.3 meter when verified on 2026-09-05; use Fireworks Serverless standard pricing of USD 1.40 input, USD 0.26 cached input, and USD 4.40 output per 1M tokens until Azure publishes a meter."
+    "The template selects Foundry's FW-GLM-5.3 offering. Microsoft currently lists its Chat Completions deployment interface; the established Responses interface is retained using Fireworks' separately documented Responses API, not claimed as an independently live-verified Foundry capability.",
+    "The Azure Retail Prices API now publishes FW-GLM-5.3 Global Standard meters effective 2026-09-01 at USD 1.75 / 0.325 / 5.50 per 1M input/cached-input/output tokens. Data Zone meters are USD 2.10 / 0.39 / 6.60. The card selects Global Standard; a meter row alone does not prove regional deployment availability.",
+    "Foundry labels the exact model type Chat Completions and provides the generic Responses endpoint for catalog models. protocolProfiles.responses.reasoning.levels and protocolProfiles.responses.reasoning.default are unverified for this exact model; values remain passthrough with no local validation/default injection.",
+    "The Chat effort choices/default are from the exact Z.ai model reference, not a Responses profile or Foundry-specific override.",
+    "maxInputTokens remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

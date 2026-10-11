@@ -97,6 +97,8 @@ test("raw validation rejects malformed controls, limits and executable tiers wit
   card.protocolProfiles.responses.reasoning.levels = ["low", 1];
   assert.match(validateModelCard(card).errors.join("\n"), /maxOutputTokens/);
   assert.match(validateModelCard(card).errors.join("\n"), /reasoning.levels/);
+  card.protocolProfiles.responses.reasoning.shimDefault = "unknown";
+  assert.match(validateModelCard(card).errors.join("\n"), /reasoning.shimDefault/);
   card.pricing = { currency: "USD", billingUnit: "1M tokens",
     tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
     tiers: [
@@ -110,6 +112,21 @@ test("raw validation rejects malformed controls, limits and executable tiers wit
   assert.ok(validateModelCard(unavailable).warnings.some(warning => warning.startsWith("pricing.billingUnit")));
   for (const provider of ["deepseek", "fireworks-ai", "future-provider"]) {
     assert.deepEqual(validateModelCard({ ...authoredCard, provider }).errors, []);
+  }
+});
+
+test("raw duration cards validate billing increments and preserve them through formatting and import", () => {
+  const card = { ...authoredCard, interfaces: ["audio/transcriptions"], capabilities: ["transcription"], protocolProfiles: {},
+    pricing: { currency: "USD", billingUnit: "second", perSecond: 0.10 / 3600, billingIncrementSeconds: 1 } };
+  assert.deepEqual(validateModelCard(card).errors, []);
+  const formatted = JSON.parse(formatModelCard(card));
+  assert.equal(formatted.pricing.billingIncrementSeconds, 1);
+  const imported = {};
+  upsertPricingCatalogEntry(imported, expandModelCard(formatted));
+  assert.equal(imported.access.pricingCatalog[card.id].billingIncrementSeconds, 1);
+  for (const value of [0, -1, 0.5, "1", null, true]) {
+    assert.match(validateModelCard({ ...card, pricingCatalogEntry: null, pricing: { ...card.pricing, billingIncrementSeconds: value } }).errors.join("\n"),
+      /billingIncrementSeconds/);
   }
 });
 
@@ -265,6 +282,52 @@ test("model-card formatter is deterministic, idempotent and preserves media and 
     ...legacy.pricingCatalogEntry, channels: { audio: { inputPer1mTokens: 64 } }
   } });
   assert.deepEqual(override.pricingCatalogEntry.channels, { audio: { inputPer1mTokens: 64 } });
+});
+
+test("GPT-6.1 Sol raw card is complete without loader-supplied reasoning metadata", async () => {
+  const card = JSON.parse(await fs.readFile(new URL("../pricing/gpt-6.1-sol.json", import.meta.url), "utf8"));
+  assert.deepEqual(validateModelCard(card), { errors: [], warnings: [] });
+  for (const protocol of card.interfaces) {
+    const profile = card.protocolProfiles[protocol].reasoning;
+    assert.equal(profile.default, "medium");
+    assert.equal(profile.validation, "passthrough");
+    assert.deepEqual(profile.levels, protocol === "responses"
+      ? ["none", "low", "medium", "high", "xhigh", "max"]
+      : ["none", "low", "medium", "high", "xhigh"]);
+  }
+});
+
+test("active cards declare native defaults and explain every unresolved metadata field", async () => {
+  const directory = new URL("../pricing/", import.meta.url);
+  const names = (await fs.readdir(directory)).filter(name => name.endsWith(".json"));
+  for (const name of names) {
+    const card = JSON.parse(await fs.readFile(new URL(name, directory), "utf8"));
+    assert.ok(card.interfaces.includes(card.defaultInterface), `${name}: explicit native default`);
+    if (card.capabilities.includes("reasoning")) {
+      for (const protocol of card.interfaces) {
+        const profile = card.protocolProfiles?.[protocol];
+        assert.ok(profile?.reasoning || profile?.thinking, `${name}: ${protocol} control profile`);
+      }
+    }
+    if (["grok-4.3.json", "grok-4.6.json", "grok-4.7.json"].includes(name)) {
+      for (const protocol of card.interfaces) {
+        const reasoning = card.protocolProfiles[protocol].reasoning;
+        assert.equal(Object.hasOwn(reasoning, "levels"), false, `${name}: ${protocol} levels stay unknown`);
+        assert.equal(Object.hasOwn(reasoning, "default"), false, `${name}: ${protocol} default stays unknown`);
+      }
+    }
+    if (["claude-opus-4-6.json", "claude-opus-4-7.json", "claude-opus-4-8.json", "claude-sonnet-4-6.json"].includes(name)) {
+      const thinking = card.protocolProfiles.messages.thinking;
+      assert.equal(Object.hasOwn(thinking, "default"), false, `${name}: native omitted thinking remains off`);
+      assert.equal(thinking.shimDefault, "adaptive", `${name}: proxy activation is explicit`);
+    }
+    const notes = (card.notes || []).join(" ");
+    for (const warning of validateModelCard(card).warnings) {
+      const field = warning.slice(0, warning.indexOf(":"));
+      assert.ok(notes.includes(field), `${name}: ${field} needs a per-card explanation`);
+    }
+    if (card.modelVersion == null) assert.ok(notes.includes("modelVersion"), `${name}: modelVersion`);
+  }
 });
 
 test("all active model cards use canonical self-contained formatting", async () => {

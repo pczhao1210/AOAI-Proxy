@@ -4,10 +4,11 @@
   "provider": "azure-openai",
   "family": "gpt-4.1",
   "modelVersion": "2025-04-14",
-  "status": "ga",
+  "status": "unknown",
   "contextWindow": 1047576,
   "maxOutputTokens": 32768,
   "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["vision", "streaming", "function-calling", "structured-outputs"],
@@ -23,7 +24,14 @@
   "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-41-series",
+    "lifecycle": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-41-series",
     "limits": "https://developers.openai.com/api/docs/models/gpt-4.1-nano",
-    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+    "azureLimits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-41-series"
+  },
+  "notes": [
+    "maxInputTokens remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "contextWindow retains the independently published OpenAI model maximum, not an unconditional Azure deployment allowance. Azure documents 300000-token Standard and 128000-token provisioned/batch windows; match the actual deployment with an explicit configuration override. maxInputTokens remains independently unverified.",
+    "Azure lists exact version 2025-04-14 and available endpoints, but its row does not explicitly label GA or Preview; status is left unknown rather than inferred."
+  ]
 }

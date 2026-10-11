@@ -7,6 +7,7 @@
   "status": "ga",
   "contextWindow": 1000000,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
@@ -15,7 +16,8 @@
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["low", "high", "max"],
-        "default": "max"
+        "default": "max",
+        "validation": "passthrough"
       }
     }
   },
@@ -23,11 +25,12 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "fireworks-serverless",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 3,
     "cachedInputPer1mTokens": 0.3,
     "outputPer1mTokens": 15
   },
+  "pricingCatalogEntry": null,
   "proxyTemplate": {
     "targetModel": "FW-Kimi-K3"
   },
@@ -38,8 +41,10 @@
     "pricing": "https://fireworks.ai/models/fireworks/kimi-k3"
   },
   "notes": [
-    "The template selects Foundry's FW-Kimi-K3 deployment, not a Fireworks-account model path. Prices remain Fireworks Serverless reference rates, not independently verified Foundry meter prices.",
+    "The template selects Foundry's FW-Kimi-K3 pay-per-token Global Standard deployment, not a Fireworks-account model path. Fireworks Serverless rates remain references; no exact Azure meter rate was verified. pricingCatalogEntry=null disables automatic charging until the selected Foundry rate is confirmed.",
     "Fireworks 的 Serverless 价格为输入、缓存输入、输出分别 3、0.3、15 USD 每 1M tokens。",
-    "Fireworks 将模型路径标识为 accounts/fireworks/models/kimi-k3，并标明支持图像输入和函数调用。"
+    "Fireworks 将模型路径标识为 accounts/fireworks/models/kimi-k3，并标明支持图像输入和函数调用。",
+    "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

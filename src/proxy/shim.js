@@ -122,7 +122,7 @@ function ensureMessagesThinking(out, descriptor) {
   const configured = getDescriptorProtocolProfile(descriptor, "messages")?.thinking;
   const profile = configured && typeof configured === "object" ? configured : fallback;
   const parameter = profile.parameter || "";
-  const defaultType = profile.default || "";
+  const defaultType = profile.shimDefault || profile.default || "";
   if (parameter && defaultType && getValueAtPath(out, parameter) == null) {
     setValueAtPath(out, parameter, defaultType);
   }

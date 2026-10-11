@@ -94,6 +94,10 @@ export function validateModelCard(card) {
       if (control.configurable != null && typeof control.configurable !== "boolean") {
         errors.push(`${prefix}.configurable: expected a boolean`);
       }
+      if (control.shimDefault != null &&
+        (!text(control.shimDefault) || !strings(control[choices]) || !control[choices].includes(control.shimDefault))) {
+        errors.push(`${prefix}.shimDefault: must be a nonempty string included in ${choices}`);
+      }
       if (control.configurable === false) continue;
       if (!text(control.parameter)) errors.push(`${prefix}.parameter: required for configurable controls`);
       if (control[choices] == null) warnings.push(`${prefix}.${choices}: not recorded; verify provider support`);
@@ -124,7 +128,8 @@ export function validateModelCard(card) {
     try {
       canonicalizeRates(pricing);
       // Reference-only media tables are not executable token policies.
-      if (pricing.tiering || field === "pricingCatalogEntry" || card.pricingCatalogEntry !== null) {
+      if (pricing.tiering || field === "pricingCatalogEntry" || card.pricingCatalogEntry !== null
+        || Object.hasOwn(pricing, "billingIncrementSeconds")) {
         compilePricingPolicy(pricing, field);
       }
     } catch (error) {

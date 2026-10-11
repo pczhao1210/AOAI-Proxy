@@ -4,7 +4,7 @@
   "provider": "anthropic",
   "family": "claude-4",
   "modelVersion": "2026-02-17",
-  "status": "preview",
+  "status": "ga",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,
   "hostingModes": ["anthropic"],
@@ -13,15 +13,16 @@
     "anthropic": ["messages"]
   },
   "interfaces": ["messages"],
-  "inputModalities": ["text", "image", "code"],
-  "outputModalities": ["text", "image", "code"],
+  "defaultInterface": "messages",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "messages": {
       "thinking": {
         "parameter": "thinking.type",
         "types": ["adaptive", "enabled", "disabled"],
-        "default": "adaptive",
+        "shimDefault": "adaptive",
         "validation": "passthrough"
       },
       "reasoning": {
@@ -42,6 +43,8 @@
     "status": "published",
     "inputPer1mTokens": 3,
     "cachedInputPer1mTokens": 0.3,
+    "cacheWrite5mPer1mTokens": 3.75,
+    "cacheWrite1hPer1mTokens": 6,
     "outputPer1mTokens": 15
   },
   "proxyTemplate": {},
@@ -49,10 +52,15 @@
     "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-from-partners#anthropic",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
-    "pricing": "https://claude.com/pricing#api"
+    "modalities": "https://platform.claude.com/docs/en/models/sonnet-4-6/overview",
+    "lifecycle": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
-    "缓存读取费率已记录；TTL 缓存写入字段受支持，但本卡片的对应单价尚待来源核实，不按缺失值计为免费。",
+    "Anthropic's exact-model pricing table, checked 2026-10-11, publishes cache-read and both TTL-specific cache-write rates. Regional surcharges and discounts are not included.",
+    "Microsoft Foundry lists the Anthropic-infrastructure offering as GA. maxInputTokens remains independently unverified; contextWindow minus maxOutputTokens is not an input limit.",
+    "protocolProfiles.messages.thinking.default remains unset because Anthropic's native omitted-field behavior is thinking off. shimDefault=adaptive is a proxy-only conversion policy that activates thinking only for cross-protocol requests asking for visible reasoning, not as an Anthropic default.",
+    "The xhigh to max alias is a proxy compatibility mapping; xhigh is not an Anthropic-native effort level for Sonnet 4.6.",
     "Azure Foundry 可直接部署 Claude Sonnet 4.6，但微软文档当前说明 model-router 还不支持 claude-sonnet-4-6。"
   ]
 }

@@ -1,13 +1,16 @@
 {
   "id": "GLM-5",
   "displayName": "GLM 5",
-  "provider": "zhipu-ai",
+  "provider": "fireworks-ai",
   "family": "glm-5",
   "modelVersion": null,
   "status": "ga",
   "contextWindow": 200000,
   "maxOutputTokens": 128000,
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "function-calling", "json-output"],
@@ -16,7 +19,8 @@
       "thinking": {
         "parameter": "thinking.type",
         "types": ["enabled", "disabled"],
-        "default": "enabled"
+        "default": "enabled",
+        "validation": "passthrough"
       }
     }
   },
@@ -24,19 +28,29 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 1.1,
     "cachedInputPer1mTokens": 0.22,
     "outputPer1mTokens": 3.52
   },
-  "proxyTemplate": {},
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "targetModel": "FW-GLM-5"
+  },
   "sources": {
-    "capabilities": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5",
+    "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "modelReference": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5",
     "limits": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5",
-    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
+    "hosting": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "pricing": "https://prices.azure.com/api/retail/prices"
   },
   "notes": [
     "Azure Retail Prices API 的 Foundry Models 计量 FW GLM 5 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00022、0.0011、0.00352 USD 每 1K tokens。",
-    "智谱官方文档声明 GLM-5 支持思考模式、Function Calling 和结构化输出；thinking 默认开启，可通过 thinking.type 在 enabled 与 disabled 间切换。"
+    "智谱官方文档声明 GLM-5 支持思考模式、Function Calling 和结构化输出；thinking 默认开启，可通过 thinking.type 在 enabled 与 disabled 间切换。",
+    "This card selects Foundry's FW-GLM-5 offering. PTU remains available, but pay-per-token is deprecated. The token prices above are historical references, not current PTU charges; pricingCatalogEntry=null disables automatic text pricing.",
+    "The administrator approved retaining this active PTU template. New imports use FW-GLM-5; persisted targetModel and administrator price overrides are not rewritten.",
+    "Limits and thinking controls retain separately cited vendor reference metadata, not independently verified PTU-specific defaults. Configure the actual deployment name and verified PTU charges separately.",
+    "maxInputTokens remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

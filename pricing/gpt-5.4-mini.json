@@ -9,6 +9,7 @@
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
   "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": [
@@ -24,14 +25,16 @@
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["none", "low", "medium", "high", "xhigh"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     },
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
         "levels": ["none", "low", "medium", "high", "xhigh"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     }
   },
@@ -49,5 +52,8 @@
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-54",
     "pricing": "https://developers.openai.com/api/docs/pricing"
-  }
+  },
+  "notes": [
+    "pricing.sourceType identifies published OpenAI reference prices, not independently verified Azure deployment charges. Match the actual service tier and region or retain an explicit administrator pricing override."
+  ]
 }

@@ -1,14 +1,15 @@
 {
   "id": "grok-4.7",
   "displayName": "Grok 4.7",
-  "provider": "xai",
+  "provider": "azure-openai",
   "family": "grok-4.7",
-  "modelVersion": null,
+  "modelVersion": "1",
   "status": "ga",
   "contextWindow": 500000,
   "maxInputTokens": 500000,
   "maxOutputTokens": 500000,
   "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
@@ -16,16 +17,12 @@
     "chat/completions": {
       "reasoning": {
         "parameter": "reasoning_effort",
-        "levels": ["low", "medium", "high", "xhigh"],
-        "default": "high",
         "validation": "passthrough"
       }
     },
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": ["low", "medium", "high", "xhigh"],
-        "default": "high",
         "validation": "passthrough"
       }
     }
@@ -34,7 +31,7 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "xai-official",
-    "status": "published",
+    "status": "reference",
     "tiering": {
       "basis": "inputTokensIncludingCache",
       "method": "whole-request"
@@ -56,17 +53,20 @@
       }
     ]
   },
+  "pricingCatalogEntry": null,
   "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-grok",
-    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#spacexai-models-sold-by-azure",
-    "reasoning": "https://docs.x.ai/developers/model-capabilities/text/reasoning",
-    "pricing": "https://docs.x.ai/developers/models/grok-4.7"
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure",
+    "pricing": "https://docs.x.ai/developers/models/grok-4.7",
+    "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/",
+    "version": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure",
+    "lifecycle": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-grok"
   },
   "notes": [
-    "Microsoft Foundry lists Grok 4.7 as GA with native Chat Completions and Responses. Its independently published input and output ceilings are 500K each within a combined 500K context budget; they cannot both be used in full in one request.",
-    "The xAI Responses API defaults max_output_tokens to 128K for visible output, not an absolute model output ceiling. Reasoning cannot be disabled; provider validation remains upstream.",
-    "xAI Responses always returns reasoning.encrypted_content, even without include. Replay these native reasoning items unchanged; Chat Completions has no ciphertext field.",
-    "These are xAI-direct whole-request prices, not verified Azure hosting prices. Prompts reaching 200K tokens use the higher input, cache-read and output rates for the entire request. Cache-write rates are unpublished and omitted."
+    "Microsoft Foundry lists Grok 4.7 as GA/version 1 with native Chat Completions and Responses, text-and-image input, and text output. The 500K input and 500K output ceilings share a combined 500K context budget.",
+    "The retained whole-request tier prices are xAI-direct reference rates, not Azure prices. Azure pricing was not numerically verified; pricingCatalogEntry=null disables automatic cost calculation for this Azure card.",
+    "The protocolProfiles parameter paths describe Chat and Responses wire fields for conversion only. protocolProfiles.chat/completions.reasoning.levels, protocolProfiles.chat/completions.reasoning.default, protocolProfiles.responses.reasoning.levels and protocolProfiles.responses.reasoning.default are unverified for Azure; xAI settings and its encrypted reasoning field are not asserted as Azure wire guarantees."
   ]
 }

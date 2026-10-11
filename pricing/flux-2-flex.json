@@ -4,9 +4,10 @@
   "provider": "black-forest-labs",
   "family": "flux-2",
   "modelVersion": null,
-  "status": "ga",
+  "status": "preview",
   "maxInputTokens": 32000,
   "interfaces": ["images/generations"],
+  "defaultInterface": "images/generations",
   "inputModalities": ["text", "image"],
   "outputModalities": ["image"],
   "capabilities": ["vision", "image-generation", "image-editing"],
@@ -38,7 +39,7 @@
     "currency": "USD",
     "billingUnit": "megapixels",
     "sourceType": "bfl-official",
-    "status": "published",
+    "status": "reference",
     "generatedImagePerMegapixel": 0.05,
     "referenceImagePerMegapixel": 0.05,
     "pixelRules": {
@@ -62,10 +63,12 @@
     "pricing": "https://bfl.ai/pricing"
   },
   "notes": [
-    "BFL 官方定价: 生成图和参考图均按每 MP 0.05 USD 计费。",
+    "Microsoft Foundry lists FLUX.2-flex as Preview. BFL's public pricing pages conflict ($0.05 vs $0.06 per MP), and neither establishes the Azure Foundry charge or a separate reference-image fee. The retained BFL amount is reference-only; pricingCatalogEntry=null disables automatic image pricing.",
     "计费时每张生成图与每张参考图分别按像素向上取整到下一整 MP。",
-    "BFL 以 1024x1024 像素计作 1 MP。",
+    "BFL defines 1024x1024 pixels as 1 MP; Azure deployment rates remain unverified.",
     "多张参考图时，每张参考图至少按 1 MP 计费。",
-    "超过 4 MP 的图片会先缩放到 4 MP 后再计费。"
+    "超过 4 MP 的图片会先缩放到 4 MP 后再计费。",
+    "contextWindow, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

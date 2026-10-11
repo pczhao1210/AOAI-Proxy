@@ -30,6 +30,7 @@ node --test test/upstream-headers.test.js
 node --test test/image-optimization.test.js test/image-work-queue.test.js test/image-config.test.js test/image-routes.test.js
 node --test test/mai-routes.test.js test/media-http.test.js test/azure-speech.test.js
 node --test test/realtime.test.js test/webrtc.test.js
+node --test test/real-protocol-matrix.test.js test/pricing-sync.test.js
 ```
 
 Security regressions cover percent-encoded matched admin routes, custom admin paths,
@@ -65,6 +66,9 @@ provider-specific SDP setup, credential export, expiration and lease cleanup. Us
 cover explicit zeros, cumulative deltas, duplicate terminals, channel/cache rates, duration/character
 units, provider price isolation and known/unknown currency totals. Media form tests cover independent
 transport gates, limits, client-secret confirmation and known/unknown cost labels.
+Duration billing tests freeze zero/exact/fractional boundaries, per-item increments,
+cumulative snapshots and unchanged raw counters/continuous pricing. Remote-sync tests
+reject malformed thinking shim defaults while preserving the previous files and Catalog.
 
 Optional local integration gates (never point these at production):
 
@@ -288,7 +292,13 @@ Configure these public model IDs, or override each ID with the named environment
 - `Kimi-K2.6`
 - `grok-4.6`
 
-The GPT-5.6 Terra model must retain the pricing-template route `chat/completions -> responses`. DeepSeek V4 has no function-tool capability, so Kimi K2.6 covers the Chat-backend tool cells. Kimi K2.6 exposes a thinking toggle rather than a reasoning level, so reasoning-level cells use the other compatible models.
+The GPT-5.6 Terra model must retain the pricing-template route `chat/completions -> responses`.
+The matrix uses Kimi K2.6 for the Chat-backend tool cells. Kimi K2.6 exposes a
+thinking toggle rather than a reasoning level; Grok 4.6's Azure effort choices
+remain unverified. Their profiles explicitly skip reasoning-level scenarios,
+which use the other compatible models. Basic, stream and tool scenarios remain
+available for Grok. The offline selector unit test checks all 36 default cases
+(four scenarios across nine directions); `--list` alone prints only model routing.
 
 Focused reruns:
 

@@ -14,6 +14,7 @@
     "anthropic": ["messages"]
   },
   "interfaces": ["messages"],
+  "defaultInterface": "messages",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
@@ -55,6 +56,7 @@
     "Hosted on Azure and Hosted on Anthropic infrastructure are both generally available in Microsoft Foundry. Both use the native Anthropic Messages API.",
     "Adaptive thinking is always on. Disabled thinking, manual budget_tokens, and forced tool_choice (any or tool) are rejected by the upstream; leave these requests to the provider for validation.",
     "Cache reads and TTL-specific cache writes are separate input categories; the published write rates previously recorded in this note are now executable pricing fields.",
-    "Foundry bills via Claude Consumption Units at standard Anthropic per-model rates before any discounts. US Data Zone inference adds a 1.1x multiplier not represented by this base price."
+    "Foundry bills via Claude Consumption Units at standard Anthropic per-model rates before any discounts. US Data Zone inference adds a 1.1x multiplier not represented by this base price.",
+    "maxInputTokens remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits."
   ]
 }

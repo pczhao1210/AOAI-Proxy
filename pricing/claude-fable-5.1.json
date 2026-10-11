@@ -4,7 +4,7 @@
   "provider": "anthropic",
   "family": "claude-5",
   "modelVersion": "2026-09-01",
-  "status": "ga",
+  "status": "preview",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,
   "hostingModes": ["anthropic"],
@@ -13,6 +13,7 @@
     "anthropic": ["messages"]
   },
   "interfaces": ["messages"],
+  "defaultInterface": "messages",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
@@ -47,10 +48,12 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
+    "lifecycle": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
     "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
     "Cache reads and TTL-specific cache writes are separate input categories; the published write rates previously recorded in this note are now executable pricing fields.",
-    "Microsoft Foundry offers Claude Fable 5.1 in preview, hosted on Anthropic infrastructure through the Messages API."
+    "Microsoft Foundry offers Claude Fable 5.1 in preview, hosted on Anthropic infrastructure through the Messages API. status describes this Foundry offering, not a universal lifecycle across providers.",
+    "maxInputTokens has not been independently verified for this deployment; no input ceiling is inferred from contextWindow minus maxOutputTokens."
   ]
 }

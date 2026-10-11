@@ -4,7 +4,7 @@
   "provider": "anthropic",
   "family": "claude-5",
   "modelVersion": "2026-06-09",
-  "status": "ga",
+  "status": "preview",
   "contextWindow": 1000000,
   "maxOutputTokens": 128000,
   "hostingModes": ["anthropic"],
@@ -13,8 +13,9 @@
     "anthropic": ["messages"]
   },
   "interfaces": ["messages"],
-  "inputModalities": ["text", "image", "code"],
-  "outputModalities": ["text", "image", "code"],
+  "defaultInterface": "messages",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "messages": {
@@ -26,7 +27,7 @@
       },
       "reasoning": {
         "parameter": "output_config.effort",
-        "levels": ["low", "medium", "high", "xhigh"],
+        "levels": ["low", "medium", "high", "xhigh", "max"],
         "default": "high",
         "validation": "passthrough"
       }
@@ -39,6 +40,8 @@
     "status": "published",
     "inputPer1mTokens": 10,
     "cachedInputPer1mTokens": 1,
+    "cacheWrite5mPer1mTokens": 12.5,
+    "cacheWrite1hPer1mTokens": 20,
     "outputPer1mTokens": 50
   },
   "proxyTemplate": {},
@@ -46,10 +49,13 @@
     "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-from-partners",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
+    "modalities": "https://platform.claude.com/docs/en/models/fable-5/overview",
+    "lifecycle": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
     "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
-    "缓存读取费率已记录；TTL 缓存写入字段受支持，但本卡片的对应单价尚待来源核实，不按缺失值计为免费。",
-    "Claude Fable 5 自 2026-06-09 起在 Claude API、Microsoft Foundry、Amazon Bedrock 和 Google Cloud 正式可用。"
+    "Microsoft Foundry lists this Anthropic-infrastructure offering as Preview; status describes that offering, not a universal lifecycle across Claude API, Bedrock and Vertex.",
+    "Anthropic's exact-model pricing table, checked 2026-10-11, publishes cache-read and both TTL-specific cache-write rates. Regional surcharges and discounts are not included.",
+    "maxInputTokens has not been independently verified for this deployment; no input ceiling is inferred from contextWindow minus maxOutputTokens."
   ]
 }

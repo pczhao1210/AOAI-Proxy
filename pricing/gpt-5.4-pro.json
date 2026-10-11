@@ -9,6 +9,7 @@
   "maxInputTokens": 922000,
   "maxOutputTokens": 128000,
   "interfaces": ["responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs"],
@@ -17,7 +18,8 @@
       "reasoning": {
         "parameter": "reasoning.effort",
         "levels": ["medium", "high", "xhigh"],
-        "default": "medium"
+        "default": "medium",
+        "validation": "passthrough"
       }
     }
   },

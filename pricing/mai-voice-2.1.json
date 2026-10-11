@@ -1,0 +1,42 @@
+{
+  "id": "mai-voice-2.1",
+  "displayName": "MAI Voice 2.1",
+  "provider": "microsoft",
+  "family": "mai-voice",
+  "status": "preview",
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["audio/speech"],
+  "defaultInterface": "audio/speech",
+  "inputModalities": ["text"],
+  "outputModalities": ["audio"],
+  "capabilities": ["text-to-speech", "speech-generation"],
+  "proxyAdapters": {
+    "responses": "azure-speech-synthesize"
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M characters",
+    "sourceType": "azure-official",
+    "status": "published",
+    "per1mCharacters": 22
+  },
+  "proxyTemplate": {
+    "targetModel": "MAI-Voice-2.1",
+    "routes": {
+      "audio/speech": "azure-speech-tts"
+    }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-voices",
+    "limits": "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-voices",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/speech/",
+    "catalog": "https://ai.azure.com/catalog/models/MAI-Voice-2.1"
+  },
+  "notes": [
+    "Microsoft lists MAI-Voice-2.1 as Public Preview: text/SSML input, speech audio output, and 23 languages. Optional voice cloning accepts a 5-60 second reference clip; this proxy template exposes standard synthesis, not voice cloning.",
+    "The published Speech meter is USD 22 per 1M characters in the listed regions. The generic price row does not establish availability in every Speech region.",
+    "No exact deployment modelVersion, text-input ceiling, context window, or output-token limit is published; character billing does not establish token limits.",
+    "Native Azure Speech synthesis uses /cognitiveservices/v1 and selects the model in the voice name. The configured audio/speech route is a proxy adapter to Speech, not an Azure OpenAI endpoint."
+  ]
+}

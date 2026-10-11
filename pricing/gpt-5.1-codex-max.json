@@ -9,6 +9,7 @@
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
   "interfaces": ["responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": [
@@ -23,7 +24,8 @@
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": ["low", "medium", "high", "xhigh"]
+        "levels": ["low", "medium", "high", "xhigh"],
+        "validation": "passthrough"
       }
     }
   },
@@ -44,6 +46,11 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-51",
-    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+    "reasoning": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning#api-and-feature-support"
+  },
+  "notes": [
+    "The exact Azure model-list note excludes none, while the current generic Azure reasoning guide lists gpt-5.1-codex-max as supporting none. Preserve this Azure documentation conflict; none is not added to the verified choice list, and explicit values remain passthrough.",
+    "protocolProfiles.responses.reasoning.default remains independently unverified for this exact provider deployment; no omitted-parameter default is inferred from a sibling model."
+  ]
 }

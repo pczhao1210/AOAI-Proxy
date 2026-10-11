@@ -5,9 +5,10 @@
   "family": "gpt-4o",
   "modelVersion": "2024-12-17",
   "status": "preview",
-  "contextWindow": 16000,
+  "maxInputTokens": 128000,
   "maxOutputTokens": 4096,
   "interfaces": ["realtime"],
+  "defaultInterface": "realtime",
   "inputModalities": ["text", "audio"],
   "outputModalities": ["text", "audio"],
   "capabilities": ["realtime", "audio-input", "audio-output", "streaming"],
@@ -15,7 +16,7 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-openai-global",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 0.6,
     "cachedInputPer1mTokens": 0.3,
     "outputPer1mTokens": 2.4,
@@ -30,7 +31,13 @@
   "pricingCatalogEntry": null,
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
-    "limits": "https://developers.openai.com/api/docs/models/gpt-4o-mini-realtime-preview",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
+    "openAiReference": "https://developers.openai.com/api/docs/models/gpt-4o-mini-realtime-preview",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+  },
+  "notes": [
+    "The Azure deployment table lists 128K input and 4,096 output for version 2024-12-17; it does not publish a combined context-window total. OpenAI direct separately lists a 16K context, which is not substituted for the Azure deployment limit.",
+    "The Azure public pricing page currently renders no numeric price for this model; retained Azure global rates are reference amounts and must not be read as a verified invoice quote.",
+    "OpenAI direct separately lists a 16K context; it is not the Azure deployment input limit."
+  ]
 }

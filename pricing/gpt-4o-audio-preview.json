@@ -9,6 +9,7 @@
   "maxInputTokens": 128000,
   "maxOutputTokens": 16384,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text", "audio"],
   "outputModalities": ["text", "audio"],
   "capabilities": ["audio-input", "audio-output", "speech-generation"],
@@ -16,7 +17,7 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-openai-global",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 2.5,
     "outputPer1mTokens": 10,
     "channels": {
@@ -34,6 +35,6 @@
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
   },
   "notes": [
-    "Text and audio tokens use different rates; scalar token governance is intentionally disabled until channel-aware accounting is available."
+    "Text and audio tokens use different rates; scalar token governance is intentionally disabled until channel-aware accounting is available. The current Azure price page renders no numeric rate; retained global prices are references, not verified current invoice charges."
   ]
 }

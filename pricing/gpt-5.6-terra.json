@@ -4,7 +4,7 @@
   "provider": "azure-openai",
   "family": "gpt-5.6",
   "modelVersion": "2026-07-09",
-  "status": "preview",
+  "status": "unknown",
   "contextWindow": 1050000,
   "maxInputTokens": 922000,
   "maxOutputTokens": 128000,
@@ -74,12 +74,15 @@
   "sources": {
     "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning",
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-56",
+    "versionMatrix": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
     "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-56",
     "pricing": "https://developers.openai.com/api/docs/pricing"
   },
   "notes": [
     "OpenAI Standard prices were verified against the user-provided screenshot and official pricing table, including separate cache reads and writes; no Batch, Flex, Fast mode or Data Zone rates are included.",
     "The screenshot labels short context as at most 272K input tokens. This request's input, including cache, selects the long rate only above 272000; the selected rate applies to the entire request.",
-    "These are OpenAI Standard rates, not independently verified Azure-specific deployment rates."
+    "These are OpenAI Standard rates, not independently verified Azure-specific deployment rates.",
+    "Azure's model table lists version 2026-07-09 while its reasoning matrix labels 2026-06-25; the model-table version is retained, but the exact Azure lifecycle label is not explicit and status remains unknown.",
+    "Azure Chat function tools fail unless reasoning_effort is none; Responses is the documented tool path. The Chat-to-Responses route is proxy policy, not a native Chat capability claim."
   ]
 }

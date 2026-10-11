@@ -8,6 +8,7 @@
   "maxInputTokens": 262144,
   "maxOutputTokens": 262144,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
@@ -16,7 +17,8 @@
       "thinking": {
         "parameter": "thinking.type",
         "types": ["enabled", "disabled"],
-        "default": "enabled"
+        "default": "enabled",
+        "validation": "passthrough"
       }
     }
   },
@@ -24,11 +26,12 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 0.66,
     "cachedInputPer1mTokens": 0.11,
     "outputPer1mTokens": 3.3
   },
+  "pricingCatalogEntry": null,
   "proxyTemplate": {},
   "sources": {
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
@@ -36,7 +39,9 @@
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
-    "Azure Retail Prices API 的 Foundry Models 计量 FW Kimi K2.5 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00011、0.00066、0.0033 USD 每 1K tokens。",
-    "Foundry 目录将此模型标为 Preview，并声明它支持文本和图像输入、文本输出与工具调用。"
+    "The retained FW Kimi K2.5 Data Zone meters are not Azure-direct Kimi-K2.5 charges. The separate Fireworks pay-per-token offer is deprecated and PTU remains; the current Azure-direct price is unverified. pricingCatalogEntry=null disables automatic pricing rather than charging with a mismatched FW meter.",
+    "Foundry 目录将此模型标为 Preview，并声明它支持文本和图像输入、文本输出与工具调用。",
+    "contextWindow remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

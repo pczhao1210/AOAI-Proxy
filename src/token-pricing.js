@@ -70,6 +70,13 @@ function bound(value, path) {
 export function compilePricingPolicy(entry, path = "pricing") {
   if (entry == null) return null;
   if (!isObject(entry)) invalid(path, "token pricing must be an object");
+  if (Object.hasOwn(entry, "billingIncrementSeconds") && (
+    !["minute", "second"].includes(entry.billingUnit)
+    || !Number.isSafeInteger(entry.billingIncrementSeconds)
+    || entry.billingIncrementSeconds <= 0
+  )) {
+    invalid(`${path}.billingIncrementSeconds`, "must be a positive safe integer for minute or second pricing");
+  }
   if (Object.hasOwn(entry, "billingUnit") && entry.billingUnit !== "1M tokens" && entry.billingUnit !== "1K tokens") {
     return null;
   }

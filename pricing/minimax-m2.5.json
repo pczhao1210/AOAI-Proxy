@@ -1,12 +1,15 @@
 {
   "id": "MiniMax-M2.5",
   "displayName": "MiniMax M2.5",
-  "provider": "minimax",
+  "provider": "fireworks-ai",
   "family": "minimax-m2.5",
   "modelVersion": null,
   "status": "ga",
   "contextWindow": 204800,
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning"],
@@ -21,18 +24,28 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 0.33,
     "cachedInputPer1mTokens": 0.033,
     "outputPer1mTokens": 1.32
   },
-  "proxyTemplate": {},
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "targetModel": "FW-MiniMax-M2.5"
+  },
   "sources": {
-    "capabilities": "https://platform.minimax.io/docs/api-reference/text-post",
+    "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "modelReference": "https://platform.minimax.io/docs/api-reference/text-post",
     "limits": "https://platform.minimax.io/docs/api-reference/api-overview",
-    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
+    "hosting": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "pricing": "https://prices.azure.com/api/retail/prices"
   },
   "notes": [
-    "Azure Retail Prices API 的 Foundry Models 计量 FW MiniMax M2.5 Cache Inp DZ Tokens、Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.000033、0.00033、0.00132 USD 每 1K tokens。"
+    "The retained historical Azure retail meters FW MiniMax M2.5 Cache Inp DZ Tokens, Inp DZ Tokens and Outp DZ Tokens are token-price references only.",
+    "This card selects Foundry's FW-MiniMax-M2.5 offering. PTU remains available, but pay-per-token is deprecated. The token prices above are historical references, not current PTU charges; pricingCatalogEntry=null disables automatic text pricing.",
+    "The administrator approved retaining this active PTU template. New imports use FW-MiniMax-M2.5; persisted targetModel and administrator price overrides are not rewritten.",
+    "The vendor-sourced contextWindow and fixed request-level reasoning metadata have not been independently reverified for this PTU deployment. Configure the actual deployment name and verified PTU charges separately.",
+    "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

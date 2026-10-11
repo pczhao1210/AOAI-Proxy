@@ -5,13 +5,13 @@
   "family": "deepseek-v4",
   "modelVersion": "2026-04-23",
   "status": "ga",
-  "contextWindow": 1000000,
   "maxInputTokens": 1000000,
   "maxOutputTokens": 384000,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
-  "capabilities": ["reasoning", "json-output"],
+  "capabilities": ["reasoning", "function-calling", "json-output"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
@@ -21,32 +21,36 @@
         "aliases": {
           "medium": "high",
           "xhigh": "high"
-        }
+        },
+        "validation": "passthrough"
       },
       "thinking": {
         "parameter": "thinking.type",
         "types": ["enabled", "disabled"],
-        "default": "enabled"
+        "default": "enabled",
+        "validation": "passthrough"
       }
     }
   },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "azure-retail-prices-api",
+    "sourceType": "azure-openai-global",
     "status": "published",
-    "inputPer1mTokens": 1.93,
-    "cachedInputPer1mTokens": 0.17,
-    "outputPer1mTokens": 3.83
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 1.74,
+    "cachedInputPer1mTokens": 0.145,
+    "outputPer1mTokens": 3.48
   },
   "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
-    "limits": "https://api-docs.deepseek.com/quick_start/pricing",
-    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/deepseek/"
   },
   "notes": [
-    "Azure Retail Prices API 的 Foundry Models 计量 FW DeepSeek-V4-Pro Inp DZ Tokens、Ch Inp DZ Tokens、Outp DZ Tokens 的最新生效价分别为 0.00193、0.00017、0.00383 USD 每 1K tokens。",
-    "Foundry 目录将此模型定义为文本输入、文本输出、带 reasoning content 的 chat completion；不支持工具调用，响应格式为文本和 JSON。"
+    "Azure-direct Global rates are USD 1.74 input, 0.145 cached input and 3.48 output per 1M tokens. Data Zone and US Government offers have separate rates.",
+    "Azure publishes 1M input and 384K output as separate ceilings; contextWindow is not published as a combined limit. The exact model row supports tool calling and text/JSON output.",
+    "DeepSeek API release/alias routing and Fireworks meter values do not establish Azure-direct rates or retirement for this target."
   ]
 }

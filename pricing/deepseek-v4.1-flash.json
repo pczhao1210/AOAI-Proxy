@@ -1,12 +1,13 @@
 {
   "id": "DeepSeek-V4.1-Flash",
   "displayName": "DeepSeek V4.1 Flash",
-  "provider": "deepseek",
+  "provider": "fireworks-ai",
   "family": "deepseek-v4",
-  "modelVersion": "2026-09-10",
-  "status": "ga",
-  "contextWindow": 1040000,
+  "modelVersion": null,
+  "status": "unknown",
+  "contextWindow": 1000000,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
@@ -15,32 +16,36 @@
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["low", "medium", "high", "max"],
-        "default": "high"
+        "default": "high",
+        "validation": "passthrough"
       },
       "thinking": {
         "parameter": "thinking.type",
         "types": ["enabled", "disabled"],
-        "default": "enabled"
+        "default": "enabled",
+        "validation": "passthrough"
       }
     }
   },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "deepseek-official",
-    "status": "published",
-    "inputPer1mTokens": 0.3,
-    "cachedInputPer1mTokens": 0.006,
-    "outputPer1mTokens": 1.2
+    "sourceType": "azure-retail-prices-api",
+    "status": "unavailable"
   },
-  "proxyTemplate": {},
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "targetModel": "FW-DeepSeek-V4.1-Flash"
+  },
   "sources": {
-    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
-    "limits": "https://api-docs.deepseek.com/news/news260910/",
-    "pricing": "https://api-docs.deepseek.com/quick_start/pricing"
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "publisher": "https://api-docs.deepseek.com/news/news260910/"
   },
   "notes": [
-    "This card selects the DeepSeek-V4.1-Flash model sold directly by Azure; the proxy template therefore uses the root model ID without a Fireworks deployment override.",
-    "The separate Fireworks-hosted Foundry deployment is named FW-DeepSeek-V4.1-Flash and is not represented by this card."
+    "The current Azure-direct catalog does not list a DeepSeek-V4.1-Flash deployment. This card selects the exact Foundry Fireworks offering FW-DeepSeek-V4.1-Flash, which lists image input and a 1M context. maxInputTokens and maxOutputTokens are not published for this exact Foundry deployment.",
+    "The DeepSeek API's deepseek-flash rates apply to its own direct endpoint, not this Foundry Fireworks target. The current Foundry Retail Prices API rate was not verified; pricingCatalogEntry=null disables automatic text pricing until that exact meter is confirmed.",
+    "The model publisher's 2026-09-10 release date and limits do not establish a Fireworks snapshot/version or deployment-specific input/output maxima; modelVersion remains unverified for this exact Foundry offer."
   ]
 }

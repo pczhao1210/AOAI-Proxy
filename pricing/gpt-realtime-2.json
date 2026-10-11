@@ -3,11 +3,12 @@
   "displayName": "GPT Realtime 2",
   "provider": "openai",
   "family": "gpt-realtime",
-  "modelVersion": "2026-05-07",
+  "modelVersion": null,
   "status": "ga",
   "contextWindow": 128000,
   "maxOutputTokens": 32000,
   "interfaces": ["realtime"],
+  "defaultInterface": "realtime",
   "inputModalities": ["text", "image", "audio"],
   "outputModalities": ["text", "audio"],
   "capabilities": ["reasoning", "realtime", "audio-input", "audio-output", "vision", "function-calling"],
@@ -15,7 +16,8 @@
     "realtime": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": ["minimal", "low", "medium", "high", "xhigh"]
+        "levels": ["minimal", "low", "medium", "high", "xhigh"],
+        "validation": "passthrough"
       }
     }
   },
@@ -47,11 +49,13 @@
   },
   "sources": {
     "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-2",
+    "azureDeployment": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "limits": "https://developers.openai.com/api/docs/models/gpt-realtime-2",
     "pricing": "https://developers.openai.com/api/docs/pricing"
   },
   "notes": [
     "OpenAI 官方价格按文本、音频、图像 token 分通道计费；媒体估算器仅在通道及缓存 usage 完整时使用这些价格。pricingCatalogEntry 保持为空，避免旧文本计费路径误算多模态请求。",
-    "Azure Foundry 的 gpt-realtime-2 模型版本为 2026-05-07；Realtime API 使用 reasoning.effort，并支持 minimal、low、medium、high、xhigh。"
+    "OpenAI's direct Realtime model ID is dateless; modelVersion remains unset because 2026-05-07 belongs to a separate Azure deployment, not an OpenAI snapshot. Azure lists that deployment with 32K input and 4,096 output.",
+    "OpenAI's exact direct model page does not enumerate reasoning.effort levels or its omitted-parameter default. protocolProfiles.realtime.reasoning.default remains unverified; client controls remain passthrough and no values are inferred."
   ]
 }

@@ -8,9 +8,10 @@
   "maxInputTokens": 128000,
   "maxOutputTokens": 128000,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
-  "capabilities": ["reasoning", "json-output"],
+  "capabilities": ["reasoning", "function-calling", "json-output"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
@@ -21,19 +22,22 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "azure-retail-prices-api",
+    "sourceType": "azure-openai-global",
     "status": "published",
-    "inputPer1mTokens": 0.62,
-    "cachedInputPer1mTokens": 0.31,
-    "outputPer1mTokens": 1.85
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 0.58,
+    "outputPer1mTokens": 1.68
   },
   "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
-    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-by-azure",
-    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/deepseek/"
   },
   "notes": [
-    "Azure Retail Prices API 的 Foundry Models 计量 FW DeepSeek V3.2 Inp DZ Tokens、FW DeepSeekV3.2 Cache Inp DZ Tokens、FW DeepSeek V3.2 Outp DZ Tokens 的最新生效价分别为 0.00062、0.00031、0.00185 USD 每 1K tokens。"
+    "Azure-direct Global prices are USD 0.58 input and USD 1.68 output per 1M tokens; the Azure table publishes no cached-input price. Data Zone and US Government prices differ and require an explicitly matched deployment tier.",
+    "DeepSeek V3.2's Azure-direct model row supports tool calling. The 128K maxima are separate input and output limits, not a published combined context window.",
+    "Azure-direct charges do not use FW DeepSeek V3.2 meter rates. DeepSeek API thinking defaults and effort settings are not Azure deployment facts.",
+    "contextWindow remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits."
   ]
 }

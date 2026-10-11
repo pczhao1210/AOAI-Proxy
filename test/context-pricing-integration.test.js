@@ -34,19 +34,16 @@ test("context tiers charge the whole request including cache and selected output
   }
 });
 
-test("verified xAI catalog tables switch at 200000 input tokens", () => {
-  for (const [id, shortRates, longRates] of [
-    ["grok-4.3", [1.25, 0.2, 2.5], [2.5, 0.4, 5]],
-    ["grok-4.6", [2, 0.5, 6], [4, 1, 12]]
-  ]) {
+test("xAI Grok prices remain references and do not create automatic Azure costs", () => {
+  for (const id of ["grok-4", "grok-4.3", "grok-4.6", "grok-4.7"]) {
     const config = { models: [{ id, pricingRef: id }] };
-    for (const input of [199999, 200000, 200001]) {
-      const { cost } = settle(config, { prompt_tokens: input, completion_tokens: 1000, prompt_tokens_details: { cached_tokens: 190000 } });
-      const rates = input < 200000 ? shortRates : longRates;
-      assert.ok(Math.abs(cost.amount - ((input - 190000) * rates[0] + 190000 * rates[1] + 1000 * rates[2]) / 1e6) < 1e-12);
-      assert.equal(cost.costStatus, "priced");
-      assert.equal(cost.pricing.actual.tier.id, input < 200000 ? "short <200K" : "long >=200K");
-    }
+    const { cost } = settle(config, {
+      prompt_tokens: 200001,
+      completion_tokens: 1000,
+      prompt_tokens_details: { cached_tokens: 190000 }
+    });
+    assert.equal(cost.costStatus, "unknown", id);
+    assert.equal(cost.estimatedCostAmount, null, id);
   }
 });
 

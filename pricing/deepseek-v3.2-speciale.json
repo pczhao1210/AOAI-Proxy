@@ -8,9 +8,10 @@
   "maxInputTokens": 128000,
   "maxOutputTokens": 128000,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
-  "capabilities": ["reasoning", "json-output"],
+  "capabilities": ["reasoning", "function-calling", "json-output"],
   "protocolProfiles": {
     "chat/completions": {
       "reasoning": {
@@ -21,18 +22,20 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "azure-foundry-models",
+    "sourceType": "azure-openai-global",
     "status": "published",
+    "deploymentType": "global-standard",
     "inputPer1mTokens": 0.58,
     "outputPer1mTokens": 1.68
   },
   "proxyTemplate": {},
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
-    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-by-azure",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-directly-by-azure",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/deepseek/"
   },
   "notes": [
-    "Azure Foundry 定价页当前公开了 DeepSeek V3.2 SP Global 的 Serverless 单价，这里映射到 DeepSeek-V3.2-Speciale。"
+    "Azure-direct Global rates are USD 0.58 input and USD 1.68 output per 1M tokens; Data Zone and US Government rates differ and require a deployment-matched override.",
+    "The Azure-direct model row supports tool calling and text/JSON output. Input/output limits are separately 128K; contextWindow is not published as a combined limit."
   ]
 }

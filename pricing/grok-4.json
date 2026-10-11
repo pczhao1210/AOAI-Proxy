@@ -1,13 +1,14 @@
 {
   "id": "grok-4",
   "displayName": "Grok 4",
-  "provider": "xai",
+  "provider": "azure-openai",
   "family": "grok-4",
-  "modelVersion": null,
-  "status": "ga",
+  "modelVersion": "1",
+  "status": "unknown",
   "maxInputTokens": 262000,
   "maxOutputTokens": 8192,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "function-calling"],
@@ -21,19 +22,22 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "xai-official",
-    "status": "published",
-    "inputPer1mTokens": 3,
-    "cachedInputPer1mTokens": 0.75,
-    "outputPer1mTokens": 15
+    "sourceType": "azure-foundry-models",
+    "status": "unavailable"
   },
+  "pricingCatalogEntry": null,
   "proxyTemplate": {},
   "sources": {
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#xai-models-sold-directly-by-azure",
-    "pricing": "https://docs.x.ai/developers/models"
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/",
+    "xaiPricing": "https://docs.x.ai/developers/models",
+    "version": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure",
+    "lifecycle": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure"
   },
   "notes": [
-    "xAI 定价页公开的是带日期的稳定模型行，这里将 grok-4 映射为当前稳定 grok-4 价格。"
+    "Azure Foundry's exact-model row lists version 1, text-only input, a 262K input ceiling and 8,192 output tokens; it requires registration. contextWindow remains unverified because no combined context window is published.",
+    "The exact-model capability table lists Chat Completions only. The broader Grok deployment how-to mentions Responses, so native Responses support for this exact model remains a Microsoft-documentation conflict; this card declares only Chat Completions.",
+    "Azure does not label a lifecycle state or publish a numeric price for this row. The current xAI model/pricing index does not list a current Grok 4 price, so no xAI rate is copied to this Azure card and automatic pricing is disabled."
   ]
 }

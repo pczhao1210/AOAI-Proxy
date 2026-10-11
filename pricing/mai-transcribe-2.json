@@ -16,10 +16,12 @@
   },
   "pricing": {
     "currency": "USD",
+    "billingUnit": "second",
     "sourceType": "azure-official",
-    "status": "unavailable"
+    "status": "published",
+    "billingIncrementSeconds": 1,
+    "perSecond": 0.00002777777777777778
   },
-  "pricingCatalogEntry": null,
   "proxyTemplate": {
     "targetModel": "MAI-Transcribe-2",
     "routes": {
@@ -28,12 +30,17 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/ai-services/speech-service/mai-transcribe",
-    "pricing": "https://azure.microsoft.com/pricing/details/cognitive-services/speech-services/"
+    "limits": "https://learn.microsoft.com/azure/ai-services/speech-service/mai-transcribe",
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/speech/",
+    "standardPricing": "https://microsoft.ai/models/mai-transcribe-2/",
+    "release": "https://github.com/microsoft-foundry/model-releases/tree/main/models/microsoft-ai/mai-transcribe-2"
   },
   "notes": [
     "Use an explicit Speech resource baseUrl such as https://RESOURCE.cognitiveservices.azure.com and enable media.http.enabled. This is not /mai/v1/audio/transcriptions.",
     "Standard audio/transcriptions maps file to audio, language to locales and model to definition.enhancedMode. Only synchronous json/text results are mapped; no translation, fabricated timing, transcoding or file splitting.",
     "Native /v1/providers/azure-speech/{publicModel}/transcriptions accepts audio and a JSON definition with enhancedMode.enabled=true and enhancedMode.model=MAI-Transcribe-2. It preserves native diarization, timestamps and extension fields/results.",
-    "Subscription-key authentication and mock wire contracts are covered. Live provider, Entra authentication and exact pricing have not been verified. pricingCatalogEntry remains null."
+    "Microsoft's Speech table publishes an early-bird USD 0.10 per audio hour through 2026-12-31. The release capsule and linked model page record a standard USD 0.36 per audio hour; the current card keeps the promotional rate and must be reviewed when the offer ends. perSecond is the exact converted promotional rate, and billingIncrementSeconds=1 rounds each request's billed duration up to a whole second without changing reported duration.",
+    "Maximum accepted file is WAV/MP3/FLAC, 300 MB or two hours. This is an endpoint media limit, not a model token context window.",
+    "modelVersion remains unverified: the capsule's 2026-09-03 value is the public-preview release date, not a deployment revision. Native provider requests use Speech transcription, not /mai/v1/audio/transcriptions; the public proxy route is an adapter."
   ]
 }

@@ -215,9 +215,9 @@ export const routeTests = [
       assert.ok(codexModel.base_instructions.length > 0);
       assert.ok(result.json.models.some((model) => model.slug === "model-router"));
       const routedModel = result.json.models.find((model) => model.slug === "model-router");
-      assert.equal(routedModel.context_window, 200000);
-      assert.equal(routedModel.max_context_window, 200000);
-      assert.equal(routedModel.effective_context_window_percent, 100);
+      assert.equal(routedModel.context_window, 128000);
+      assert.equal(routedModel.max_context_window, 128000);
+      assert.equal(routedModel.effective_context_window_percent, 95);
       assert.equal(result.json.models.some((model) => model.slug === "gpt-5-mini"), false);
       assert.equal(result.json.models.some((model) => model.slug === "claude-sonnet-4-6"), false);
       assert.equal(result.json.models.some((model) => model.slug === "chat-only"), false);

@@ -12,6 +12,7 @@ import {
 } from "../src/model-catalog.js";
 import { getConfiguredModelBindingIssues } from "../src/model-validation.js";
 import { compileDefinitionPricing } from "../src/pricing-policy.js";
+import { responsesToMessagesRequest } from "../src/proxy/shim.js";
 import { buildModelFromPricingTemplate, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
 import {
   findPricingDefinitionForModel,
@@ -29,6 +30,73 @@ function definition(id, aliases = []) {
     capabilities: ["reasoning"]
   };
 }
+
+test("remote sync rejects invalid shim defaults and retains the active directory and Catalog", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-shim-default-sync-"));
+  const previousPricingDir = process.env.PRICING_DIR;
+  const previousFetch = globalThis.fetch;
+  const card = {
+    ...definition("thinking-model"),
+    provider: "anthropic",
+    interfaces: ["messages"],
+    protocolProfiles: {
+      messages: { thinking: { parameter: "thinking.type", types: ["adaptive"], shimDefault: "adaptive", validation: "passthrough" } }
+    }
+  };
+  const config = {
+    upstreams: [{ name: "test", provider: "anthropic", baseUrl: "https://api.example.test", routes: { messages: "/v1/messages" } }],
+    models: [{ id: "thinking-public", pricingRef: card.id, upstream: "test" }]
+  };
+  let remote = structuredClone(card);
+  process.env.PRICING_DIR = path.join(tempDir, "pricing");
+  globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes("/contents/") ? [
+    { type: "file", name: "thinking-model.json", download_url: "https://download.test/thinking-model.json" }
+  ] : remote));
+  try {
+    const transaction = createModelCatalogSyncTransaction(() => config, getConfiguredModelBindingIssues);
+    const sync = () => syncPricingDefinitionsFromGitHub({ owner: "test", repo: "catalog", ref: "thinking" }, transaction);
+    await sync();
+    const active = getModelCatalogRuntimeInfo();
+    const filePath = path.join(process.env.PRICING_DIR, "thinking-model.json");
+    const original = await fs.readFile(filePath, "utf8");
+    const descriptor = resolveModelDescriptor("thinking-public");
+    assert.deepEqual(responsesToMessagesRequest({
+      input: "Hello", include: ["reasoning.encrypted_content"]
+    }, card.id, descriptor).thinking, { type: "adaptive" });
+    for (const thinking of [
+      { shimDefault: "invalid" },
+      { shimDefault: "adaptive", types: [] },
+      { shimDefault: "invalid", types: ["adaptive"] },
+      { shimDefault: true, types: ["true"] },
+      { shimDefault: 1, types: ["1"] },
+      { shimDefault: {}, types: ["[object object]"] },
+      { shimDefault: "", types: ["adaptive"] },
+      { shimDefault: " ", types: ["adaptive"] },
+      { shimDefault: "adaptive", types: ["ADAPTIVE"] },
+      { shimDefault: "adaptive", types: ["adaptive", true] }
+    ]) {
+      remote = structuredClone(card);
+      remote.protocolProfiles.messages.thinking = { parameter: "thinking.type", validation: "passthrough", ...thinking };
+      await assert.rejects(sync(), /thinking\.shimDefault/);
+      assert.deepEqual(getModelCatalogRuntimeInfo(), active);
+      assert.equal(resolveModelDescriptor("thinking-public"), descriptor);
+      assert.equal(await fs.readFile(filePath, "utf8"), original);
+      assert.deepEqual((await fs.readdir(process.env.PRICING_DIR)).sort(), [".pricing-sync-meta", "thinking-model.json"]);
+    }
+    remote = structuredClone(card);
+    delete remote.protocolProfiles.messages.thinking.shimDefault;
+    await sync();
+    assert.equal(findPricingDefinitionForModel({ pricingRef: card.id }).protocolProfiles.messages.thinking.shimDefault, undefined);
+    assert.equal(responsesToMessagesRequest({
+      input: "Hello", include: ["reasoning.encrypted_content"]
+    }, card.id, resolveModelDescriptor("thinking-public")).thinking, undefined);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousPricingDir == null) delete process.env.PRICING_DIR;
+    else process.env.PRICING_DIR = previousPricingDir;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
 
 test("remote compact cards preserve source form and activate complete template and pricing contracts", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-compact-sync-"));

@@ -5,9 +5,10 @@
   "family": "gpt-realtime",
   "modelVersion": "2026-07-07",
   "status": "ga",
-  "contextWindow": 128000,
-  "maxOutputTokens": 32000,
+  "maxInputTokens": 32000,
+  "maxOutputTokens": 4096,
   "interfaces": ["realtime"],
+  "defaultInterface": "realtime",
   "inputModalities": ["text", "image", "audio"],
   "outputModalities": ["text", "audio"],
   "capabilities": ["reasoning", "realtime", "audio-input", "audio-output", "vision", "function-calling"],
@@ -15,7 +16,8 @@
     "realtime": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": ["minimal", "low", "medium", "high", "xhigh"]
+        "levels": ["minimal", "low", "medium", "high", "xhigh"],
+        "validation": "passthrough"
       }
     }
   },
@@ -23,7 +25,7 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-openai-global",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 0.6,
     "cachedInputPer1mTokens": 0.06,
     "outputPer1mTokens": 2.4,
@@ -47,11 +49,14 @@
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
-    "limits": "https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
+    "openAiReference": "https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini",
     "pricing": "https://prices.azure.com/api/retail/prices"
   },
   "notes": [
     "Microsoft Foundry lists model version 2026-07-07 as generally available.",
-    "Azure Retail Prices uses separate global and data-zone meters; this card records the global-standard text, audio, and image rates."
+    "Azure's exact deployment row lists 32K input and 4,096 output; it does not publish a combined context window. OpenAI direct separately lists 128K/32K; those larger direct limits are not substituted for Azure.",
+    "The Azure public price table renders $- for current numeric prices; the retained Azure global rates are reference estimates and were not independently confirmed as current invoice charges.",
+    "protocolProfiles.realtime.reasoning.default remains independently unverified for this exact provider deployment. Client controls remain passthrough; no omitted-parameter default or effort list is inferred from a sibling model."
   ]
 }

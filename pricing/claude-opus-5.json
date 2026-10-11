@@ -14,8 +14,9 @@
     "anthropic": ["messages"]
   },
   "interfaces": ["messages"],
-  "inputModalities": ["text", "image", "code"],
-  "outputModalities": ["text", "code"],
+  "defaultInterface": "messages",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
   "protocolProfiles": {
     "messages": {
@@ -40,6 +41,8 @@
     "status": "published",
     "inputPer1mTokens": 5,
     "cachedInputPer1mTokens": 0.5,
+    "cacheWrite5mPer1mTokens": 6.25,
+    "cacheWrite1hPer1mTokens": 10,
     "outputPer1mTokens": 25
   },
   "proxyTemplate": {},
@@ -47,10 +50,12 @@
     "reasoning": "https://github.com/anthropics/skills/blob/main/skills/claude-api/SKILL.md#thinking--effort-quick-reference",
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
+    "modalities": "https://platform.claude.com/docs/en/models/opus-5/overview",
     "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
   },
   "notes": [
-    "缓存读取费率已记录；TTL 缓存写入字段受支持，但本卡片的对应单价尚待来源核实，不按缺失值计为免费。",
+    "Anthropic's exact-model pricing table, checked 2026-10-11, publishes cache-read and both TTL-specific cache-write rates. Regional surcharges and discounts are not included.",
+    "maxInputTokens has not been independently verified for this deployment; no input ceiling is inferred from contextWindow minus maxOutputTokens.",
     "Microsoft Foundry 同时提供 Hosted on Azure 与 Hosted on Anthropic infrastructure 两种部署模式；两种模式的推理接口均为 Anthropic Messages。",
     "Claude Opus 5 支持 low、medium、high、xhigh、max effort；thinking.type 支持 adaptive，且 high 及以下可设为 disabled。"
   ]

@@ -4,6 +4,8 @@ import { XMLParser } from "fast-xml-parser";
 import { withTestContext } from "./lib/harness.js";
 import { mapAzureTranscriptionResult } from "../src/proxy/azure-speech.js";
 import { prepareResponsesSpeechRequest } from "../src/proxy/responses-media.js";
+import { findPricingDefinitionForModel } from "../src/pricing-library.js";
+import { upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
 
 test("Azure Speech native and compatible TTS preserve bytes and enforce SSML model ownership", async () => {
   const audio = Buffer.from([0x49, 0x44, 0x33, 0xff, 0x00, 0xfe]);
@@ -98,7 +100,7 @@ test("Azure Speech native and compatible TTS preserve bytes and enforce SSML mod
 });
 
 test("Azure Speech transcription binds the native model and maps only documented result text", async () => {
-  const result = { durationMilliseconds: 2000, combinedPhrases: [{ text: "Weather" }],
+  const result = { durationMilliseconds: 1500, combinedPhrases: [{ text: "Weather" }],
     phrases: [{ offsetMilliseconds: 40, durationMilliseconds: 320, text: "Weather", locale: "en-US", confidence: 0.78983736 }] };
   let received;
   await withTestContext(async ctx => {
@@ -107,6 +109,8 @@ test("Azure Speech transcription binds the native model and maps only documented
     const upstream = config.upstreams[0];
     upstream.routes["audio/transcriptions"] = "/speechtotext/transcriptions:transcribe?api-version=2025-10-15";
     config.models.push({ id: "transcribe", targetModel: "MAI-Transcribe-2", pricingRef: "mai-transcribe-2", upstream: upstream.name });
+    const card = findPricingDefinitionForModel({ pricingRef: "mai-transcribe-2" });
+    upsertPricingCatalogEntry(config, card);
     const saved = await ctx.adminRequest("/admin/api/config", { method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config });
     assert.equal(saved.status, 200, saved.text);
     const definition = { enhancedMode: { enabled: true, model: "MAI-Transcribe-2" }, diarization: { enabled: true }, locales: ["en"] };
@@ -150,6 +154,13 @@ test("Azure Speech transcription binds the native model and maps only documented
     assert.equal(ctx.getUpstreamRequest().headers["ocp-apim-subscription-key"], "test-upstream-key");
     assert.deepEqual(Buffer.from(await received.get("audio").arrayBuffer()), audio);
     assert.deepEqual(JSON.parse(received.get("definition")), { enhancedMode: { enabled: true, model: "MAI-Transcribe-2" }, locales: ["en"] });
+    const stats = await ctx.adminRequest("/admin/api/stats");
+    assert.equal(stats.status, 200, stats.text);
+    const media = stats.json.perModel.transcribe.media;
+    assert.equal(media.requests, 4);
+    assert.equal(media.counters.durationSeconds, 6);
+    assert.equal(media.unknownCostRequests, 0);
+    assert.ok(Math.abs(media.costAmounts.USD - 8 * card.pricing.perSecond) < 1e-12);
     for (const extra of [{ stream: true }, { store: true }, { previous_response_id: "resp_old" }, { instructions: "Summarize instead" }]) {
       ctx.clearUpstreamRequests();
       const rejected = await ctx.publicRequest("/v1/responses", { method: "POST", json: { ...responsesInput, ...extra } });

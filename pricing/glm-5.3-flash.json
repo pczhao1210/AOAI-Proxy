@@ -5,8 +5,9 @@
   "family": "glm-5.3",
   "modelVersion": "2026-08-26",
   "status": "ga",
-  "contextWindow": 1040000,
+  "contextWindow": 1000000,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
@@ -15,7 +16,8 @@
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["low", "high", "max"],
-        "default": "max"
+        "default": "max",
+        "validation": "passthrough"
       }
     }
   },
@@ -23,11 +25,12 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "fireworks-serverless",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 0.15,
     "cachedInputPer1mTokens": 0.03,
     "outputPer1mTokens": 0.5
   },
+  "pricingCatalogEntry": null,
   "proxyTemplate": {
     "targetModel": "FW-GLM-5.3-Flash"
   },
@@ -38,8 +41,8 @@
     "pricing": "https://docs.fireworks.ai/serverless/pricing"
   },
   "notes": [
-    "The template selects Foundry's FW-GLM-5.3-Flash deployment, not a Fireworks-account model path. Prices remain Fireworks Serverless reference rates, not independently verified Foundry meter prices.",
-    "Fireworks catalog lists 1040k context, image input, and Function Calling support; the page records Created on 8/26/2026.",
-    "Fireworks Serverless standard pricing is USD 0.15 input, USD 0.03 cached input, and USD 0.50 output per 1M tokens."
+    "The template selects Foundry's FW-GLM-5.3-Flash deployment, not a Fireworks-account model path. Microsoft lists a 1M context and multimodal image input; no exact output limit or reasoning-effort default is published for this Flash offering.",
+    "Fireworks Serverless rates are retained as reference values only; an exact Azure Retail Prices meter was not verified. pricingCatalogEntry=null disables automatic pricing until the selected Foundry meter is confirmed.",
+    "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits."
   ]
 }

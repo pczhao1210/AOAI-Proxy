@@ -9,6 +9,7 @@
   "hostingModes": ["azure"],
   "defaultHostingMode": "azure",
   "interfaces": ["images/generations", "images/edits"],
+  "defaultInterface": "images/generations",
   "inputModalities": ["text", "image"],
   "outputModalities": ["image"],
   "capabilities": ["vision", "image-generation", "image-editing"],
@@ -48,6 +49,8 @@
     "The mai-image route defaults to /mai/v1/images/generations on the Foundry services endpoint. Set targetModel to the actual deployment name; explicit upstream route and host overrides remain available.",
     "Generation uses width and height; the profile expands explicit WIDTHxHEIGHT size values. Native auto_aspect_ratio and web_grounding parameters are preserved for upstream handling.",
     "The upstream returns base64 PNG data. Native image edits use multipart requests through mai-image-edits at /mai/v1/images/edits, enabled by media.http.enabled. Generation size expansion is not applied to edits.",
-    "Exact model-specific pricing has not been verified as of 2026-09-11. pricingCatalogEntry remains null to avoid inventing token-based image charges."
+    "Exact model-specific pricing has not been verified as of 2026-09-11. pricingCatalogEntry remains null to avoid inventing token-based image charges.",
+    "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "pricing.billingUnit and exact-model rates remain unverified together. pricingCatalogEntry=null keeps automatic token pricing disabled; absent units or rates are not zero or sibling-model prices."
   ]
 }

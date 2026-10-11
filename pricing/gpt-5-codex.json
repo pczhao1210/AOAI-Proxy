@@ -9,6 +9,7 @@
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
   "interfaces": ["responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": [
@@ -23,7 +24,8 @@
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": ["low", "medium", "high"]
+        "levels": ["low", "medium", "high"],
+        "validation": "passthrough"
       }
     }
   },
@@ -47,6 +49,7 @@
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
-    "Azure Retail Prices API 的 Global Standard 计量 gpt-5-codex inp、ccchd inp、out glbl Tokens 的最新生效价分别为 0.00125、0.000125、0.01 USD 每 1K tokens。"
+    "Azure Retail Prices API 的 Global Standard 计量 gpt-5-codex inp、ccchd inp、out glbl Tokens 的最新生效价分别为 0.00125、0.000125、0.01 USD 每 1K tokens。",
+    "protocolProfiles.responses.reasoning.default remains independently unverified for this exact provider deployment. Client controls remain passthrough; no omitted-parameter default or effort list is inferred from a sibling model."
   ]
 }

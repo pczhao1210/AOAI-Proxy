@@ -6,6 +6,7 @@
   "modelVersion": "2026-09-09",
   "status": "ga",
   "interfaces": ["images/generations"],
+  "defaultInterface": "images/generations",
   "inputModalities": ["text", "image"],
   "outputModalities": ["image"],
   "capabilities": ["vision", "image-generation", "image-editing"],
@@ -41,6 +42,8 @@
     "Generally available high-fidelity image generation model optimized for editing precision; supports text and image input and inpainting.",
     "Native quality values are low, medium, high, xhigh, max and auto. Custom dimensions support up to 4K; the upstream validates size and quality constraints.",
     "Exact model-specific pricing was not available in the checked Azure pricing page on 2026-09-11. No GPT-Image-2 prices are substituted, and pricingCatalogEntry remains null.",
-    "This proxy template exposes images/generations; native model editing capabilities do not imply a proxy images/edits endpoint."
+    "This proxy template exposes images/generations; native model editing capabilities do not imply a proxy images/edits endpoint.",
+    "contextWindow, maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "pricing.billingUnit and exact-model rates remain unverified together. pricingCatalogEntry=null keeps automatic token pricing disabled; absent units or rates are not zero or sibling-model prices."
   ]
 }

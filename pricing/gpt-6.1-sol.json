@@ -4,7 +4,7 @@
   "provider": "azure-openai",
   "family": "gpt-6.1",
   "modelVersion": "2026-09-29",
-  "status": "ga",
+  "status": "unknown",
   "contextWindow": 1050000,
   "maxInputTokens": 922000,
   "maxOutputTokens": 128000,
@@ -24,12 +24,16 @@
     "chat/completions": {
       "reasoning": {
         "parameter": "reasoning_effort",
+        "levels": ["none", "low", "medium", "high", "xhigh"],
+        "default": "medium",
         "validation": "passthrough"
       }
     },
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
+        "levels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "default": "medium",
         "validation": "passthrough"
       }
     }
@@ -75,7 +79,9 @@
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
     "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
     "hosting": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-region-availability",
+    "lifecycle": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
     "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
+    "reasoningDefault": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
     "pricing": "https://prices.azure.com/api/retail/prices",
     "tiering": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
     "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
@@ -83,7 +89,9 @@
   "notes": [
     "Microsoft lists model version 2026-09-29 and Global Standard availability. Both Chat Completions and Responses are native; the exact-model capability table limits function tools and parallel tool calling to Responses. This is provider metadata, not a proxy preflight rejection policy.",
     "The published input and output maxima are individual limits sharing the context budget with reasoning tokens; they are not additive allowances.",
-    "The exact-model reasoning matrix confirms effort support including none, but complete per-protocol effort lists and omitted-parameter defaults were not independently verified. Do not inherit them from GPT-6 Sol.",
+    "The reasoning profiles use the administrator-approved GPT-6 Astra/Luna reference: Chat uses reasoning_effort and Responses uses reasoning.effort. Azure's exact-model matrix includes none, and its GPT-6 feature guide limits max to Responses; minimal is not a GPT-6 option.",
+    "The medium default is an administrator-approved Azure reference default corroborated by OpenAI's exact-model page, not a live-verified Azure omitted-parameter default. OpenAI's page excludes none and minimal, unlike Azure's none entry. Keep this provider discrepancy explicit and validation passthrough; catalog choices do not impose local rejection or silently replace an explicit client effort.",
+    "Azure lists exact model version 2026-09-29 but its exact model row does not explicitly label GA or Preview; status remains unknown.",
     "Azure Retail Prices API's Azure OpenAI GPT6 product publishes 6.1-sol ShortCo/LongCo input, cached-input, cache-write and output Std Gl meters, effective 2026-10-01. Checked on 2026-10-11, all eight meters use USD per 1M tokens and agree across 26 returned regions. This card uses Global Standard consumption rates, not Flex or Data Zone rates; deployment-specific discounts are not included.",
     "The Azure API distinguishes short/long-context meters but does not publish their numeric boundary. OpenAI's exact-model documentation independently establishes the whole-request threshold: input including cache above 272000 tokens selects long-context rates for the entire request. Exactly 272000 remains short; session totals and output length do not select the tier. These rates and bounds are not inherited from GPT-6 Sol.",
     "Automatic Azure Global Standard pricing is enabled for new imports. Existing administrator prices require explicit review and save; historical unclassified usage and recorded costs are not recalculated."

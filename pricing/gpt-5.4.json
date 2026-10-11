@@ -9,6 +9,7 @@
   "maxInputTokens": 922000,
   "maxOutputTokens": 128000,
   "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": [
@@ -24,14 +25,16 @@
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["none", "low", "medium", "high", "xhigh"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     },
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
         "levels": ["none", "low", "medium", "high", "xhigh"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     }
   },

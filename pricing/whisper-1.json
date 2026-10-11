@@ -5,6 +5,7 @@
   "family": "whisper",
   "status": "ga",
   "interfaces": ["audio/transcriptions", "audio/translations"],
+  "defaultInterface": "audio/transcriptions",
   "inputModalities": ["audio"],
   "outputModalities": ["text"],
   "capabilities": ["speech-to-text", "transcription", "translation"],
@@ -22,6 +23,8 @@
   },
   "notes": [
     "Native file transcription and translation use multipart requests. Response format and timestamps are passed to the upstream; the proxy does not transcode input audio.",
-    "OpenAI pricing is per minute, not per token. This card does not assume the same price or availability on Azure OpenAI."
+    "OpenAI pricing is per minute, not per token. This card does not assume the same price or availability on Azure OpenAI.",
+    "contextWindow, maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

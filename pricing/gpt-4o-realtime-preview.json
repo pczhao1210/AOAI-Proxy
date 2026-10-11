@@ -8,6 +8,7 @@
   "contextWindow": 32000,
   "maxOutputTokens": 4096,
   "interfaces": ["realtime"],
+  "defaultInterface": "realtime",
   "inputModalities": ["text", "audio"],
   "outputModalities": ["text", "audio"],
   "capabilities": ["realtime", "audio-input", "audio-output", "streaming"],
@@ -15,7 +16,7 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-openai-global",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 5,
     "cachedInputPer1mTokens": 2.5,
     "outputPer1mTokens": 20,
@@ -30,7 +31,11 @@
   "pricingCatalogEntry": null,
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
-    "limits": "https://developers.openai.com/api/docs/models/gpt-4o-realtime-preview",
+    "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
+    "openAiReference": "https://developers.openai.com/api/docs/models/gpt-4o-realtime-preview",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+  },
+  "notes": [
+    "Azure lists 32K input and 4,096 output for this exact deployment. The current Azure price page renders no numeric rate; retained global rates are reference amounts, not verified current invoice charges."
+  ]
 }

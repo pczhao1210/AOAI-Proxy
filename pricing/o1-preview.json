@@ -4,11 +4,12 @@
   "provider": "azure-openai",
   "family": "o-series",
   "modelVersion": "2024-09-12",
-  "status": "preview",
+  "status": "retired",
   "contextWindow": 128000,
   "maxInputTokens": 128000,
   "maxOutputTokens": 32768,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning"],
@@ -23,18 +24,19 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 15,
     "cachedInputPer1mTokens": 7.5,
     "outputPer1mTokens": 60
   },
-  "proxyTemplate": {},
+  "pricingCatalogEntry": null,
+  "proxyTemplate": null,
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://developers.openai.com/api/docs/models/o1-preview",
     "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
   },
   "notes": [
-    "Azure Retail Prices API 的 Global Standard 计量 o1 preview input、cached input、output glbl Tokens 的最新生效价分别为 0.015、0.0075、0.06 USD 每 1K tokens。"
+    "Azure retired this exact deployment on 2025-07-28; it is unavailable for new deployments. The recorded Global Standard rates are historical references only, and pricingCatalogEntry=null disables automatic pricing for the retired model."
   ]
 }

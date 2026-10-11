@@ -9,6 +9,7 @@
   "maxInputTokens": 1000000,
   "maxOutputTokens": 1000000,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["vision"],
@@ -16,10 +17,11 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
-    "status": "published",
+    "status": "reference",
     "inputPer1mTokens": 0.29,
     "outputPer1mTokens": 1.16
   },
+  "pricingCatalogEntry": null,
   "proxyTemplate": {
     "targetModel": "Llama-4-Maverick-17B-128E-Instruct-FP8"
   },
@@ -30,6 +32,7 @@
   },
   "notes": [
     "model-router 使用的是简化路由名 llama4-maverick-instruct，这里同时兼容 Azure 模型目录中的完整模型名。",
-    "Azure Retail Prices API 的 Azure Machine Learning 计量 Llama-4-Mvrck-17B-128E-FP8-In Tokens 和 Out Tokens 的最新生效价分别为 0.00029 和 0.00116 USD 每 1K tokens。"
+    "The retained USD 0.29/$1.16 per-1M rates come from an Azure Machine Learning meter, not a verified Foundry Models deployment meter. pricingCatalogEntry=null disables automatic pricing until the exact Foundry product/region charge is confirmed.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
   ]
 }

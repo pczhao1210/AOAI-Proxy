@@ -9,6 +9,7 @@
   "maxInputTokens": 128000,
   "maxOutputTokens": 16384,
   "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["vision", "streaming", "function-calling", "structured-outputs", "parallel-tool-calling"],
