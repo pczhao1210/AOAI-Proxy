@@ -749,7 +749,7 @@ test("GPT-6.1 Sol keeps native interfaces and independent limits and reasoning d
   assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1050000, 922000, 128000]);
   assert.deepEqual(card.interfaces, ["chat/completions", "responses"]);
   assert.equal(card.defaultInterface, "responses");
-  assert.equal(card.pricing.status, "reference");
+  assert.equal(card.pricing.status, "published");
   assert.deepEqual(card.pricingCatalogEntry, card.pricing);
   assert.equal(card.pricing.inputPer1mTokens, undefined);
   const model = { ...card.proxyTemplate, upstream: "azure" };
@@ -771,12 +771,17 @@ test("GPT-6.1 Sol keeps native interfaces and independent limits and reasoning d
   assert.equal(converted.reasoning.effort, "none");
 });
 
-test("GPT-6.1 Sol reference pricing imports complete rates and selects exact cache-inclusive boundaries", () => {
+test("GPT-6.1 Sol Azure retail pricing imports complete rates and selects exact cache-inclusive boundaries", () => {
   const card = listPricingDefinitions().find(definition => definition.id === "gpt-6.1-sol");
-  assert.equal(card.pricing.sourceType, "openai-standard-reference");
-  assert.equal(card.pricing.status, "reference");
-  assert.equal(card.sources.pricing, "https://developers.openai.com/api/docs/models/gpt-6.1-sol");
-  assert.match(card.notes.join(" "), /not verified Azure/);
+  assert.equal(card.pricing.sourceType, "azure-retail-prices-api");
+  assert.equal(card.pricing.status, "published");
+  assert.equal(card.sources.pricing, "https://prices.azure.com/api/retail/prices");
+  assert.equal(card.sources.tiering, "https://developers.openai.com/api/docs/models/gpt-6.1-sol");
+  assert.match(card.notes.join(" "), /effective 2026-10-01/);
+  assert.deepEqual(card.pricing.tiers.map(tier => [tier.deploymentType, tier.contextClass]), [
+    ["global-standard", "short"],
+    ["global-standard", "long"]
+  ]);
   const importedConfig = { models: [] };
   const model = buildModelFromPricingTemplate(card, "azure", importedConfig);
   importedConfig.models.push(model);

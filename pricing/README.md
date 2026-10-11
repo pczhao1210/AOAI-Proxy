@@ -178,16 +178,22 @@ GPT-6.1 Sol uses Microsoft's exact `2026-09-29` model version, native Chat and
 Responses, and independently published 1,050,000 / 922,000 / 128,000
 context/input/output limits. The provider documents function tools on Responses
 only. Exact effort defaults/lists are not copied from GPT-6 Sol: missing
-controls remain passthrough. Its pricing now uses administrator-approved
-[OpenAI Standard reference rates](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
-not verified Azure Global Standard quotes: `sourceType` is
-`openai-standard-reference` and `status` is `reference`. Azure's pricing page
-lists short/long rows but returned price placeholders. The exact OpenAI model
-page independently supplies all four token rates and the whole-request
-threshold: input including cache at 272,000 tokens remains `short <=272K`;
-272,001 selects `long >272K`. No GPT-6 Sol prices or thresholds are inherited.
-Service-tier discounts/premiums and regional surcharges are not included.
-New imports include the complete reference pricing. Existing model prices
+controls remain passthrough. Its pricing now uses published
+[Azure Retail Prices API](https://prices.azure.com/api/retail/prices)
+Global Standard consumption rates: `sourceType` is `azure-retail-prices-api`
+and `status` is `published`. The eight exact-model `Std Gl` meters are
+effective **2026-10-01** and, when checked on 2026-10-11, agree across all 26
+returned regions. Short/long USD rates per 1M tokens are 2/4 input, 0.10/0.20
+cache reads, 2.50/5 cache writes and 10/15 output. These match the previous
+OpenAI reference estimates; the source and verification status have changed,
+not the amounts. Flex and Data Zone meters and deployment-specific discounts
+are not included. The API distinguishes short/long meters but does not publish
+their numeric boundary; the
+[exact OpenAI model page](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
+independently establishes the whole-request threshold: input including cache
+at 272,000 tokens remains `short <=272K`; 272,001 selects `long >272K`.
+No GPT-6 Sol prices or thresholds are inherited.
+New imports include the complete Azure pricing. Existing model prices
 require explicit review and save, and historical unknown-tier rows and costs
 are not reconstructed from the new card. “Tier not recorded” in model
 statistics means request-time pricing/tier evidence is missing, not free usage.
