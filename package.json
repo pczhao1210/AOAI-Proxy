@@ -43,6 +43,9 @@
     "undici": "^8.12.3",
     "ws": "^8.21.3"
   },
+  "overrides": {
+    "@azure/msal-node": "7.1.1"
+  },
   "devDependencies": {
     "@testing-library/react": "^16.3.3",
     "@vitejs/plugin-react": "^6.1.2",
