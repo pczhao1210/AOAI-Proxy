@@ -145,6 +145,7 @@ JPEG 处理应用 EXIF 方向、等比缩放且不放大、不裁切，转换到
 | `observability.logs.includeClientIp` | `true` | 在结构化日志中保留客户端 IP。 | Workspace；热 |
 | `observability.logs.includeUsage` | `true` | 在日志中保留 token usage 与费用字段。 | Workspace；热 |
 | `observability.logs.includeHeaders` | `false` | 在允许的内容模式下保留经过清洗的 header 信息；凭据仍强制脱敏。 | Workspace；热 |
+| `observability.logs.includeAuthRejected` | `false` | 记录在认证阶段被拒绝的请求，包括缺失或无效的 API Key、管理端 Basic Auth 失败，以及管理端 IP 白名单拒绝。关闭时只累加计数（运维页显示），不写内存、控制台或 Log Analytics；开启后写为 `http.auth_rejected` 事件。此开关只影响新增日志，不清除历史记录；日志页的“隐藏认证拒绝”筛选始终可用，记录状态提示以实际运行配置为准，不随未保存的编辑变化。CSRF 拒绝和其他 4xx 不受影响。 | Workspace；热 |
 | `observability.logAnalytics.enabled` | `false` | 启用 Azure Log Analytics 上传 sink；还需要完整 DCE/DCR 配置。 | Workspace；热 |
 | `observability.runtimeStore.enabled` | `true` | 启用 PostgreSQL runtime event/rollup store；仅当活动持久化模式使用数据库时有效。 | JSON；热 |
 

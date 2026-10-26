@@ -292,6 +292,7 @@ export default function App() {
       const json = await fetchLogs({
         level: filters.level,
         event: filters.event,
+        excludeEvent: filters.hideAuthRejected ? "http.auth_rejected" : "",
         modelId: filters.modelId,
         requestId: filters.requestId,
         keyword: filters.keyword,
@@ -528,7 +529,7 @@ export default function App() {
       void loadLogsAction(logFilters);
     }, 180);
     return () => clearTimeout(timer);
-  }, [activeTab, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit]);
+  }, [activeTab, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
 
   useEffect(() => {
     if (activeTab !== "ops" || !logFilters.autoRefresh) return undefined;
@@ -536,7 +537,7 @@ export default function App() {
       void loadLogsAction(logFilters);
     }, 5000);
     return () => clearInterval(interval);
-  }, [activeTab, logFilters.autoRefresh, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit]);
+  }, [activeTab, logFilters.autoRefresh, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
 
   useEffect(() => {
     if (activeTab !== "harness" || !config) return undefined;

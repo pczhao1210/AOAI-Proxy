@@ -19,7 +19,7 @@ import { flushRuntimeEvents, getRuntimeStatsSnapshot, resetRuntimeModelStats } f
 import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
-import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, setLogConfig } from "./logs.js";
+import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, recordSuppressedAuthRejection, setLogConfig } from "./logs.js";
 import { getConfiguredModelBindingIssues, getHarnessClientEligibility, getHarnessModelEligibility, validateConfiguredModels } from "./model-validation.js";
 import { compileModelCatalog, createModelCatalogSyncTransaction, getDescriptorProtocolProfile, resolveModelDescriptor } from "./model-catalog.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
@@ -112,7 +112,7 @@ function isAdminRequest(req, config) {
 function shouldSkipSuccessfulAccessLog(url, method, status, adminPath) {
   if (status >= 400) return false;
   const pathOnly = String(url || "").split("?")[0];
-  if (pathOnly === "/healthz" || pathOnly === "/version" || pathOnly === "/favicon.ico") return true;
+  if (pathOnly === "/healthz" || pathOnly === "/version" || pathOnly === "/robots.txt" || pathOnly === "/favicon.ico") return true;
   return ["GET", "HEAD", "OPTIONS"].includes(String(method || "").toUpperCase())
     && isAdminRoute(url, adminPath);
 }
@@ -639,17 +639,20 @@ app.addHook("onRequest", async (req, reply) => {
   const config = getConfig();
   const rawUrl = req.raw?.url || req.url;
   const pathOnly = (rawUrl || "").split("?")[0];
-  if (pathOnly === "/healthz" || pathOnly === "/version") {
+  if (pathOnly === "/healthz" || pathOnly === "/version" || pathOnly === "/robots.txt") {
     return;
   }
   if (pathOnly === "/favicon.ico") {
     return reply.code(204).send();
   }
   if (isAdminRequest(req, config)) {
+    reply.header("X-Robots-Tag", "noindex, nofollow");
     if (!verifyAdminIpAccess(config, req)) {
+      req.authRejection = "ADMIN_IP_FORBIDDEN";
       return reply.code(403).send({ error: "AdminForbidden", message: "Admin access is not allowed from this IP address" });
     }
     if (!verifyAdminBasicAuth(config, req.headers)) {
+      req.authRejection = "ADMIN_UNAUTHORIZED";
       reply.header("WWW-Authenticate", 'Basic realm="AOAI Proxy Admin"');
       return reply.code(401).send({ error: "AdminUnauthorized" });
     }
@@ -661,9 +664,20 @@ app.addHook("onRequest", async (req, reply) => {
   const key = extractApiKey(config, req.headers);
   const consumerResult = resolveApiConsumer(config, key);
   if (!consumerResult.ok) {
+    req.authRejection = key ? "API_KEY_INVALID" : "API_KEY_MISSING";
     return reply.code(consumerResult.status || 401).send({ error: consumerResult.error || "Unauthorized", message: consumerResult.message || "Unauthorized" });
   }
   req.proxyAccess = { key, consumer: consumerResult.consumer };
+});
+
+// Record why Fastify rejected a request (e.g. body parsing) so the access log carries the cause.
+app.addHook("onError", async (req, _reply, error) => {
+  const code = typeof error?.code === "string" ? error.code : "";
+  req.accessLogFailure = {
+    errorCode: code || (error instanceof SyntaxError ? "INVALID_REQUEST_BODY" : "REQUEST_FAILED"),
+    // Parser messages can quote request body fragments, so only Fastify's fixed messages are kept.
+    failureReason: code.startsWith("FST_") && !(error instanceof SyntaxError) ? String(error.message || "") : ""
+  };
 });
 
 app.addHook("onResponse", async (req, reply) => {
@@ -673,18 +687,26 @@ app.addHook("onResponse", async (req, reply) => {
   if (shouldSkipSuccessfulAccessLog(rawUrl, req.method, status, config.server.adminPath)) {
     return;
   }
+  if (req.authRejection && config?.observability?.logs?.includeAuthRejected !== true) {
+    recordSuppressedAuthRejection();
+    return;
+  }
 
   const level = status >= 500 ? "error" : status >= 400 ? "warn" : "info";
   const networkContext = getRequestNetworkContext(config, req);
   const payload = {
     source: isAdminRequest(req, config) ? "http.admin" : "http",
-    event: "http.request_completed",
-    message: status >= 400 ? "request completed with error" : "request completed",
+    event: req.authRejection ? "http.auth_rejected" : "http.request_completed",
+    message: req.authRejection
+      ? "request rejected by authentication"
+      : status >= 400 ? "request completed with error" : "request completed",
     ...getRequestContext(req),
     method: req.method,
     url: rawUrl,
     status,
     latencyMs: Math.round(reply.elapsedTime || 0),
+    ...(req.authRejection ? { errorCode: req.authRejection } : {}),
+    ...(!req.authRejection && status >= 400 && req.accessLogFailure ? req.accessLogFailure : {}),
     ...networkContext
   };
   if (level === "info") {
@@ -695,6 +717,11 @@ app.addHook("onResponse", async (req, reply) => {
 });
 
 app.get("/healthz", async () => ({ status: "ok" }));
+
+app.get("/robots.txt", async (_req, reply) => {
+  reply.header("Cache-Control", "public, max-age=86400");
+  return reply.type("text/plain; charset=utf-8").send("User-agent: *\nDisallow: /\n");
+});
 
 app.get("/version", async (_req, reply) => {
   reply.header("Cache-Control", "no-store");

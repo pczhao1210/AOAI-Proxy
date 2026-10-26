@@ -150,7 +150,7 @@ export async function fetchLogs(params = {}) {
   if (Array.isArray(params.level) && params.level.length > 0) {
     search.set("level", params.level.join(","));
   }
-  ["event", "modelId", "requestId", "keyword", "since", "limit"].forEach((key) => {
+  ["event", "excludeEvent", "modelId", "requestId", "keyword", "since", "limit"].forEach((key) => {
     const value = params[key];
     if (value != null && value !== "") {
       search.set(key, String(value));

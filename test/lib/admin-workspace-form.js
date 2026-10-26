@@ -62,3 +62,8 @@ export function renderWorkspace(config, sectionId = "workspace-media", overrides
   section.open = true;
   return { ...view, section, fields: within(section), changes, updateConfig };
 }
+
+export async function renderAdminComponent(modulePath, props) {
+  const { default: Component } = await vite.ssrLoadModule(modulePath);
+  return render(React.createElement(Component, props));
+}

@@ -216,7 +216,8 @@ export const DEFAULT_LOG_FILTERS = {
   requestId: "",
   keyword: "",
   limit: 100,
-  autoRefresh: true
+  autoRefresh: true,
+  hideAuthRejected: true
 };
 
 export const TEST_ENDPOINTS = [

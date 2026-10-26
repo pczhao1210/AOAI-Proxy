@@ -285,7 +285,14 @@ export default function OpsTab({
               <input type="checkbox" checked={logFilters.autoRefresh} onChange={(event) => setLogFilters((current) => ({ ...current, autoRefresh: event.target.checked }))} />
               <span>{t("ops.autoRefresh", "Auto Refresh")}</span>
             </label>
+            <label className="inline">
+              <input type="checkbox" checked={logFilters.hideAuthRejected !== false} onChange={(event) => setLogFilters((current) => ({ ...current, hideAuthRejected: event.target.checked }))} />
+              <span>{t("ops.hideAuthRejected", "Hide auth rejections")}</span>
+            </label>
           </div>
+          {loggingRuntime?.includeAuthRejected === false ? (
+            <div className="muted">{t("ops.authRejectedSuppressed", "Requests rejected by authentication are not logged ({count} suppressed since start). Enable them in Workspace log settings.", { count: Number(loggingRuntime?.authRejectedSuppressed) || 0 })}</div>
+          ) : null}
           <div className="muted">{logFilters.autoRefresh ? t("logs.autoRefreshHint.on", "Auto refresh is enabled. The log list updates every 5 seconds.") : t("logs.autoRefreshHint.off", "Auto refresh is disabled. Use Refresh Logs to fetch the latest entries.")}</div>
           <div className="muted">{t("field.logLevel", "Log Level")}: {t(`logs.level.${loggingRuntime?.level || "info"}`, loggingRuntime?.level || "info")}</div>
           <details className="log-advanced-react" open={advancedFiltersOpen}>

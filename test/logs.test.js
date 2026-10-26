@@ -83,6 +83,81 @@ test("structured logs redact sensitive URL query parameters", () => {
   assert.match(entry.fields.url, /api-version=2025-01-01/);
 });
 
+test("event exclusion filters hide noisy events", () => {
+  configureLogs();
+  appendStructuredLog("info", { event: "test.exclude.noise" });
+  appendStructuredLog("info", { event: "test.exclude.keep" });
+  const remaining = queryLogs({ keyword: "test.exclude.", excludeEvent: "test.exclude.noise,unrelated" }).items;
+  assert.deepEqual(remaining.map((entry) => entry.event), ["test.exclude.keep"]);
+});
+
+test("request metadata that resembles Base64 is not omitted as binary", () => {
+  configureLogs();
+  const jpegBase64 = `/9j/${"A".repeat(400)}`;
+  appendStructuredLog("warn", {
+    event: "test.metadata.base64-like",
+    reqId: "req-12j0",
+    method: "POST",
+    url: "/v1/chat/completions",
+    path: "/v1/responses/compact",
+    imageUrl: "data:image/png;base64,QUJDREVGRw==",
+    thumbnailUrl: jpegBase64,
+    opaqueValue: "QUJD/REVGRw=="
+  });
+
+  const entry = queryLogs({ event: "test.metadata.base64-like" }).items[0];
+  assert.equal(entry.fields.reqId, "req-12j0");
+  assert.equal(entry.fields.method, "POST");
+  assert.equal(entry.fields.url, "/v1/chat/completions");
+  assert.equal(entry.fields.path, "/v1/responses/compact");
+  assert.equal(entry.fields.imageUrl, "[BINARY_OMITTED chars=12]");
+  assert.equal(entry.fields.thumbnailUrl, `[BINARY_OMITTED chars=${jpegBase64.length}]`);
+  assert.equal(entry.fields.opaqueValue, "[BINARY_OMITTED chars=13]");
+});
+
+test("long request paths remain readable without weakening URL query redaction", () => {
+  configureLogs();
+  const path = `/v1/chat/completions/${"A".repeat(400)}`;
+  appendStructuredLog("info", { event: "test.metadata.long-url", url: path });
+  assert.equal(queryLogs({ event: "test.metadata.long-url" }).items[0].fields.url, path);
+
+  appendStructuredLog("info", { event: "test.metadata.long-query", url: `${path}?api_key=URL_SECRET_PROBE` });
+  const entry = queryLogs({ event: "test.metadata.long-query" }).items[0];
+  assert.equal(entry.fields.url, `${path}?api_key=[REDACTED]`);
+});
+
+test("URL fields cannot bypass binary omission in structured logs or content snapshots", () => {
+  configureLogs();
+  const cases = [
+    ["url", "QUJDREVGRw=="],
+    ["imageUrl", "QUJDREVGRw=="],
+    ["thumbnailUrl", `/9j/${"A".repeat(40)}`],
+    ["base64Url", "QUJDREVGRw=="],
+    ["b64_url", "A".repeat(300)],
+    ["image_url", "data:image/png;base64,QUJDREVGRw=="]
+  ];
+  for (const [key, value] of cases) {
+    const payload = { [key]: value };
+    const expected = `[BINARY_OMITTED chars=${value.startsWith("data:") ? 12 : value.length}]`;
+    const entry = appendStructuredLog("info", { event: "test.binary-url", ...payload });
+    assert.equal(entry.fields[key], expected, key);
+    for (const mode of ["summary", "full"]) {
+      const snapshot = buildContentLogSnapshot(payload, { mode });
+      assert.equal(JSON.parse(snapshot.preview)[key], expected, `${mode}: ${key}`);
+      if (mode === "full") assert.equal(JSON.parse(snapshot.bodyJson)[key], expected);
+    }
+  }
+  for (const mode of ["summary", "full"]) {
+    const snapshot = buildContentLogSnapshot({
+      image_url: { url: `/9j/${"A".repeat(40)}` },
+      path: "QUJDREVGRw=="
+    }, { mode });
+    const parsed = JSON.parse(snapshot.preview);
+    assert.equal(parsed.image_url.url, "[BINARY_OMITTED chars=44]");
+    assert.equal(parsed.path, "[BINARY_OMITTED chars=12]");
+  }
+});
+
 test("event filters match event names exactly", () => {
   configureLogs();
   appendStructuredLog("info", { event: "test.event.target", message: "target event" });
@@ -576,17 +651,14 @@ test("HTTP logs skip successful admin reads and redact warning URLs", async (con
   assert.equal(logsResponse.status, 200, logsResponse.text);
   const httpEntries = logsResponse.json.items.filter((entry) => entry.event === "http.request_completed");
   const success = httpEntries.find((entry) => entry.status === 200 && entry.fields.url === "/v1/models");
-  const warning = httpEntries.find((entry) => entry.status === 401);
   const correlatedHttp = httpEntries.find((entry) => entry.requestId === "request-log-correlation");
   const proxyEntries = logsResponse.json.items.filter((entry) => entry.requestId === "request-log-correlation" && entry.source === "proxy");
 
   assert.ok(success);
   assert.equal(success.level, "info");
-  assert.ok(warning);
-  assert.equal(warning.level, "warn");
-  assert.equal(warning.source, "http");
-  assert.doesNotMatch(warning.fields.url, /HTTP_SECRET_PROBE/);
-  assert.match(warning.fields.url, /api_key=.*REDACTED/);
+  assert.equal(success.fields.url, "/v1/models");
+  assert.equal(httpEntries.some((entry) => entry.status === 401), false, "Auth rejections are not logged by default");
+  assert.equal(logsResponse.json.items.some((entry) => entry.event === "http.auth_rejected"), false);
   assert.equal(correlatedHttp?.conversationId, "conversation-log-correlation");
   assert.equal(correlatedHttp?.sessionId, "session-log-correlation");
   assert.ok(proxyEntries.some((entry) => entry.event === "proxy.request_started"));
@@ -645,4 +717,114 @@ test("HTTP logs skip successful admin reads and redact warning URLs", async (con
   assert.ok(proxyEntries.every((entry) => entry.conversationId === "conversation-log-correlation"));
   assert.ok(proxyEntries.every((entry) => entry.sessionId === "session-log-correlation"));
   assert.equal(httpEntries.some((entry) => entry.fields.url === "/admin/api/config"), false);
+});
+
+test("auth rejections are suppressed by default and logged as a separate event when enabled", async (context) => {
+  const testContext = await createTestContext({ logLevel: "info" });
+  context.after(() => testContext.cleanup());
+
+  const robots = await testContext.request("/robots.txt");
+  assert.equal(robots.status, 200, robots.text);
+  assert.equal(robots.text, "User-agent: *\nDisallow: /\n");
+
+  const adminDenied = await testContext.request("/admin/");
+  assert.equal(adminDenied.status, 401);
+  assert.equal(adminDenied.headers.get("x-robots-tag"), "noindex, nofollow");
+  assert.equal((await testContext.request("/")).status, 401);
+
+  const runtime = await testContext.adminRequest("/admin/api/runtime");
+  assert.equal(runtime.status, 200, runtime.text);
+  assert.equal(runtime.json.runtime.logging.includeAuthRejected, false);
+  assert.ok(runtime.json.runtime.logging.authRejectedSuppressed >= 2);
+  const suppressedLogs = await testContext.adminRequest("/admin/api/logs?level=error,warn,info&limit=200");
+  assert.equal(suppressedLogs.json.items.some((entry) => entry.status === 401), false);
+  assert.equal(suppressedLogs.json.items.some((entry) => entry.fields.url === "/robots.txt"), false);
+
+  const config = (await testContext.adminRequest("/admin/api/config")).json;
+  config.observability.logs.includeAuthRejected = true;
+  const saved = await testContext.adminRequest("/admin/api/config", {
+    method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+  });
+  assert.equal(saved.status, 200, saved.text);
+  const enabledRuntime = await testContext.adminRequest("/admin/api/runtime");
+  assert.equal(enabledRuntime.json.runtime.logging.includeAuthRejected, true);
+
+  assert.equal((await testContext.request("/v1/models?api_key=HTTP_SECRET_PROBE")).status, 401);
+  assert.equal((await testContext.request("/v1/models", { headers: { authorization: "Bearer wrong-key" } })).status, 401);
+  assert.equal((await testContext.request("/admin/api/config", { headers: { "x-request-id": "req-admin-denied" } })).status, 401);
+
+  const rejectedLogs = await testContext.adminRequest("/admin/api/logs?event=http.auth_rejected&limit=50");
+  const rejected = rejectedLogs.json.items;
+  const missingKey = rejected.find((entry) => entry.errorCode === "API_KEY_MISSING");
+  assert.ok(missingKey);
+  assert.equal(missingKey.level, "warn");
+  assert.equal(missingKey.source, "http");
+  assert.doesNotMatch(missingKey.fields.url, /HTTP_SECRET_PROBE/);
+  assert.match(missingKey.fields.url, /^\/v1\/models\?api_key=.*REDACTED/);
+  assert.ok(rejected.some((entry) => entry.errorCode === "API_KEY_INVALID"));
+  const adminRejected = rejected.find((entry) => entry.errorCode === "ADMIN_UNAUTHORIZED");
+  assert.equal(adminRejected?.source, "http.admin");
+  assert.equal(adminRejected?.fields.url, "/admin/api/config");
+  assert.equal(adminRejected?.requestId, "req-admin-denied");
+  assert.match(adminRejected?.fields.reqId || "", /^req-[0-9a-z]+$/);
+
+  const visible = await testContext.adminRequest("/admin/api/logs?level=error,warn,info&excludeEvent=http.auth_rejected&limit=200");
+  assert.equal(visible.json.items.some((entry) => entry.event === "http.auth_rejected"), false);
+  assert.equal(visible.json.items.some((entry) => entry.status === 401), false);
+
+  config.observability.logs.includeAuthRejected = false;
+  const disabled = await testContext.adminRequest("/admin/api/config", {
+    method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+  });
+  assert.equal(disabled.status, 200, disabled.text);
+  const disabledRuntime = await testContext.adminRequest("/admin/api/runtime");
+  assert.equal(disabledRuntime.json.runtime.logging.includeAuthRejected, false);
+  assert.equal((await testContext.request("/admin/", { headers: { "x-request-id": "request-suppressed-again" } })).status, 401);
+  const suppressedAgain = await testContext.adminRequest("/admin/api/logs?requestId=request-suppressed-again");
+  assert.equal(suppressedAgain.json.total, 0);
+  const historical = await testContext.adminRequest("/admin/api/logs?event=http.auth_rejected&limit=50");
+  assert.deepEqual(historical.json.items.map((entry) => entry.id), rejected.map((entry) => entry.id));
+  const hiddenHistory = await testContext.adminRequest("/admin/api/logs?event=http.auth_rejected&excludeEvent=http.auth_rejected");
+  assert.equal(hiddenHistory.json.total, 0);
+});
+
+test("access logs and proxy rejections carry the cause of 400 responses without request content", async (context) => {
+  const testContext = await createTestContext({ logLevel: "info" });
+  context.after(() => testContext.cleanup());
+
+  const invalid = await testContext.publicRequest("/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-request-id": "request-invalid-json" },
+    body: "{\"model\":\"gpt-5-mini\",\"messages\":BODY_CONTENT_PROBE"
+  });
+  assert.equal(invalid.status, 400, invalid.text);
+
+  const logs = await testContext.adminRequest("/admin/api/logs?requestId=request-invalid-json&limit=20");
+  const completed = logs.json.items.find((entry) => entry.event === "http.request_completed");
+  assert.equal(completed?.status, 400);
+  assert.equal(completed?.fields.url, "/v1/chat/completions");
+  assert.equal(completed?.errorCode, "FST_ERR_CTP_INVALID_JSON_BODY");
+  assert.match(completed?.failureReason || "", /not valid JSON/);
+  assert.doesNotMatch(JSON.stringify(logs.json.items), /BODY_CONTENT_PROBE/);
+
+  const config = (await testContext.adminRequest("/admin/api/config")).json;
+  config.proxy.guards.rejectUnknownProxyParams = true;
+  config.proxy.timeouts.allowPerRequestOverride = false;
+  const saved = await testContext.adminRequest("/admin/api/config", {
+    method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+  });
+  assert.equal(saved.status, 200, saved.text);
+  testContext.clearUpstreamRequests();
+  const controlRejected = await testContext.publicRequest("/v1/chat/completions", {
+    method: "POST",
+    headers: { "x-request-id": "request-proxy-control" },
+    json: { model: "gpt-5-mini", messages: [{ role: "user", content: "hello" }], timeoutMs: 1000 }
+  });
+  assert.equal(controlRejected.status, 400, controlRejected.text);
+  assert.equal(testContext.upstreamRequests.length, 0);
+  const controlLogs = await testContext.adminRequest("/admin/api/logs?requestId=request-proxy-control&limit=20");
+  const rejection = controlLogs.json.items.find((entry) => entry.event === "proxy.request_rejected");
+  assert.equal(rejection?.errorCode, "UNKNOWN_PROXY_CONTROL_FIELDS");
+  assert.equal(rejection?.status, 400);
+  assert.match(rejection?.failureReason || "", /timeoutMs/);
 });

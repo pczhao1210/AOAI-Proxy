@@ -24,6 +24,7 @@ node --test test/config-feature-flags.test.js test/config-environment.test.js te
 node --test test/admin-media-form.test.js
 node --test test/admin-routing-form.test.js
 node --test test/admin-log-content.test.js
+node --test test/logs.test.js test/admin-auth-logs.test.js
 node --test test/response-reader.test.js
 node --test test/usage-accounting.test.js
 node --test test/upstream-headers.test.js

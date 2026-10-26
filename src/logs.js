@@ -169,6 +169,24 @@ const CONTENT_KEYS = new Set([
   "requestbody",
   "responsebody"
 ]);
+const REQUEST_METADATA_STRING_KEYS = new Set([
+  "reqid",
+  "requestid",
+  "conversationid",
+  "sessionid",
+  "azurerequestid",
+  "correlationid",
+  "traceid",
+  "spanid",
+  "method",
+  "useragent",
+  "hostname",
+  "host",
+  "event",
+  "route",
+  "routekey",
+  "path"
+]);
 const BINARY_VALUE_KEYS = new Set([
   "attachment",
   "audio",
@@ -185,6 +203,7 @@ const logBufferEntryBytes = [];
 let logBufferBytes = 0;
 let logBufferDroppedEntries = 0;
 let logBufferDroppedBytes = 0;
+let authRejectedSuppressedCount = 0;
 let nextLogId = 1;
 let runtimeLogConfig = null;
 let logAnalyticsClient = null;
@@ -743,6 +762,8 @@ export function getLogRuntimeInfo(config = runtimeLogConfig) {
     memoryBufferBytes: logBufferBytes,
     memoryDroppedEntries: logBufferDroppedEntries,
     memoryDroppedBytes: logBufferDroppedBytes,
+    includeAuthRejected: config?.observability?.logs?.includeAuthRejected === true,
+    authRejectedSuppressed: authRejectedSuppressedCount,
     endpoint: settings.endpoint,
     workspaceId: settings.workspaceId,
     tableName: settings.tableName,
@@ -855,15 +876,20 @@ function sanitizeValue(value, key = "", depth = 0, settings = resolveLogSettings
     return value;
   }
   if (typeof value === "string") {
+    const isDataUrl = /^data:[^,]*;base64,/i.test(value);
+    const isUrlKey = normalizedKey === "url" || normalizedKey.endsWith("url");
+    // Only top-level log metadata is exempt; body snapshots can contain binary under any key.
+    const isRequestMetadata = settings.requestMetadata === true && depth === 1
+      && (REQUEST_METADATA_STRING_KEYS.has(compactKey) || (compactKey === "url" && value.startsWith("/")));
     if (
       compactKey.includes("base64")
       || compactKey.includes("b64")
-      || /^data:[^,]*;base64,/i.test(value)
-      || isLikelyBase64Value(value, compactKey)
+      || isDataUrl
+      || (!isRequestMetadata && isLikelyBase64Value(value, compactKey))
     ) {
       return sanitizeBase64Value(value);
     }
-    if (normalizedKey === "url" || normalizedKey.endsWith("url")) {
+    if (isUrlKey) {
       return sanitizeUrl(value);
     }
     if (settings.messageContentMode !== "full" && CONTENT_KEYS.has(compactKey)) {
@@ -1174,7 +1200,7 @@ function buildEntry(payload) {
     responseToolCount: Number.isInteger(responseToolCount) ? responseToolCount : 0,
     responseItemCount: Number.isInteger(responseItemCount) ? responseItemCount : 0,
     fields: {
-      ...sanitizeValue(rest, "", 0, settings),
+      ...sanitizeValue(rest, "", 0, { ...settings, requestMetadata: true }),
       ...(typeof sourceProtocol === "string" ? { sourceProtocol } : {}),
       ...(typeof targetProtocol === "string" ? { targetProtocol } : {})
     }
@@ -1183,6 +1209,10 @@ function buildEntry(payload) {
 
 export function appendStructuredLog(level, payload = {}, options = {}) {
   return recordEntry(buildEntry({ ...payload, level }), options);
+}
+
+export function recordSuppressedAuthRejection() {
+  authRejectedSuppressedCount += 1;
 }
 
 function ingestPinoLine(line) {
@@ -1242,6 +1272,7 @@ function normalizeListParam(value) {
 export function queryLogs(filters = {}) {
   const levels = new Set(normalizeListParam(filters.level).map((item) => normalizeLevel(item)));
   const event = typeof filters.event === "string" ? filters.event.trim().toLowerCase() : "";
+  const excludedEvents = new Set(normalizeListParam(filters.excludeEvent).map((item) => item.toLowerCase()));
   const modelId = typeof filters.modelId === "string" ? filters.modelId.trim().toLowerCase() : "";
   const requestId = typeof filters.requestId === "string" ? filters.requestId.trim().toLowerCase() : "";
   const keyword = typeof filters.keyword === "string" ? filters.keyword.trim().toLowerCase() : "";
@@ -1256,6 +1287,7 @@ export function queryLogs(filters = {}) {
   const filtered = logBuffer.filter((entry) => {
     if (levels.size > 0 && !levels.has(entry.level)) return false;
     if (event && entry.event.toLowerCase() !== event) return false;
+    if (excludedEvents.has(entry.event.toLowerCase())) return false;
     if (modelId && entry.modelId.toLowerCase() !== modelId) return false;
     if (requestId && entry.requestId.toLowerCase() !== requestId) return false;
     if (since && entry.ts < since) return false;

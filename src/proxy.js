@@ -434,12 +434,25 @@ export async function proxyRequest({
     sanitizeMeaninglessValues: config?.proxy?.guards?.sanitizeMeaninglessValues !== false
   });
   let requestOverrides = {};
+  const rejectProxyControl = (status, { code, exposedCode, message, detail }) => {
+    log.warn({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      routeKey,
+      status,
+      event: "proxy.request_rejected",
+      errorCode: code,
+      failureReason: message
+    }, `request rejected: ${message}`);
+    sendProxyError(status, { code, exposedCode, message, detail });
+  };
   try {
     const extractedControls = extractProxyRequestControls(body, config);
     body = extractedControls.body;
     requestOverrides = extractedControls.overrides;
     if (extractedControls.rejectedFields.length) {
-      sendProxyError(400, {
+      rejectProxyControl(400, {
         code: "UNKNOWN_PROXY_CONTROL_FIELDS",
         exposedCode: "UnknownProxyControlFields",
         message: `Unsupported proxy control fields: ${extractedControls.rejectedFields.join(", ")}`,
@@ -448,7 +461,7 @@ export async function proxyRequest({
       return;
     }
   } catch (error) {
-    sendProxyError(error?.status || 400, {
+    rejectProxyControl(error?.status || 400, {
       code: "INVALID_PROXY_CONTROL_FIELD",
       exposedCode: error?.code || "InvalidProxyControlField",
       message: error?.message || "Invalid proxy control field"

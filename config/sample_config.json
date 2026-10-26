@@ -195,7 +195,8 @@
       "bufferSize": 100,
       "maxBufferBytes": 16777216,
       "messageContentMode": "summary",
-      "maxPayloadLogBytes": 102400
+      "maxPayloadLogBytes": 102400,
+      "includeAuthRejected": false
     },
     "logAnalytics": {
       "enabled": false,

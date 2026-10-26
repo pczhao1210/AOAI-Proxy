@@ -259,7 +259,8 @@ const DEFAULTS = {
       maxBase64LogChars: 64,
       includeClientIp: true,
       includeUsage: true,
-      includeHeaders: false
+      includeHeaders: false,
+      includeAuthRejected: false
     },
     logAnalytics: {
       enabled: false,
@@ -1726,6 +1727,9 @@ function validateConfig(cfg) {
       }
       if (logs.maxBufferBytes != null && (!Number.isInteger(logs.maxBufferBytes) || logs.maxBufferBytes <= 0)) {
         throw new Error("observability.logs.maxBufferBytes must be a positive integer");
+      }
+      if (logs.includeAuthRejected != null && typeof logs.includeAuthRejected !== "boolean") {
+        throw new Error("observability.logs.includeAuthRejected must be a boolean");
       }
     }
     if (cfg.observability.runtimeStore != null) {
