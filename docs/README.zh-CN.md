@@ -149,6 +149,10 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 ## 本地运行
 
+使用 Node.js 24.22.1 或更新的已修补 24.x 版本。使用 nvm 时，执行 `nvm install`
+和 `nvm use` 选择 [.nvmrc](../.nvmrc) 中的验证基线。代理使用 Node 内置的
+`fetch()`，仅升级 npm 的 `undici` 包不会修补这部分实现。
+
 1. 复制示例配置：
    - `cp config/sample_config.json config/config.json`
 2. 编辑 `config/config.json`：
@@ -160,11 +164,17 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
     - 未设置上游认证方式时继续继承全局 `auth` 配置，以兼容旧配置
    - 替换默认 API Key 和管理账号密码
 3. 安装依赖并启动：
-   - `npm install`
+   - `npm ci --engine-strict`
   - 当 `server.host` 不是回环地址时，将 `AOAI_PROXY_ADMIN_PASSWORD` 和 `AOAI_PROXY_API_KEY` 设置为强且唯一的秘密值
    - `npm run start`
 
 非回环监听会采用 fail-closed：管理认证关闭或仍存在已知占位凭据时拒绝启动。`ALLOW_INSECURE_PUBLIC_ADMIN=true` 仅用于显式兼容，不建议用于正常部署。
+
+依赖维护说明（2026-10-26）：Azure Identity/MSAL 更新已明确暂缓。当前锁定的
+`@azure/identity` 4.13.1 使用 MSAL Node 5.2.2，受到
+[GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5) 公告影响。
+Identity 4.14.0 仍依赖受影响的 MSAL 6.x；已修复的 MSAL 7.1+ 超出其声明范围。
+未经批准和鉴权验证，不要强制跨版本覆盖或降级。审计门槛保持启用，CI 审计步骤仍会因这条暂缓处理的依赖链而失败。
 
 所有可配置布尔开关的默认值、功能、管理页入口、生效方式，以及预留或未接线字段，统一收录在 [Feature Flag 与布尔开关目录](configuration/feature-flags.zh-CN.md)。
 

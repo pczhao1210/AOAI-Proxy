@@ -153,6 +153,10 @@ Guidance:
 
 ## Local Run
 
+Use Node.js 24.22.1 or a newer patched 24.x release. With nvm, run `nvm install`
+and `nvm use` to select the baseline in [.nvmrc](.nvmrc). The proxy uses Node's
+built-in `fetch()`, so updating the npm `undici` package alone does not patch it.
+
 1. Copy the sample config:
    - `cp config/sample_config.json config/config.json`
 2. Edit `config/config.json`:
@@ -164,11 +168,19 @@ Guidance:
     - Omitting the upstream mode preserves compatibility by inheriting the global `auth` configuration
    - Replace the default API key and admin credentials
 3. Install dependencies and start:
-   - `npm install`
+   - `npm ci --engine-strict`
   - Set `AOAI_PROXY_ADMIN_PASSWORD` and `AOAI_PROXY_API_KEY` to strong, unique secrets when `server.host` is not loopback
    - `npm run start`
 
 Non-loopback listeners fail closed when admin authentication is disabled or known placeholder credentials are active. `ALLOW_INSECURE_PUBLIC_ADMIN=true` is an explicit compatibility escape hatch and is not recommended for normal deployments.
+
+Dependency maintenance note (2026-10-26): the Azure Identity/MSAL update is
+explicitly deferred. The locked `@azure/identity` 4.13.1 uses MSAL Node 5.2.2,
+which is flagged by [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5).
+Identity 4.14.0 still depends on affected MSAL 6.x; the patched MSAL 7.1+ is outside
+its declared range. Do not force an incompatible override or downgrade without
+approval and authentication validation. The audit gate remains enabled and will
+continue to fail for this deferred dependency chain.
 
 JSON feature flags require literal booleans, not strings such as `"false"` or
 numbers such as `0`. Legacy export/image gates retain their effective AND

@@ -46,8 +46,11 @@ Runtime recovery tests inject failed checkpoints, lost insert/commit acknowledge
 legacy spool replay/restart, and failed budget hydration. They assert transactional
 rollups, stable event identities and preservation of settlements during recovery.
 These mocks complement, rather than replace, the disposable PostgreSQL gate below.
-The CI workflow runs Node 24 unit/routes/card/build/security checks and that database
-gate; it never runs real providers, modifies a deployment, or rebuilds committed UI assets.
+The CI workflow runs patched Node 24 (at least 24.22.1) unit/routes/card/build/security
+checks and that database gate; it never runs real providers, modifies a deployment,
+or rebuilds committed UI assets.
+For local validation, use `nvm install && nvm use` and `npm ci --engine-strict`
+so tests use the checked-in runtime baseline and exact lockfile.
 
 Feature-flag contracts reject non-boolean JSON before legacy upgrades, defaults
 or environment overrides can hide it. Failed legacy upgrades retain the source

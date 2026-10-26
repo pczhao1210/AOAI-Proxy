@@ -9,7 +9,7 @@ FROM caddy:${CADDY_MAJOR}-alpine AS caddy
 FROM node:${NODE_MAJOR}-alpine${ALPINE_VERSION} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --engine-strict
 
 FROM alpine:${ALPINE_VERSION} AS runtime
 WORKDIR /app
