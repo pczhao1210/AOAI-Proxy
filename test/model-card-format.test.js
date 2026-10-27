@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -297,6 +298,40 @@ test("GPT-6.1 Sol raw card is complete without loader-supplied reasoning metadat
   }
 });
 
+test("October additions retain raw reference metadata without loader-supplied deployment facts", async () => {
+  const terra = JSON.parse(await fs.readFile(new URL("../pricing/gpt-6.1-terra.json", import.meta.url), "utf8"));
+  for (const protocol of terra.interfaces) {
+    const reasoning = terra.protocolProfiles[protocol].reasoning;
+    assert.deepEqual(reasoning.levels, protocol === "responses"
+      ? ["none", "low", "medium", "high", "xhigh", "max"]
+      : ["none", "low", "medium", "high", "xhigh"]);
+    assert.equal(reasoning.parameter, protocol === "responses" ? "reasoning.effort" : "reasoning_effort");
+    assert.equal(Object.hasOwn(reasoning, "default"), false);
+  }
+  assert.equal(terra.pricingCatalogEntry, null);
+  const deepseek = JSON.parse(await fs.readFile(new URL("../pricing/deepseek-v4.1-flash-1017.json", import.meta.url), "utf8"));
+  assert.equal(deepseek.proxyTemplate.targetModel, "FW-Deepseek-v4.1-Flash-1017");
+  assert.equal(deepseek.pricingCatalogEntry, null);
+  for (const field of ["contextWindow", "maxInputTokens", "maxOutputTokens"]) {
+    assert.equal(Object.hasOwn(deepseek, field), false);
+  }
+  for (const protocol of deepseek.interfaces) {
+    const reasoning = deepseek.protocolProfiles[protocol].reasoning;
+    assert.equal(reasoning.parameter, protocol === "responses" ? "reasoning.effort" : "reasoning_effort");
+    assert.equal(Object.hasOwn(reasoning, "levels"), false);
+    assert.equal(Object.hasOwn(reasoning, "default"), false);
+  }
+  assert.equal(Object.hasOwn(deepseek.protocolProfiles["chat/completions"].thinking, "types"), false);
+  assert.equal(Object.hasOwn(deepseek.protocolProfiles["chat/completions"].thinking, "default"), false);
+  for (const card of [terra, deepseek]) {
+    const validation = validateModelCard(card);
+    assert.deepEqual(validation.errors, []);
+    for (const warning of validation.warnings) {
+      assert.ok(card.notes.join(" ").includes(warning.slice(0, warning.indexOf(":"))), warning);
+    }
+  }
+});
+
 test("active cards declare native defaults and explain every unresolved metadata field", async () => {
   const directory = new URL("../pricing/", import.meta.url);
   const names = (await fs.readdir(directory)).filter(name => name.endsWith(".json"));
@@ -345,8 +380,11 @@ test("all active model cards use canonical self-contained formatting", async () 
   }
 });
 
-test("bundled admin and backend loaders expand the same compact model-card contracts", async () => {
+test("bundled admin and backend loaders expand the same compact model-card contracts", async (t) => {
+  const cacheDir = await fs.mkdtemp(`${tmpdir()}/aoai-model-card-vite-`);
+  t.after(() => fs.rm(cacheDir, { recursive: true, force: true }));
   const vite = await createServer({
+    cacheDir,
     configFile: fileURLToPath(new URL("../admin-ui/vite.config.js", import.meta.url)),
     root: fileURLToPath(new URL("..", import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: "custom"

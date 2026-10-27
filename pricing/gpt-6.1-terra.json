@@ -1,0 +1,90 @@
+{
+  "id": "gpt-6.1-terra",
+  "displayName": "GPT-6.1 Terra",
+  "provider": "azure-openai",
+  "family": "gpt-6.1",
+  "modelVersion": "2026-10-26",
+  "status": "unknown",
+  "contextWindow": 1050000,
+  "maxInputTokens": 922000,
+  "maxOutputTokens": 128000,
+  "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling",
+    "computer-use"
+  ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["none", "low", "medium", "high", "xhigh"],
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "openai-official",
+    "status": "reference",
+    "tiering": {
+      "basis": "inputTokensIncludingCache",
+      "method": "whole-request"
+    },
+    "tiers": [
+      {
+        "id": "short <=272K",
+        "promptTokensBelow": 272001,
+        "inputPer1mTokens": 1,
+        "cachedInputPer1mTokens": 0.05,
+        "cacheWritePer1mTokens": 1.25,
+        "outputPer1mTokens": 5
+      },
+      {
+        "id": "long >272K",
+        "promptTokensAtLeast": 272001,
+        "inputPer1mTokens": 2,
+        "cachedInputPer1mTokens": 0.1,
+        "cacheWritePer1mTokens": 2.5,
+        "outputPer1mTokens": 7.5
+      }
+    ]
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "routes": {
+      "chat/completions": "responses"
+    }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
+    "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
+    "lifecycle": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-61",
+    "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
+    "modelReference": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+    "pricing": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+    "azurePricing": "https://prices.azure.com/api/retail/prices"
+  },
+  "notes": [
+    "Checked on 2026-10-27: Azure lists the exact model version 2026-10-26 and independent context/input/output limits, but does not explicitly label this row GA or Preview; status remains unknown. Input and output maxima share the context budget with reasoning tokens.",
+    "Reasoning choices use the exact OpenAI Terra page with Azure's protocol restriction that max is Responses-only. protocolProfiles.chat/completions.reasoning.default and protocolProfiles.responses.reasoning.default remain unverified for Azure. OpenAI documents medium as its own omitted-parameter default; no sibling or provider default is silently promoted to an Azure fact.",
+    "OpenAI requires Responses for tool calling. The Chat-to-Responses template route is proxy policy; native Chat remains a declared interface, and capability metadata does not impose local rejection.",
+    "Prices are independently published OpenAI Standard reference rates, not verified Azure deployment charges. No exact Terra meter was found in the Azure Retail Prices API GPT6/terra SKU query on 2026-10-27. pricingCatalogEntry=null prevents automatic Azure text pricing and preserves administrator overrides.",
+    "Cache-write rates use OpenAI's 30-minute retention. Its 12-hour retention costs 2.50 USD per 1M tokens before the long-context multiplier and is not selected by this reference table. Batch/Flex discounts, Fast mode and regional processing premiums are excluded.",
+    "The request's input including cache selects long-context rates only above 272000 tokens; exactly 272000 remains short. The chosen tier applies to the whole request, not just tokens above the threshold."
+  ]
+}

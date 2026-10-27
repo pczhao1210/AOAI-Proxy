@@ -200,6 +200,36 @@ When archiving a card, verify the provider-specific lifecycle and preserve the
 card's original filename. Do not archive a card solely because another
 provider's deployment of the same model has retired.
 
+#### 2026-10-27 catalog update
+
+- [GPT-6.1 Terra](gpt-6.1-terra.json) records Azure's exact 2026-10-26 version,
+  independently documented token limits, native Chat/Responses interfaces and
+  the Responses-first template route. OpenAI publishes the effort choices and
+  its own `medium` default; Azure's omitted-parameter defaults remain unknown.
+  The card's short/long prices are **OpenAI Standard references**, not confirmed
+  Azure charges. Automatic Azure pricing is disabled until exact deployment
+  rates are verified. The cache-write table uses 30-minute retention, not the
+  separately priced 12-hour option.
+- [DeepSeek V4.1 Flash 1017](deepseek-v4.1-flash-1017.json) preserves the
+  administrator-supplied target `FW-Deepseek-v4.1-Flash-1017` verbatim.
+  Microsoft's current [Fireworks roster](https://learn.microsoft.com/azure/foundry/how-to/fireworks/fireworks-model-catalog)
+  still names the unsuffixed offering; the suffixed deployment's version,
+  lifecycle, limits, control choices/defaults and rates remain independently
+  unverified. Parameter paths stay passthrough, and automatic pricing stays
+  disabled. Publisher reference capabilities and Foundry's documented
+  Chat/Responses interface contract do not establish live deployment acceptance.
+  The existing unsuffixed card remains separate; neither the official
+  `deepseek-flash` alias nor its time-dependent direct API prices are substituted.
+- Six cards moved unchanged to the [archive](archive/README.md):
+  GPT-4.1, GPT-4.1 Mini, GPT-4.1 Nano, GPT-4o, o1 Preview and the retired
+  `FW-GLM-5.2` pay-per-token card. This follows the administrator's
+  Deprecated/Legacy/retired criterion, not inferred usage. Existing configured
+  bindings still resolve archived definitions; active template discovery does
+  not offer them. The explicitly approved GLM-5 PTU template remains active.
+
+These are card/documentation/test changes only. They do not rewrite persisted
+configuration, rebuild the admin UI or refresh generated assets.
+
 ### Provider profile reconciliation
 
 A release-date or retirement audit is not sufficient to keep this catalog

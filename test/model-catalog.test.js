@@ -10,7 +10,7 @@ import {
 } from "../src/model-catalog.js";
 import { getConfiguredModelBindingIssues, validateConfiguredModels } from "../src/model-validation.js";
 import { recordGovernanceUsage } from "../src/governance.js";
-import { listPricingDefinitions } from "../src/pricing-library.js";
+import { listArchivedPricingDefinitions, listPricingDefinitions } from "../src/pricing-library.js";
 import { prepareImageGenerationRequest } from "../src/proxy/image-adapter.js";
 import { resolveEffectiveRouteKey, resolveRoutePlan } from "../src/proxy/routing.js";
 import { chatToResponsesRequest, responsesToMessagesRequest } from "../src/proxy/shim.js";
@@ -186,7 +186,8 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
   for (const id of [
     "glm-5.3", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "claude-fable-5-1", "claude-opus-5-5",
     "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "mai-image-2.6", "mai-image-2.6-flash",
-    "deepseek-v4.1-flash", "glm-5.3-flash", "grok-4.7", "claude-haiku-5-5"
+    "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "gpt-6.1-terra",
+    "glm-5.3-flash", "grok-4.7", "claude-haiku-5-5"
   ]) {
     assert.ok(ids.has(id), `missing bundled Model Catalog definition ${id}`);
   }
@@ -201,6 +202,12 @@ test("archived model cards stay outside the active Model Catalog", () => {
     "claude-sonnet-4-5",
     "gpt-4o-mini",
     "gpt-4o-transcribe",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4o",
+    "o1-preview",
+    "glm-5.2",
     "gpt-5-chat",
     "gpt-5.1-chat",
     "gpt-5.2-chat",
@@ -229,6 +236,27 @@ test("configured models can still resolve archived definitions at runtime", () =
 
   assert.equal(snapshot.descriptors[0].catalogId, "gpt-4o-mini");
   assert.equal(snapshot.descriptors[0].definition.status, "ga");
+});
+
+test("October archives preserve configured bindings and historical metadata without active templates", () => {
+  const archived = new Map(listArchivedPricingDefinitions().map(card => [card.id, card]));
+  const ids = ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "o1-preview", "GLM-5.2"];
+  const snapshot = compileModelCatalog({
+    models: ids.map(id => ({ id: `existing-${id}`, pricingRef: id }))
+  }, []);
+  for (const id of ids) {
+    const descriptor = resolveModelDescriptor(`existing-${id}`, snapshot);
+    assert.equal(descriptor.catalogId, id);
+    assert.deepEqual(descriptor.definition.pricing, archived.get(id).pricing, id);
+    assert.deepEqual(descriptor.definition.protocolProfiles, archived.get(id).protocolProfiles, id);
+  }
+  for (const id of ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]) {
+    const card = archived.get(id);
+    assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1047576, null, 32768], id);
+    assert.match(card.sources.limits, /developers\.openai\.com/);
+  }
+  assert.equal(archived.get("o1-preview").status, "retired");
+  assert.equal(archived.get("o1-preview").proxyTemplate, null);
 });
 
 test("Azure-direct DeepSeek replaces only its own Fireworks offering", () => {
@@ -290,7 +318,7 @@ test("Foundry Fireworks cards align deployment targets and disable historical to
     upsertPricingCatalogEntry(imported, card);
     assert.deepEqual(imported.access.pricingCatalog[id], { inputPer1mTokens: 0 }, id);
   }
-  const glm = definitions.find(card => card.id === "GLM-5.2");
+  const glm = listArchivedPricingDefinitions().find(card => card.id === "GLM-5.2");
   assert.equal(glm.provider, "fireworks-ai");
   assert.equal(glm.proxyTemplate.targetModel, "FW-GLM-5.2");
   assert.equal(glm.sources.pricing, "https://prices.azure.com/api/retail/prices");
@@ -361,8 +389,6 @@ test("verified Azure provider facts correct Codex effort, Nano tools, retired o1
   }
   assert.match(cards.get("gpt-5.1-codex-max").notes.join(" "), /conflict.*none/i);
   assert.ok(cards.get("gpt-5.4-nano").capabilities.includes("computer-use"));
-  assert.equal(cards.get("o1-preview").status, "retired");
-  assert.equal(cards.get("o1-preview").proxyTemplate, null);
   for (const id of ["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-4o-mini-realtime-preview"]) {
     assert.equal(cards.get(id).contextWindow, null, `${id}: Azure does not state combined context`);
     assert.equal(cards.get(id).maxInputTokens, id === "gpt-4o-mini-realtime-preview" ? 128000 : 32000, id);
@@ -489,14 +515,6 @@ test("verified model cards preserve documented token limits without filling ambi
     assert.equal(definition.maxInputTokens, 922000);
     assert.equal(definition.maxOutputTokens, 128000);
     assert.match(definition.sources.limits, /learn\.microsoft\.com/);
-  }
-
-  for (const id of ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]) {
-    const definition = definitionsById.get(id);
-    assert.equal(definition.contextWindow, 1047576);
-    assert.equal(definition.maxOutputTokens, 32768);
-    assert.equal(definition.maxInputTokens, null);
-    assert.match(definition.sources.limits, /developers\.openai\.com/);
   }
 
   assert.equal(definitionsById.get("gpt-5-pro").contextWindow, 400000);
@@ -657,6 +675,7 @@ test("Azure Grok reasoning profiles pass through protocol fields without inventi
 
 test("all active cards with unresolved token limits are explicitly reviewed", () => {
   const expectedUnresolvedIds = [
+    "DeepSeek-V4.1-Flash-1017",
     "gpt-4o-mini-transcribe",
     "gpt-4o-mini-tts",
     "gpt-4o-transcribe-diarize",
@@ -1036,6 +1055,81 @@ test("Sonnet 5.5 preserves native hosting, distinct thinking controls and source
   const snapshot = compileModelCatalog({ upstreams: [upstream], models: [model] });
   const descriptor = resolveModelDescriptor(model.id, snapshot);
   assert.equal(resolveRoutePlan({ routeKey: "messages", model, upstream, descriptor }).backendRouteKey, "messages");
+});
+
+test("GPT-6.1 Terra preserves native routes, reference prices and unknown Azure defaults", () => {
+  const card = listPricingDefinitions().find(card => card.id === "gpt-6.1-terra");
+  assert.equal(card.provider, "azure-openai");
+  assert.equal(card.modelVersion, "2026-10-26");
+  assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1050000, 922000, 128000]);
+  assert.equal(card.defaultInterface, "responses");
+  assert.equal(card.pricing.status, "reference");
+  assert.equal(getModelCardPricing(card), null);
+  const model = buildModelFromPricingTemplate(card, "azure", { models: [] });
+  assert.equal(model.targetModel, card.id);
+  assert.deepEqual(model.routes, { "chat/completions": "responses" });
+  const descriptor = resolveModelDescriptor(model.id, compileModelCatalog({ upstreams: config.upstreams, models: [model] }));
+  for (const protocol of ["chat/completions", "responses"]) {
+    const profile = getDescriptorProtocolProfile(descriptor, protocol).reasoning;
+    assert.deepEqual(profile.levels, protocol === "responses"
+      ? ["none", "low", "medium", "high", "xhigh", "max"]
+      : ["none", "low", "medium", "high", "xhigh"]);
+    assert.equal(profile.default, "");
+    assert.equal(profile.validation, "passthrough");
+    const plan = resolveRoutePlan({ routeKey: protocol, model, upstream: config.upstreams[0], descriptor });
+    assert.equal(plan.backendRouteKey, "responses");
+    assert.equal(plan.targetUrl, "https://example.openai.azure.com/openai/v1/responses");
+  }
+  const imported = { access: { pricingCatalog: { [card.id]: { inputPer1mTokens: 0 } } } };
+  upsertPricingCatalogEntry(imported, card);
+  assert.deepEqual(imported.access.pricingCatalog[card.id], { inputPer1mTokens: 0 });
+  const policy = compilePricingPolicy(card.pricing);
+  assert.deepEqual(policy.tiers.map(tier => tier.rates), [
+    { inputPer1mTokens: 1, cachedInputPer1mTokens: 0.05, cacheWritePer1mTokens: 1.25, outputPer1mTokens: 5 },
+    { inputPer1mTokens: 2, cachedInputPer1mTokens: 0.1, cacheWritePer1mTokens: 2.5, outputPer1mTokens: 7.5 }
+  ]);
+  for (const input of [271999, 272000, 272001]) {
+    const tier = policy.tiers[input > 272000 ? 1 : 0];
+    const cost = calculateTokenCost(policy, {
+      input_tokens: input, output_tokens: 1000,
+      input_tokens_details: { cached_tokens: 1000, cache_write_tokens: 2000 }
+    }, { backendProtocol: "responses" });
+    assert.equal(cost.tier.id, tier.id);
+    assert.equal(cost.costStatus, "priced");
+    const rates = tier.rates;
+    const expected = ((input - 3000) * rates.inputPer1mTokens
+      + 1000 * rates.cachedInputPer1mTokens + 2000 * rates.cacheWritePer1mTokens
+      + 1000 * rates.outputPer1mTokens) / 1e6;
+    assert.ok(Math.abs(cost.amount - expected) < 1e-12);
+  }
+});
+
+test("DeepSeek 1017 imports the administrator-supplied Foundry target without fabricating deployment facts", () => {
+  const card = listPricingDefinitions().find(card => card.id === "DeepSeek-V4.1-Flash-1017");
+  assert.equal(card.provider, "fireworks-ai");
+  assert.equal(card.modelVersion, null);
+  assert.equal(card.status, "unknown");
+  assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [null, null, null]);
+  assert.deepEqual(card.interfaces, ["chat/completions", "responses"]);
+  assert.equal(card.pricing.status, "unavailable");
+  assert.equal(getModelCardPricing(card), null);
+  const model = buildModelFromPricingTemplate(card, "azure", { models: [] });
+  assert.equal(model.targetModel, "FW-Deepseek-v4.1-Flash-1017");
+  assert.equal(model.pricingRef, card.id);
+  const descriptor = resolveModelDescriptor(model.id, compileModelCatalog({ upstreams: config.upstreams, models: [model] }));
+  for (const protocol of card.interfaces) {
+    const profile = getDescriptorProtocolProfile(descriptor, protocol).reasoning;
+    assert.deepEqual(profile.levels, []);
+    assert.equal(profile.default, "");
+    assert.equal(profile.validation, "passthrough");
+    const plan = resolveRoutePlan({ routeKey: protocol, model, upstream: config.upstreams[0], descriptor });
+    assert.equal(plan.backendRouteKey, protocol);
+  }
+  const imported = {};
+  upsertPricingCatalogEntry(imported, card);
+  assert.equal(imported.access?.pricingCatalog?.[card.id], undefined);
+  assert.equal(listPricingDefinitions().find(card => card.id === "DeepSeek-V4.1-Flash").proxyTemplate.targetModel,
+    "FW-DeepSeek-V4.1-Flash");
 });
 
 test("GPT-6.1 Sol keeps complete Azure reference profiles and independently sourced model facts", () => {
