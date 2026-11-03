@@ -89,7 +89,7 @@ HTTP 状态码重试只依据最终解析出的 `statuses` 列表；显式空列
 
 | 配置前缀 | 参数与默认值 | 行为 |
 | --- | --- | --- |
-| `media.http` | `maxUploadBytes=26214400`、`maxFiles=10`、`maxFields=64`、`maxFieldBytes=65536` | multipart 总上传、文件数量、普通字段数量及单字段限额。模型字段必须唯一。 |
+| `media.http` | `maxUploadBytes=26214400`、`maxFiles=10`、`maxFields=64`、`maxFieldBytes=65536` | multipart 总上传（含边界及头部，chunked 同样受限）、文件数量、普通字段数量及单字段限额。总字节超限立即返回 413，不等待当前 part 或上传结束。模型字段必须唯一。 |
 | `media.http` | `maxConcurrentUploads=4`、`maxBufferedUploadBytes=314572800`、`uploadTimeoutMs=60000` | 上传并发、总缓冲预留与上传期限；每次上传按 `maxUploadBytes * 3` 预留容量。 |
 | `media.http` | `maxResponseBytes=104857600` | 原生音频、文本、JSON、SSE 响应总字节上限；其他上游超时沿用代理策略。 |
 | `media.realtime` | `maxConnections=100`、`maxMessageBytes=8388608`、`maxBufferedBytes=16777216` | 包含等待首配置与握手的连接上限；单消息及发送缓冲上限，超限终止而不重放音频。 |

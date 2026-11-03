@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import http from "node:http";
+import { Readable } from "node:stream";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { withTestContext } from "./lib/harness.js";
 
 test("multipart preserves JSON-typed field text and handles uploads beyond a stream buffer", { timeout: 10000 }, async () => {
@@ -29,6 +32,169 @@ test("multipart preserves JSON-typed field text and handles uploads beyond a str
     received = await new Response(rawBody, { headers: { "content-type": req.headers["content-type"] } }).formData();
     res.writeHead(200, { "content-type": "text/plain" });
     res.end("transcript");
+    return true;
+  } });
+});
+
+test("large multipart uploads do not stall native or compatible audio and image routes", { timeout: 20000 }, async context => {
+  const file = Buffer.alloc(256 * 1024, 0xfe);
+  let received;
+  await withTestContext(async ctx => {
+    const config = await ctx.readConfigFile();
+    config.media = { http: { enabled: true, maxUploadBytes: 512 * 1024, uploadTimeoutMs: 2000, maxConcurrentUploads: 1 } };
+    const upstream = config.upstreams[0];
+    upstream.routes["audio/transcriptions"] = "/v1/audio/transcriptions";
+    config.models.push(
+      { id: "gpt-transcribe", pricingRef: "gpt-4o-transcribe", upstream: upstream.name },
+      { id: "mai-transcribe", targetModel: "MAI-Transcribe-2", pricingRef: "mai-transcribe-2",
+        upstream: upstream.name, routes: { "audio/transcriptions": "azure-speech-transcribe" } },
+      { id: "mai-edit", pricingRef: "mai-image-2.6", upstream: upstream.name }
+    );
+    const saved = await ctx.adminRequest("/admin/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+    });
+    assert.equal(saved.status, 200, saved.text);
+    for (const [model, path, inputName, upstreamName, upstreamPath] of [
+      ["gpt-transcribe", "/v1/audio/transcriptions", "file", "file", "/v1/audio/transcriptions"],
+      ["mai-transcribe", "/v1/audio/transcriptions", "file", "audio", "/speechtotext/transcriptions:transcribe?api-version=2025-10-15"],
+      ["mai-transcribe", "/v1/providers/azure-speech/mai-transcribe/transcriptions", "audio", "audio", "/speechtotext/transcriptions:transcribe?api-version=2025-10-15"],
+      ["mai-edit", "/v1/images/edits", "image", "image", "/mai/v1/images/edits"]
+    ]) {
+      for (const chunked of [false, true]) {
+        await context.test(`${path} ${model} ${chunked ? "chunked" : "content-length"}`, async () => {
+          const form = new FormData();
+          form.append(inputName, new Blob([file], { type: inputName === "image" ? "image/png" : "audio/wav" }), "fixture.bin");
+          if (inputName === "audio") form.append("definition", JSON.stringify({ enhancedMode: { enabled: true, model: "MAI-Transcribe-2" } }));
+          else form.append("model", model);
+          const encoded = new Request(`${ctx.baseUrl}${path}`, { method: "POST", body: form });
+          const bytes = Buffer.from(await encoded.arrayBuffer());
+          const body = chunked ? Readable.from((async function* () {
+            for (let offset = 0; offset < bytes.length; offset += 16384) {
+              yield bytes.subarray(offset, offset + 16384);
+              await delay(2);
+            }
+          })()) : bytes;
+          ctx.clearUpstreamRequests();
+          const response = await ctx.publicRequest(path, {
+            method: "POST", headers: { "content-type": encoded.headers.get("content-type") }, body,
+            ...(chunked ? { duplex: "half" } : {}), signal: AbortSignal.timeout(5000)
+          });
+          assert.equal(response.status, 200, response.text);
+          assert.deepEqual(response.json, inputName === "audio"
+            ? { durationMilliseconds: 1000, combinedPhrases: [{ text: "transcript" }] }
+            : inputName === "image" ? { data: [] } : { text: "transcript" });
+          assert.equal(ctx.upstreamRequests.length, 1);
+          assert.equal(ctx.getUpstreamRequest().url, upstreamPath);
+          assert.deepEqual(Buffer.from(await received.get(upstreamName).arrayBuffer()), file);
+        });
+      }
+    }
+  }, { upstreamHandler: async ({ req, res, rawBody }) => {
+    received = await new Response(rawBody, { headers: { "content-type": req.headers["content-type"] } }).formData();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(req.url.startsWith("/speechtotext/")
+      ? { durationMilliseconds: 1000, combinedPhrases: [{ text: "transcript" }] }
+      : req.url.includes("/images/") ? { data: [] } : { text: "transcript" }));
+    return true;
+  } });
+});
+
+test("multipart wire byte limits include framing for chunked uploads and release capacity", async () => {
+  await withTestContext(async ctx => {
+    const config = await ctx.readConfigFile();
+    config.media = { http: { enabled: true, maxUploadBytes: 2048, maxConcurrentUploads: 1 } };
+    config.upstreams[0].routes["audio/transcriptions"] = "/v1/audio/transcriptions";
+    config.models.push({ id: "transcribe", pricingRef: "gpt-4o-transcribe", upstream: config.upstreams[0].name });
+    const saved = await ctx.adminRequest("/admin/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+    });
+    assert.equal(saved.status, 200, saved.text);
+    const prefix = Buffer.from('--wire-limit\r\nContent-Disposition: form-data; name="file"; filename="clip.wav"\r\nContent-Type: audio/wav\r\n\r\n');
+    const suffix = Buffer.from('\r\n--wire-limit\r\nContent-Disposition: form-data; name="model"\r\n\r\ntranscribe\r\n--wire-limit--\r\n');
+    for (const chunked of [false, true]) {
+      for (const delta of [-1, 0, 1]) {
+        const bytes = Buffer.concat([prefix, Buffer.alloc(2048 - prefix.length - suffix.length + delta), suffix]);
+        assert.equal(bytes.length, 2048 + delta);
+        ctx.clearUpstreamRequests();
+        const response = await ctx.publicRequest("/v1/audio/transcriptions", {
+          method: "POST", headers: { "content-type": "multipart/form-data; boundary=wire-limit" },
+          body: chunked ? Readable.from([bytes]) : bytes, ...(chunked ? { duplex: "half" } : {})
+        });
+        assert.equal(response.status, delta > 0 ? 413 : 200, response.text);
+        assert.equal(ctx.upstreamRequests.length, delta > 0 ? 0 : 1);
+        if (chunked && delta > 0) assert.equal(response.json.error.code, "UPLOAD_TOO_LARGE");
+      }
+    }
+    ctx.clearUpstreamRequests();
+    const valid = new FormData();
+    valid.append("file", new Blob(["audio"]), "clip.wav");
+    valid.append("model", "transcribe");
+    const recovered = await ctx.publicRequest("/v1/audio/transcriptions", { method: "POST", body: valid });
+    assert.equal(recovered.status, 200, recovered.text);
+    assert.deepEqual(recovered.json, { text: "transcript" });
+    assert.equal(ctx.upstreamRequests.length, 1);
+  }, { upstreamHandler: ({ res }) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ text: "transcript" }));
+    return true;
+  } });
+});
+
+test("multipart wire limits reject unfinished parts promptly and release upload capacity", { timeout: 15000 }, async context => {
+  await withTestContext(async ctx => {
+    const config = await ctx.readConfigFile();
+    config.media = { http: { enabled: true, maxUploadBytes: 2048, maxConcurrentUploads: 1, uploadTimeoutMs: 10000 } };
+    config.upstreams[0].routes["audio/transcriptions"] = "/v1/audio/transcriptions";
+    config.models.push({ id: "transcribe", pricingRef: "gpt-4o-transcribe", upstream: config.upstreams[0].name });
+    const saved = await ctx.adminRequest("/admin/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+    });
+    assert.equal(saved.status, 200, saved.text);
+    for (const [phase, prefix] of [
+      ["preamble", ""],
+      ["part headers", '--partial\r\nContent-Disposition: form-data; name="'],
+      ["field", '--partial\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n'],
+      ["file", '--partial\r\nContent-Disposition: form-data; name="file"; filename="clip.wav"\r\n\r\n']
+    ]) {
+      await context.test(phase, async () => {
+        ctx.clearUpstreamRequests();
+        const response = await new Promise((resolve, reject) => {
+          const request = http.request(`${ctx.baseUrl}/v1/audio/transcriptions`, {
+            method: "POST", headers: {
+              authorization: "Bearer test-client-key",
+              "content-type": "multipart/form-data; boundary=partial"
+            }
+          }, response => {
+            const chunks = [];
+            response.on("data", chunk => chunks.push(chunk));
+            response.on("error", reject);
+            response.on("end", () => {
+              request.destroy();
+              resolve({ status: response.statusCode, text: Buffer.concat(chunks).toString() });
+            });
+          });
+          request.on("error", reject);
+          request.setTimeout(1500, () => request.destroy(new Error("Oversized unfinished upload did not receive a prompt rejection")));
+          request.write(prefix + "a".repeat(1024), async error => {
+            if (error) return request.destroy(error);
+            await delay(20);
+            if (!request.destroyed) request.write("a".repeat(2048));
+          });
+        });
+        assert.equal(response.status, 413, response.text);
+        assert.equal(JSON.parse(response.text).error.code, "UPLOAD_TOO_LARGE");
+        assert.equal(ctx.upstreamRequests.length, 0);
+        const form = new FormData();
+        form.append("file", new Blob(["audio"]), "clip.wav");
+        form.append("model", "transcribe");
+        const recovered = await ctx.publicRequest("/v1/audio/transcriptions", { method: "POST", body: form });
+        assert.equal(recovered.status, 200, recovered.text);
+        assert.equal(ctx.upstreamRequests.length, 1);
+      });
+    }
+  }, { upstreamHandler: ({ res }) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ text: "transcript" }));
     return true;
   } });
 });

@@ -196,6 +196,51 @@ test("Azure Speech transcription binds the native model and maps only documented
   } });
 });
 
+test("MAI enhanced-model rejection preserves upstream HTTP errors across Speech entry points", async () => {
+  const providerError = '{"code":"InvalidRequest","message":"Enhanced mode with model is currently not supported yet."}';
+  let received;
+  await withTestContext(async ctx => {
+    const config = await ctx.readConfigFile();
+    config.media = { http: { enabled: true, maxConcurrentUploads: 1 } };
+    config.proxy.retries = { ...config.proxy.retries, maxRetries: 2 };
+    config.models.push({ id: "transcribe", targetModel: "MAI-Transcribe-2", pricingRef: "mai-transcribe-2",
+      upstream: config.upstreams[0].name, routes: { "audio/transcriptions": "azure-speech-transcribe" } });
+    const saved = await ctx.adminRequest("/admin/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+    });
+    assert.equal(saved.status, 200, saved.text);
+    const definition = { enhancedMode: { enabled: true, model: "MAI-Transcribe-2" } };
+    for (const path of ["/v1/audio/transcriptions", "/v1/providers/azure-speech/transcribe/transcriptions", "/v1/responses"]) {
+      const native = path.includes("/providers/");
+      const form = new FormData();
+      form.append(native ? "audio" : "file", new Blob(["audio"], { type: "audio/wav" }), "clip.wav");
+      form.append(native ? "definition" : "model", native ? JSON.stringify(definition) : "transcribe");
+      ctx.clearUpstreamRequests();
+      const response = await ctx.publicRequest(path, {
+        method: "POST",
+        ...(path === "/v1/responses" ? { json: {
+          model: "transcribe", input: [{ role: "user", content: [
+            { type: "input_file", filename: "clip.wav", file_data: Buffer.from("audio").toString("base64") }
+          ] }]
+        } } : { body: form }),
+        signal: AbortSignal.timeout(5000)
+      });
+      assert.equal(response.status, 400, response.text);
+      assert.equal(response.text, providerError);
+      assert.equal(response.headers.get("x-request-id"), "speech-rejection");
+      assert.equal(ctx.upstreamRequests.length, 1);
+      assert.equal(ctx.getUpstreamRequest().url, "/speechtotext/transcriptions:transcribe?api-version=2025-10-15");
+      assert.equal(ctx.getUpstreamRequest().headers["ocp-apim-subscription-key"], "test-upstream-key");
+      assert.deepEqual(JSON.parse(received.get("definition")), definition);
+    }
+  }, { upstreamHandler: async ({ req, res, rawBody }) => {
+    received = await new Response(rawBody, { headers: { "content-type": req.headers["content-type"] } }).formData();
+    res.writeHead(400, { "content-type": "application/json", "x-request-id": "speech-rejection" });
+    res.end(providerError);
+    return true;
+  } });
+});
+
 test("Responses Speech bounds buffers and releases its shared reservation idempotently", () => {
   const config = { media: { http: { maxUploadBytes: 16, maxResponseBytes: 16, maxBufferedUploadBytes: 70000, maxConcurrentUploads: 1 } } };
   const model = { id: "voice", targetModel: "MAI-Voice-2", defaultParams: { voice: "en-US-Harper:MAI-Voice-2" } };

@@ -117,6 +117,8 @@
 
 Azure API 版本、区域、部署、Speech Entra 认证以及专用转写/翻译 WebRTC control 仍需分别验证。不自动迁移已弃用的 Azure Realtime preview URL，也不因 provider 猜测建立全局字段拒绝表。
 
+MAI 转写排障：若上游返回 HTTP 400、`InvalidRequest` / `Enhanced mode with model is currently not supported yet.`，先检查 Speech 资源区域及最终 URL，而不是延长客户端超时。截至 2026-11-03，[官方区域表的 LLM speech 栏](https://learn.microsoft.com/azure/ai-services/speech-service/regions?tabs=llmspeech)列出 `centralindia`、`eastus`、`northeurope`、`southeastasia`、`westus`、`westus2`，不包括 `japaneast`；以最新区域表和真实上游响应为准。[官方 MAI 示例](https://learn.microsoft.com/azure/ai-services/speech-service/mai-transcribe)使用 `2025-10-15` 及 `enhancedMode.enabled=true`、`enhancedMode.model=MAI-Transcribe-2`。应绑定支持区域的 Speech endpoint 和对应凭据，不能通过删除 model 或关闭 enhanced mode 静默改用其他转写模型。兼容入口和原生入口均保留上游错误状态及 body；客户端必须结束等待并展示非 2xx 错误。GPT 转写使用不同的 Azure OpenAI/OpenAI 路径，其成功不能证明 MAI Speech 的区域可用性。
+
 #### HTTP 媒体契约
 
 multipart 保留文件字节、名称、MIME、字段重复顺序以及 JSON 字符串精度；允许文件在 `model` 前，但重复 model 属于授权歧义，调用上游前拒绝。代理不转码、不重采样、不自动分片长文件。响应按真实 Content-Type 保留二进制、JSON、文本/SRT/VTT 或原生 SSE；chunked audio 不等于 SSE，也不要求 `stream=true`。

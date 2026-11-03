@@ -822,7 +822,8 @@ await app.register(async mediaApp => {
     if (!req.routeOptions.config.httpMediaUpload) return payload;
     const limit = getMediaHttpLimits(getConfig()).maxUploadBytes;
     if (Number(req.headers["content-length"]) > limit) throw createPayloadTooLargeError(limit);
-    return limitRequestBodyStream(payload, limit);
+    // Multipart reads req.raw directly; its reader enforces streamed byte limits.
+    return payload;
   });
   for (const routeKey of ["audio/speech", "audio/transcriptions", "audio/translations", "images/edits"]) {
     mediaApp.post(`/v1/${routeKey}`, { config: { httpMediaUpload: routeKey !== "audio/speech" } }, async (req, reply) => {
