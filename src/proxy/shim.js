@@ -1326,9 +1326,7 @@ function normalizeMessageContentToText(content) {
       if (!part) continue;
       if (typeof part === "string") {
         textParts.push(part);
-      } else if (part.type === "text" && typeof part.text === "string") {
-        textParts.push(part.text);
-      } else if (part.type === "input_text" && typeof part.text === "string") {
+      } else if (TEXT_CONTENT_TYPES.has(part.type) && typeof part.text === "string") {
         textParts.push(part.text);
       }
     }
@@ -1579,9 +1577,9 @@ function extractInstructionTextFromMessages(messages) {
   return instructions.join("\n\n");
 }
 
-// Chat and Messages function tools are non-strict by default, whereas an omitted Responses `strict` requests strict normalization.
+// Preserve the non-strict Chat/Messages default; Responses may normalize an omitted `strict` into strict mode.
 function explicitStrictForResponses(strict) {
-  return typeof strict === "boolean" ? strict : false;
+  return strict ?? false;
 }
 
 function normalizeToolsForResponses(tools) {

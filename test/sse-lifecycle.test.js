@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import test, { mock } from "node:test";
 import { createRawSseParser, streamPassthrough, streamShim } from "../src/proxy/stream.js";
@@ -146,10 +147,12 @@ test("SSE parser reports unfinished bytes and resumes after an abandoned iterato
   assert.equal(parser.bufferedLength, 0);
 });
 
-test("SSE parser joins a split event once and never copies events contained in one chunk", () => {
+test("SSE parser bounds split-event copies and allocations and keeps complete frames zero-copy", () => {
   const body = "x".repeat(1024 * 1024);
   const big = Buffer.from(`data: ${body}\r\n\r\n`);
-  const copy = mock.method(Buffer, "concat");
+  const concat = mock.method(Buffer, "concat");
+  const copy = mock.method(Buffer.prototype, "copy");
+  const allocate = mock.method(Buffer, "allocUnsafeSlow");
   try {
     const parser = createRawSseParser();
     const events = [];
@@ -157,18 +160,86 @@ test("SSE parser joins a split event once and never copies events contained in o
       events.push(...parser.feed(big.subarray(offset, offset + 1024)));
     }
     assert.equal(events.length, 1);
-    assert.equal(events[0].payload.length, body.length);
-    assert.equal(events[0].raw.length, big.length);
-    const copiedBytes = copy.mock.calls.reduce((total, call) => total + call.result.length, 0);
-    assert.ok(copiedBytes <= big.length * 1.1, `copied ${copiedBytes} bytes for a ${big.length} byte event`);
+    assert.equal(events[0].payload, body);
+    assert.deepEqual(events[0].raw, big);
+    const copiedBytes = copy.mock.calls.reduce((total, call) => total + call.result, 0)
+      + concat.mock.calls.reduce((total, call) => total + call.result.length, 0);
+    assert.ok(copiedBytes <= big.length * 3, `copied ${copiedBytes} bytes for a ${big.length} byte event`);
+    assert.equal(concat.mock.callCount(), 0, "chunk boundaries must not allocate temporary concatenations");
+    assert.ok(allocate.mock.callCount() > 0);
+    assert.ok(allocate.mock.callCount() <= 16, "buffer growth must be geometric, not per chunk");
+    assert.ok(allocate.mock.calls.every((call) => call.arguments[0] <= LIMIT), "capacity must stay within the raw event limit");
+    assert.ok(allocate.mock.calls.reduce((total, call) => total + call.arguments[0], 0) <= big.length * 4);
   } finally {
+    allocate.mock.restore();
     copy.mock.restore();
+    concat.mock.restore();
   }
 
   const chunk = Buffer.from("data: a\n\ndata: b\r\n\r\ndata: c\n\n");
   const events = [...createRawSseParser().feed(chunk)];
   assert.equal(events.length, 3);
   for (const event of events) assert.equal(event.raw.buffer, chunk.buffer, "complete events are views of the incoming chunk");
+});
+
+test("SSE parser releases fragmented-frame storage without overwriting previously yielded frames", () => {
+  const parser = createRawSseParser();
+  const first = Buffer.from(`data: ${"x".repeat(64 * 1024)}\r\n\r\n`);
+  assert.deepEqual([...parser.feed(first.subarray(0, -1))], []);
+  const [event] = parser.feed(first.subarray(-1));
+  assert.deepEqual(event.raw, first);
+  for (const tail of ["\n\n", ""]) {
+    assert.deepEqual([...parser.feed(Buffer.from("data: ne"))], []);
+    const frames = [...parser.feed(Buffer.from(`xt${tail}`)), ...parser.finish()];
+    assert.equal(frames[0].payload, "next");
+    assert.notEqual(frames[0].raw.buffer, event.raw.buffer);
+    assert.ok(frames[0].raw.buffer.byteLength <= 8192, "a later small event must not retain the old large buffer");
+    assert.deepEqual(event.raw, first, "returned bytes remain owned by the consumer");
+    assert.equal(parser.bufferedLength, 0);
+  }
+});
+
+test("SSE parser caps fragmented-frame capacity at the configured raw byte limit", () => {
+  for (const limit of [16, 64, 8193]) {
+    const parser = createRawSseParser({ maxEventBytes: limit });
+    const exact = Buffer.from(`data: ${"x".repeat(limit - 8)}\n\n`);
+    assert.deepEqual([...parser.feed(exact.subarray(0, -1))], []);
+    const [event] = parser.feed(exact.subarray(-1));
+    assert.deepEqual(event.raw, exact);
+    assert.ok(event.raw.buffer.byteLength <= limit);
+    assert.equal(parser.bufferedLength, 0);
+  }
+});
+
+test("SSE parser retains bounded memory for one-byte Uint8Array fragments", () => {
+  const output = execFileSync(process.execPath, ["--expose-gc", "--input-type=module", "-e", `
+    import { createRawSseParser } from ${JSON.stringify(new URL("../src/proxy/stream.js", import.meta.url).href)};
+    for (let i = 0; i < 2000; i++) [...createRawSseParser().feed(Buffer.from("data: ok\\n\\n"))];
+    const source = Buffer.from("data: " + "x".repeat(128 * 1024 - 6));
+    global.gc();
+    const before = process.memoryUsage();
+    const parser = createRawSseParser();
+    for (let i = 0; i < source.length; i++) {
+      for (const event of parser.feed(new Uint8Array(source.buffer, source.byteOffset + i, 1))) {
+        throw new Error("unexpected complete event");
+      }
+    }
+    global.gc();
+    const after = process.memoryUsage();
+    const buffered = parser.bufferedLength;
+    const [event] = parser.feed(Buffer.from("\\n\\n"));
+    console.log(JSON.stringify({
+      buffered, payload: event.payload.length, remaining: parser.bufferedLength,
+      heapGrowth: after.heapUsed - before.heapUsed,
+      bufferGrowth: after.arrayBuffers - before.arrayBuffers
+    }));
+  `], { encoding: "utf8", timeout: 30000 });
+  const result = JSON.parse(output);
+  assert.equal(result.buffered, 128 * 1024);
+  assert.equal(result.payload, 128 * 1024 - 6);
+  assert.equal(result.remaining, 0);
+  assert.ok(result.heapGrowth < 4 * 1024 * 1024, `fragment metadata retained ${result.heapGrowth} heap bytes`);
+  assert.ok(result.bufferGrowth < 512 * 1024, `fragment storage retained ${result.bufferGrowth} buffer bytes`);
 });
 
 test("oversized complete and unfinished SSE events fail before forwarding and release upstream", async t => {

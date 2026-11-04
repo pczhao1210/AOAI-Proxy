@@ -89,7 +89,7 @@
 - Chat 转 Messages 时，`stop` 映射为 `stop_sequences`（单个字符串规范化为单元素数组），`top_p` 与 `top_k` 保留为同名控制字段；Messages 转 Chat 时执行反向 stop 映射。Responses 请求中的 `stop` 扩展字段转 Messages 时同样规范化为数组。
 - Chat 的 `parallel_tool_calls: false` 与 Responses 的 `parallel_tool_calls: false` 转 Messages 时映射为 `tool_choice.disable_parallel_tool_use: true`：未显式提供 `tool_choice` 且存在工具时补 `{ "type": "auto" }`；`tool_choice` 为 `none` 或没有工具时不生成；`true` 为 Messages 默认行为，不转发。`parallel_tool_calls` 本身不会出现在 Messages 请求体中。Messages 转 Chat 时 `disable_parallel_tool_use` 仍按有损字段处理。
 - Chat 转 Responses 时保留 `top_p`；`stop`、`top_k` 等 Responses 无对应字段的控制项仍按有损策略处理。
-- Chat 与 Messages function tool 默认非严格；转 Responses 时，未显式提供 `strict` 的工具会写入 `strict: false`，避免省略字段触发 Responses 的严格 schema 归一化。显式布尔值原样保留；原生 Responses 请求不受影响。
+- Chat 与 Messages function tool 默认非严格；转 Responses 时，缺失或为 `null` 的 `strict` 会写入 `strict: false`，避免省略字段触发 Responses 的严格 schema 归一化。显式值原样保留，包括交由上游校验的非布尔值，不将非法值静默改成 `false`；原生 Responses 请求不受影响。
 - Messages 的 `stop_sequences` 转 Responses 时映射为 `stop`。它是目标上游扩展兼容字段，不应被解释为所有 Responses 服务都原生支持；最终能力由真实上游判断。
 - Responses 转 Chat 时，`service_tier`、`verbosity`、`top_k` 等字段当前会作为顶层扩展字段继续传递；这不代表标准 Chat 语义与其等价，最终是否接受由字段策略和上游决定。
 - Responses 严格流终止是协议不变量：所有 Responses 源流都必须出现 `response.completed` 或 `response.incomplete`，不受目录开关或 User-Agent 影响。
@@ -491,7 +491,7 @@ Chat web search 的路由提升逻辑只在模型没有显式 route override、d
 | `image_url` | `input_image` |
 | function tool | Responses function tool |
 | assistant `tool_calls` | `function_call` item |
-| tool message | `function_call_output` item；content 为字符串或纯文本 part 数组（数组按顺序拼接为文本，非文本 part 视为有损内容） |
+| tool message | `function_call_output` item；content 为字符串或纯文本 part 数组（字符串 part 及 `text`、`input_text`、`output_text` 按原顺序无分隔符拼接为文本，不序列化为 JSON；非文本或带注解的 part 视为有损内容） |
 | `max_tokens` / `max_completion_tokens` | `max_output_tokens` |
 | `reasoning_effort` | `reasoning.effort` |
 | assistant `reasoning_content` | reasoning item 的 `summary_text` |
@@ -704,6 +704,7 @@ Responses 与 Messages 的转换通过双方都能投影到的基础消息与 fu
 - 输出 token 上限；
 - `stop` 到 `stop_sequences`（字符串规范化为数组）；
 - `parallel_tool_calls: false` 到 `tool_choice.disable_parallel_tool_use`；
+- `reasoning.effort` 到 Catalog 声明的 Messages effort/thinking 控制；
 - `include: ["reasoning.encrypted_content"]` 对应的 thinking signature 响应保留；
 - 基础 tool choice 交集。
 
@@ -903,11 +904,14 @@ metadata 应按“默认不承诺跨协议无损”处理：
 - 最后一个事件没有尾随换行；
 - 原生流保留完整原始 frame，包括未解释的 `event`、`id`、`retry` 等字段；
 - 跨协议流只拼接并解释 `data:` 行，事件类型依赖 JSON payload 内的 `type`，不读取 SSE 的 `event`、`id` 或 `retry` 语义；
-- 单事件有名义上的 8 MiB 缓冲上限；原生流按原始字节计数，跨协议流按解码后的字符长度计数，因此它不是统一的 8 MiB 网络字节保证；
+- 原生流和跨协议流统一按单事件原始字节数限制为 8 MiB（包含分隔符），在 UTF-8/JSON 解码前检查；
 - backpressure，不能无限缓存慢客户端数据；
 - 客户端断开后取消上游 reader。
 
 网络 chunk 不是协议事件边界，不能按每次读取直接解析 JSON。
+完整事件位于单个 chunk 时保留零拷贝视图；跨 chunk 的事件使用独立、按需指数扩容的字节缓冲，容量不超过事件上限，不逐个保留网络碎片。
+事件输出后交出缓冲所有权，后续事件不得覆盖已输出的字节或长期复用旧的大缓冲。
+8 MiB 是单事件原始字节限制，不是包含输出字符串、JSON 对象和下游写缓冲的进程总内存限制。
 
 ### 14.2 三种源协议的成功终态
 

@@ -42,19 +42,49 @@ function findEventDelimiter(buf) {
   return null;
 }
 
+function findBoundaryDelimiter(pending, pendingLength, buf) {
+  // A delimiter can start up to three bytes before this chunk, giving a negative index.
+  let suffix = 0;
+  for (let i = Math.max(0, pendingLength - 3); i < pendingLength; i++) {
+    suffix = (suffix << 8) | pending[i];
+  }
+  for (let i = 0; i < Math.min(3, buf.length); i++) {
+    suffix = ((suffix << 8) | buf[i]) >>> 0;
+    if ((suffix & 0xffff) === 0x0a0a) return { index: i - 1, length: 2 };
+    if (suffix === 0x0d0a0d0a) return { index: i - 3, length: 4 };
+  }
+  return null;
+}
+
 export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {}) {
-  // `pending` is the unfinished leading event and never contains a delimiter;
-  // `tail` is its last three bytes, so a delimiter split across chunks is found
-  // by scanning only the join. `queue` holds chunks not scanned yet. An event is
-  // joined once, when it completes, instead of re-concatenating on every chunk.
-  let pending = [];
+  let pending = EMPTY_BUFFER;
   let pendingLength = 0;
-  let tail = EMPTY_BUFFER;
   const queue = [];
+  let queuedLength = 0;
   const checkSize = length => {
     if (length > maxEventBytes) {
       throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
     }
+  };
+  const appendPending = (buf, length = buf.length) => {
+    const required = pendingLength + length;
+    checkSize(required);
+    if (required > pending.length) {
+      const capacity = Math.min(maxEventBytes, Math.max(required, pending.length ? pending.length * 2 : 4096));
+      // Own the storage rather than retaining one wrapper per fragment or a pooled slab.
+      const next = Buffer.allocUnsafeSlow(capacity);
+      pending.copy(next, 0, 0, pendingLength);
+      pending = next;
+    }
+    buf.copy(pending, pendingLength, 0, length);
+    pendingLength = required;
+  };
+  const takePending = () => {
+    const raw = pending.subarray(0, pendingLength);
+    // The consumer owns raw until it finishes writing; never reuse its backing buffer.
+    pending = EMPTY_BUFFER;
+    pendingLength = 0;
+    return raw;
   };
 
   // Parse lazily so terminal evidence stops interpretation of trailing bytes.
@@ -63,47 +93,30 @@ export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {})
   function* drain(final = false) {
     while (queue.length) {
       const buf = queue[0];
-      let consumed = -1;
-      let delimiterLength = 0;
-      if (pendingLength) {
-        const crossing = findEventDelimiter(Buffer.concat([tail, buf.subarray(0, 3)]));
-        if (crossing && crossing.index < tail.length) {
-          consumed = crossing.index + crossing.length - tail.length;
-          delimiterLength = crossing.length;
-        }
-      }
-      if (consumed < 0) {
-        const hit = findEventDelimiter(buf);
-        if (hit) {
-          consumed = hit.index + hit.length;
-          delimiterLength = hit.length;
-        }
-      }
-      if (consumed < 0) {
-        checkSize(pendingLength + buf.length);
-        tail = buf.length >= 3 ? buf.subarray(-3) : Buffer.concat([tail, buf]).subarray(-3);
-        pending.push(buf);
-        pendingLength += buf.length;
+      const hit = (pendingLength ? findBoundaryDelimiter(pending, pendingLength, buf) : null)
+        || findEventDelimiter(buf);
+      if (!hit) {
+        appendPending(buf);
+        queuedLength -= buf.length;
         queue.shift();
         continue;
       }
-      const length = pendingLength + consumed;
-      checkSize(length);
-      const raw = pending.length
-        ? Buffer.concat([...pending, buf.subarray(0, consumed)], length)
-        : buf.subarray(0, consumed);
-      pending = [];
-      pendingLength = 0;
-      tail = EMPTY_BUFFER;
+      const consumed = hit.index + hit.length;
+      checkSize(pendingLength + consumed);
+      let raw;
+      if (pendingLength) {
+        appendPending(buf, consumed);
+        raw = takePending();
+      } else {
+        raw = buf.subarray(0, consumed);
+      }
+      queuedLength -= consumed;
       if (consumed < buf.length) queue[0] = buf.subarray(consumed);
       else queue.shift();
-      yield { raw, payload: sseDataFromBlock(raw.subarray(0, length - delimiterLength).toString("utf8")) };
+      yield { raw, payload: sseDataFromBlock(raw.subarray(0, raw.length - hit.length).toString("utf8")) };
     }
     if (final && pendingLength) {
-      const raw = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingLength);
-      pending = [];
-      pendingLength = 0;
-      tail = EMPTY_BUFFER;
+      const raw = takePending();
       yield { raw, payload: sseDataFromBlock(raw.toString("utf8")) };
     }
   }
@@ -111,11 +124,14 @@ export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {})
   return {
     feed(chunk) {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-      if (buf.length) queue.push(buf);
+      if (buf.length) {
+        queue.push(buf);
+        queuedLength += buf.length;
+      }
       return drain();
     },
     finish: () => drain(true),
-    get bufferedLength() { return pendingLength + queue.reduce((total, buf) => total + buf.length, 0); }
+    get bufferedLength() { return pendingLength + queuedLength; }
   };
 }
 

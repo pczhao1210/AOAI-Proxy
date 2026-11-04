@@ -67,9 +67,10 @@ async function withFidelityContext(run) {
     upstreamHandler({ req, res, body }) {
       if (!script || !String(body?.model).startsWith("fidelity-")) return false;
       const protocol = req.url.endsWith("/messages") ? "messages" : req.url.endsWith("/responses") ? "responses" : "chat";
-      const { json, events } = script({ body, protocol });
-      res.writeHead(200, { "content-type": body.stream ? "text/event-stream" : "application/json" });
-      res.end(body.stream ? sseFrames(protocol, events) : JSON.stringify(json));
+      const { json, events, status = 200 } = script({ body, protocol });
+      const streaming = body.stream && status < 400;
+      res.writeHead(status, { "content-type": streaming ? "text/event-stream" : "application/json" });
+      res.end(streaming ? sseFrames(protocol, events) : JSON.stringify(json));
       return true;
     }
   });
@@ -255,22 +256,38 @@ test("Chat tool-result text arrays reach the Responses upstream as function_call
     setUpstream(responsesCompleted);
     for (const strict of [false, true]) {
       await setProtocolShim({ rejectLossyRequests: strict });
-      ctx.upstreamRequests.length = 0;
-      const result = await ctx.publicRequest("/v1/chat/completions", {
-        method: "POST",
-        json: {
-          model: "fidelity-responses",
-          tools: [lookupTool],
-          messages: toolTurn([{ type: "text", text: "temp: " }, { type: "text", text: "22C" }])
+      for (const stream of [false, true]) {
+        for (const [content, expected] of [
+          [[{ type: "text", text: "temp: " }, { type: "text", text: "22C" }], "temp: 22C"],
+          [[{ type: "input_text", text: "answer=42" }], "answer=42"],
+          [[{ type: "output_text", text: "answer=42" }], "answer=42"],
+          [[{ type: "text", text: " a " }, { type: "output_text", text: "\nb" }, { type: "input_text", text: "" }, "!"], " a \nb!"],
+          [[], ""]
+        ]) {
+          ctx.upstreamRequests.length = 0;
+          const result = await ctx.publicRequest("/v1/chat/completions", {
+            method: "POST",
+            json: {
+              model: "fidelity-responses",
+              stream,
+              tools: [lookupTool],
+              messages: toolTurn(content)
+            }
+          });
+          const label = `strict=${strict} stream=${stream} content=${JSON.stringify(content)}`;
+          assert.equal(result.status, 200, `${label}: ${result.text}`);
+          const [upstream] = upstreamCalls("fidelity-responses-deployment");
+          assert.ok(upstream.url.endsWith("/responses"), upstream.url);
+          const calls = upstream.body.input.filter((item) => item.type === "function_call");
+          const outputs = upstream.body.input.filter((item) => item.type === "function_call_output");
+          assert.deepEqual(calls.map((item) => item.call_id), ["call_1"], label);
+          assert.deepEqual(outputs, [{ type: "function_call_output", call_id: "call_1", output: expected }], label);
+          const text = stream
+            ? parseSse(result.text).map((chunk) => chunk.choices?.[0]?.delta?.content || "").join("")
+            : result.json.choices[0].message.content;
+          assert.equal(text, "ok", label);
         }
-      });
-      assert.equal(result.status, 200, `strict=${strict}: ${result.text}`);
-      const [upstream] = upstreamCalls("fidelity-responses-deployment");
-      assert.ok(upstream.url.endsWith("/responses"), upstream.url);
-      const calls = upstream.body.input.filter((item) => item.type === "function_call");
-      const outputs = upstream.body.input.filter((item) => item.type === "function_call_output");
-      assert.deepEqual(calls.map((item) => item.call_id), ["call_1"]);
-      assert.deepEqual(outputs, [{ type: "function_call_output", call_id: "call_1", output: "temp: 22C" }]);
+      }
     }
   });
 });
@@ -289,17 +306,18 @@ test("Chat string tool results and non-text tool arrays keep their existing Resp
     );
 
     await setProtocolShim({ rejectLossyRequests: true });
-    ctx.upstreamRequests.length = 0;
-    const imageResult = await ctx.publicRequest("/v1/chat/completions", {
-      method: "POST",
-      json: {
-        model: "fidelity-responses",
-        tools: [lookupTool],
-        messages: toolTurn([{ type: "image_url", image_url: { url: "https://example.test/a.png" } }])
-      }
-    });
-    assert.ok(imageResult.status >= 400 && imageResult.status < 500, imageResult.text);
-    assert.equal(upstreamCalls("fidelity-responses-deployment").length, 0, "proxy preflight rejection must not reach the upstream");
+    for (const content of [
+      [{ type: "image_url", image_url: { url: "https://example.test/a.png" } }],
+      [{ type: "output_text", text: "annotated", annotations: [{ type: "citation", url: "https://example.test/source" }] }]
+    ]) {
+      ctx.upstreamRequests.length = 0;
+      const result = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: { model: "fidelity-responses", tools: [lookupTool], messages: toolTurn(content) }
+      });
+      assert.equal(result.status, 400, result.text);
+      assert.equal(upstreamCalls("fidelity-responses-deployment").length, 0, "proxy preflight rejection must not reach the upstream");
+    }
   });
 });
 
@@ -516,13 +534,14 @@ test("Chat and Messages function tools default to strict=false on the Responses 
       messages: [{ role: "user", content: "hi" }],
       tools: [
         { type: "function", function: { name: "implicit", parameters: schema } },
+        { type: "function", function: { name: "explicit_null", parameters: schema, strict: null } },
         { type: "function", function: { name: "explicit_true", parameters: schema, strict: true } },
         { type: "function", function: { name: "explicit_false", parameters: schema, strict: false } }
       ]
     }, "fidelity-responses-deployment");
     assert.equal(chat.result.status, 200, chat.result.text);
     assert.deepEqual(chat.upstream.body.tools.map((tool) => [tool.name, tool.strict]), [
-      ["implicit", false], ["explicit_true", true], ["explicit_false", false]
+      ["implicit", false], ["explicit_null", false], ["explicit_true", true], ["explicit_false", false]
     ]);
 
     const messages = await capture(ctx, upstreamCalls, "/v1/messages", {
@@ -531,12 +550,14 @@ test("Chat and Messages function tools default to strict=false on the Responses 
       messages: [{ role: "user", content: "hi" }],
       tools: [
         { name: "implicit", input_schema: schema },
-        { name: "explicit_true", input_schema: schema, strict: true }
+        { name: "explicit_null", input_schema: schema, strict: null },
+        { name: "explicit_true", input_schema: schema, strict: true },
+        { name: "explicit_false", input_schema: schema, strict: false }
       ]
     }, "fidelity-responses-deployment");
     assert.equal(messages.result.status, 200, messages.result.text);
     assert.deepEqual(messages.upstream.body.tools.map((tool) => [tool.name, tool.strict]), [
-      ["implicit", false], ["explicit_true", true]
+      ["implicit", false], ["explicit_null", false], ["explicit_true", true], ["explicit_false", false]
     ]);
 
     const native = await capture(ctx, upstreamCalls, "/v1/responses", {
@@ -546,6 +567,44 @@ test("Chat and Messages function tools default to strict=false on the Responses 
     }, "fidelity-responses-deployment");
     assert.equal(native.result.status, 200, native.result.text);
     assert.equal("strict" in native.upstream.body.tools[0], false, "native Responses tools must stay untouched");
+  });
+});
+
+test("Chat and Messages invalid tool strict values reach Responses unchanged and preserve upstream errors", async () => {
+  await withFidelityContext(async ({ ctx, setUpstream, setProtocolShim, upstreamCalls }) => {
+    const error = {
+      type: "invalid_request_error",
+      code: "invalid_strict",
+      message: "strict must be a boolean",
+      param: "tools[0].strict"
+    };
+    setUpstream(({ body, protocol }) => typeof body.tools[0].strict === "boolean"
+      ? completedFor({ protocol })
+      : { status: 400, json: { error } });
+    for (const rejectLossyRequests of [false, true]) {
+      await setProtocolShim({ rejectLossyRequests });
+      for (const client of ["chat", "chat-flat", "messages"]) {
+        for (const stream of [false, true]) {
+          for (const strict of ["true", 1, {}, []]) {
+            const schema = { type: "object", properties: {} };
+            const fn = { name: "lookup", parameters: schema, strict };
+            const tool = client === "messages"
+              ? { name: "lookup", input_schema: schema, strict }
+              : client === "chat-flat" ? { type: "function", ...fn } : { type: "function", function: fn };
+            const path = client === "messages" ? "/v1/messages" : "/v1/chat/completions";
+            const { result, upstream } = await capture(ctx, upstreamCalls, path, {
+              model: "fidelity-responses", stream, max_tokens: 16,
+              messages: [{ role: "user", content: "hi" }], tools: [tool]
+            }, "fidelity-responses-deployment");
+            const label = `${client} stream=${stream} rejectLossyRequests=${rejectLossyRequests} strict=${JSON.stringify(strict)}`;
+            assert.ok(upstream?.url.endsWith("/responses"), label);
+            assert.deepEqual(upstream.body.tools[0].strict, strict, label);
+            assert.equal(result.status, 400, `${label}: ${result.text}`);
+            assert.equal(result.json.error.message, error.message, label);
+          }
+        }
+      }
+    }
   });
 });
 

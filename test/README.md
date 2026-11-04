@@ -40,6 +40,9 @@ CSRF/IP policy and header authentication before body parsing. Redirect tests fre
 three native JSON/SSE protocols: no 3xx response may forward credentials or content to
 a different target, including a same-origin target. SSE lifecycle checks enforce raw
 per-event byte limits before decoding and cancel/unlock readers on all exits.
+They also check linear split-event copying, bounded fragment storage, and frame
+ownership. The memory regression launches its own Node process with `--expose-gc`;
+it does not require that flag on the test runner.
 Request cleanup keeps client placeholder adaptation for optional controls while
 preserving literal text, tool data and JSON Schema enum/default/const values.
 
