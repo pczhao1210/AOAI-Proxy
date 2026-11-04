@@ -175,15 +175,20 @@ built-in `fetch()`, so updating the npm `undici` package alone does not patch it
 Non-loopback listeners fail closed when admin authentication is disabled or known placeholder credentials are active. `ALLOW_INSECURE_PUBLIC_ADMIN=true` is an explicit compatibility escape hatch and is not recommended for normal deployments.
 
 Dependency maintenance note (2026-11-04): `@azure/identity` 4.14.1 declares
-`@azure/msal-node` `^7.1.0`, and the `overrides` entry pins MSAL Node 7.1.1, which
+`@azure/msal-node` `^7.1.0`, and the `overrides` entry pins MSAL Node 7.1.2, which
 is patched for [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5).
 Change that pin only with authentication validation. `@fastify/static` still
 declares `glob` `^13`, so `overrides` raises `glob` to `^14.0.3` (with minimatch 11)
 for [GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) and
 [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249); the
 admin asset route keeps the default `wildcard: true` and does not invoke glob.
-Remove that override once `@fastify/static` accepts a patched glob. The CI audit
-gate (`npm audit --audit-level=moderate`) is expected to pass.
+Remove that override once `@fastify/static` accepts a patched glob. Keep
+`@fastify/multipart` at 10.1.7 or newer: earlier versions are affected by the
+upload DoS advisories GHSA-62qx-hpj5-j6hc, GHSA-vmph-573x-85f6 and
+GHSA-5849-5m6q-9632, which were published in the
+[fastify-multipart repository](https://github.com/fastify/fastify-multipart/security/advisories)
+but not yet in the global advisory database, so `npm audit` does not report them.
+The CI audit gate (`npm audit --audit-level=moderate`) is expected to pass.
 
 JSON feature flags require literal booleans, not strings such as `"false"` or
 numbers such as `0`. Legacy export/image gates retain their effective AND
