@@ -488,7 +488,7 @@ Chat web search 的路由提升逻辑只在模型没有显式 route override、d
 | `image_url` | `input_image` |
 | function tool | Responses function tool |
 | assistant `tool_calls` | `function_call` item |
-| tool message | `function_call_output` item |
+| tool message | `function_call_output` item；content 为字符串或纯文本 part 数组（数组按顺序拼接为文本，非文本 part 视为有损内容） |
 | `max_tokens` / `max_completion_tokens` | `max_output_tokens` |
 | `reasoning_effort` | `reasoning.effort` |
 | assistant `reasoning_content` | reasoning item 的 `summary_text` |
@@ -575,14 +575,15 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 - assistant 文本转为 output text；
 - function tool call 转为 `function_call` item；
 - Chat usage 转为 Responses usage；
-- `stop`、`length`、`tool_calls` 转为可表达的 completed 或 incomplete 状态。
+- `stop`、`length`、`tool_calls` 转为可表达的 completed 或 incomplete 状态；
+- `content_filter` 转为 `status = incomplete`、`incomplete_details.reason = content_filter`（JSON 与 SSE 一致，SSE 以 `response.incomplete` 终止）。
 - assistant `reasoning_content` 转为 reasoning item 的 `summary_text`。
 
 #### 限制
 
 - 仅允许一个 choice；
 - 数组化 assistant output、audio、refusal、未知 reasoning extension、复杂 logprobs 或供应商 finish reason 不应被静默简化；
-- Chat 的 `content_filter` 不能伪装成 Responses 正常完成。
+- Chat 的 `content_filter` 不能伪装成 Responses 正常完成，必须映射为 incomplete（`content_filter`）。
 
 ---
 
@@ -988,6 +989,7 @@ Responses 的 `response.failed` 和 provider error 是失败终态。Messages �
 | `stop` | completed | `end_turn` 或 `stop_sequence` | 正常结束 |
 | `length` | incomplete: `max_output_tokens` | `max_tokens` | 达到输出上限 |
 | `tool_calls` | function call output lifecycle | `tool_use` | 等待工具结果 |
+| `content_filter` | incomplete: `content_filter` | 不可安全转换 | 被内容过滤终止 |
 
 `stop_sequence` 转到 Chat 后只能表示为 `stop`，精确触发序列和细分原因不一定保留。
 
@@ -995,7 +997,7 @@ Responses 的 `response.failed` 和 provider error 是失败终态。Messages �
 
 以下终止原因不应伪装成普通成功：
 
-- Chat `content_filter`；
+- Chat `content_filter`（目标为 Messages 时；转 Responses 时按 incomplete 表示）；
 - Anthropic `pause_turn`；
 - Anthropic `model_context_window_exceeded`；
 - Responses 非 `max_output_tokens` 的未知 incomplete reason；

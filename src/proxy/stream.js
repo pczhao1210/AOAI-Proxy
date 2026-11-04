@@ -1,5 +1,5 @@
 import { markErrorWithCode } from "./reliability.js";
-import { getProtocolShimStreamCompatibilityIssue } from "./shim.js";
+import { chatFinishReasonToResponsesTermination, getProtocolShimStreamCompatibilityIssue } from "./shim.js";
 
 const MAX_SSE_EVENT_BYTES = 8 * 1024 * 1024;
 
@@ -791,13 +791,13 @@ export async function streamShim({
     ...(reverseUsage.completion_tokens_details ? { output_tokens_details: reverseUsage.completion_tokens_details } : {})
     };
   };
-  const buildReverseResponse = (status, output = []) => ({
+  const buildReverseResponse = (status, output = [], incompleteReason = "max_output_tokens") => ({
     id: reverseResponseId,
     object: "response",
     created_at: created,
     status,
     error: null,
-    incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null,
+    incomplete_details: status === "incomplete" ? { reason: incompleteReason } : null,
     instructions: null,
     model: resolvedModel,
     output,
@@ -1009,10 +1009,11 @@ export async function streamShim({
       completedOutput.push(outputItem);
       await writeResponsesEvent({ type: "response.output_item.done", output_index: item.outputIndex, item: outputItem });
     }
-    const status = reverseFinishReason === "length" ? "incomplete" : "completed";
+    const termination = chatFinishReasonToResponsesTermination(reverseFinishReason);
+    const status = termination.status;
     await writeResponsesEvent({
       type: status === "completed" ? "response.completed" : "response.incomplete",
-      response: buildReverseResponse(status, completedOutput)
+      response: buildReverseResponse(status, completedOutput, termination.reason)
     });
     await writeSseDone(reply.raw);
     reverseCompleted = true;
@@ -1492,9 +1493,7 @@ export async function streamShim({
                     delta: {
                       tool_calls: [{
                         index: sourceBlock.toolIndex,
-                        id: sourceBlock.id,
-                        type: "function",
-                        function: { name: sourceBlock.name || "", arguments: delta }
+                        function: { arguments: delta }
                       }]
                     },
                     finish_reason: null

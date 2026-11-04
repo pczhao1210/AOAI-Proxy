@@ -922,9 +922,16 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     {
       sourceProtocol: "chat/completions",
       targetProtocol: "responses",
-      payload: { messages: [{ role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "done" }] }] },
+      payload: { messages: [{ role: "tool", tool_call_id: "call_1", content: [{ type: "image_url", image_url: { url: "https://example.test/a.png" } }] }] },
+      path: "messages[0].content[0]",
+      type: "image_url"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { messages: [{ role: "tool", tool_call_id: "call_1", content: { text: "done" } }] },
       path: "messages[0].content",
-      type: "content_array"
+      type: "object"
     },
     {
       phase: "response",
@@ -1041,6 +1048,13 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     assert.equal(issue?.type, item.type);
     assert.match(issue?.message || "", /Cannot losslessly convert/);
   }
+
+  assert.equal(getProtocolShimCompatibilityIssue({
+    messages: [{ role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "done" }] }]
+  }, {
+    sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  }), null);
 
   assert.equal(getProtocolShimCompatibilityIssue({
     input: [

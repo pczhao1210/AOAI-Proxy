@@ -28,6 +28,7 @@ node --test test/logs.test.js test/admin-auth-logs.test.js
 node --test test/response-reader.test.js
 node --test test/usage-accounting.test.js
 node --test test/upstream-headers.test.js
+node --test test/protocol-shim-fidelity.test.js
 node --test test/image-optimization.test.js test/image-work-queue.test.js test/image-config.test.js test/image-routes.test.js
 node --test test/mai-routes.test.js test/media-http.test.js test/azure-speech.test.js
 node --test test/realtime.test.js test/webrtc.test.js

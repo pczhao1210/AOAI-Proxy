@@ -22,9 +22,20 @@ const RESPONSES_SHIM_STREAM_LIFECYCLE_EVENTS = new Set([
   "error"
 ]);
 const SUPPORTED_CHAT_FINAL_FINISH_REASONS = new Set(["stop", "length", "tool_calls"]);
-const SUPPORTED_CHAT_STREAM_FINISH_REASONS = new Set([null, undefined, ...SUPPORTED_CHAT_FINAL_FINISH_REASONS]);
 const SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS = new Set(["end_turn", "max_tokens", "stop_sequence", "tool_use"]);
 const SUPPORTED_ANTHROPIC_STREAM_STOP_REASONS = new Set([null, undefined, ...SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS]);
+
+export function chatFinishReasonToResponsesTermination(reason) {
+  if (reason === "length") return { status: "incomplete", reason: "max_output_tokens" };
+  if (reason === "content_filter") return { status: "incomplete", reason: "content_filter" };
+  return { status: "completed", reason: null };
+}
+
+function isSupportedChatFinishReason(reason, context, { allowOpen = false } = {}) {
+  if (SUPPORTED_CHAT_FINAL_FINISH_REASONS.has(reason)) return true;
+  if (allowOpen && reason == null) return true;
+  return reason === "content_filter" && context.targetProtocol === "responses";
+}
 
 export function normalizeWebSearchToolType(type) {
   const normalized = typeof type === "string" ? type.trim().toLowerCase() : "";
@@ -984,7 +995,7 @@ function validateChatPayload(payload, context) {
       });
     }
     const finishReason = choices[0]?.finish_reason;
-    if (!SUPPORTED_CHAT_FINAL_FINISH_REASONS.has(finishReason)) {
+    if (!isSupportedChatFinishReason(finishReason, context)) {
       return createShimCompatibilityIssue({
         ...context,
         path: "choices[0].finish_reason",
@@ -1082,12 +1093,12 @@ function validateChatPayload(payload, context) {
       }
     }
     if (message?.role === "tool") {
-      if (context.targetProtocol === "responses" && typeof message.content !== "string") {
+      if (context.targetProtocol === "responses" && typeof message.content !== "string" && !Array.isArray(message.content)) {
         return createShimCompatibilityIssue({
           ...context,
           path: `${basePath}.content`,
-          type: Array.isArray(message.content) ? "content_array" : typeof message.content,
-          reason: "Responses function_call_output conversion requires a string tool result"
+          type: typeof message.content,
+          reason: "Responses function_call_output conversion requires a string or text-array tool result"
         });
       }
       const outputIssue = validateTextOnlyValue(message.content, context, `${basePath}.content`);
@@ -1217,7 +1228,7 @@ export function getProtocolShimStreamCompatibilityIssue(event, {
   for (let choiceIndex = 0; choiceIndex < choices.length; choiceIndex += 1) {
     const choice = choices[choiceIndex];
     const delta = choice?.delta || {};
-    if (!SUPPORTED_CHAT_STREAM_FINISH_REASONS.has(choice?.finish_reason)) {
+    if (!isSupportedChatFinishReason(choice?.finish_reason, context, { allowOpen: true })) {
       return createShimCompatibilityIssue({
         ...context,
         path: `choices[${choiceIndex}].finish_reason`,
@@ -1498,11 +1509,11 @@ function buildResponsesInputFromMessages(messages) {
       }
       continue;
     }
-    if (role === "tool" && m.tool_call_id && typeof m.content === "string") {
+    if (role === "tool" && m.tool_call_id && (typeof m.content === "string" || Array.isArray(m.content))) {
       input.push({
         type: "function_call_output",
         call_id: m.tool_call_id,
-        output: m.content
+        output: normalizeMessageContentToText(m.content)
       });
       continue;
     }
@@ -2758,7 +2769,7 @@ export function mapChatCompletionJsonToResponses(payload, modelId) {
       arguments: toolCall.function.arguments || ""
     });
   }
-  const incomplete = choice.finish_reason === "length";
+  const termination = chatFinishReasonToResponsesTermination(choice.finish_reason);
   const usage = payload?.usage ? (() => {
     const inputTokens = payload.usage.prompt_tokens ?? payload.usage.input_tokens ?? 0;
     const outputTokens = payload.usage.completion_tokens ?? payload.usage.output_tokens ?? 0;
@@ -2774,9 +2785,9 @@ export function mapChatCompletionJsonToResponses(payload, modelId) {
     id: responseId,
     object: "response",
     created_at: payload?.created || Math.floor(Date.now() / 1000),
-    status: incomplete ? "incomplete" : "completed",
+    status: termination.status,
     error: null,
-    incomplete_details: incomplete ? { reason: "max_output_tokens" } : null,
+    incomplete_details: termination.reason ? { reason: termination.reason } : null,
     instructions: null,
     model: modelId || payload?.model,
     output,
