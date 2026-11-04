@@ -27,10 +27,30 @@ function createSseDataParser() {
   };
 }
 
+const LF = 0x0a;
+const CR = 0x0d;
+const EMPTY_BUFFER = Buffer.alloc(0);
+
+// First event delimiter in `buf`: "\n\n" or "\r\n\r\n", whichever starts first.
+// Walking newlines keeps the scan linear in the bytes consumed.
+function findEventDelimiter(buf) {
+  for (let lf = buf.indexOf(LF); lf !== -1; lf = buf.indexOf(LF, lf + 1)) {
+    const next = buf[lf + 1];
+    if (next === LF) return { index: lf, length: 2 };
+    if (next === CR && buf[lf + 2] === LF && lf > 0 && buf[lf - 1] === CR) return { index: lf - 1, length: 4 };
+  }
+  return null;
+}
+
 export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {}) {
-  let buffer = Buffer.alloc(0);
-  const lfDelimiter = Buffer.from("\n\n");
-  const crlfDelimiter = Buffer.from("\r\n\r\n");
+  // `pending` is the unfinished leading event and never contains a delimiter;
+  // `tail` is its last three bytes, so a delimiter split across chunks is found
+  // by scanning only the join. `queue` holds chunks not scanned yet. An event is
+  // joined once, when it completes, instead of re-concatenating on every chunk.
+  let pending = [];
+  let pendingLength = 0;
+  let tail = EMPTY_BUFFER;
+  const queue = [];
   const checkSize = length => {
     if (length > maxEventBytes) {
       throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
@@ -41,36 +61,61 @@ export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {})
   // Enforce the complete raw frame size before UTF-8 or JSON decoding; checking
   // only the remaining buffer misses oversized events ending in this chunk.
   function* drain(final = false) {
-    while (buffer.length) {
-      const lfIndex = buffer.indexOf(lfDelimiter);
-      const crlfIndex = buffer.indexOf(crlfDelimiter);
-      if (lfIndex < 0 && crlfIndex < 0) {
-        checkSize(buffer.length);
-        if (final) {
-          const raw = buffer;
-          buffer = Buffer.alloc(0);
-          yield { raw, payload: sseDataFromBlock(raw.toString("utf8")) };
+    while (queue.length) {
+      const buf = queue[0];
+      let consumed = -1;
+      let delimiterLength = 0;
+      if (pendingLength) {
+        const crossing = findEventDelimiter(Buffer.concat([tail, buf.subarray(0, 3)]));
+        if (crossing && crossing.index < tail.length) {
+          consumed = crossing.index + crossing.length - tail.length;
+          delimiterLength = crossing.length;
         }
-        return;
       }
-      const useCrlf = crlfIndex >= 0 && (lfIndex < 0 || crlfIndex < lfIndex);
-      const index = useCrlf ? crlfIndex : lfIndex;
-      const length = index + (useCrlf ? crlfDelimiter.length : lfDelimiter.length);
+      if (consumed < 0) {
+        const hit = findEventDelimiter(buf);
+        if (hit) {
+          consumed = hit.index + hit.length;
+          delimiterLength = hit.length;
+        }
+      }
+      if (consumed < 0) {
+        checkSize(pendingLength + buf.length);
+        tail = buf.length >= 3 ? buf.subarray(-3) : Buffer.concat([tail, buf]).subarray(-3);
+        pending.push(buf);
+        pendingLength += buf.length;
+        queue.shift();
+        continue;
+      }
+      const length = pendingLength + consumed;
       checkSize(length);
-      const raw = buffer.subarray(0, length);
-      const payload = sseDataFromBlock(buffer.subarray(0, index).toString("utf8"));
-      buffer = buffer.subarray(length);
-      yield { raw, payload };
+      const raw = pending.length
+        ? Buffer.concat([...pending, buf.subarray(0, consumed)], length)
+        : buf.subarray(0, consumed);
+      pending = [];
+      pendingLength = 0;
+      tail = EMPTY_BUFFER;
+      if (consumed < buf.length) queue[0] = buf.subarray(consumed);
+      else queue.shift();
+      yield { raw, payload: sseDataFromBlock(raw.subarray(0, length - delimiterLength).toString("utf8")) };
+    }
+    if (final && pendingLength) {
+      const raw = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingLength);
+      pending = [];
+      pendingLength = 0;
+      tail = EMPTY_BUFFER;
+      yield { raw, payload: sseDataFromBlock(raw.toString("utf8")) };
     }
   }
 
   return {
     feed(chunk) {
-      buffer = Buffer.concat([buffer, chunk]);
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      if (buf.length) queue.push(buf);
       return drain();
     },
     finish: () => drain(true),
-    get bufferedLength() { return buffer.length; }
+    get bufferedLength() { return pendingLength + queue.reduce((total, buf) => total + buf.length, 0); }
   };
 }
 
@@ -209,6 +254,71 @@ function createStreamCancellation(replyRaw, reader, onClientDisconnect) {
   };
 }
 
+// Owns the first-byte, idle and max-duration timers shared by both stream paths.
+// Timeouts cancel the upstream reader; timeoutFailure() reports which one fired.
+function createStreamWatchdog(policy, cancellation) {
+  const fired = { firstByte: false, idle: false, maxDuration: false };
+  let firstChunkSeen = false;
+  let idleTimer = null;
+  const clearIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = null;
+  };
+  const firstByteTimer = setTimeout(() => {
+    if (firstChunkSeen) return;
+    fired.firstByte = true;
+    cancellation.cancel("first-byte-timeout", "UPSTREAM_FIRST_BYTE_TIMEOUT", `first byte timeout after ${policy.firstByteTimeoutMs}ms`);
+  }, policy.firstByteTimeoutMs);
+  const maxDurationTimer = policy.maxStreamDurationMs > 0
+    ? setTimeout(() => {
+      fired.maxDuration = true;
+      cancellation.cancel("max-stream-duration", "UPSTREAM_MAX_STREAM_DURATION", `stream exceeded max duration after ${policy.maxStreamDurationMs}ms`);
+    }, policy.maxStreamDurationMs)
+    : null;
+  return {
+    firstChunk() {
+      firstChunkSeen = true;
+      clearTimeout(firstByteTimer);
+    },
+    resetIdle() {
+      clearIdle();
+      idleTimer = setTimeout(() => {
+        fired.idle = true;
+        cancellation.cancel("idle-timeout", "UPSTREAM_IDLE_TIMEOUT", `idle timeout after ${policy.idleTimeoutMs}ms`);
+      }, policy.idleTimeoutMs);
+    },
+    dispose() {
+      clearTimeout(firstByteTimer);
+      clearIdle();
+      if (maxDurationTimer) clearTimeout(maxDurationTimer);
+    },
+    timeoutFailure() {
+      if (fired.firstByte) {
+        return {
+          ok: false,
+          beforeFirstChunk: true,
+          error: markErrorWithCode(new Error(`first byte timeout after ${policy.firstByteTimeoutMs}ms`), "UPSTREAM_FIRST_BYTE_TIMEOUT")
+        };
+      }
+      if (fired.idle) {
+        return {
+          ok: false,
+          beforeFirstChunk: !firstChunkSeen,
+          error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
+        };
+      }
+      if (fired.maxDuration) {
+        return {
+          ok: false,
+          beforeFirstChunk: !firstChunkSeen,
+          error: markErrorWithCode(new Error(`stream exceeded max duration after ${policy.maxStreamDurationMs}ms`), "UPSTREAM_MAX_STREAM_DURATION")
+        };
+      }
+      return null;
+    }
+  };
+}
+
 function createSseWriters(signal) {
   return {
     writeSse: (replyRaw, dataObj) => writeWithBackpressure(replyRaw, `data: ${JSON.stringify(dataObj)}\n\n`, signal),
@@ -262,6 +372,15 @@ function normalizeAnthropicUsage(usage) {
     total_tokens: Number(usage.total_tokens ?? inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens),
     cached_tokens: cacheReadTokens
   };
+}
+
+// Cached prompt tokens as reported by Chat, Responses or Messages usage objects.
+function cachedTokensFromUsage(usage) {
+  return usage.prompt_tokens_details?.cached_tokens
+    ?? usage.input_tokens_details?.cached_tokens
+    ?? usage.cache_read_input_tokens
+    ?? usage.cached_tokens
+    ?? 0;
 }
 
 function normalizeChatUsage(usage) {
@@ -407,11 +526,6 @@ export async function streamPassthrough({
     return { ok: false, beforeFirstChunk: true, error: markErrorWithCode(new Error("stream body unavailable"), "STREAM_INTERRUPTED") };
   }
   let firstChunkSeen = false;
-  let firstByteTimedOut = false;
-  let idleTimedOut = false;
-  let maxDurationTimedOut = false;
-  let idleTimer = null;
-  let maxDurationTimer = null;
   const usageState = { recorded: false, anthropicUsage: null, genericUsage: null };
   const sseParser = createRawSseParser();
   let providerError = null;
@@ -471,33 +585,7 @@ export async function streamPassthrough({
       chatFinishReasonSeen = true;
     }
   };
-  const clearIdle = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = null;
-  };
-  const clearMaxDuration = () => {
-    if (maxDurationTimer) clearTimeout(maxDurationTimer);
-    maxDurationTimer = null;
-  };
-  const resetIdle = () => {
-    clearIdle();
-    idleTimer = setTimeout(() => {
-      idleTimedOut = true;
-      cancellation.cancel("idle-timeout", "UPSTREAM_IDLE_TIMEOUT", `idle timeout after ${policy.idleTimeoutMs}ms`);
-    }, policy.idleTimeoutMs);
-  };
-  const firstByteTimer = setTimeout(() => {
-    if (!firstChunkSeen) {
-      firstByteTimedOut = true;
-      cancellation.cancel("first-byte-timeout", "UPSTREAM_FIRST_BYTE_TIMEOUT", `first byte timeout after ${policy.firstByteTimeoutMs}ms`);
-    }
-  }, policy.firstByteTimeoutMs);
-  if (policy.maxStreamDurationMs > 0) {
-    maxDurationTimer = setTimeout(() => {
-      maxDurationTimedOut = true;
-      cancellation.cancel("max-stream-duration", "UPSTREAM_MAX_STREAM_DURATION", `stream exceeded max duration after ${policy.maxStreamDurationMs}ms`);
-    }, policy.maxStreamDurationMs);
-  }
+  const watchdog = createStreamWatchdog(policy, cancellation);
 
   try {
     while (true) {
@@ -506,10 +594,10 @@ export async function streamPassthrough({
       if (clientDisconnected) break;
       if (!firstChunkSeen) {
         firstChunkSeen = true;
-        clearTimeout(firstByteTimer);
+        watchdog.firstChunk();
         onFirstChunk();
       }
-      resetIdle();
+      watchdog.resetIdle();
       for (const event of sseParser.feed(value)) {
         if (reachedTerminal()) break;
         processPayload(event.payload);
@@ -536,9 +624,7 @@ export async function streamPassthrough({
   } catch (error) {
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
   } finally {
-    clearTimeout(firstByteTimer);
-    clearIdle();
-    clearMaxDuration();
+    watchdog.dispose();
     await cancellation.finish();
   }
   if (clientDisconnected) {
@@ -549,27 +635,8 @@ export async function streamPassthrough({
       clientDisconnected: true
     };
   }
-  if (firstByteTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: true,
-      error: markErrorWithCode(new Error(`first byte timeout after ${policy.firstByteTimeoutMs}ms`), "UPSTREAM_FIRST_BYTE_TIMEOUT")
-    };
-  }
-  if (idleTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: !firstChunkSeen,
-      error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
-    };
-  }
-  if (maxDurationTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: !firstChunkSeen,
-      error: markErrorWithCode(new Error(`stream exceeded max duration after ${policy.maxStreamDurationMs}ms`), "UPSTREAM_MAX_STREAM_DURATION")
-    };
-  }
+  const timeoutFailure = watchdog.timeoutFailure();
+  if (timeoutFailure) return timeoutFailure;
   if (providerError) {
     return {
       ok: false,
@@ -621,11 +688,6 @@ export async function streamShim({
     return { ok: false, beforeFirstChunk: true, error: markErrorWithCode(new Error("stream body unavailable"), "STREAM_INTERRUPTED") };
   }
   let firstChunkSeen = false;
-  let firstByteTimedOut = false;
-  let idleTimedOut = false;
-  let maxDurationTimedOut = false;
-  let idleTimer = null;
-  let maxDurationTimer = null;
   const sourceSseParser = createSseDataParser();
   let providerError = null;
   let sourceTerminalSeen = false;
@@ -764,11 +826,7 @@ export async function streamShim({
   };
   const buildReverseUsage = () => {
     if (!reverseUsage) return null;
-    const cachedTokens = reverseUsage.prompt_tokens_details?.cached_tokens
-      ?? reverseUsage.input_tokens_details?.cached_tokens
-      ?? reverseUsage.cache_read_input_tokens
-      ?? reverseUsage.cached_tokens
-      ?? 0;
+    const cachedTokens = cachedTokensFromUsage(reverseUsage);
     const cacheCreationTokens = reverseUsage.cache_creation_input_tokens ?? 0;
     const hasAnthropicBreakdown = reverseUsage.cache_read_input_tokens != null
       || reverseUsage.cache_creation_input_tokens != null;
@@ -1020,11 +1078,7 @@ export async function streamShim({
   };
   const buildMessagesUsage = (usage) => {
     if (!usage) return null;
-    const cachedTokens = usage.prompt_tokens_details?.cached_tokens
-      ?? usage.input_tokens_details?.cached_tokens
-      ?? usage.cache_read_input_tokens
-      ?? usage.cached_tokens
-      ?? 0;
+    const cachedTokens = cachedTokensFromUsage(usage);
     const sourceInputTokens = usage.prompt_tokens ?? usage.input_tokens ?? 0;
     const inputTokens = Math.max(0, sourceInputTokens - cachedTokens);
     const outputTokens = usage.completion_tokens ?? usage.output_tokens ?? 0;
@@ -1247,33 +1301,7 @@ export async function streamShim({
     await writeAnthropicSse(reply.raw, { type: "message_stop" });
     messagesCompleted = true;
   };
-  const clearIdle = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = null;
-  };
-  const clearMaxDuration = () => {
-    if (maxDurationTimer) clearTimeout(maxDurationTimer);
-    maxDurationTimer = null;
-  };
-  const resetIdle = () => {
-    clearIdle();
-    idleTimer = setTimeout(() => {
-      idleTimedOut = true;
-      cancellation.cancel("idle-timeout", "UPSTREAM_IDLE_TIMEOUT", `idle timeout after ${policy.idleTimeoutMs}ms`);
-    }, policy.idleTimeoutMs);
-  };
-  const firstByteTimer = setTimeout(() => {
-    if (!firstChunkSeen) {
-      firstByteTimedOut = true;
-      cancellation.cancel("first-byte-timeout", "UPSTREAM_FIRST_BYTE_TIMEOUT", `first byte timeout after ${policy.firstByteTimeoutMs}ms`);
-    }
-  }, policy.firstByteTimeoutMs);
-  if (policy.maxStreamDurationMs > 0) {
-    maxDurationTimer = setTimeout(() => {
-      maxDurationTimedOut = true;
-      cancellation.cancel("max-stream-duration", "UPSTREAM_MAX_STREAM_DURATION", `stream exceeded max duration after ${policy.maxStreamDurationMs}ms`);
-    }, policy.maxStreamDurationMs);
-  }
+  const watchdog = createStreamWatchdog(policy, cancellation);
 
   try {
     while (true) {
@@ -1282,10 +1310,10 @@ export async function streamShim({
       if (clientDisconnected) break;
       if (!reachedEof && !firstChunkSeen) {
         firstChunkSeen = true;
-        clearTimeout(firstByteTimer);
+        watchdog.firstChunk();
         onFirstChunk();
       }
-      if (!reachedEof) resetIdle();
+      if (!reachedEof) watchdog.resetIdle();
       const payloads = reachedEof ? sourceSseParser.finish() : sourceSseParser.feed(value);
       while (!providerError && !sourceTerminalSeen) {
         const next = payloads.next();
@@ -1803,9 +1831,7 @@ export async function streamShim({
   } catch (error) {
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
   } finally {
-    clearTimeout(firstByteTimer);
-    clearIdle();
-    clearMaxDuration();
+    watchdog.dispose();
     await cancellation.finish();
   }
   if (clientDisconnected) {
@@ -1816,27 +1842,8 @@ export async function streamShim({
       clientDisconnected: true
     };
   }
-  if (firstByteTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: true,
-      error: markErrorWithCode(new Error(`first byte timeout after ${policy.firstByteTimeoutMs}ms`), "UPSTREAM_FIRST_BYTE_TIMEOUT")
-    };
-  }
-  if (idleTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: !firstChunkSeen,
-      error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
-    };
-  }
-  if (maxDurationTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: !firstChunkSeen,
-      error: markErrorWithCode(new Error(`stream exceeded max duration after ${policy.maxStreamDurationMs}ms`), "UPSTREAM_MAX_STREAM_DURATION")
-    };
-  }
+  const timeoutFailure = watchdog.timeoutFailure();
+  if (timeoutFailure) return timeoutFailure;
   if (providerError) {
     return {
       ok: false,

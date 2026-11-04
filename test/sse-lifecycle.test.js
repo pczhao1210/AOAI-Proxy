@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { createRawSseParser, streamPassthrough, streamShim } from "../src/proxy/stream.js";
 
 const LIMIT = 8 * 1024 * 1024;
@@ -74,6 +74,101 @@ test("SSE parser enforces raw event bytes including delimiters before decoding",
   }
   const parser = createRawSseParser({ maxEventBytes: 16 });
   assert.throws(() => [...parser.feed(Buffer.from("x".repeat(17)))], { code: "UPSTREAM_STREAM_EVENT_TOO_LARGE" });
+});
+
+// Reference framing: the earliest "\n\n" or "\r\n\r\n" ends an event; trailing bytes are the final partial event.
+function referenceSseFrames(data) {
+  const frames = [];
+  let rest = data;
+  for (;;) {
+    const lf = rest.indexOf("\n\n");
+    const crlf = rest.indexOf("\r\n\r\n");
+    if (lf < 0 && crlf < 0) break;
+    const useCrlf = crlf >= 0 && (lf < 0 || crlf < lf);
+    const length = (useCrlf ? crlf + 4 : lf + 2);
+    frames.push(rest.subarray(0, length).toString("hex"));
+    rest = rest.subarray(length);
+  }
+  if (rest.length) frames.push(rest.toString("hex"));
+  return frames;
+}
+
+function parseInChunks(chunks, options) {
+  const parser = createRawSseParser(options);
+  const frames = [];
+  for (const chunk of chunks) for (const event of parser.feed(chunk)) frames.push(event.raw.toString("hex"));
+  for (const event of parser.finish()) frames.push(event.raw.toString("hex"));
+  return { frames, buffered: parser.bufferedLength };
+}
+
+test("SSE parser frames events identically for every delimiter split and random chunking", () => {
+  const stream = Buffer.from(
+    "data: one\n\ndata: 中文\r\n\r\n\n\n\r\n\r\n: comment\n\ndata: a\r\ndata: b\n\r\n\r\n\ndata: tail"
+  );
+  const expected = referenceSseFrames(stream);
+  for (let size = 1; size <= stream.length; size += 1) {
+    const chunks = [];
+    for (let offset = 0; offset < stream.length; offset += size) chunks.push(stream.subarray(offset, offset + size));
+    assert.deepEqual(parseInChunks(chunks).frames, expected, `chunk size ${size}`);
+  }
+  for (let split = 0; split <= stream.length; split += 1) {
+    assert.deepEqual(parseInChunks([stream.subarray(0, split), stream.subarray(split)]).frames, expected, `split ${split}`);
+  }
+
+  let seed = 20240607;
+  const random = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+  const pieces = ["\n", "\r", "\r\n", "\n\n", "\r\n\r\n", "a", "data: x", "中", ":"];
+  for (let run = 0; run < 1500; run += 1) {
+    let text = "";
+    for (let count = 1 + Math.floor(random() * 20); count > 0; count -= 1) text += pieces[Math.floor(random() * pieces.length)];
+    const data = Buffer.from(text);
+    const chunks = [];
+    for (let offset = 0; offset < data.length;) {
+      const size = 1 + Math.floor(random() * 6);
+      chunks.push(data.subarray(offset, offset + size));
+      offset += size;
+    }
+    const { frames, buffered } = parseInChunks(chunks);
+    assert.deepEqual(frames, referenceSseFrames(data), JSON.stringify(text));
+    assert.equal(buffered, 0);
+  }
+});
+
+test("SSE parser reports unfinished bytes and resumes after an abandoned iterator", () => {
+  const parser = createRawSseParser();
+  assert.deepEqual([...parser.feed(Buffer.from("data: a\n"))], []);
+  assert.equal(parser.bufferedLength, 8);
+  const [first] = parser.feed(Buffer.from("\ndata: b\n\ndata: c\n\ndata: d"));
+  assert.equal(first.payload, "a");
+  assert.equal(parser.bufferedLength, "data: b\n\ndata: c\n\ndata: d".length);
+  const resumed = [...parser.feed(Buffer.from("\n\n"))];
+  assert.deepEqual(resumed.map(event => event.payload), ["b", "c", "d"]);
+  assert.equal(parser.bufferedLength, 0);
+});
+
+test("SSE parser joins a split event once and never copies events contained in one chunk", () => {
+  const body = "x".repeat(1024 * 1024);
+  const big = Buffer.from(`data: ${body}\r\n\r\n`);
+  const copy = mock.method(Buffer, "concat");
+  try {
+    const parser = createRawSseParser();
+    const events = [];
+    for (let offset = 0; offset < big.length; offset += 1024) {
+      events.push(...parser.feed(big.subarray(offset, offset + 1024)));
+    }
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.length, body.length);
+    assert.equal(events[0].raw.length, big.length);
+    const copiedBytes = copy.mock.calls.reduce((total, call) => total + call.result.length, 0);
+    assert.ok(copiedBytes <= big.length * 1.1, `copied ${copiedBytes} bytes for a ${big.length} byte event`);
+  } finally {
+    copy.mock.restore();
+  }
+
+  const chunk = Buffer.from("data: a\n\ndata: b\r\n\r\ndata: c\n\n");
+  const events = [...createRawSseParser().feed(chunk)];
+  assert.equal(events.length, 3);
+  for (const event of events) assert.equal(event.raw.buffer, chunk.buffer, "complete events are views of the incoming chunk");
 });
 
 test("oversized complete and unfinished SSE events fail before forwarding and release upstream", async t => {

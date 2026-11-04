@@ -75,3 +75,27 @@ for (const routeKey of Object.keys(EVENTS)) {
     });
   }
 }
+
+for (const routeKey of Object.keys(EVENTS)) {
+  for (const backendRouteKey of Object.keys(EVENTS)) {
+    test(`${routeKey} via ${backendRouteKey}: first byte timeout cancels the upstream before any output`, async () => {
+      const raw = new StalledReply();
+      const cancellations = [];
+      const upstreamResponse = { body: new ReadableStream({ cancel(reason) { cancellations.push(reason); } }) };
+      const handler = routeKey === backendRouteKey ? streamPassthrough : streamShim;
+      let firstChunks = 0;
+      const result = await handler({
+        upstreamResponse, reply: { raw }, routeKey, backendRouteKey, modelId: "test-model", model: {},
+        policy: { firstByteTimeoutMs: 20, idleTimeoutMs: 1000, maxStreamDurationMs: 0 },
+        onFirstChunk() { firstChunks += 1; }, onUsage() {}, onModel() {}
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.error?.code, "UPSTREAM_FIRST_BYTE_TIMEOUT");
+      assert.equal(result.beforeFirstChunk, true);
+      assert.equal(firstChunks, 0);
+      assert.deepEqual(cancellations, ["first-byte-timeout"]);
+      assert.equal(raw.output, "", "No frame may be written before the first upstream byte");
+      for (const event of ["drain", "close", "error"]) assert.equal(raw.listenerCount(event), 0);
+    });
+  }
+}

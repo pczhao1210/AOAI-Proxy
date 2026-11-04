@@ -2317,22 +2317,7 @@ function buildAnthropicMessagesFromResponses(input) {
   return { messages, system: systemParts.join("\n\n") };
 }
 
-function normalizeChatToolsForAnthropic(tools) {
-  if (!Array.isArray(tools)) return undefined;
-  const normalized = [];
-  for (const tool of tools) {
-    const fn = tool?.type === "function" ? (tool.function || tool) : null;
-    if (!fn?.name) continue;
-    normalized.push({
-      name: fn.name,
-      description: fn.description,
-      input_schema: fn.parameters ?? { type: "object", properties: {} }
-    });
-  }
-  return normalized.length ? normalized : undefined;
-}
-
-function normalizeResponsesToolsForAnthropic(tools) {
+function normalizeToolsForAnthropic(tools) {
   if (!Array.isArray(tools)) return undefined;
   const normalized = [];
   for (const tool of tools) {
@@ -2348,19 +2333,7 @@ function normalizeResponsesToolsForAnthropic(tools) {
   return normalized.length ? normalized : undefined;
 }
 
-function normalizeChatToolChoiceForAnthropic(toolChoice) {
-  if (!toolChoice) return undefined;
-  if (toolChoice === "auto") return { type: "auto" };
-  if (toolChoice === "required") return { type: "any" };
-  if (toolChoice === "none") return { type: "none" };
-  if (typeof toolChoice === "object" && toolChoice.type === "function") {
-    const name = toolChoice.function?.name || toolChoice.name;
-    return name ? { type: "tool", name } : undefined;
-  }
-  return undefined;
-}
-
-function normalizeResponsesToolChoiceForAnthropic(toolChoice) {
+function normalizeToolChoiceForAnthropic(toolChoice) {
   if (!toolChoice) return undefined;
   if (toolChoice === "auto") return { type: "auto" };
   if (toolChoice === "required") return { type: "any" };
@@ -2415,11 +2388,11 @@ export function chatToMessagesRequest(body, deployment, descriptor) {
   if (system) out.system = system;
   else delete out.system;
 
-  const tools = normalizeChatToolsForAnthropic(body?.tools);
+  const tools = normalizeToolsForAnthropic(body?.tools);
   if (tools) out.tools = tools;
   else delete out.tools;
 
-  const toolChoice = normalizeChatToolChoiceForAnthropic(body?.tool_choice);
+  const toolChoice = normalizeToolChoiceForAnthropic(body?.tool_choice);
   if (toolChoice !== undefined) out.tool_choice = toolChoice;
   else delete out.tool_choice;
   applyParallelToolPolicyForAnthropic(out, body?.parallel_tool_calls);
@@ -2504,11 +2477,11 @@ export function responsesToMessagesRequest(body, deployment, descriptor) {
   if (system) out.system = system;
   else delete out.system;
 
-  const tools = normalizeResponsesToolsForAnthropic(body?.tools);
+  const tools = normalizeToolsForAnthropic(body?.tools);
   if (tools) out.tools = tools;
   else delete out.tools;
 
-  const toolChoice = normalizeResponsesToolChoiceForAnthropic(body?.tool_choice);
+  const toolChoice = normalizeToolChoiceForAnthropic(body?.tool_choice);
   if (toolChoice !== undefined) out.tool_choice = toolChoice;
   else delete out.tool_choice;
   applyParallelToolPolicyForAnthropic(out, body?.parallel_tool_calls);
