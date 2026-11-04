@@ -365,3 +365,219 @@ test("Chat content_filter is not representable for Messages clients and stays a 
     assert.equal(result.json?.error?.param, "choices[0].finish_reason");
   });
 });
+
+function messagesCompleted() {
+  const model = "fidelity-messages-deployment";
+  const json = {
+    id: "msg_fidelity",
+    type: "message",
+    role: "assistant",
+    model,
+    content: [{ type: "text", text: "ok" }],
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 3, output_tokens: 2 }
+  };
+  return {
+    json,
+    events: [
+      { type: "message_start", message: { ...json, content: [], stop_reason: null, usage: { input_tokens: 3, output_tokens: 0 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } },
+      { type: "message_stop" }
+    ]
+  };
+}
+
+function completedFor({ protocol }) {
+  if (protocol === "messages") return messagesCompleted();
+  if (protocol === "responses") return responsesCompleted();
+  return chatCompletion("stop");
+}
+
+async function capture(ctx, upstreamCalls, path, json, upstreamModel) {
+  ctx.upstreamRequests.length = 0;
+  const result = await ctx.publicRequest(path, { method: "POST", json });
+  return { result, upstream: upstreamCalls(upstreamModel).at(-1) };
+}
+
+test("Chat and Responses stop controls reach Messages as a stop_sequences array", async () => {
+  await withFidelityContext(async ({ ctx, setUpstream, upstreamCalls }) => {
+    setUpstream(completedFor);
+    for (const stream of [false, true]) {
+      for (const [stop, expected] of [["END", ["END"]], [["A", "B"], ["A", "B"]]]) {
+        const label = `chat stream=${stream} stop=${JSON.stringify(stop)}`;
+        const { result, upstream } = await capture(ctx, upstreamCalls, "/v1/chat/completions", {
+          model: "fidelity-messages", stream, max_tokens: 16, stop, messages: [{ role: "user", content: "hi" }]
+        }, "fidelity-messages-deployment");
+        assert.equal(result.status, 200, `${label}: ${result.text}`);
+        assert.ok(upstream.url.endsWith("/messages"), upstream.url);
+        assert.deepEqual(upstream.body.stop_sequences, expected, label);
+        assert.equal(upstream.body.stop, undefined, label);
+      }
+    }
+    const responses = await capture(ctx, upstreamCalls, "/v1/responses", {
+      model: "fidelity-messages", input: "hi", max_output_tokens: 16, stop: "END"
+    }, "fidelity-messages-deployment");
+    assert.equal(responses.result.status, 200, responses.result.text);
+    assert.deepEqual(responses.upstream.body.stop_sequences, ["END"]);
+    assert.equal(responses.upstream.body.stop, undefined);
+  });
+});
+
+test("Messages stop_sequences keep their existing array mapping to Responses and Chat upstreams", async () => {
+  await withFidelityContext(async ({ ctx, setUpstream, upstreamCalls }) => {
+    setUpstream(completedFor);
+    const toResponses = await capture(ctx, upstreamCalls, "/v1/messages", {
+      model: "fidelity-responses", max_tokens: 16, stop_sequences: ["E"], messages: [{ role: "user", content: "hi" }]
+    }, "fidelity-responses-deployment");
+    assert.equal(toResponses.result.status, 200, toResponses.result.text);
+    assert.deepEqual(toResponses.upstream.body.stop, ["E"]);
+    const toChat = await capture(ctx, upstreamCalls, "/v1/messages", {
+      model: "fidelity-chat", max_tokens: 16, stop_sequences: ["E"], messages: [{ role: "user", content: "hi" }]
+    }, "fidelity-chat-deployment");
+    assert.equal(toChat.result.status, 200, toChat.result.text);
+    assert.deepEqual(toChat.upstream.body.stop, ["E"]);
+  });
+});
+
+const parallelCases = [
+  { name: "omitted tool_choice", toolChoice: undefined, expected: { type: "auto", disable_parallel_tool_use: true } },
+  { name: "required", toolChoice: "required", expected: { type: "any", disable_parallel_tool_use: true } },
+  { name: "none", toolChoice: "none", expected: { type: "none" } }
+];
+
+for (const client of ["chat", "responses"]) {
+  test(`${client} parallel_tool_calls=false maps to Messages disable_parallel_tool_use without leaking the field`, async () => {
+    await withFidelityContext(async ({ ctx, setUpstream, setProtocolShim, upstreamCalls }) => {
+      setUpstream(completedFor);
+      const path = client === "chat" ? "/v1/chat/completions" : "/v1/responses";
+      const tools = client === "chat"
+        ? [lookupTool]
+        : [{ type: "function", name: "lookup", parameters: { type: "object", properties: {} } }];
+      const base = client === "chat"
+        ? { model: "fidelity-messages", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }
+        : { model: "fidelity-messages", max_output_tokens: 16, input: "hi" };
+      const named = client === "chat"
+        ? { type: "function", function: { name: "lookup" } }
+        : { type: "function", name: "lookup" };
+      const cases = [
+        ...parallelCases,
+        { name: "named function", toolChoice: named, expected: { type: "tool", name: "lookup", disable_parallel_tool_use: true } }
+      ];
+      for (const strict of [false, true]) {
+        await setProtocolShim({ rejectLossyRequests: strict });
+        for (const item of cases) {
+          const label = `${client} strict=${strict} ${item.name}`;
+          const { result, upstream } = await capture(ctx, upstreamCalls, path, {
+            ...base, tools, parallel_tool_calls: false,
+            ...(item.toolChoice === undefined ? {} : { tool_choice: item.toolChoice })
+          }, "fidelity-messages-deployment");
+          assert.equal(result.status, 200, `${label}: ${result.text}`);
+          assert.deepEqual(upstream.body.tool_choice, item.expected, label);
+          assert.equal("parallel_tool_calls" in upstream.body, false, label);
+        }
+      }
+    });
+  });
+
+  test(`${client} parallel_tool_calls counterexamples add no Messages tool_choice`, async () => {
+    await withFidelityContext(async ({ ctx, setUpstream, upstreamCalls }) => {
+      setUpstream(completedFor);
+      const path = client === "chat" ? "/v1/chat/completions" : "/v1/responses";
+      const tools = client === "chat"
+        ? [lookupTool]
+        : [{ type: "function", name: "lookup", parameters: { type: "object", properties: {} } }];
+      const base = client === "chat"
+        ? { model: "fidelity-messages", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }
+        : { model: "fidelity-messages", max_output_tokens: 16, input: "hi" };
+      for (const [label, extra] of [
+        ["parallel allowed", { tools, parallel_tool_calls: true }],
+        ["parallel unset", { tools }],
+        ["no tools", { parallel_tool_calls: false }]
+      ]) {
+        const { result, upstream } = await capture(ctx, upstreamCalls, path, { ...base, ...extra }, "fidelity-messages-deployment");
+        assert.equal(result.status, 200, `${label}: ${result.text}`);
+        assert.equal("tool_choice" in upstream.body, false, label);
+        assert.equal("parallel_tool_calls" in upstream.body, false, label);
+      }
+    });
+  });
+}
+
+test("Chat and Messages function tools default to strict=false on the Responses upstream", async () => {
+  await withFidelityContext(async ({ ctx, setUpstream, upstreamCalls }) => {
+    setUpstream(completedFor);
+    const schema = { type: "object", properties: { city: { type: "string" } } };
+    const chat = await capture(ctx, upstreamCalls, "/v1/chat/completions", {
+      model: "fidelity-responses",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { type: "function", function: { name: "implicit", parameters: schema } },
+        { type: "function", function: { name: "explicit_true", parameters: schema, strict: true } },
+        { type: "function", function: { name: "explicit_false", parameters: schema, strict: false } }
+      ]
+    }, "fidelity-responses-deployment");
+    assert.equal(chat.result.status, 200, chat.result.text);
+    assert.deepEqual(chat.upstream.body.tools.map((tool) => [tool.name, tool.strict]), [
+      ["implicit", false], ["explicit_true", true], ["explicit_false", false]
+    ]);
+
+    const messages = await capture(ctx, upstreamCalls, "/v1/messages", {
+      model: "fidelity-responses",
+      max_tokens: 16,
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { name: "implicit", input_schema: schema },
+        { name: "explicit_true", input_schema: schema, strict: true }
+      ]
+    }, "fidelity-responses-deployment");
+    assert.equal(messages.result.status, 200, messages.result.text);
+    assert.deepEqual(messages.upstream.body.tools.map((tool) => [tool.name, tool.strict]), [
+      ["implicit", false], ["explicit_true", true]
+    ]);
+
+    const native = await capture(ctx, upstreamCalls, "/v1/responses", {
+      model: "fidelity-responses",
+      input: "hi",
+      tools: [{ type: "function", name: "native", parameters: schema }]
+    }, "fidelity-responses-deployment");
+    assert.equal(native.result.status, 200, native.result.text);
+    assert.equal("strict" in native.upstream.body.tools[0], false, "native Responses tools must stay untouched");
+  });
+});
+
+test("Chat top_p reaches the Responses upstream while unsupported stop stays a Chat-to-Responses boundary", async () => {
+  await withFidelityContext(async ({ ctx, setUpstream, setProtocolShim, upstreamCalls }) => {
+    setUpstream(completedFor);
+    for (const strict of [false, true]) {
+      await setProtocolShim({ rejectLossyRequests: strict });
+      for (const stream of [false, true]) {
+        const label = `strict=${strict} stream=${stream}`;
+        const { result, upstream } = await capture(ctx, upstreamCalls, "/v1/chat/completions", {
+          model: "fidelity-responses", stream, top_p: 0.5, temperature: 0.2, messages: [{ role: "user", content: "hi" }]
+        }, "fidelity-responses-deployment");
+        assert.equal(result.status, 200, `${label}: ${result.text}`);
+        assert.ok(upstream.url.endsWith("/responses"), upstream.url);
+        assert.equal(upstream.body.top_p, 0.5, label);
+        assert.equal(upstream.body.temperature, 0.2, label);
+      }
+    }
+
+    const lossy = await capture(ctx, upstreamCalls, "/v1/chat/completions", {
+      model: "fidelity-responses", stop: "END", messages: [{ role: "user", content: "hi" }]
+    }, "fidelity-responses-deployment");
+    assert.equal(lossy.result.status, 400, lossy.result.text);
+    assert.equal(lossy.upstream, undefined, "proxy preflight rejection must not reach the upstream");
+
+    await setProtocolShim({ rejectLossyRequests: false });
+    const bestEffort = await capture(ctx, upstreamCalls, "/v1/chat/completions", {
+      model: "fidelity-responses", stop: "END", top_p: 0.5, messages: [{ role: "user", content: "hi" }]
+    }, "fidelity-responses-deployment");
+    assert.equal(bestEffort.result.status, 200, bestEffort.result.text);
+    assert.equal(bestEffort.upstream.body.top_p, 0.5);
+    assert.equal("stop" in bestEffort.upstream.body, false);
+  });
+});

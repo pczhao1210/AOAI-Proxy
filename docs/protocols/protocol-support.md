@@ -86,7 +86,10 @@
 ### 2.4 当前已知边界
 
 - 请求发往上游时会把公开模型 ID 替换为目标部署名；成功 JSON 与 SSE 响应会把 `model`、`response.model` 或 `message.model` 恢复为公开模型 ID，上游模型名只用于日志、usage 与计价观测。
-- Chat 转 Messages 时，`stop` 映射为 `stop_sequences`，`top_p` 与 `top_k` 保留为同名控制字段；Messages 转 Chat 时执行反向 stop 映射。
+- Chat 转 Messages 时，`stop` 映射为 `stop_sequences`（单个字符串规范化为单元素数组），`top_p` 与 `top_k` 保留为同名控制字段；Messages 转 Chat 时执行反向 stop 映射。Responses 请求中的 `stop` 扩展字段转 Messages 时同样规范化为数组。
+- Chat 的 `parallel_tool_calls: false` 与 Responses 的 `parallel_tool_calls: false` 转 Messages 时映射为 `tool_choice.disable_parallel_tool_use: true`：未显式提供 `tool_choice` 且存在工具时补 `{ "type": "auto" }`；`tool_choice` 为 `none` 或没有工具时不生成；`true` 为 Messages 默认行为，不转发。`parallel_tool_calls` 本身不会出现在 Messages 请求体中。Messages 转 Chat 时 `disable_parallel_tool_use` 仍按有损字段处理。
+- Chat 转 Responses 时保留 `top_p`；`stop`、`top_k` 等 Responses 无对应字段的控制项仍按有损策略处理。
+- Chat 与 Messages function tool 默认非严格；转 Responses 时，未显式提供 `strict` 的工具会写入 `strict: false`，避免省略字段触发 Responses 的严格 schema 归一化。显式布尔值原样保留；原生 Responses 请求不受影响。
 - Messages 的 `stop_sequences` 转 Responses 时映射为 `stop`。它是目标上游扩展兼容字段，不应被解释为所有 Responses 服务都原生支持；最终能力由真实上游判断。
 - Responses 转 Chat 时，`service_tier`、`verbosity`、`top_k` 等字段当前会作为顶层扩展字段继续传递；这不代表标准 Chat 语义与其等价，最终是否接受由字段策略和上游决定。
 - Responses 严格流终止是协议不变量：所有 Responses 源流都必须出现 `response.completed` 或 `response.incomplete`，不受目录开关或 User-Agent 影响。
@@ -603,8 +606,9 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 | assistant tool call | `tool_use` block |
 | tool message | `tool_result` block |
 | `max_tokens` / `max_completion_tokens` | `max_tokens` |
-| `stop` | `stop_sequences` |
+| `stop` | `stop_sequences`（字符串规范化为数组） |
 | `top_p` / `top_k` | 同名 Messages 控制字段 |
+| `parallel_tool_calls: false` | `tool_choice.disable_parallel_tool_use: true` |
 
 #### 必须拒绝的内容
 
@@ -613,7 +617,7 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 - audio、refusal；
 - 只有 `reasoning_effort` 可按目标 Messages profile 转成 effort 并启用 thinking；其他 reasoning 扩展拒绝；
 - 多 choice、best-of、seed、logprobs 和采样惩罚；
-- Chat `parallel_tool_calls`；
+- 非布尔的 `parallel_tool_calls`；
 - legacy `functions` / `function_call`；
 - 非 function tool；
 - 带结构化 metadata 的文本；
@@ -698,8 +702,8 @@ Responses 与 Messages 的转换通过双方都能投影到的基础消息与 fu
 - function tool；
 - function call 和 function call output；
 - 输出 token 上限；
-- `stop` 到 `stop_sequences`；
-- `reasoning.effort` 到 Catalog 声明的 Messages effort/thinking 控制；
+- `stop` 到 `stop_sequences`（字符串规范化为数组）；
+- `parallel_tool_calls: false` 到 `tool_choice.disable_parallel_tool_use`；
 - `include: ["reasoning.encrypted_content"]` 对应的 thinking signature 响应保留；
 - 基础 tool choice 交集。
 
@@ -845,7 +849,7 @@ Messages 的 `stop_sequences` 会作为 Responses `stop` 扩展字段保留并�
 只有存在有效工具时才保留 `tool_choice`、`parallel_tool_calls` 等控制项。不同协议的 tool choice 并非全等：
 
 - `auto`、`none`、强制某个普通 function 通常可映射；
-- Anthropic 的 `disable_parallel_tool_use` 没有稳定的跨协议等价；
+- Anthropic 的 `disable_parallel_tool_use` 与 `parallel_tool_calls: false` 在 Messages ↔ Responses、Chat/Responses → Messages 方向有明确映射（见 2.4）；Messages → Chat 方向没有稳定等价，仍按有损字段处理；
 - thinking 开启时强制 `any` 或指定工具，某些 Foundry Claude 模型会拒绝，可规范化为 `auto`；
 - custom、server、computer、MCP 和 shell tool 必须留在原生协议路径。
 

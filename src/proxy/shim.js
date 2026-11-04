@@ -913,7 +913,7 @@ function validateChatPayload(payload, context) {
       "presence_penalty",
       "seed",
       "top_logprobs",
-      ...(context.targetProtocol === "messages" ? [] : ["stop", "top_k", "top_p"])
+      ...(context.targetProtocol === "messages" ? [] : ["stop", "top_k"])
     ];
     for (const field of droppedControls) {
       const value = payload?.[field];
@@ -974,12 +974,12 @@ function validateChatPayload(payload, context) {
         reason: "non-text Chat modalities cannot be preserved"
       });
     }
-    if (context.targetProtocol === "messages" && payload?.parallel_tool_calls != null) {
+    if (context.targetProtocol === "messages" && payload?.parallel_tool_calls != null && typeof payload.parallel_tool_calls !== "boolean") {
       return createShimCompatibilityIssue({
         ...context,
         path: "parallel_tool_calls",
         type: "parallel_tool_calls",
-        reason: "Chat parallel tool-call policy cannot be preserved by Anthropic Messages"
+        reason: "Chat parallel tool-call policy must be a boolean to map to Anthropic disable_parallel_tool_use"
       });
     }
   } else {
@@ -1579,6 +1579,11 @@ function extractInstructionTextFromMessages(messages) {
   return instructions.join("\n\n");
 }
 
+// Chat and Messages function tools are non-strict by default, whereas an omitted Responses `strict` requests strict normalization.
+function explicitStrictForResponses(strict) {
+  return typeof strict === "boolean" ? strict : false;
+}
+
 function normalizeToolsForResponses(tools) {
   if (!Array.isArray(tools)) return undefined;
   const out = [];
@@ -1592,7 +1597,7 @@ function normalizeToolsForResponses(tools) {
         name,
         description: tool.function.description,
         parameters: tool.function.parameters,
-        strict: tool.function.strict
+        strict: explicitStrictForResponses(tool.function.strict)
       });
       continue;
     }
@@ -1602,7 +1607,7 @@ function normalizeToolsForResponses(tools) {
         name: tool.name,
         description: tool.description,
         parameters: tool.parameters,
-        strict: tool.strict
+        strict: explicitStrictForResponses(tool.strict)
       });
       continue;
     }
@@ -1620,7 +1625,8 @@ function normalizeFunctionsForResponses(functions) {
       type: "function",
       name: fn.name,
       description: fn.description,
-      parameters: fn.parameters
+      parameters: fn.parameters,
+      strict: false
     });
   }
   return out.length ? out : undefined;
@@ -2113,7 +2119,8 @@ function normalizeAnthropicToolsForResponses(tools) {
       type: "function",
       name: tool.name,
       description: tool.description,
-      parameters: tool.input_schema ?? { type: "object", properties: {} }
+      parameters: tool.input_schema ?? { type: "object", properties: {} },
+      strict: explicitStrictForResponses(tool.strict)
     }));
   return normalized.length ? normalized : undefined;
 }
@@ -2365,6 +2372,17 @@ function normalizeResponsesToolChoiceForAnthropic(toolChoice) {
   return undefined;
 }
 
+function normalizeStopSequencesForAnthropic(stop) {
+  return typeof stop === "string" ? [stop] : stop;
+}
+
+// Messages carries the parallel policy inside tool_choice; it is only meaningful with tools and an active choice.
+function applyParallelToolPolicyForAnthropic(out, parallelToolCalls) {
+  if (parallelToolCalls !== false || !Array.isArray(out.tools) || out.tools.length === 0) return;
+  if (out.tool_choice?.type === "none") return;
+  out.tool_choice = { ...(out.tool_choice || { type: "auto" }), disable_parallel_tool_use: true };
+}
+
 export function messagesToChatRequest(body, deployment, descriptor) {
   const out = { ...body, model: deployment };
   out.messages = buildChatMessagesFromAnthropic(body);
@@ -2404,13 +2422,15 @@ export function chatToMessagesRequest(body, deployment, descriptor) {
   const toolChoice = normalizeChatToolChoiceForAnthropic(body?.tool_choice);
   if (toolChoice !== undefined) out.tool_choice = toolChoice;
   else delete out.tool_choice;
+  applyParallelToolPolicyForAnthropic(out, body?.parallel_tool_calls);
 
   out.max_tokens = body?.max_tokens ?? body?.max_completion_tokens ?? body?.max_output_tokens ?? 4096;
-  if (body?.stop != null) out.stop_sequences = body.stop;
+  if (body?.stop != null) out.stop_sequences = normalizeStopSequencesForAnthropic(body.stop);
   if (transferReasoning(out, body, "chat/completions", "messages", descriptor)) {
     ensureMessagesThinking(out, descriptor);
   }
 
+  delete out.parallel_tool_calls;
   delete out.max_completion_tokens;
   delete out.max_output_tokens;
   delete out.stop;
@@ -2491,12 +2511,10 @@ export function responsesToMessagesRequest(body, deployment, descriptor) {
   const toolChoice = normalizeResponsesToolChoiceForAnthropic(body?.tool_choice);
   if (toolChoice !== undefined) out.tool_choice = toolChoice;
   else delete out.tool_choice;
-  if (body?.parallel_tool_calls === false && out.tool_choice && typeof out.tool_choice === "object") {
-    out.tool_choice.disable_parallel_tool_use = true;
-  }
+  applyParallelToolPolicyForAnthropic(out, body?.parallel_tool_calls);
 
   out.max_tokens = body?.max_output_tokens ?? body?.max_tokens ?? 4096;
-  if (body?.stop != null) out.stop_sequences = body.stop;
+  if (body?.stop != null) out.stop_sequences = normalizeStopSequencesForAnthropic(body.stop);
   const effort = transferReasoning(out, body, "responses", "messages", descriptor);
   if (effort) ensureMessagesThinking(out, descriptor);
   if (
@@ -2603,7 +2621,6 @@ export function chatToResponsesRequest(body, deployment, descriptor) {
   delete out.stream_options;
   delete out.serviceTier;
   delete out.seed;
-  delete out.top_p;
   delete out.top_k;
   delete out.logprobs;
   delete out.top_logprobs;

@@ -880,13 +880,6 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     {
       sourceProtocol: "chat/completions",
       targetProtocol: "responses",
-      payload: { top_p: 0.5, messages: [{ role: "user", content: "hello" }] },
-      path: "top_p",
-      type: "top_p"
-    },
-    {
-      sourceProtocol: "chat/completions",
-      targetProtocol: "responses",
       payload: { stream_options: { include_usage: true, unknown: true }, messages: [{ role: "user", content: "hello" }] },
       path: "stream_options.unknown",
       type: "unknown"
@@ -894,7 +887,7 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     {
       sourceProtocol: "chat/completions",
       targetProtocol: "messages",
-      payload: { parallel_tool_calls: false, messages: [{ role: "user", content: "hello" }] },
+      payload: { parallel_tool_calls: "false", messages: [{ role: "user", content: "hello" }] },
       path: "parallel_tool_calls",
       type: "parallel_tool_calls"
     },
@@ -1107,6 +1100,21 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
   assert.deepEqual(convertedMessagesControls.stop_sequences, ["END"]);
   assert.equal(convertedMessagesControls.top_k, 20);
   assert.equal(convertedMessagesControls.top_p, 0.5);
+  const compatibleResponsesControls = { top_p: 0.5, messages: [{ role: "user", content: "hello" }] };
+  assert.equal(getProtocolShimCompatibilityIssue(compatibleResponsesControls, {
+    sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  }), null);
+  assert.equal(chatToResponsesRequest(compatibleResponsesControls, "gpt-deployment").top_p, 0.5);
+  for (const parallel of [true, false]) {
+    assert.equal(getProtocolShimCompatibilityIssue({
+      parallel_tool_calls: parallel,
+      messages: [{ role: "user", content: "hello" }]
+    }, {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "messages"
+    }), null);
+  }
   assert.equal(getProtocolShimCompatibilityIssue({
     stop_reason: "end_turn",
     content: [{ type: "redacted_thinking", data: "opaque" }]
