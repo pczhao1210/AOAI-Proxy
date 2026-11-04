@@ -170,11 +170,15 @@ ACI 原生 Azure Files 挂载目前仍依赖 Shared Key。托管身份用于应�
 
 非回环监听会采用 fail-closed：管理认证关闭或仍存在已知占位凭据时拒绝启动。`ALLOW_INSECURE_PUBLIC_ADMIN=true` 仅用于显式兼容，不建议用于正常部署。
 
-依赖维护说明（2026-10-26）：Azure Identity/MSAL 更新已明确暂缓。当前锁定的
-`@azure/identity` 4.13.1 使用 MSAL Node 5.2.2，受到
-[GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5) 公告影响。
-Identity 4.14.0 仍依赖受影响的 MSAL 6.x；已修复的 MSAL 7.1+ 超出其声明范围。
-未经批准和鉴权验证，不要强制跨版本覆盖或降级。审计门槛保持启用，CI 审计步骤仍会因这条暂缓处理的依赖链而失败。
+依赖维护说明（2026-11-04）：`@azure/identity` 4.14.1 声明依赖 `@azure/msal-node` `^7.1.0`，
+`overrides` 将 MSAL Node 固定为已修复
+[GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5) 的 7.1.1；
+修改该固定版本前须完成鉴权验证。`@fastify/static` 仍声明 `glob` `^13`，因此 `overrides`
+将 `glob` 提升到 `^14.0.3`（连带 minimatch 11），以修复
+[GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) 和
+[GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)；管理端静态资源路由保持默认
+`wildcard: true`，不会调用 glob。待 `@fastify/static` 接受已修复的 glob 后移除该覆盖。CI 审计门槛
+（`npm audit --audit-level=moderate`）应当通过。
 
 所有可配置布尔开关的默认值、功能、管理页入口、生效方式，以及预留或未接线字段，统一收录在 [Feature Flag 与布尔开关目录](configuration/feature-flags.zh-CN.md)。
 

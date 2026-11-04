@@ -174,13 +174,16 @@ built-in `fetch()`, so updating the npm `undici` package alone does not patch it
 
 Non-loopback listeners fail closed when admin authentication is disabled or known placeholder credentials are active. `ALLOW_INSECURE_PUBLIC_ADMIN=true` is an explicit compatibility escape hatch and is not recommended for normal deployments.
 
-Dependency maintenance note (2026-10-26): the Azure Identity/MSAL update is
-explicitly deferred. The locked `@azure/identity` 4.13.1 uses MSAL Node 5.2.2,
-which is flagged by [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5).
-Identity 4.14.0 still depends on affected MSAL 6.x; the patched MSAL 7.1+ is outside
-its declared range. Do not force an incompatible override or downgrade without
-approval and authentication validation. The audit gate remains enabled and will
-continue to fail for this deferred dependency chain.
+Dependency maintenance note (2026-11-04): `@azure/identity` 4.14.1 declares
+`@azure/msal-node` `^7.1.0`, and the `overrides` entry pins MSAL Node 7.1.1, which
+is patched for [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5).
+Change that pin only with authentication validation. `@fastify/static` still
+declares `glob` `^13`, so `overrides` raises `glob` to `^14.0.3` (with minimatch 11)
+for [GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) and
+[GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249); the
+admin asset route keeps the default `wildcard: true` and does not invoke glob.
+Remove that override once `@fastify/static` accepts a patched glob. The CI audit
+gate (`npm audit --audit-level=moderate`) is expected to pass.
 
 JSON feature flags require literal booleans, not strings such as `"false"` or
 numbers such as `0`. Legacy export/image gates retain their effective AND
