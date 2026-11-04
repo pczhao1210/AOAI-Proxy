@@ -74,3 +74,11 @@ export async function renderAdminComponent(modulePath, props) {
   const { default: Component } = await vite.ssrLoadModule(modulePath);
   return render(React.createElement(Component, props));
 }
+
+export function loadAdminModule(modulePath) {
+  return vite.ssrLoadModule(modulePath);
+}
+
+export function renderElement(element) {
+  return render(element);
+}

@@ -1,5 +1,5 @@
-import { Fragment, useState } from "react";
 import { AccordionSection, Field, Section, StatCard } from "./ui.jsx";
+import LogTable from "./LogTable.jsx";
 
 export default function OpsTab({
   config,
@@ -56,7 +56,6 @@ export default function OpsTab({
   getValueByPath,
   t
 }) {
-  const [expandedLogRequest, setExpandedLogRequest] = useState("");
   const levelOptions = [
     { key: "fatal", label: t("logs.level.fatal", "Fatal") },
     { key: "error", label: t("logs.level.error", "Error") },
@@ -67,7 +66,8 @@ export default function OpsTab({
   ];
   const memoryBufferSize = Math.max(1, Number(loggingRuntime?.memoryBufferSize) || 100);
   const requestView = logFilters.view !== "events" && logFilters.view !== "access";
-  const logsMatchView = logs.view === (requestView ? "requests" : logFilters.view);
+  const logView = requestView ? "requests" : logFilters.view;
+  const logsMatchView = logs.view === logView;
   const logItems = logsMatchView ? logs.items : [];
   const logTotal = logsMatchView ? logs.total : 0;
   const emptyLogsMessage = logsLoading
@@ -359,148 +359,20 @@ export default function OpsTab({
           </div>
         </div>
 
-        {requestView ? (
-          <div className="log-table-scroll">
-            <table className="log-request-table">
-              <thead>
-                <tr>
-                  <th>{t("logs.meta.time", "Time")}</th>
-                  <th>{t("logs.meta.outcome", "Outcome")}</th>
-                  <th>{t("logs.meta.model", "Model / Request")}</th>
-                  <th>{t("logs.meta.route", "Route")}</th>
-                  <th>{t("logs.meta.status", "Status")}</th>
-                  <th>{t("logs.meta.latency", "Latency")}</th>
-                  <th>{t("logs.meta.usageCost", "Tokens / Cost")}</th>
-                  <th>{t("logs.meta.error", "Error")}</th>
-                  <th aria-label={t("logs.details", "Details")} />
-                </tr>
-              </thead>
-              <tbody>
-                {logItems.length ? logItems.map((entry) => {
-                  const isExpanded = expandedLogRequest === entry.id;
-                  const outcome = entry.outcome || "unknown";
-                  return (
-                    <Fragment key={entry.id}>
-                      <tr key={entry.id}>
-                        <td title={entry.ts || ""}>{formatDateTime(entry.ts)}</td>
-                        <td><span className={`badge ${outcome === "failed" ? "level-error" : outcome === "warning" ? "level-warn" : outcome === "success" ? "level-info" : ""}`}>
-                          {t(`logs.outcome.${outcome}`, outcome === "unknown" ? "Pending / Unknown" : outcome)}
-                        </span></td>
-                        <td>
-                          <strong>{entry.modelId || "-"}</strong>
-                          <button type="button" className="log-request-id" onClick={() => onApplyRequestIdFilter(entry.requestId)}>{entry.requestId}</button>
-                        </td>
-                        <td>{entry.backendRouteKey && entry.backendRouteKey !== entry.routeKey
-                          ? `${entry.routeKey || "-"} → ${entry.backendRouteKey}`
-                          : entry.routeKey || entry.url || "-"}</td>
-                        <td>{entry.status ?? "-"}</td>
-                        <td>{entry.latencyMs == null ? "-" : `${entry.latencyMs} ms`}</td>
-                        <td>{entry.totalTokens == null ? "—" : Number(entry.totalTokens).toLocaleString()}<br />
-                          {entry.estimatedCostAmount == null ? "—" : `${Number(entry.estimatedCostAmount).toFixed(4)} ${entry.currency || ""}`}</td>
-                        <td className={entry.outcome === "failed" ? "log-request-error" : ""}>
-                          {entry.source ? <><span className="badge">{getLogSourceLabel(entry.source)}</span><br /></> : null}
-                          {entry.errorCode ? <><strong>{entry.errorCode}</strong><br /></> : null}
-                          {entry.retryCount > 0 ? <><span className="badge">{t("logs.retryCount", "{count} retries", { count: entry.retryCount })}</span><br /></> : null}
-                          {entry.message || "-"}
-                        </td>
-                        <td>
-                          <button type="button" className="ghost" aria-expanded={isExpanded}
-                            onClick={() => setExpandedLogRequest(isExpanded ? "" : entry.id)}>
-                            {isExpanded ? t("logs.closeDetails", "Close") : t("logs.details", "Details")}
-                          </button>
-                          <button type="button" className="ghost" onClick={() => onCopyLogSummary(entry)}>{t("logs.copySummary", "Copy Summary")}</button>
-                        </td>
-                      </tr>
-                      {isExpanded ? (
-                        <tr key={`${entry.id}-details`} className="log-request-expanded">
-                          <td colSpan={9}>
-                            <div className="log-request-detail">
-                              <div className="log-request-detail-summary">
-                                <strong>{entry.failureReason || entry.message || t("logs.failureReasonMissing", "Failure reason not recorded.")}</strong>
-                                {entry.method || entry.url ? <span>{entry.method} {entry.url}</span> : null}
-                                {entry.requestId ? <span>{t("logs.meta.requestId", "Request ID")}: {entry.requestId}</span> : null}
-                              </div>
-                              <h4>{t("logs.timeline", "Request timeline ({count} events)", { count: entry.events.length })}</h4>
-                              <div className="log-timeline">
-                                {entry.events.map((event) => (
-                                  <details className="log-timeline-event" key={event.id}>
-                                    <summary>
-                                      <span className={`badge level-${event.level || "info"}`}>{getLogEventLabel(event.event) || event.level}</span>
-                                      <span>{getLogMessage(event)}</span>
-                                      <time>{formatDateTime(event.ts)}</time>
-                                    </summary>
-                                    <pre>{JSON.stringify({
-                                      source: event.source,
-                                      status: event.status,
-                                      errorCode: event.errorCode,
-                                      failureReason: event.failureReason,
-                                      ...getLogDetails(event)
-                                    }, null, 2)}</pre>
-                                  </details>
-                                ))}
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : null}
-                    </Fragment>
-                  );
-                }) : <tr><td colSpan={9}><div className="empty-state">{emptyLogsMessage}</div></td></tr>}
-              </tbody>
-            </table>
-          </div>
-        ) : <div className="log-list">
-          {logItems.length ? logItems.map((entry, index) => {
-            const details = getLogDetails(entry);
-            const isExpanded = entry.level === "error" || entry.level === "fatal";
-            return (
-              <article key={entry.id ?? `${entry.ts || "log"}-${entry.event || "event"}-${index}`} className={`log-entry level-${entry.level || "info"}`}>
-                <div className="log-header-react">
-                  <div className="badge-row">
-                    <span className={`badge level-${entry.level || "info"}`}>{t(`logs.level.${entry.level || "info"}`, entry.level || "info")}</span>
-                    {entry.occurrences > 1 ? <span className="badge">{t("logs.occurrences", "{count} occurrences", { count: entry.occurrences })}</span> : null}
-                    {entry.event ? <span className="badge">{getLogEventLabel(entry.event)}</span> : null}
-                    {entry.source ? <span className="badge">{getLogSourceLabel(entry.source)}</span> : null}
-                    {entry.status != null ? <span className="badge">{t("logs.meta.status", "Status")} {entry.status}</span> : null}
-                    {entry.errorCode ? <span className="badge">{entry.errorCode}</span> : null}
-                  </div>
-                  <div className="muted" title={entry.ts || ""}>{formatDateTime(entry.ts)}</div>
-                </div>
-                {entry.event ? <div className="log-topline-react"><span className="event-label-react">{getLogEventLabel(entry.event)}</span></div> : null}
-                <div className="log-message">{getLogMessage(entry)}</div>
-                <div className="log-meta-react">
-                  {entry.requestId ? <span>{t("logs.meta.requestId", "Request ID")}: {entry.requestId}</span> : null}
-                  {entry.azureRequestId ? <span>{t("logs.meta.azureRequestId", "Azure Request ID")}: {entry.azureRequestId}</span> : null}
-                  {entry.modelId ? <span>{t("logs.meta.model", "Model")}: {entry.modelId}</span> : null}
-                  {entry.routeKey || entry.backendRouteKey ? <span>{t("logs.meta.route", "Route")}: {entry.backendRouteKey && entry.backendRouteKey !== entry.routeKey ? `${entry.routeKey || "-"} -> ${entry.backendRouteKey}` : entry.routeKey || entry.backendRouteKey}</span> : null}
-                  {entry.latencyMs != null ? <span>{t("logs.meta.latency", "Latency")}: {entry.latencyMs} ms</span> : null}
-                </div>
-                <div className="toolbar" style={{ marginTop: "0.85rem" }}>
-                  {entry.requestId ? <button type="button" className="ghost" onClick={() => onApplyRequestIdFilter(entry.requestId)}>{t("logs.filterByRequest", "Filter By Request")}</button> : null}
-                  <button type="button" className="ghost" onClick={() => onCopyLogSummary(entry)}>{t("logs.copySummary", "Copy Summary")}</button>
-                </div>
-                {Object.keys(details).length || entry.events?.length > 1 ? (
-                  <details className="log-details-react" open={isExpanded}>
-                    <summary>{t("logs.details", "Details")}</summary>
-                    <pre>{JSON.stringify(entry.events
-                      ? entry.events.map((event) => ({
-                        ts: event.ts,
-                        event: event.event,
-                        requestId: event.requestId,
-                        status: event.status,
-                        errorCode: event.errorCode,
-                        source: event.source,
-                        failureReason: event.failureReason,
-                        message: getLogMessage(event),
-                        ...getLogDetails(event)
-                      }))
-                      : details, null, 2)}</pre>
-                  </details>
-                ) : null}
-              </article>
-            );
-          }) : <div className="empty-state">{emptyLogsMessage}</div>}
-        </div>}
+        <LogTable
+          key={logView}
+          view={logView}
+          items={logItems}
+          emptyMessage={emptyLogsMessage}
+          t={t}
+          formatDateTime={formatDateTime}
+          getLogDetails={getLogDetails}
+          getLogMessage={getLogMessage}
+          getLogEventLabel={getLogEventLabel}
+          getLogSourceLabel={getLogSourceLabel}
+          onApplyRequestIdFilter={onApplyRequestIdFilter}
+          onCopyLogSummary={onCopyLogSummary}
+        />
       </AccordionSection>
 
       <AccordionSection
