@@ -210,6 +210,8 @@ export const DEFAULT_MODEL_TEMPLATE = {
 const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "messages", "stream", "images", "image"]);
 
 export const DEFAULT_LOG_FILTERS = {
+  view: "requests",
+  outcome: "all",
   level: ["fatal", "error", "warn", "info"],
   event: "",
   modelId: "",
@@ -598,8 +600,14 @@ export function buildLogSummaryText(entry, t, formatDateTimeFn = formatDateTime)
     entry?.requestId ? `${t("logs.meta.requestId", "Request ID")}: ${entry.requestId}` : "",
     entry?.azureRequestId ? `${t("logs.meta.azureRequestId", "Azure Request ID")}: ${entry.azureRequestId}` : "",
     entry?.modelId ? `${t("logs.meta.model", "Model")}: ${entry.modelId}` : "",
+    entry?.routeKey || entry?.backendRouteKey
+      ? `${t("logs.meta.route", "Route")}: ${entry.backendRouteKey && entry.backendRouteKey !== entry.routeKey ? `${entry.routeKey || "-"} -> ${entry.backendRouteKey}` : entry.routeKey || entry.backendRouteKey}`
+      : "",
+    entry?.method || entry?.url ? `${entry.method || ""} ${entry.url || ""}`.trim() : "",
     entry?.errorCode ? `${t("logs.meta.errorCode", "Error Code")}: ${entry.errorCode}` : "",
-    entry?.status != null ? `${t("logs.meta.status", "Status")}: ${entry.status}` : ""
+    entry?.status != null ? `${t("logs.meta.status", "Status")}: ${entry.status}` : "",
+    entry?.latencyMs != null ? `${t("logs.meta.latency", "Latency")}: ${entry.latencyMs} ms` : "",
+    entry?.retryCount > 0 ? `${t("logs.retryCount", "{count} retries", { count: entry.retryCount })}` : ""
   ].filter(Boolean);
   return lines.join("\n");
 }

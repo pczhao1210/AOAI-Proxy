@@ -1,3 +1,4 @@
+import { Fragment, useState } from "react";
 import { AccordionSection, Field, Section, StatCard } from "./ui.jsx";
 
 export default function OpsTab({
@@ -55,6 +56,7 @@ export default function OpsTab({
   getValueByPath,
   t
 }) {
+  const [expandedLogRequest, setExpandedLogRequest] = useState("");
   const levelOptions = [
     { key: "fatal", label: t("logs.level.fatal", "Fatal") },
     { key: "error", label: t("logs.level.error", "Error") },
@@ -64,6 +66,15 @@ export default function OpsTab({
     { key: "trace", label: t("logs.level.trace", "Trace") }
   ];
   const memoryBufferSize = Math.max(1, Number(loggingRuntime?.memoryBufferSize) || 100);
+  const requestView = logFilters.view !== "events" && logFilters.view !== "access";
+  const logsMatchView = logs.view === (requestView ? "requests" : logFilters.view);
+  const logItems = logsMatchView ? logs.items : [];
+  const logTotal = logsMatchView ? logs.total : 0;
+  const emptyLogsMessage = logsLoading
+    ? t("ops.loadingLogs", "Loading...")
+    : !logsMatchView
+      ? t("logs.viewNotLoaded", "This log view has not loaded. Refresh to retry.")
+      : t("ops.noLogs", "No logs yet. Adjust filters and refresh.");
   const advancedFiltersOpen = Boolean(logFilters.event || logFilters.modelId || logFilters.requestId || logFilters.keyword || Number(logFilters.limit || 100) !== 100);
   const pricingRepoLabel = pricingLibraryStatus?.githubOwner && pricingLibraryStatus?.githubRepo
     ? `${pricingLibraryStatus.githubOwner}/${pricingLibraryStatus.githubRepo}`
@@ -109,7 +120,7 @@ export default function OpsTab({
           />
           <StatCard
             label={t("ops.logsTitle", "Runtime Logs")}
-            value={logs.total || 0}
+            value={logTotal || 0}
             note={`${t("logs.level.info", "Info")}/${t("logs.level.warn", "Warn")}/${t("logs.level.error", "Error")}: ${activeLevelSummary}`}
           />
           <StatCard
@@ -275,7 +286,31 @@ export default function OpsTab({
         </div>
         <div className="log-controls-react">
           <div className="toolbar">
-            {levelOptions.map((item) => (
+            <div className="log-view-tabs" role="tablist" aria-label={t("logs.viewLabel", "Log view")}>
+              <button type="button" role="tab" aria-selected={requestView} className={requestView ? "selected" : "ghost"}
+                onClick={() => setLogFilters((current) => ({ ...current, view: "requests" }))}>
+                {t("logs.view.requests", "Requests")}
+              </button>
+              <button type="button" role="tab" aria-selected={logFilters.view === "events"} className={logFilters.view === "events" ? "selected" : "ghost"}
+                onClick={() => setLogFilters((current) => ({ ...current, view: "events" }))}>
+                {t("logs.view.events", "System & Cost Events")}
+              </button>
+              <button type="button" role="tab" aria-selected={logFilters.view === "access"} className={logFilters.view === "access" ? "selected" : "ghost"}
+                onClick={() => setLogFilters((current) => ({ ...current, view: "access" }))}>
+                {t("logs.view.access", "Access & Auth")}
+              </button>
+            </div>
+            {requestView ? (
+              <div className="log-view-tabs" role="group" aria-label={t("logs.outcomeLabel", "Request outcome")}>
+                {["all", "failed", "warning", "success", "unknown"].map((outcome) => (
+                  <button type="button" key={outcome} className={logFilters.outcome === outcome ? "selected" : "ghost"}
+                    aria-pressed={logFilters.outcome === outcome}
+                    onClick={() => setLogFilters((current) => ({ ...current, outcome }))}>
+                    {t(`logs.outcome.${outcome}`, outcome === "unknown" ? "Pending / Unknown" : outcome)}
+                  </button>
+                ))}
+              </div>
+            ) : levelOptions.map((item) => (
               <label key={item.key} className="inline">
                 <input type="checkbox" checked={logFilters.level.includes(item.key)} onChange={() => toggleLogLevel(item.key)} />
                 <span>{item.label}</span>
@@ -285,10 +320,12 @@ export default function OpsTab({
               <input type="checkbox" checked={logFilters.autoRefresh} onChange={(event) => setLogFilters((current) => ({ ...current, autoRefresh: event.target.checked }))} />
               <span>{t("ops.autoRefresh", "Auto Refresh")}</span>
             </label>
-            <label className="inline">
-              <input type="checkbox" checked={logFilters.hideAuthRejected !== false} onChange={(event) => setLogFilters((current) => ({ ...current, hideAuthRejected: event.target.checked }))} />
-              <span>{t("ops.hideAuthRejected", "Hide auth rejections")}</span>
-            </label>
+            {logFilters.view !== "events" ? (
+              <label className="inline">
+                <input type="checkbox" checked={logFilters.hideAuthRejected !== false} onChange={(event) => setLogFilters((current) => ({ ...current, hideAuthRejected: event.target.checked }))} />
+                <span>{t("ops.hideAuthRejected", "Hide auth rejections")}</span>
+              </label>
+            ) : null}
           </div>
           {loggingRuntime?.includeAuthRejected === false ? (
             <div className="muted">{t("ops.authRejectedSuppressed", "Requests rejected by authentication are not logged ({count} suppressed since start). Enable them in Workspace log settings.", { count: Number(loggingRuntime?.authRejectedSuppressed) || 0 })}</div>
@@ -315,11 +352,105 @@ export default function OpsTab({
             </div>
           </details>
           <div className="muted">{t("field.logBufferSize", "Log Buffer Size")}: {memoryBufferSize}</div>
-          <div className="muted">{t("ops.logCount", "Matched {count} log entries{suffix}.", { count: logs.total || 0, suffix: logFilters.autoRefresh ? t("ops.logAutoRefreshSuffix", ", auto refresh enabled") : "" })}</div>
+          <div className="muted">
+            {t(requestView ? "logs.requestCount" : "ops.logCount", requestView ? "Showing {count} requests from the retained event buffer." : "Matched {count} log entries.", { count: logTotal || 0 })}
+            {" "}{t("logs.retainedEvents", "Retained events: {count}", { count: logs.retainedEvents ?? 0 })}
+            {logFilters.autoRefresh ? t("ops.logAutoRefreshSuffix", ", auto refresh enabled") : ""}
+          </div>
         </div>
 
-        <div className="log-list">
-          {logs.items.length ? logs.items.map((entry, index) => {
+        {requestView ? (
+          <div className="log-table-scroll">
+            <table className="log-request-table">
+              <thead>
+                <tr>
+                  <th>{t("logs.meta.time", "Time")}</th>
+                  <th>{t("logs.meta.outcome", "Outcome")}</th>
+                  <th>{t("logs.meta.model", "Model / Request")}</th>
+                  <th>{t("logs.meta.route", "Route")}</th>
+                  <th>{t("logs.meta.status", "Status")}</th>
+                  <th>{t("logs.meta.latency", "Latency")}</th>
+                  <th>{t("logs.meta.usageCost", "Tokens / Cost")}</th>
+                  <th>{t("logs.meta.error", "Error")}</th>
+                  <th aria-label={t("logs.details", "Details")} />
+                </tr>
+              </thead>
+              <tbody>
+                {logItems.length ? logItems.map((entry) => {
+                  const isExpanded = expandedLogRequest === entry.id;
+                  const outcome = entry.outcome || "unknown";
+                  return (
+                    <Fragment key={entry.id}>
+                      <tr key={entry.id}>
+                        <td title={entry.ts || ""}>{formatDateTime(entry.ts)}</td>
+                        <td><span className={`badge ${outcome === "failed" ? "level-error" : outcome === "warning" ? "level-warn" : outcome === "success" ? "level-info" : ""}`}>
+                          {t(`logs.outcome.${outcome}`, outcome === "unknown" ? "Pending / Unknown" : outcome)}
+                        </span></td>
+                        <td>
+                          <strong>{entry.modelId || "-"}</strong>
+                          <button type="button" className="log-request-id" onClick={() => onApplyRequestIdFilter(entry.requestId)}>{entry.requestId}</button>
+                        </td>
+                        <td>{entry.backendRouteKey && entry.backendRouteKey !== entry.routeKey
+                          ? `${entry.routeKey || "-"} → ${entry.backendRouteKey}`
+                          : entry.routeKey || entry.url || "-"}</td>
+                        <td>{entry.status ?? "-"}</td>
+                        <td>{entry.latencyMs == null ? "-" : `${entry.latencyMs} ms`}</td>
+                        <td>{entry.totalTokens == null ? "—" : Number(entry.totalTokens).toLocaleString()}<br />
+                          {entry.estimatedCostAmount == null ? "—" : `${Number(entry.estimatedCostAmount).toFixed(4)} ${entry.currency || ""}`}</td>
+                        <td className={entry.outcome === "failed" ? "log-request-error" : ""}>
+                          {entry.source ? <><span className="badge">{getLogSourceLabel(entry.source)}</span><br /></> : null}
+                          {entry.errorCode ? <><strong>{entry.errorCode}</strong><br /></> : null}
+                          {entry.retryCount > 0 ? <><span className="badge">{t("logs.retryCount", "{count} retries", { count: entry.retryCount })}</span><br /></> : null}
+                          {entry.message || "-"}
+                        </td>
+                        <td>
+                          <button type="button" className="ghost" aria-expanded={isExpanded}
+                            onClick={() => setExpandedLogRequest(isExpanded ? "" : entry.id)}>
+                            {isExpanded ? t("logs.closeDetails", "Close") : t("logs.details", "Details")}
+                          </button>
+                          <button type="button" className="ghost" onClick={() => onCopyLogSummary(entry)}>{t("logs.copySummary", "Copy Summary")}</button>
+                        </td>
+                      </tr>
+                      {isExpanded ? (
+                        <tr key={`${entry.id}-details`} className="log-request-expanded">
+                          <td colSpan={9}>
+                            <div className="log-request-detail">
+                              <div className="log-request-detail-summary">
+                                <strong>{entry.failureReason || entry.message || t("logs.failureReasonMissing", "Failure reason not recorded.")}</strong>
+                                {entry.method || entry.url ? <span>{entry.method} {entry.url}</span> : null}
+                                {entry.requestId ? <span>{t("logs.meta.requestId", "Request ID")}: {entry.requestId}</span> : null}
+                              </div>
+                              <h4>{t("logs.timeline", "Request timeline ({count} events)", { count: entry.events.length })}</h4>
+                              <div className="log-timeline">
+                                {entry.events.map((event) => (
+                                  <details className="log-timeline-event" key={event.id}>
+                                    <summary>
+                                      <span className={`badge level-${event.level || "info"}`}>{getLogEventLabel(event.event) || event.level}</span>
+                                      <span>{getLogMessage(event)}</span>
+                                      <time>{formatDateTime(event.ts)}</time>
+                                    </summary>
+                                    <pre>{JSON.stringify({
+                                      source: event.source,
+                                      status: event.status,
+                                      errorCode: event.errorCode,
+                                      failureReason: event.failureReason,
+                                      ...getLogDetails(event)
+                                    }, null, 2)}</pre>
+                                  </details>
+                                ))}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                }) : <tr><td colSpan={9}><div className="empty-state">{emptyLogsMessage}</div></td></tr>}
+              </tbody>
+            </table>
+          </div>
+        ) : <div className="log-list">
+          {logItems.length ? logItems.map((entry, index) => {
             const details = getLogDetails(entry);
             const isExpanded = entry.level === "error" || entry.level === "fatal";
             return (
@@ -327,6 +458,7 @@ export default function OpsTab({
                 <div className="log-header-react">
                   <div className="badge-row">
                     <span className={`badge level-${entry.level || "info"}`}>{t(`logs.level.${entry.level || "info"}`, entry.level || "info")}</span>
+                    {entry.occurrences > 1 ? <span className="badge">{t("logs.occurrences", "{count} occurrences", { count: entry.occurrences })}</span> : null}
                     {entry.event ? <span className="badge">{getLogEventLabel(entry.event)}</span> : null}
                     {entry.source ? <span className="badge">{getLogSourceLabel(entry.source)}</span> : null}
                     {entry.status != null ? <span className="badge">{t("logs.meta.status", "Status")} {entry.status}</span> : null}
@@ -347,16 +479,28 @@ export default function OpsTab({
                   {entry.requestId ? <button type="button" className="ghost" onClick={() => onApplyRequestIdFilter(entry.requestId)}>{t("logs.filterByRequest", "Filter By Request")}</button> : null}
                   <button type="button" className="ghost" onClick={() => onCopyLogSummary(entry)}>{t("logs.copySummary", "Copy Summary")}</button>
                 </div>
-                {Object.keys(details).length ? (
+                {Object.keys(details).length || entry.events?.length > 1 ? (
                   <details className="log-details-react" open={isExpanded}>
                     <summary>{t("logs.details", "Details")}</summary>
-                    <pre>{JSON.stringify(details, null, 2)}</pre>
+                    <pre>{JSON.stringify(entry.events
+                      ? entry.events.map((event) => ({
+                        ts: event.ts,
+                        event: event.event,
+                        requestId: event.requestId,
+                        status: event.status,
+                        errorCode: event.errorCode,
+                        source: event.source,
+                        failureReason: event.failureReason,
+                        message: getLogMessage(event),
+                        ...getLogDetails(event)
+                      }))
+                      : details, null, 2)}</pre>
                   </details>
                 ) : null}
               </article>
             );
-          }) : <div className="empty-state">{t("ops.noLogs", "No logs yet. Adjust filters and refresh.")}</div>}
-        </div>
+          }) : <div className="empty-state">{emptyLogsMessage}</div>}
+        </div>}
       </AccordionSection>
 
       <AccordionSection

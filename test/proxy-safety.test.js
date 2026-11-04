@@ -154,6 +154,7 @@ test("request context normalizes correlation IDs and falls back to request ID", 
   });
   assert.deepEqual(complete, {
     requestId: "request-id",
+    requestInstanceId: "generated-id",
     conversationId: "conversation-id",
     sessionId: "session-id"
   });
@@ -168,6 +169,7 @@ test("request context normalizes correlation IDs and falls back to request ID", 
     headers: { "x-session-id": "session-only" }
   }), {
     requestId: "generated-id",
+    requestInstanceId: "generated-id",
     conversationId: "session-only",
     sessionId: "session-only"
   });
@@ -177,12 +179,14 @@ test("request context normalizes correlation IDs and falls back to request ID", 
     headers: { "x-request-id": "   ", "x-correlation-id": "legacy-id" }
   }), {
     requestId: "generated-id",
+    requestInstanceId: "generated-id",
     conversationId: "legacy-id",
     sessionId: "legacy-id"
   });
 
   assert.deepEqual(resolveRequestContext({ id: "generated-id", headers: {} }), {
     requestId: "generated-id",
+    requestInstanceId: "generated-id",
     conversationId: "generated-id",
     sessionId: "generated-id"
   });

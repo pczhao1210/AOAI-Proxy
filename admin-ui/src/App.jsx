@@ -132,7 +132,7 @@ export default function App() {
   const [databaseConfigForm, setDatabaseConfigForm] = useState(() => normalizeDatabaseConfigForm());
   const [databaseTestResult, setDatabaseTestResult] = useState(null);
   const [logAnalyticsInitializationResult, setLogAnalyticsInitializationResult] = useState(null);
-  const [logs, setLogs] = useState({ total: 0, limit: 100, items: [] });
+  const [logs, setLogs] = useState({ view: DEFAULT_LOG_FILTERS.view, total: 0, retainedEvents: 0, limit: 100, items: [] });
   const [caddyStatus, setCaddyStatus] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -290,6 +290,8 @@ export default function App() {
     setLogsLoading(true);
     try {
       const json = await fetchLogs({
+        view: filters.view,
+        outcome: filters.outcome,
         level: filters.level,
         event: filters.event,
         excludeEvent: filters.hideAuthRejected ? "http.auth_rejected" : "",
@@ -303,6 +305,8 @@ export default function App() {
         setLogs({
           total: json.total || 0,
           limit: json.limit || filters.limit,
+          view: json.view || filters.view,
+          retainedEvents: json.retainedEvents || 0,
           items: Array.isArray(json.items) ? json.items : []
         });
       });
@@ -529,7 +533,7 @@ export default function App() {
       void loadLogsAction(logFilters);
     }, 180);
     return () => clearTimeout(timer);
-  }, [activeTab, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
+  }, [activeTab, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
 
   useEffect(() => {
     if (activeTab !== "ops" || !logFilters.autoRefresh) return undefined;
@@ -537,7 +541,7 @@ export default function App() {
       void loadLogsAction(logFilters);
     }, 5000);
     return () => clearInterval(interval);
-  }, [activeTab, logFilters.autoRefresh, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
+  }, [activeTab, logFilters.autoRefresh, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
 
   useEffect(() => {
     if (activeTab !== "harness" || !config) return undefined;

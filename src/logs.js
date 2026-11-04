@@ -172,6 +172,7 @@ const CONTENT_KEYS = new Set([
 const REQUEST_METADATA_STRING_KEYS = new Set([
   "reqid",
   "requestid",
+  "requestinstanceid",
   "conversationid",
   "sessionid",
   "azurerequestid",
@@ -1269,6 +1270,17 @@ function normalizeListParam(value) {
     .filter(Boolean);
 }
 
+function getLogRequestGroupKey(entry) {
+  if (!entry.requestId || entry.event === "governance.text_cost_incomplete") return "";
+  const instanceId = typeof entry.fields?.requestInstanceId === "string" ? entry.fields.requestInstanceId : "";
+  return instanceId || (entry.event.startsWith("http.") || entry.event.startsWith("proxy.") ? entry.requestId : "");
+}
+
+function isRequestRetryEvent(entry) {
+  return entry.level === "warn" && entry.source === "upstream"
+    && (entry.event === "proxy.upstream_retry" || !entry.event && /\bretry\b/i.test(entry.message));
+}
+
 export function queryLogs(filters = {}) {
   const levels = new Set(normalizeListParam(filters.level).map((item) => normalizeLevel(item)));
   const event = typeof filters.event === "string" ? filters.event.trim().toLowerCase() : "";
@@ -1284,8 +1296,112 @@ export function queryLogs(filters = {}) {
     ? Math.max(1, Math.min(500, Math.floor(requestedLimit)))
     : 100;
 
+  if (filters.view === "requests") {
+    const groups = new Map();
+    for (const entry of logBuffer) {
+      const groupKey = getLogRequestGroupKey(entry);
+      if (!groupKey) continue;
+      if (!groups.has(groupKey)) groups.set(groupKey, []);
+      groups.get(groupKey).push(entry);
+    }
+
+    const requests = [];
+    for (const [groupKey, entries] of groups) {
+      const events = entries.filter((entry) => !excludedEvents.has(entry.event.toLowerCase()));
+      if (!events.length) continue;
+      events.sort((left, right) => left.ts.localeCompare(right.ts) || left.id - right.id);
+      const latestEvents = [...events].reverse();
+
+      const httpCompletion = latestEvents.find((entry) => entry.event === "http.request_completed");
+      const terminalEvent = latestEvents.find((entry) =>
+        ["proxy.request_completed", "proxy.stream_completed", "proxy.media_completed"].includes(entry.event)
+      );
+      const failureEvent = latestEvents.find((entry) =>
+        entry.event !== "http.request_completed"
+          && entry.event !== "proxy.request_timing"
+          && !isRequestRetryEvent(entry)
+          && (entry.event === "http.auth_rejected"
+            || entry.event.startsWith("proxy.") && /failed|rejected|error|empty|invalid|missing/.test(entry.event)
+            || entry.level === "error" || entry.level === "fatal"
+            || Number(entry.status) >= 400)
+      );
+      const status = httpCompletion?.status ?? failureEvent?.status ?? terminalEvent?.status ?? null;
+      const hasFailure = Boolean(failureEvent) || Number(status) >= 400;
+      const hasCompletion = Boolean(terminalEvent || httpCompletion && Number.isFinite(httpCompletion.status));
+      const retries = events.filter(isRequestRetryEvent).length;
+      const warningEvent = events.find((entry) =>
+        entry.level === "warn" && !isRequestRetryEvent(entry)
+      );
+      const hasWarning = !hasFailure && Boolean(warningEvent);
+      const level = hasFailure
+        ? Number(status) >= 500 || failureEvent?.level === "error" || failureEvent?.level === "fatal" ? "error" : "warn"
+        : hasWarning ? "warn" : "info";
+      const outcome = hasFailure ? "failed" : !hasCompletion ? "unknown" : hasWarning ? "warning" : "success";
+      const primary = failureEvent || terminalEvent || httpCompletion || events.at(-1);
+      const modelEntry = latestEvents.find((entry) => entry.modelId);
+      const routeEntry = latestEvents.find((entry) => entry.routeKey || entry.backendRouteKey);
+      const usageEntry = latestEvents.find((entry) =>
+        entry.usageAvailable && entry.event === "proxy.usage_recorded"
+          || entry.totalTokens != null || entry.estimatedCostAmount != null
+      );
+      const message = hasFailure
+        ? failureEvent?.failureReason || failureEvent?.message || failureEvent?.errorCode
+          || httpCompletion?.failureReason || httpCompletion?.errorCode || "Failure reason not recorded"
+        : !hasCompletion
+          ? "Request completion not recorded"
+          : hasWarning
+            ? warningEvent.message || "Request completed with warnings"
+            : terminalEvent?.message || httpCompletion?.message || "Request completed";
+      const request = {
+        id: groupKey,
+        requestId: primary.requestId,
+        ts: httpCompletion?.ts || primary.ts,
+        level,
+        outcome,
+        event: primary.event,
+        message,
+        source: failureEvent?.source || primary.source,
+        status: Number.isFinite(status) ? status : null,
+        errorCode: failureEvent?.errorCode || httpCompletion?.errorCode || "",
+        failureReason: failureEvent?.failureReason || (hasFailure ? httpCompletion?.failureReason || "" : ""),
+        retryCount: retries,
+        method: httpCompletion?.fields?.method || "",
+        url: httpCompletion?.fields?.url || "",
+        modelId: modelEntry?.modelId || "",
+        routeKey: routeEntry?.routeKey || "",
+        backendRouteKey: routeEntry?.backendRouteKey || "",
+        latencyMs: httpCompletion?.latencyMs ?? primary.latencyMs ?? null,
+        usageAvailable: Boolean(usageEntry),
+        totalTokens: usageEntry?.totalTokens ?? null,
+        estimatedCostAmount: usageEntry?.estimatedCostAmount ?? null,
+        currency: usageEntry?.currency || "",
+        events
+      };
+
+      if (filters.outcome && filters.outcome !== "all" && filters.outcome !== outcome) continue;
+      if (event && !events.some((entry) => entry.event.toLowerCase() === event)) continue;
+      if (modelId && request.modelId.toLowerCase() !== modelId) continue;
+      if (requestId && request.requestId.toLowerCase() !== requestId) continue;
+      if (since && request.ts < since) continue;
+      if (keyword && !JSON.stringify(request).toLowerCase().includes(keyword)) continue;
+      requests.push(request);
+    }
+
+    requests.sort((left, right) => left.ts.localeCompare(right.ts));
+    return {
+      ok: true,
+      view: "requests",
+      total: requests.length,
+      limit,
+      retainedEvents: logBuffer.length,
+      items: requests.slice(-limit).reverse()
+    };
+  }
+
   const filtered = logBuffer.filter((entry) => {
     if (levels.size > 0 && !levels.has(entry.level)) return false;
+    if (filters.view === "access" && !entry.event.startsWith("http.") && !entry.source.startsWith("http")) return false;
+    if (filters.view === "events" && getLogRequestGroupKey(entry)) return false;
     if (event && entry.event.toLowerCase() !== event) return false;
     if (excludedEvents.has(entry.event.toLowerCase())) return false;
     if (modelId && entry.modelId.toLowerCase() !== modelId) return false;
@@ -1297,11 +1413,37 @@ export function queryLogs(filters = {}) {
     }
     return true;
   });
+  let visibleEntries = filtered;
+  if (filters.view === "events") {
+    const groups = new Map();
+    for (const entry of filtered) {
+      const signature = entry.event === "governance.text_cost_incomplete"
+        ? JSON.stringify([entry.source, entry.event, entry.modelId, entry.errorCode, entry.failureReason])
+        : `entry:${entry.id}`;
+      if (!groups.has(signature)) groups.set(signature, []);
+      groups.get(signature).push(entry);
+    }
+    visibleEntries = Array.from(groups.values(), (events) => {
+      if (events.length === 1) return events[0];
+      const latest = events.at(-1);
+      return {
+        ...latest,
+        requestId: "",
+        ts: latest.ts,
+        firstTs: events[0].ts,
+        occurrences: events.length,
+        events
+      };
+    });
+    visibleEntries.sort((left, right) => left.ts.localeCompare(right.ts));
+  }
 
   return {
     ok: true,
-    total: filtered.length,
+    view: filters.view === "access" ? "access" : "events",
+    total: visibleEntries.length,
     limit,
-    items: filtered.slice(-limit).reverse()
+    retainedEvents: logBuffer.length,
+    items: visibleEntries.slice(-limit).reverse()
   };
 }

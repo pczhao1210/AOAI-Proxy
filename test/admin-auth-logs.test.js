@@ -11,8 +11,12 @@ function renderOps(config, loggingRuntime, overrides = {}) {
     loggingRuntime,
     logFilters: DEFAULT_LOG_FILTERS,
     diagnosticsBusy: {},
-    logs: { total: 0, items: [] },
+    logs: { view: "requests", total: 0, retainedEvents: 0, items: [] },
     getValueByPath,
+    getLogDetails: entry => entry?.fields || {},
+    getLogMessage: entry => entry?.message || entry?.failureReason || entry?.event || "-",
+    getLogEventLabel: event => event || "",
+    getLogSourceLabel: source => source || "",
     formatDateTime: () => "-",
     testEndpoints: [],
     t: (_key, fallback, values = {}) => fallback.replace(/\{(\w+)\}/g, (_match, key) => String(values[key] ?? "")),
@@ -63,4 +67,91 @@ test("unknown runtime state does not claim auth logging is disabled", async () =
   const view = await renderOps({ observability: { logs: { includeAuthRejected: false } } }, {});
   assert.ok(view.getByLabelText("Hide auth rejections"));
   assert.equal(view.queryByText(/Requests rejected by authentication are not logged/), null);
+});
+
+test("request logs show one result with the failure cause and expandable event timeline", async () => {
+  const view = await renderOps({}, {}, {
+    logs: {
+      view: "requests",
+      total: 1,
+      retainedEvents: 2,
+      items: [{
+        id: "request-instance-1",
+        requestId: "request-1",
+        ts: "2026-11-04T06:00:00.000Z",
+        outcome: "failed",
+        level: "warn",
+        status: 400,
+        method: "POST",
+        url: "/v1/responses",
+        modelId: "mai-transcribe-2",
+        routeKey: "responses",
+        backendRouteKey: "audio/transcriptions",
+        errorCode: "RESPONSES_SPEECH_UNREPRESENTABLE",
+        message: "stream is not supported",
+        failureReason: "stream is not supported",
+        events: [
+          { id: 1, event: "proxy.media_failed", level: "warn", message: "media request failed", failureReason: "stream is not supported", fields: {}, ts: "2026-11-04T06:00:00.000Z" },
+          { id: 2, event: "http.request_completed", level: "warn", message: "request completed with error", fields: {}, ts: "2026-11-04T06:00:00.003Z" }
+        ]
+      }]
+    }
+  });
+  assert.ok(view.getByRole("tab", { name: "Requests" }));
+  assert.ok(view.getByText("RESPONSES_SPEECH_UNREPRESENTABLE"));
+  assert.ok(view.getByText("stream is not supported"));
+  fireEvent.click(view.getByRole("button", { name: "Details" }));
+  assert.ok(view.getByText("Request timeline (2 events)"));
+  assert.ok(view.getByText("request completed with error"));
+});
+
+test("event and access views remain separate from request summaries", async () => {
+  let filters = { ...DEFAULT_LOG_FILTERS };
+  const view = await renderOps({}, {}, {
+    logFilters: filters,
+    setLogFilters: update => { filters = update(filters); },
+    logs: { total: 0, items: [] }
+  });
+  fireEvent.click(view.getByRole("tab", { name: "System & Cost Events" }));
+  assert.equal(filters.view, "events");
+  fireEvent.click(view.getByRole("tab", { name: "Access & Auth" }));
+  assert.equal(filters.view, "access");
+});
+
+for (const logsLoading of [false, true]) {
+  test(`request view hides stale access entries while the matching query is ${logsLoading ? "loading" : "not loaded"}`, async () => {
+    const view = await renderOps({}, {}, {
+      logsLoading,
+      logs: {
+        view: "access",
+        total: 1,
+        retainedEvents: 1,
+        items: [{ id: 17, requestId: "stale-access", event: "http.request_completed", status: 400, fields: {} }]
+      }
+    });
+    assert.ok(!view.queryByText("stale-access"));
+    assert.ok(!view.queryByRole("button", { name: "Details" }));
+    assert.ok(view.getByText(/Showing 0 requests/));
+    if (!logsLoading) assert.ok(view.getByText("This log view has not loaded. Refresh to retry."));
+  });
+}
+
+test("request view preserves zero retained events instead of showing the buffer capacity", async () => {
+  const view = await renderOps({}, { memoryBufferSize: 500 });
+  assert.ok(view.getByText(/Retained events: 0/));
+  assert.ok(!view.queryByText(/Retained events: 500/));
+});
+
+test("request view supports unknown outcomes without claiming success", async () => {
+  let filters = { ...DEFAULT_LOG_FILTERS };
+  const view = await renderOps({}, {}, {
+    setLogFilters: update => { filters = update(filters); },
+    logs: {
+      view: "requests", total: 1, retainedEvents: 1,
+      items: [{ id: "pending-instance", requestId: "pending-request", outcome: "unknown", message: "Request completion not recorded", events: [] }]
+    }
+  });
+  assert.ok(view.container.querySelector(".log-request-table").textContent.includes("Pending / Unknown"));
+  fireEvent.click(view.getByRole("button", { name: "Pending / Unknown" }));
+  assert.equal(filters.outcome, "unknown");
 });

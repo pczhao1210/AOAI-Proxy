@@ -147,6 +147,8 @@ export async function fetchStats(params = {}) {
 
 export async function fetchLogs(params = {}) {
   const search = new URLSearchParams();
+  if (params.view) search.set("view", String(params.view));
+  if (params.outcome) search.set("outcome", String(params.outcome));
   if (Array.isArray(params.level) && params.level.length > 0) {
     search.set("level", params.level.join(","));
   }

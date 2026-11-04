@@ -149,6 +149,8 @@ JPEG 处理应用 EXIF 方向、等比缩放且不放大、不裁切，转换到
 | `observability.logAnalytics.enabled` | `false` | 启用 Azure Log Analytics 上传 sink；还需要完整 DCE/DCR 配置。 | Workspace；热 |
 | `observability.runtimeStore.enabled` | `true` | 启用 PostgreSQL runtime event/rollup store；仅当活动持久化模式使用数据库时有效。 | JSON；热 |
 
+管理端运行日志默认按内部请求实例汇总为请求列表，并显示客户端 Request ID；复用客户端 Request ID 不会合并不同请求，展开后可查看对应事件时间线。重试过程中的错误不决定最终结果；重试成功仍显示成功，HTTP 200 中的流式失败仍显示失败。缺少完成或失败证据时显示“未完成 / 未知”，不推断成功或仍在运行。用量与费用取自实际记录，保留明确的零值，缺失值显示为未知。系统与计费事件、HTTP 访问与认证记录分别保留在独立视图；重复的计价不完整告警按模型和原因汇总，同时保留单次事件明细。该页面读取应用内存日志，不包含 Caddy 的独立标准输出访问日志。列表仅覆盖当前进程仍保留的事件，不等于跨重启历史记录；事件被缓冲区淘汰后，请求详情可能不完整。
+
 ### 持久化与访问治理
 
 文本上下文计费不新增布尔开关。`models[].pricing`、`access.pricingCatalog[pricingRef]`

@@ -99,6 +99,9 @@ test("adaptive images freeze all nine JSON/SSE directions and preflight budgets"
     assert.equal(denied.status, 429, denied.text);
     assert.equal(ctx.upstreamRequests.length, 0);
     const after = await ctx.adminRequest("/admin/api/logs?event=proxy.image_optimization");
-    assert.equal(after.text, before.text, "Governance-denied requests must not start image processing");
+    assert.equal(before.status, 200, before.text);
+    assert.equal(after.status, 200, after.text);
+    assert.equal(after.json.total, before.json.total);
+    assert.deepEqual(after.json.items, before.json.items, "Governance-denied requests must not start image processing");
   });
 });

@@ -301,6 +301,20 @@ test("Responses Speech enforces local boundaries, preserves provider errors and 
       assert.ok([400, 413].includes(response.status), response.text);
       assert.equal(ctx.upstreamRequests.length, 0);
     }
+    const locallyRejected = await ctx.publicRequest("/v1/responses", {
+      method: "POST",
+      headers: { "x-request-id": "speech-local-rejection" },
+      json: { ...voice, stream: true }
+    });
+    assert.equal(locallyRejected.status, 400, locallyRejected.text);
+    const requestLogs = await ctx.adminRequest("/admin/api/logs?view=requests&requestId=speech-local-rejection");
+    assert.equal(requestLogs.status, 200, requestLogs.text);
+    assert.equal(requestLogs.json.total, 1);
+    assert.equal(requestLogs.json.items[0].status, 400);
+    assert.equal(requestLogs.json.items[0].source, "proxy");
+    assert.equal(requestLogs.json.items[0].errorCode, "RESPONSES_SPEECH_UNREPRESENTABLE");
+    assert.equal(requestLogs.json.items[0].failureReason, "stream is not supported by synchronous Speech Responses");
+    assert.equal(requestLogs.json.items[0].events.length, 2);
     for (const guard of ["model", "budget", "tpm", "enabled", "responses-route", "physical-route"]) {
       config.apiKeys[0].allowedModels = guard === "model" ? ["voice"] : [];
       config.apiKeys[0].budget = guard === "budget" ? { limitAmount: 1 } : { currency: "EUR" };

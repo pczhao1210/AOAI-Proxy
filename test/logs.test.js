@@ -91,6 +91,203 @@ test("event exclusion filters hide noisy events", () => {
   assert.deepEqual(remaining.map((entry) => entry.event), ["test.exclude.keep"]);
 });
 
+test("request view groups correlated errors and keeps cost warnings out of the outcome", () => {
+  configureLogs();
+  const requestContext = {
+    requestId: "request-summary",
+    requestInstanceId: "fastify-request-17",
+    modelId: "mai-transcribe-2",
+    routeKey: "responses",
+    backendRouteKey: "audio/transcriptions"
+  };
+  appendStructuredLog("warn", {
+    ...requestContext,
+    source: "proxy",
+    event: "proxy.media_failed",
+    status: 400,
+    errorCode: "RESPONSES_SPEECH_UNREPRESENTABLE",
+    failureReason: "stream is not supported by synchronous Speech Responses",
+    message: "media request failed"
+  });
+  appendStructuredLog("warn", {
+    ...requestContext,
+    source: "proxy",
+    event: "proxy.request_timing",
+    status: 400,
+    errorCode: "RESPONSES_SPEECH_UNREPRESENTABLE"
+  });
+  appendStructuredLog("warn", {
+    requestId: "request-summary",
+    event: "governance.text_cost_incomplete",
+    source: "governance",
+    modelId: "mai-transcribe-2",
+    failureReason: "token pricing unavailable"
+  });
+  appendStructuredLog("warn", {
+    requestId: "request-summary-2",
+    event: "governance.text_cost_incomplete",
+    source: "governance",
+    modelId: "mai-transcribe-2",
+    failureReason: "token pricing unavailable"
+  });
+  appendStructuredLog("warn", {
+    ...requestContext,
+    source: "http",
+    event: "http.request_completed",
+    status: 400,
+    latencyMs: 11,
+    method: "POST",
+    url: "/v1/responses",
+    message: "request completed with error"
+  });
+  appendStructuredLog("info", {
+    requestId: "request-summary",
+    requestInstanceId: "fastify-request-18",
+    source: "http",
+    event: "http.request_completed",
+    status: 200,
+    latencyMs: 8,
+    method: "POST",
+    url: "/v1/responses",
+    message: "request completed"
+  });
+  appendStructuredLog("warn", {
+    requestId: "request-parser-failure",
+    requestInstanceId: "fastify-parser-failure",
+    source: "http",
+    event: "http.request_completed",
+    status: 400,
+    errorCode: "FST_ERR_CTP_INVALID_JSON_BODY",
+    failureReason: "Request body is not valid JSON",
+    message: "request completed with error"
+  });
+
+  const requests = queryLogs({ view: "requests", requestId: "request-summary" });
+  assert.equal(requests.total, 2, "reused client request IDs remain separate request instances");
+  const failed = requests.items.find((entry) => entry.outcome === "failed");
+  assert.equal(failed.status, 400);
+  assert.equal(failed.errorCode, "RESPONSES_SPEECH_UNREPRESENTABLE");
+  assert.equal(failed.failureReason, "stream is not supported by synchronous Speech Responses");
+  assert.equal(failed.method, "POST");
+  assert.equal(failed.url, "/v1/responses");
+  assert.equal(failed.events.length, 3);
+  assert.equal(queryLogs({ view: "requests", outcome: "success", requestId: "request-summary" }).total, 1);
+  const parserFailure = queryLogs({ view: "requests", requestId: "request-parser-failure", level: "info" }).items[0];
+  assert.equal(parserFailure.errorCode, "FST_ERR_CTP_INVALID_JSON_BODY");
+  assert.equal(parserFailure.failureReason, "Request body is not valid JSON");
+  const costWarnings = queryLogs({ view: "events", event: "governance.text_cost_incomplete" });
+  assert.equal(costWarnings.total, 1);
+  assert.equal(costWarnings.items[0].occurrences, 2);
+  assert.equal(costWarnings.items[0].events.length, 2);
+  assert.equal(queryLogs({ requestId: "request-summary", event: "governance.text_cost_incomplete" }).total, 1);
+  assert.equal(queryLogs({ view: "events", requestId: "request-summary" }).total, 1);
+  assert.equal(queryLogs({ view: "access", requestId: "request-summary" }).total, 2);
+});
+
+test("a successful request with retry events stays successful and reports retries", () => {
+  configureLogs();
+  appendStructuredLog("warn", {
+    requestId: "request-retried",
+    requestInstanceId: "fastify-retried",
+    source: "upstream",
+    status: 503,
+    errorCode: "UPSTREAM_HTTP_5XX",
+    message: "upstream retry on HTTP status"
+  });
+  appendStructuredLog("info", {
+    requestId: "request-retried",
+    requestInstanceId: "fastify-retried",
+    event: "proxy.request_completed",
+    source: "proxy",
+    status: 200,
+    message: "proxy request completed"
+  });
+
+  const result = queryLogs({ view: "requests", requestId: "request-retried" });
+  assert.equal(result.items[0].outcome, "success");
+  assert.equal(result.items[0].retryCount, 1);
+  assert.equal(result.items[0].status, 200);
+  assert.equal(result.items[0].errorCode, "");
+});
+
+test("request summaries preserve recorded usage and explicit zeros across completion events", () => {
+  configureLogs();
+  for (const event of ["proxy.request_completed", "proxy.stream_completed"]) {
+    for (const amount of [0, 0.00001675, null]) {
+      const requestId = `summary-usage-${event}-${amount}`;
+      const totalTokens = amount === 0 ? 0 : 18;
+      appendStructuredLog("info", {
+        requestId, event: "proxy.usage_recorded", usageAvailable: true,
+        totalTokens, estimatedCostAmount: amount, currency: "USD"
+      });
+      appendStructuredLog("info", { requestId, event, usageAvailable: true, status: 200 });
+      const summary = queryLogs({ view: "requests", requestId }).items[0];
+      assert.equal(summary.usageAvailable, true);
+      assert.equal(summary.totalTokens, totalTokens);
+      assert.equal(summary.estimatedCostAmount, amount);
+      assert.equal(summary.currency, "USD");
+    }
+  }
+});
+
+test("media request summaries retain known costs without a text usage flag", () => {
+  configureLogs();
+  appendStructuredLog("info", {
+    requestId: "summary-media-cost", event: "proxy.media_completed", status: 200,
+    usageStatus: "observed", estimatedCostAmount: 0, currency: "USD"
+  });
+  const summary = queryLogs({ view: "requests", requestId: "summary-media-cost" }).items[0];
+  assert.equal(summary.totalTokens, null);
+  assert.equal(summary.estimatedCostAmount, 0);
+  assert.equal(summary.currency, "USD");
+});
+
+test("request summaries require terminal evidence before reporting success or warnings", () => {
+  configureLogs();
+  for (const event of ["proxy.request_started", "proxy.usage_recorded", "proxy.protocol_shim_lossy_conversion"]) {
+    const requestId = `summary-nonterminal-${event}`;
+    appendStructuredLog(event.endsWith("conversion") ? "warn" : "info", { requestId, event });
+    const summary = queryLogs({ view: "requests", requestId }).items[0];
+    assert.equal(summary.outcome, "unknown");
+    assert.equal(summary.status, null);
+    assert.equal(summary.message, "Request completion not recorded");
+    assert.equal(queryLogs({ view: "requests", requestId, outcome: "success" }).total, 0);
+    assert.equal(queryLogs({ view: "requests", requestId, outcome: "unknown" }).total, 1);
+    appendStructuredLog("info", { requestId, event: "http.request_completed", status: 200 });
+    assert.equal(queryLogs({ view: "requests", requestId }).items[0].outcome, event.endsWith("conversion") ? "warning" : "success");
+  }
+});
+
+test("terminal stream failures remain failures after HTTP 200 and are not counted as retries", () => {
+  configureLogs();
+  const requestId = "summary-stream-failed";
+  appendStructuredLog("info", { requestId, event: "http.request_completed", status: 200 });
+  appendStructuredLog("error", {
+    requestId, source: "upstream", event: "proxy.stream_failed",
+    errorCode: "UPSTREAM_INCOMPLETE_STREAM", message: "stream failed after retry"
+  });
+  const summary = queryLogs({ view: "requests", requestId }).items[0];
+  assert.equal(summary.outcome, "failed");
+  assert.equal(summary.status, 200);
+  assert.equal(summary.errorCode, "UPSTREAM_INCOMPLETE_STREAM");
+  assert.equal(summary.retryCount, 0);
+});
+
+test("system logs exclude eventless request events but retain correlated cost warnings", () => {
+  configureLogs();
+  const context = { requestId: "summary-system-split", requestInstanceId: "system-split-instance" };
+  appendStructuredLog("warn", {
+    ...context, source: "upstream", status: 503, message: "upstream retry on HTTP status"
+  });
+  appendStructuredLog("warn", {
+    ...context, source: "governance", event: "governance.text_cost_incomplete", failureReason: "token pricing unavailable"
+  });
+  const requests = queryLogs({ view: "requests", requestId: context.requestId });
+  const system = queryLogs({ view: "events", requestId: context.requestId });
+  assert.equal(requests.items[0].events.length, 1);
+  assert.deepEqual(system.items.map(entry => entry.event), ["governance.text_cost_incomplete"]);
+});
+
 test("request metadata that resembles Base64 is not omitted as binary", () => {
   configureLogs();
   const jpegBase64 = `/9j/${"A".repeat(400)}`;
@@ -717,6 +914,70 @@ test("HTTP logs skip successful admin reads and redact warning URLs", async (con
   assert.ok(proxyEntries.every((entry) => entry.conversationId === "conversation-log-correlation"));
   assert.ok(proxyEntries.every((entry) => entry.sessionId === "session-log-correlation"));
   assert.equal(httpEntries.some((entry) => entry.fields.url === "/admin/api/config"), false);
+  for (const [requestId, recordedUsage] of [
+    ["request-log-correlation", usageEntry],
+    ["request-stream-correlation", streamUsage]
+  ]) {
+    const summaries = await testContext.adminRequest(`/admin/api/logs?view=requests&requestId=${requestId}`);
+    assert.equal(summaries.status, 200, summaries.text);
+    assert.equal(summaries.json.total, 1);
+    const summary = summaries.json.items[0];
+    assert.equal(summary.outcome, "success");
+    assert.equal(summary.totalTokens, recordedUsage.totalTokens);
+    assert.equal(summary.estimatedCostAmount, recordedUsage.estimatedCostAmount);
+    assert.equal(summary.currency, recordedUsage.currency);
+  }
+});
+
+test("HTTP status retries produce successful JSON and SSE request summaries without system noise", async context => {
+  const attempts = new Map();
+  const ctx = await createTestContext({
+    logLevel: "info",
+    upstreamHandler: async ({ body, res }) => {
+      const attempt = (attempts.get(body.stream) || 0) + 1;
+      attempts.set(body.stream, attempt);
+      if (attempt > 1) return false;
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: "busy", message: "Temporary upstream failure" } }));
+      return true;
+    }
+  });
+  context.after(() => ctx.cleanup());
+  const config = (await ctx.adminRequest("/admin/api/config")).json;
+  config.proxy.retries = { ...config.proxy.retries, maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1 };
+  const saved = await ctx.adminRequest("/admin/api/config", {
+    method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+  });
+  assert.equal(saved.status, 200, saved.text);
+  for (const stream of [false, true]) {
+    const requestId = `summary-http-retry-${stream}`;
+    const response = await ctx.publicRequest("/v1/chat/completions", {
+      method: "POST",
+      headers: { "x-request-id": requestId },
+      json: { model: "gpt-5-mini", stream, messages: [{ role: "user", content: "hello" }] }
+    });
+    assert.equal(response.status, 200, response.text);
+    assert.equal(attempts.get(stream), 2);
+    const terminalEvent = stream ? "proxy.stream_completed" : "proxy.request_completed";
+    let summary;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const logs = await ctx.adminRequest(`/admin/api/logs?view=requests&requestId=${requestId}`);
+      assert.equal(logs.status, 200, logs.text);
+      assert.equal(logs.json.total, 1);
+      summary = logs.json.items[0];
+      if (summary.events.some(entry => entry.event === terminalEvent)) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.ok(summary.events.some(entry => entry.event === terminalEvent));
+    assert.equal(summary.outcome, "success");
+    assert.equal(summary.status, 200);
+    assert.equal(summary.retryCount, 1);
+    assert.equal(summary.errorCode, "");
+    assert.equal(summary.totalTokens, 18);
+    const system = await ctx.adminRequest(`/admin/api/logs?view=events&requestId=${requestId}`);
+    assert.equal(system.status, 200, system.text);
+    assert.equal(system.json.total, 0);
+  }
 });
 
 test("auth rejections are suppressed by default and logged as a separate event when enabled", async (context) => {

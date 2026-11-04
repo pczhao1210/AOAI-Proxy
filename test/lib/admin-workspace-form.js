@@ -1,10 +1,14 @@
 import { after, afterEach, before } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { JSDOM } from "jsdom";
 import { setValueByPath } from "../../admin-ui/src/utils.js";
 
 let vite;
+let viteCacheDir;
 let dom;
 let React;
 let WorkspaceTab;
@@ -23,9 +27,11 @@ export function setupWorkspaceFormTests() {
     }
     React = await import("react");
     ({ render, fireEvent, within, cleanup } = await import("@testing-library/react/pure.js"));
+    viteCacheDir = await mkdtemp(path.join(tmpdir(), "aoai-proxy-vite-test-"));
     vite = await createServer({
       configFile: fileURLToPath(new URL("../../admin-ui/vite.config.js", import.meta.url)),
       root: fileURLToPath(new URL("../..", import.meta.url)),
+      cacheDir: viteCacheDir,
       resolve: { dedupe: ["react", "react-dom"] },
       server: { middlewareMode: true, watch: null, ws: false },
       appType: "custom"
@@ -36,6 +42,7 @@ export function setupWorkspaceFormTests() {
   afterEach(() => cleanup?.());
   after(async () => {
     await vite?.close();
+    if (viteCacheDir) await rm(viteCacheDir, { recursive: true, force: true });
     dom?.window.close();
     for (const [name, descriptor] of originalGlobals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
