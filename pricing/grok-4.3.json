@@ -23,7 +23,7 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "xai-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "reference",
     "tiering": {
       "basis": "inputTokensIncludingCache",
@@ -32,6 +32,7 @@
     "tiers": [
       {
         "id": "short <200K",
+        "deploymentType": "global-standard",
         "promptTokensBelow": 200000,
         "inputPer1mTokens": 1.25,
         "cachedInputPer1mTokens": 0.2,
@@ -39,6 +40,7 @@
       },
       {
         "id": "long >=200K",
+        "deploymentType": "global-standard",
         "promptTokensAtLeast": 200000,
         "inputPer1mTokens": 2.5,
         "cachedInputPer1mTokens": 0.4,
@@ -53,15 +55,17 @@
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "xaiReference": "https://docs.x.ai/developers/models/grok-4.3",
     "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
-    "pricing": "https://docs.x.ai/developers/models/grok-4.3",
-    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/",
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/grok/",
     "version": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure",
-    "lifecycle": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure"
+    "lifecycle": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure",
+    "tiering": "https://docs.x.ai/developers/models/grok-4.3"
   },
   "notes": [
     "Azure Foundry lists this exact deployment as Preview/version 1 with text-only input capped at 200K and output capped at 8,192 tokens; contextWindow remains unverified because Azure publishes no combined window. xAI's 1M context and image input are not Azure limits/modalities.",
     "Azure's exact-model capability table lists Chat Completions. The broader Grok deployment how-to mentions Responses, so native Responses support for Grok 4.3 remains a Microsoft-documentation conflict; this card declares only Chat Completions.",
-    "The retained tier rates are xAI-direct reference prices, not Azure charges. Azure pricing was not numerically verified; pricingCatalogEntry=null disables automatic cost calculation for this Azure card.",
-    "protocolProfiles.chat/completions.reasoning records the Chat wire parameter path only. protocolProfiles.chat/completions.reasoning.levels and protocolProfiles.chat/completions.reasoning.default are unverified for Azure; xAI-direct choices are not applied, and Azure does not list Responses as a native interface."
+    "protocolProfiles.chat/completions.reasoning records the Chat wire parameter path only. protocolProfiles.chat/completions.reasoning.levels and protocolProfiles.chat/completions.reasoning.default are unverified for Azure; xAI-direct choices are not applied, and Azure does not list Responses as a native interface.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure Grok Models', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained.",
+    "Azure Retail confirms the exact model's short/long meter rates, but the numeric tier boundary and whole-request selection method remain unverified for Azure. pricing.tiering and the retained 200K bounds are xAI-direct reference policy, not a verified Azure billing invariant; pricingCatalogEntry=null remains an explicit opt-out."
   ]
 }

@@ -415,7 +415,9 @@ test("Realtime settles distinct response and transcription prices without duplic
     config.upstreams[0].provider = "openai";
     config.upstreams[0].baseUrl = `http://127.0.0.1:${upstreamServer.address().port}`;
     Object.assign(config.upstreams[0].routes, { realtime: "/v1/realtime", "realtime/transcription_sessions": "/v1/realtime?intent=transcription" });
-    config.models.push({ id: "voice-priced", pricingRef: "gpt-realtime-2", targetModel: "voice-deployment", upstream: config.upstreams[0].name });
+    config.models.push({ id: "voice-priced", pricingRef: "gpt-realtime-2", targetModel: "voice-deployment", upstream: config.upstreams[0].name,
+      pricing: { currency: "USD", billingUnit: "1M tokens", inputPer1mTokens: 4, cachedInputPer1mTokens: 0.4,
+        outputPer1mTokens: 24, channels: { audio: { inputPer1mTokens: 32, cachedInputPer1mTokens: 0.4, outputPer1mTokens: 64 } } } });
     config.models.push({ id: "transcript-priced", pricingRef: "gpt-realtime-whisper", targetModel: "transcript-deployment", upstream: config.upstreams[0].name,
       pricing: { currency: "USD", billingUnit: "minute", perMinute: 0.006 } });
     const saved = await ctx.adminRequest("/admin/api/config", { method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config });

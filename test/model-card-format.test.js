@@ -298,6 +298,48 @@ test("GPT-6.1 Sol raw card is complete without loader-supplied reasoning metadat
   }
 });
 
+test("Kimi K3.1 Pro raw card preserves exact Azure facts and publisher-only reasoning metadata", async () => {
+  const card = JSON.parse(await fs.readFile(new URL("../pricing/kimi-k3.1-pro.json", import.meta.url), "utf8"));
+  assert.equal(card.id, "Kimi-K3.1-Pro");
+  assert.equal(card.modelVersion, "2026-11-04");
+  assert.equal(card.status, "preview");
+  assert.equal(card.contextWindow, 1048576);
+  assert.equal(card.maxOutputTokens, 262144);
+  assert.equal(Object.hasOwn(card, "maxInputTokens"), false);
+  assert.deepEqual(card.hostingModes, ["azure"]);
+  assert.equal(card.defaultHostingMode, "azure");
+  assert.deepEqual(card.interfaces, ["chat/completions"]);
+  assert.equal(card.defaultInterface, "chat/completions");
+  assert.deepEqual(card.protocolProfiles, {
+    "chat/completions": {
+      reasoning: {
+        parameter: "reasoning_effort",
+        levels: ["low", "high", "max"],
+        validation: "passthrough"
+      }
+    }
+  });
+  assert.deepEqual(card.pricing, {
+    currency: "USD",
+    billingUnit: "1M tokens",
+    sourceType: "azure-official",
+    status: "published",
+    inputPer1mTokens: 2.3,
+    cachedInputPer1mTokens: 0.23,
+    outputPer1mTokens: 11.5
+  });
+  assert.equal(Object.hasOwn(card, "pricingCatalogEntry"), false);
+  assert.deepEqual(card.proxyTemplate, {});
+  assert.equal(card.sources.limits, "https://ai.azure.com/catalog/models/Kimi-K3.1-Pro");
+  assert.deepEqual(validateModelCard(card), {
+    errors: [],
+    warnings: [
+      "maxInputTokens: not recorded; add only with deployment-specific evidence",
+      "protocolProfiles.chat/completions.reasoning.default: not recorded; do not assume a family default"
+    ]
+  });
+});
+
 test("October additions retain raw reference metadata without loader-supplied deployment facts", async () => {
   const terra = JSON.parse(await fs.readFile(new URL("../pricing/gpt-6.1-terra.json", import.meta.url), "utf8"));
   for (const protocol of terra.interfaces) {

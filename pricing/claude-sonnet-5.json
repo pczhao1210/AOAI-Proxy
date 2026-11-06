@@ -52,12 +52,14 @@
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
     "modalities": "https://platform.claude.com/docs/en/models/sonnet-5/overview",
     "hosting": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models-hosting-comparison",
-    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "azureBilling": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models-billing"
   },
   "notes": [
     "Anthropic cancelled the scheduled September 1, 2026 price increase; the former introductory input/output prices are now the standard prices.",
     "Anthropic's exact-model pricing table, checked 2026-10-11, publishes cache-read and both TTL-specific cache-write rates. Regional surcharges and discounts are not included.",
     "maxInputTokens has not been independently verified for this deployment; no input ceiling is inferred from contextWindow minus maxOutputTokens.",
-    "Microsoft Foundry defaults to Version 2 (Hosted on Azure) when both Claude hosting versions are available; Anthropic hosting remains selectable."
+    "Microsoft Foundry defaults to Version 2 (Hosted on Azure) when both Claude hosting versions are available; Anthropic hosting remains selectable.",
+    "Azure's CCU billing documentation is the selected-host authority and delegates per-model token rates to Anthropic's official pricing table before contractual discounts. Retain the Anthropic publisher/source identity, existing hosting choices and separately sourced TTL rates; CCU is not a new token price or a reason to copy a different model's rate."
   ]
 }

@@ -264,15 +264,15 @@ test("Azure-direct DeepSeek replaces only its own Fireworks offering", () => {
   const direct = definitionsById.get("DeepSeek-V4.1-Flash");
   assert.equal(direct.provider, "fireworks-ai");
   assert.equal(direct.proxyTemplate.targetModel, "FW-DeepSeek-V4.1-Flash");
-  assert.equal(direct.pricing.status, "unavailable");
+  assert.equal(direct.pricing.status, "published");
   assert.equal(getModelCardPricing(direct), null);
   assert.equal(new URL(direct.sources.capabilities).hostname, "learn.microsoft.com");
   assert.equal(new URL(direct.sources.pricing).hostname, "prices.azure.com");
-  assert.equal(direct.pricing.inputPer1mTokens, undefined);
-  assert.equal(direct.pricing.outputPer1mTokens, undefined);
+  assert.equal(direct.pricing.inputPer1mTokens, 0.375);
+  assert.equal(direct.pricing.outputPer1mTokens, 1.5);
   const expected = [
     ["glm-5.3", "FW-GLM-5.3", 1.75, 0.325, 5.5],
-    ["glm-5.3-flash", "FW-GLM-5.3-Flash", 0.15, 0.03, 0.5],
+    ["glm-5.3-flash", "FW-GLM-5.3-Flash", 0.188, 0.038, 0.625],
     ["kimi-k3", "FW-Kimi-K3", 3, 0.3, 15]
   ];
 
@@ -280,12 +280,54 @@ test("Azure-direct DeepSeek replaces only its own Fireworks offering", () => {
     const definition = definitionsById.get(id);
     assert.equal(definition.provider, "fireworks-ai");
     assert.equal(definition.proxyTemplate.targetModel, targetModel);
-    assert.equal(definition.pricing.sourceType,
-      id === "glm-5.3" ? "azure-retail-prices-api" : "fireworks-serverless");
+    assert.equal(definition.pricing.sourceType, "azure-retail-prices-api");
     assert.equal(definition.pricing.inputPer1mTokens, input);
     assert.equal(definition.pricing.cachedInputPer1mTokens, cachedInput);
     assert.equal(definition.pricing.outputPer1mTokens, output);
   }
+});
+
+test("Kimi K3.1 Pro imports Azure-direct routing, published pricing and explicit reasoning metadata", () => {
+  const card = listPricingDefinitions().find(card => card.id === "Kimi-K3.1-Pro");
+  assert.ok(card);
+  assert.equal(card.provider, "moonshot-ai");
+  assert.equal(card.family, "kimi-k3");
+  assert.equal(card.modelVersion, "2026-11-04");
+  assert.equal(card.status, "preview");
+  assert.deepEqual(card.hostingModes, ["azure"]);
+  assert.equal(card.defaultHostingMode, "azure");
+  assert.deepEqual(card.interfaces, ["chat/completions"]);
+  assert.equal(card.defaultInterface, "chat/completions");
+  assert.deepEqual(card.inputModalities, ["text", "image"]);
+  assert.deepEqual(card.outputModalities, ["text"]);
+  assert.deepEqual(card.capabilities, ["reasoning", "vision", "function-calling"]);
+  assert.equal(card.pricing.sourceType, "azure-official");
+  assert.equal(card.pricing.status, "published");
+  assert.equal(new URL(card.sources.pricing).hostname, "techcommunity.microsoft.com");
+  assert.equal(card.sources.reasoning, "https://platform.kimi.ai/docs/guide/use-reasoning-effort");
+  assert.deepEqual(getModelCardPricing(card), card.pricing);
+  const model = buildModelFromPricingTemplate(card, "azure", { models: [] });
+  assert.equal(model.targetModel, "Kimi-K3.1-Pro");
+  assert.equal(model.pricingRef, card.id);
+  assert.deepEqual(model.routes, {});
+  const descriptor = resolveModelDescriptor(model.id, compileModelCatalog({ upstreams: config.upstreams, models: [model] }));
+  assert.deepEqual(descriptor.tokenLimits, { contextWindow: 1048576, maxInputTokens: null, maxOutputTokens: 262144 });
+  const reasoning = getDescriptorProtocolProfile(descriptor, "chat/completions").reasoning;
+  assert.equal(reasoning.parameter, "reasoning_effort");
+  assert.deepEqual(reasoning.levels, ["low", "high", "max"]);
+  assert.equal(reasoning.default, "");
+  assert.equal(reasoning.validation, "passthrough");
+  const plan = resolveRoutePlan({ routeKey: "chat/completions", model, upstream: config.upstreams[0], descriptor });
+  assert.equal(plan.backendRouteKey, "chat/completions");
+  assert.equal(plan.targetUrl, "https://example.openai.azure.com/openai/v1/chat/completions");
+  const imported = {};
+  upsertPricingCatalogEntry(imported, card);
+  assert.deepEqual(imported.access.pricingCatalog[card.id], card.pricing);
+  const cost = calculateTokenCost(compilePricingPolicy(imported.access.pricingCatalog[card.id]), {
+    prompt_tokens: 1000, completion_tokens: 100, prompt_tokens_details: { cached_tokens: 200 }
+  }, { backendProtocol: "chat/completions" });
+  assert.equal(cost.costStatus, "priced");
+  assert.ok(Math.abs(cost.amount - (800 * 2.3 + 200 * 0.23 + 100 * 11.5) / 1e6) < 1e-12);
 });
 
 test("Fireworks fallback cards preserve explicit deployment targets and price provenance", () => {
@@ -356,13 +398,13 @@ test("DeepSeek V4.1 Flash selects the exact Fireworks Foundry deployment, not an
   const card = listPricingDefinitions().find(card => card.id === "DeepSeek-V4.1-Flash");
   assert.equal(card.provider, "fireworks-ai");
   assert.equal(card.proxyTemplate.targetModel, "FW-DeepSeek-V4.1-Flash");
-  assert.equal(card.pricing.status, "unavailable");
+  assert.equal(card.pricing.status, "published");
   assert.equal(getModelCardPricing(card), null);
   assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1000000, null, null]);
   assert.match(card.notes.join(" "), /Azure-direct catalog does not list/);
 });
 
-test("Foundry GLM-5.3 uses current Azure Global meters; Flash keeps its verified 1M context and reference prices", () => {
+test("Foundry GLM-5.3 and Flash use exact Azure Global meters while preserving pricing opt-outs", () => {
   const cards = listPricingDefinitions();
   const glm = cards.find(card => card.id === "glm-5.3");
   assert.equal(glm.provider, "fireworks-ai");
@@ -378,8 +420,10 @@ test("Foundry GLM-5.3 uses current Azure Global meters; Flash keeps its verified
 
   const flash = cards.find(card => card.id === "glm-5.3-flash");
   assert.equal(flash.contextWindow, 1000000);
-  assert.equal(flash.pricing.status, "reference");
-  assert.match(flash.notes.join(" "), /Azure Retail Prices meter was not verified/);
+  assert.equal(flash.pricing.status, "published");
+  assert.equal(flash.pricingCatalogEntry, null);
+  assert.deepEqual([flash.pricing.inputPer1mTokens, flash.pricing.cachedInputPer1mTokens, flash.pricing.outputPer1mTokens],
+    [0.188, 0.038, 0.625]);
 });
 
 test("verified Azure provider facts correct Codex effort, Nano tools, retired o1 preview and Realtime limits", () => {
@@ -447,14 +491,15 @@ test("model-router limits and capabilities are documented as dynamic pool facts"
   assert.match(card.notes.join(" "), /capabilities vary by route/i);
 });
 
-test("Azure-hosted FLUX cards are Preview and do not present BFL prices as Azure charges", () => {
+test("Azure-hosted FLUX cards preserve Preview and separate verified rates from reference pixel rules", () => {
   const cards = listPricingDefinitions();
   for (const id of ["flux-2-flex", "flux-2-pro"]) {
     const card = cards.find(card => card.id === id);
     assert.equal(card.status, "preview", id);
-    assert.equal(card.pricing.status, "reference", id);
+    assert.equal(card.pricing.status, "published", id);
+    assert.equal(card.pricing.sourceType, "azure-retail-prices-api", id);
     assert.equal(card.pricingCatalogEntry, null, id);
-    assert.match(card.notes.join(" "), /not an Azure Foundry quote|neither establishes the Azure Foundry charge/);
+    assert.match(card.notes.join(" "), /pixelRules.*reference/);
   }
 });
 
@@ -466,7 +511,7 @@ test("Grok 4 uses its Azure Chat-only listing and does not inherit an xAI price"
   assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [null, 262000, 8192]);
   assert.deepEqual(card.interfaces, ["chat/completions"]);
   assert.equal(card.defaultInterface, "chat/completions");
-  assert.equal(card.pricing.status, "unavailable");
+  assert.equal(card.pricing.status, "published");
   assert.equal(getModelCardPricing(card), null);
   assert.match(card.notes.join(" "), /requires registration/);
   assert.match(card.notes.join(" "), /Responses.*conflict/);
@@ -787,7 +832,8 @@ test("new image model cards preserve deployment identities and native request pa
       ? { "*": "mai-image", "images/edits": "mai-image-edits" } : { "*": "openai-image" });
     assert.equal(definition.modelVersion, modelVersion);
     assert.equal(definition.status, status);
-    assert.equal(definition.pricing.status, "unavailable");
+    assert.equal(definition.pricing.status, "published");
+    assert.equal(definition.pricing.sourceType, "azure-retail-prices-api");
     assert.equal(definition.pricingCatalogEntry, null);
     assert.deepEqual(definition.capabilities, ["vision", "image-generation", "image-editing"]);
     const body = {
@@ -878,8 +924,8 @@ test("Azure Foundry model profiles preserve deployment IDs and pricing sources",
   };
   for (const [id, expected] of Object.entries(expectedStandardPricing)) {
     const definition = definitionsById.get(id);
-    assert.equal(definition.pricing.sourceType, "openai-official", `${id}: Standard pricing source`);
-    assert.equal(definition.sources.pricing, "https://developers.openai.com/api/docs/pricing");
+    assert.equal(definition.pricing.sourceType, "azure-retail-prices-api", `${id}: Standard pricing source`);
+    assert.equal(definition.sources.pricing, "https://prices.azure.com/api/retail/prices");
     assert.deepEqual([
       definition.pricing.tiers[0].inputPer1mTokens,
       definition.pricing.tiers[0].cachedInputPer1mTokens,
@@ -956,14 +1002,14 @@ test("reviewed GPT and Grok policies retain their explicit boundaries without co
   }
 });
 
-test("Grok 4.7 preserves Azure protocols and limits while disabling xAI reference pricing", () => {
+test("Grok 4.7 preserves Azure protocols and meter rates while disabling unverified tier policy", () => {
   const card = listPricingDefinitions().find(definition => definition.id === "grok-4.7");
   assert.ok(card);
   assert.equal(card.provider, "azure-openai");
   assert.equal(card.status, "ga");
   assert.deepEqual(card.interfaces, ["chat/completions", "responses"]);
   assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [500000, 500000, 500000]);
-  assert.equal(card.pricing.sourceType, "xai-official");
+  assert.equal(card.pricing.sourceType, "azure-retail-prices-api");
   assert.equal(card.pricing.status, "reference");
   assert.equal(card.pricingCatalogEntry, null);
   assert.equal(getModelCardPricing(card), null);
@@ -980,7 +1026,7 @@ test("Grok 4.7 preserves Azure protocols and limits while disabling xAI referenc
     assert.equal(plan.targetUrl, `https://example.openai.azure.com/openai/v1/${protocol}`);
   }
   assert.equal(buildModelFromPricingTemplate(card, "azure").pricingRef, card.id);
-  assert.match(card.notes.join(" "), /xAI-direct reference rates/);
+  assert.match(card.notes.join(" "), /boundary.*unverified/);
 });
 
 test("Haiku 5.5 preserves native hosting, thinking controls and cache-inclusive 100K price boundaries", () => {
@@ -1057,13 +1103,13 @@ test("Sonnet 5.5 preserves native hosting, distinct thinking controls and source
   assert.equal(resolveRoutePlan({ routeKey: "messages", model, upstream, descriptor }).backendRouteKey, "messages");
 });
 
-test("GPT-6.1 Terra preserves native routes, reference prices and unknown Azure defaults", () => {
+test("GPT-6.1 Terra preserves native routes, verified Azure prices, opt-out and unknown defaults", () => {
   const card = listPricingDefinitions().find(card => card.id === "gpt-6.1-terra");
   assert.equal(card.provider, "azure-openai");
   assert.equal(card.modelVersion, "2026-10-26");
   assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1050000, 922000, 128000]);
   assert.equal(card.defaultInterface, "responses");
-  assert.equal(card.pricing.status, "reference");
+  assert.equal(card.pricing.status, "published");
   assert.equal(getModelCardPricing(card), null);
   const model = buildModelFromPricingTemplate(card, "azure", { models: [] });
   assert.equal(model.targetModel, card.id);
@@ -1400,7 +1446,7 @@ test("MAI Speech templates select native paths without OpenAI deployment routing
   }
 });
 
-test("Realtime templates bind OpenAI native paths and retain explicit Azure GA overrides", () => {
+test("Realtime templates default to Azure native paths and retain explicit OpenAI overrides", () => {
   const definitions = listPricingDefinitions();
   for (const [id, routeKey, pathname] of [
     ["gpt-realtime-2", "realtime", "/v1/realtime"],
@@ -1409,7 +1455,8 @@ test("Realtime templates bind OpenAI native paths and retain explicit Azure GA o
   ]) {
     const definition = definitions.find(item => item.id === id);
     const upstream = buildUpstreamFromPricingTemplate(definition, "voice-provider");
-    upstream.baseUrl = "https://api.openai.com";
+    assert.equal(upstream.provider, "azure-openai");
+    upstream.baseUrl = "https://example.openai.azure.com";
     const model = buildModelFromPricingTemplate(definition, upstream.name, { models: [] });
     model.id = `public-${id}`;
     model.targetModel = "deployment";
@@ -1417,12 +1464,12 @@ test("Realtime templates bind OpenAI native paths and retain explicit Azure GA o
     installModelCatalogSnapshot(compileModelCatalog(config, definitions));
     const transcription = routeKey === "realtime/transcription_sessions";
     const binding = resolveRealtimeBinding(config, {}, model.id, routeKey, transcription);
-    assert.equal(binding.targetUrl.toString(), `wss://api.openai.com${pathname}?${transcription ? "intent=transcription" : "model=deployment"}`);
-    upstream.provider = "azure-openai";
-    upstream.baseUrl = "https://example.openai.azure.com";
-    upstream.routes[routeKey] = `/openai${pathname}${transcription ? "?intent=transcription" : ""}`;
-    const azure = resolveRealtimeBinding(config, {}, model.id, routeKey, transcription);
-    assert.equal(azure.targetUrl.toString(), `wss://example.openai.azure.com/openai${pathname}?${transcription ? "intent=transcription" : "model=deployment"}`);
+    assert.equal(binding.targetUrl.toString(), `wss://example.openai.azure.com/openai${pathname}?${transcription ? "intent=transcription" : "model=deployment"}`);
+    upstream.provider = "openai";
+    upstream.baseUrl = "https://api.openai.com";
+    upstream.routes[routeKey] = `${pathname}${transcription ? "?intent=transcription" : ""}`;
+    const direct = resolveRealtimeBinding(config, {}, model.id, routeKey, transcription);
+    assert.equal(direct.targetUrl.toString(), `wss://api.openai.com${pathname}?${transcription ? "intent=transcription" : "model=deployment"}`);
   }
 });
 

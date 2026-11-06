@@ -17,9 +17,10 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
-    "status": "reference",
-    "inputPer1mTokens": 0.29,
-    "outputPer1mTokens": 1.16
+    "status": "published",
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 0.25,
+    "outputPer1mTokens": 1
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
@@ -28,11 +29,13 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#meta-models-sold-directly-by-azure",
     "limits": "https://github.com/meta-llama/llama-models/blob/main/models/llama4/MODEL_CARD.md",
-    "pricing": "https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/llama/"
   },
   "notes": [
     "model-router 使用的是简化路由名 llama4-maverick-instruct，这里同时兼容 Azure 模型目录中的完整模型名。",
-    "The retained USD 0.29/$1.16 per-1M rates come from an Azure Machine Learning meter, not a verified Foundry Models deployment meter. pricingCatalogEntry=null disables automatic pricing until the exact Foundry product/region charge is confirmed.",
-    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version.",
+    "The selected Llama 4 Maverick 17B Global meters belong to Azure Llama Models, not Azure Machine Learning. Regional and Data Zone deployment prices differ and are not selected.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure Llama Models', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

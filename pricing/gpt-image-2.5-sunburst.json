@@ -24,8 +24,19 @@
   },
   "pricing": {
     "currency": "USD",
-    "sourceType": "azure-openai-global",
-    "status": "unavailable"
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-retail-prices-api",
+    "status": "published",
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 5,
+    "cachedInputPer1mTokens": 1.25,
+    "channels": {
+      "image": {
+        "inputPer1mTokens": 8,
+        "cachedInputPer1mTokens": 2,
+        "outputPer1mTokens": 30
+      }
+    }
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
@@ -36,14 +47,15 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/azure/foundry/openai/how-to/dall-e#models-and-capabilities",
     "version": "https://learn.microsoft.com/azure/foundry/openai/how-to/responses#supported-models",
-    "pricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
   },
   "notes": [
     "Generally available high-fidelity image generation model optimized for editing precision; supports text and image input and inpainting.",
     "Native quality values are low, medium, high, xhigh, max and auto. Custom dimensions support up to 4K; the upstream validates size and quality constraints.",
-    "Exact model-specific pricing was not available in the checked Azure pricing page on 2026-09-11. No GPT-Image-2 prices are substituted, and pricingCatalogEntry remains null.",
     "This proxy template exposes images/generations; native model editing capabilities do not imply a proxy images/edits endpoint.",
     "contextWindow, maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
-    "pricing.billingUnit and exact-model rates remain unverified together. pricingCatalogEntry=null keeps automatic token pricing disabled; absent units or rates are not zero or sibling-model prices."
+    "The exact Azure model meters independently price text input, image input and image output; unpublished cache or text-output rates remain absent. pricingCatalogEntry=null is retained so this metadata update does not enable scalar text billing for media.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure OpenAI Media', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

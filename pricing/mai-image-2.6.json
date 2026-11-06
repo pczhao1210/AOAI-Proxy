@@ -28,8 +28,17 @@
   },
   "pricing": {
     "currency": "USD",
-    "sourceType": "azure-official",
-    "status": "unavailable"
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-retail-prices-api",
+    "status": "published",
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 5,
+    "channels": {
+      "image": {
+        "inputPer1mTokens": 8,
+        "outputPer1mTokens": 38
+      }
+    }
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
@@ -42,15 +51,16 @@
   "sources": {
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-mai-image",
-    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/"
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/"
   },
   "notes": [
     "Microsoft Foundry Global Standard public preview with text-to-image generation and image editing, improved text rendering, portraits and commercial imagery.",
     "The mai-image route defaults to /mai/v1/images/generations on the Foundry services endpoint. Set targetModel to the actual deployment name; explicit upstream route and host overrides remain available.",
     "Generation uses width and height; the profile expands explicit WIDTHxHEIGHT size values. Native auto_aspect_ratio and web_grounding parameters are preserved for upstream handling.",
     "The upstream returns base64 PNG data. Native image edits use multipart requests through mai-image-edits at /mai/v1/images/edits, enabled by media.http.enabled. Generation size expansion is not applied to edits.",
-    "Exact model-specific pricing has not been verified as of 2026-09-11. pricingCatalogEntry remains null to avoid inventing token-based image charges.",
     "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
-    "pricing.billingUnit and exact-model rates remain unverified together. pricingCatalogEntry=null keeps automatic token pricing disabled; absent units or rates are not zero or sibling-model prices."
+    "The exact Azure model meters independently price text input, image input and image output; unpublished cache or text-output rates remain absent. pricingCatalogEntry=null is retained so this metadata update does not enable scalar text billing for media.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='MAI Models', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

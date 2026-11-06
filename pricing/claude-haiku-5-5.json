@@ -70,7 +70,8 @@
     "limits": "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
     "reasoning": "https://platform.claude.com/docs/en/build-with-claude/effort",
     "thinking": "https://platform.claude.com/docs/en/models/haiku-5-5/whats-new-haiku-5-5",
-    "pricing": "https://platform.claude.com/docs/en/models/haiku-5-5/overview"
+    "pricing": "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
+    "azureBilling": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models-billing"
   },
   "notes": [
     "Released October 7, 2026. Microsoft Foundry lists both Azure-hosted and Anthropic-hosted Haiku 5.5 as GA through native Messages. No independent maximum input limit is inferred from its context window.",
@@ -78,6 +79,7 @@
     "Thinking blocks are account-bound or usable by linked accounts; replay them unchanged through the producing account. The newer tokenizer can count approximately 30% more tokens than Haiku 4.5.",
     "Prompts up to and including 100K tokens use the short rates; larger prompts use the long rates for the whole request, including cache reads and TTL-specific writes. Batch discounts and deployment-specific surcharges are not represented by these standard Anthropic prices.",
     "The 128K output limit is for synchronous Messages. The separate Message Batches API supports 300K output with the output-300k-2026-03-24 beta header; that batch-only limit is not applied to proxy Messages routes.",
-    "maxInputTokens remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits."
+    "maxInputTokens remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "Azure's CCU billing documentation is the selected-host authority and delegates per-model token rates to Anthropic's official pricing table before contractual discounts. Retain the Anthropic publisher/source identity, existing hosting choices and separately sourced TTL rates; CCU is not a new token price or a reason to copy a different model's rate."
   ]
 }

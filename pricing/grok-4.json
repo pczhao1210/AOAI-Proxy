@@ -22,22 +22,27 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "azure-foundry-models",
-    "status": "unavailable"
+    "sourceType": "azure-retail-prices-api",
+    "status": "published",
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 3,
+    "outputPer1mTokens": 15
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {},
   "sources": {
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others&tabs=global-standard-aoai%2Cglobal-standard#xai-models-sold-directly-by-azure",
-    "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/",
+    "pricing": "https://prices.azure.com/api/retail/prices",
     "xaiPricing": "https://docs.x.ai/developers/models",
     "version": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure",
-    "lifecycle": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure"
+    "lifecycle": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#xai-models-sold-directly-by-azure",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/grok/"
   },
   "notes": [
     "Azure Foundry's exact-model row lists version 1, text-only input, a 262K input ceiling and 8,192 output tokens; it requires registration. contextWindow remains unverified because no combined context window is published.",
     "The exact-model capability table lists Chat Completions only. The broader Grok deployment how-to mentions Responses, so native Responses support for this exact model remains a Microsoft-documentation conflict; this card declares only Chat Completions.",
-    "Azure does not label a lifecycle state or publish a numeric price for this row. The current xAI model/pricing index does not list a current Grok 4 price, so no xAI rate is copied to this Azure card and automatic pricing is disabled."
+    "Azure's exact model row does not independently label its lifecycle, so status remains unknown. The absence of a current xAI-direct price does not override the exact Azure Grok Models meters.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure Grok Models', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

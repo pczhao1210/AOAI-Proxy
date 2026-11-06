@@ -38,8 +38,9 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "megapixels",
-    "sourceType": "bfl-official",
-    "status": "reference",
+    "sourceType": "azure-retail-prices-api",
+    "status": "published",
+    "deploymentType": "global-standard",
     "generatedImageFirstMegapixel": 0.03,
     "generatedImageAdditionalMegapixel": 0.015,
     "referenceImagePerMegapixel": 0.015,
@@ -60,16 +61,15 @@
   },
   "sources": {
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
-    "capabilities": "https://docs.bfl.ai/flux_2",
-    "pricing": "https://bfl.ai/pricing"
+    "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others#black-forest-labs-models-sold-directly-by-azure",
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "pixelRules": "https://bfl.ai/pricing",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/black-forest-labs/"
   },
   "notes": [
-    "Microsoft Foundry lists FLUX.2-pro as Preview. The retained BFL first/additional/reference megapixel formula is not established by the current BFL pricing table and is not an Azure Foundry quote; pricingCatalogEntry=null disables automatic image pricing pending an exact selected-host price.",
-    "计费时每张生成图与每张参考图分别按像素向上取整到下一整 MP。",
-    "BFL defines 1024x1024 pixels as 1 MP; Azure deployment rates remain unverified.",
-    "多张参考图时，每张参考图至少按 1 MP 计费。",
-    "超过 4 MP 的图片会先缩放到 4 MP 后再计费。",
+    "The selected Azure BFL Flux Models meters establish generated/reference megapixel rates. pixelRules retain publisher reference behavior for MP sizing, rounding and minimums; these rules are not independently verified Azure billing invariants. The existing pricingCatalogEntry=null opt-out remains unchanged.",
     "contextWindow, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
-    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version."
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure BFL Flux Models', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

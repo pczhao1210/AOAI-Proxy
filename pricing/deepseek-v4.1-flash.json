@@ -31,7 +31,11 @@
     "currency": "USD",
     "billingUnit": "1M tokens",
     "sourceType": "azure-retail-prices-api",
-    "status": "unavailable"
+    "status": "published",
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 0.375,
+    "cachedInputPer1mTokens": 0.008,
+    "outputPer1mTokens": 1.5
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
@@ -41,11 +45,13 @@
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
     "pricing": "https://prices.azure.com/api/retail/prices",
-    "publisher": "https://api-docs.deepseek.com/news/news260910/"
+    "publisher": "https://api-docs.deepseek.com/news/news260910/",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/fireworks/"
   },
   "notes": [
     "The current Azure-direct catalog does not list a DeepSeek-V4.1-Flash deployment. This card selects the exact Foundry Fireworks offering FW-DeepSeek-V4.1-Flash, which lists image input and a 1M context. maxInputTokens and maxOutputTokens are not published for this exact Foundry deployment.",
-    "The DeepSeek API's deepseek-flash rates apply to its own direct endpoint, not this Foundry Fireworks target. The current Foundry Retail Prices API rate was not verified; pricingCatalogEntry=null disables automatic text pricing until that exact meter is confirmed.",
-    "The model publisher's 2026-09-10 release date and limits do not establish a Fireworks snapshot/version or deployment-specific input/output maxima; modelVersion remains unverified for this exact Foundry offer."
+    "The model publisher's 2026-09-10 release date and limits do not establish a Fireworks snapshot/version or deployment-specific input/output maxima; modelVersion remains unverified for this exact Foundry offer.",
+    "The exact FW DS-V4.1-Flash meters apply only to the unsuffixed Foundry offering. They do not establish rates for the administrator-supplied FW-Deepseek-v4.1-Flash-1017 target or the DeepSeek direct API.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure Fireworks Models', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

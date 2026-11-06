@@ -51,11 +51,13 @@
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
     "modalities": "https://platform.claude.com/docs/en/models/fable-5/overview",
     "lifecycle": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/claude-models#available-claude-models",
-    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "azureBilling": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models-billing"
   },
   "notes": [
     "Microsoft Foundry lists this Anthropic-infrastructure offering as Preview; status describes that offering, not a universal lifecycle across Claude API, Bedrock and Vertex.",
     "Anthropic's exact-model pricing table, checked 2026-10-11, publishes cache-read and both TTL-specific cache-write rates. Regional surcharges and discounts are not included.",
-    "maxInputTokens has not been independently verified for this deployment; no input ceiling is inferred from contextWindow minus maxOutputTokens."
+    "maxInputTokens has not been independently verified for this deployment; no input ceiling is inferred from contextWindow minus maxOutputTokens.",
+    "Azure's CCU billing documentation is the selected-host authority and delegates per-model token rates to Anthropic's official pricing table before contractual discounts. Retain the Anthropic publisher/source identity, existing hosting choices and separately sourced TTL rates; CCU is not a new token price or a reason to copy a different model's rate."
   ]
 }

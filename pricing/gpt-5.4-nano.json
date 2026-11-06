@@ -41,8 +41,9 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "openai-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
+    "deploymentType": "global-standard",
     "inputPer1mTokens": 0.2,
     "cachedInputPer1mTokens": 0.02,
     "outputPer1mTokens": 1.25
@@ -51,9 +52,11 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-54",
-    "pricing": "https://developers.openai.com/api/docs/pricing"
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "pricingReference": "https://developers.openai.com/api/docs/pricing",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
   },
   "notes": [
-    "pricing.sourceType identifies published OpenAI reference prices, not independently verified Azure deployment charges. Match the actual service tier and region or retain an explicit administrator pricing override."
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure OpenAI GPT5', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

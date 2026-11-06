@@ -33,6 +33,7 @@ node --test test/image-optimization.test.js test/image-work-queue.test.js test/i
 node --test test/mai-routes.test.js test/media-http.test.js test/azure-speech.test.js
 node --test test/realtime.test.js test/webrtc.test.js
 node --test test/real-protocol-matrix.test.js test/pricing-sync.test.js
+node --test test/model-card-source-priority.test.js test/model-card-format.test.js test/model-catalog.test.js
 ```
 
 Security regressions cover percent-encoded matched admin routes, custom admin paths,

@@ -1,12 +1,15 @@
 {
   "id": "gpt-realtime-2",
   "displayName": "GPT Realtime 2",
-  "provider": "openai",
+  "provider": "azure-openai",
   "family": "gpt-realtime",
-  "modelVersion": null,
-  "status": "ga",
+  "modelVersion": "2026-05-07",
+  "status": "preview",
   "contextWindow": 128000,
-  "maxOutputTokens": 32000,
+  "maxInputTokens": 32000,
+  "maxOutputTokens": 4096,
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
   "interfaces": ["realtime"],
   "defaultInterface": "realtime",
   "inputModalities": ["text", "image", "audio"],
@@ -16,7 +19,7 @@
     "realtime": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": ["minimal", "low", "medium", "high", "xhigh"],
+        "levels": ["minimal", "low", "medium", "high"],
         "validation": "passthrough"
       }
     }
@@ -24,8 +27,9 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "openai-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
+    "deploymentType": "global-standard",
     "inputPer1mTokens": 4,
     "cachedInputPer1mTokens": 0.4,
     "outputPer1mTokens": 24,
@@ -48,14 +52,20 @@
     }
   },
   "sources": {
-    "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-2",
-    "azureDeployment": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
-    "limits": "https://developers.openai.com/api/docs/models/gpt-realtime-2",
-    "pricing": "https://developers.openai.com/api/docs/pricing"
+    "capabilities": "https://ai.azure.com/catalog/models/gpt-realtime-2",
+    "azureDeployment": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "limits": "https://ai.azure.com/catalog/models/gpt-realtime-2",
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "publisher": "https://developers.openai.com/api/docs/models/gpt-realtime-2",
+    "transport": "https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets",
+    "pricingReference": "https://developers.openai.com/api/docs/pricing",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
   },
   "notes": [
-    "OpenAI 官方价格按文本、音频、图像 token 分通道计费；媒体估算器仅在通道及缓存 usage 完整时使用这些价格。pricingCatalogEntry 保持为空，避免旧文本计费路径误算多模态请求。",
-    "OpenAI's direct Realtime model ID is dateless; modelVersion remains unset because 2026-05-07 belongs to a separate Azure deployment, not an OpenAI snapshot. Azure lists that deployment with 32K input and 4,096 output.",
-    "OpenAI's exact direct model page does not enumerate reasoning.effort levels or its omitted-parameter default. protocolProfiles.realtime.reasoning.default remains unverified; client controls remain passthrough and no values are inferred."
+    "Administrator approved Azure-default selection on 2026-11-06. The exact Foundry catalog identifies version 2026-05-07 and a 128K context; Microsoft's deployment table separately publishes 32K input and 4,096 output. These independent ceilings are not copied from the OpenAI direct endpoint or added together.",
+    "The provider and hosting metadata select Azure for new imports. Existing upstream URLs, authentication and route overrides are not rewritten; the Realtime transport gates and pricingCatalogEntry=null opt-out remain unchanged. OpenAI-direct usage no longer inherits an automatic price fallback from this Azure card; retain independently sourced explicit model.pricing or access.pricingCatalog entries for that host.",
+    "The exact Azure catalog lists reasoning.effort values minimal, low, medium and high. protocolProfiles.realtime.reasoning.default remains unpublished; no default or xhigh choice is copied from another Realtime model.",
+    "Azure conversational Realtime uses /openai/v1/realtime?model=<deployment>, with text, image and audio input and text/audio output.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure OpenAI Media', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

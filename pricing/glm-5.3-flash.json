@@ -24,11 +24,12 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "fireworks-serverless",
-    "status": "reference",
-    "inputPer1mTokens": 0.15,
-    "cachedInputPer1mTokens": 0.03,
-    "outputPer1mTokens": 0.5
+    "sourceType": "azure-retail-prices-api",
+    "status": "published",
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 0.188,
+    "cachedInputPer1mTokens": 0.038,
+    "outputPer1mTokens": 0.625
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
@@ -38,11 +39,12 @@
     "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
     "providerModel": "https://fireworks.ai/models/fireworks/glm-5p3-flash",
     "limits": "https://fireworks.ai/models/fireworks/glm-5p3-flash",
-    "pricing": "https://docs.fireworks.ai/serverless/pricing"
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/fireworks/"
   },
   "notes": [
     "The template selects Foundry's FW-GLM-5.3-Flash deployment, not a Fireworks-account model path. Microsoft lists a 1M context and multimodal image input; no exact output limit or reasoning-effort default is published for this Flash offering.",
-    "Fireworks Serverless rates are retained as reference values only; an exact Azure Retail Prices meter was not verified. pricingCatalogEntry=null disables automatic pricing until the selected Foundry meter is confirmed.",
-    "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits."
+    "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure Fireworks Models', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

@@ -32,8 +32,9 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "openai-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
+    "deploymentType": "global-standard",
     "inputPer1mTokens": 1.75,
     "cachedInputPer1mTokens": 0.175,
     "outputPer1mTokens": 14
@@ -46,13 +47,15 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-53",
-    "pricing": "https://developers.openai.com/api/docs/pricing",
+    "pricing": "https://prices.azure.com/api/retail/prices",
     "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
-    "reasoningReference": "https://developers.openai.com/api/docs/models/gpt-5.3-codex"
+    "reasoningReference": "https://developers.openai.com/api/docs/models/gpt-5.3-codex",
+    "pricingReference": "https://developers.openai.com/api/docs/pricing",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
   },
   "notes": [
     "protocolProfiles.responses.reasoning.default remains independently unverified for this exact provider deployment. Client controls remain passthrough; no omitted-parameter default or effort list is inferred from a sibling model.",
-    "pricing.sourceType identifies published OpenAI reference prices, not independently verified Azure deployment charges. Match the actual service tier and region or retain an explicit administrator pricing override.",
-    "OpenAI's exact-model reference additionally lists xhigh, while Azure's generic xhigh feature list does not independently confirm it for this Codex deployment version. The retained Azure effort metadata is descriptive, not local rejection: explicit xhigh remains passthrough. The Azure omitted-parameter default stays unverified."
+    "OpenAI's exact-model reference additionally lists xhigh, while Azure's generic xhigh feature list does not independently confirm it for this Codex deployment version. The retained Azure effort metadata is descriptive, not local rejection: explicit xhigh remains passthrough. The Azure omitted-parameter default stays unverified.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure OpenAI GPT5', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

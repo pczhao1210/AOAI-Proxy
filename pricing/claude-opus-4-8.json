@@ -51,13 +51,15 @@
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-claude#available-claude-models",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models",
     "modalities": "https://platform.claude.com/docs/en/models/opus-4-8/overview",
-    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing"
+    "pricing": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "azureBilling": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models-billing"
   },
   "notes": [
     "Anthropic's exact-model pricing table, checked 2026-10-11, publishes cache-read and both TTL-specific cache-write rates. Regional surcharges and discounts are not included.",
     "maxInputTokens has not been independently verified for this deployment; no input ceiling is inferred from contextWindow minus maxOutputTokens.",
     "protocolProfiles.messages.thinking.default remains unset because Anthropic's native omitted-field behavior is thinking off. shimDefault=adaptive is a proxy-only conversion policy that activates thinking only for cross-protocol requests asking for visible reasoning, not as an Anthropic default.",
     "Claude Opus 4.8 于 2026-05-28 发布，定价与 Opus 4.6 相同（$5/$25 per 1M tokens）。",
-    "Claude 在 model-router 中仍需先单独部署到 Foundry 资源。"
+    "Claude 在 model-router 中仍需先单独部署到 Foundry 资源。",
+    "Azure's CCU billing documentation is the selected-host authority and delegates per-model token rates to Anthropic's official pricing table before contractual discounts. Retain the Anthropic publisher/source identity, existing hosting choices and separately sourced TTL rates; CCU is not a new token price or a reason to copy a different model's rate."
   ]
 }

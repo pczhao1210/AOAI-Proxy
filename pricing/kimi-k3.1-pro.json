@@ -1,0 +1,49 @@
+{
+  "id": "Kimi-K3.1-Pro",
+  "displayName": "Kimi K3.1 Pro",
+  "provider": "moonshot-ai",
+  "family": "kimi-k3",
+  "modelVersion": "2026-11-04",
+  "status": "preview",
+  "contextWindow": 1048576,
+  "maxOutputTokens": 262144,
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling"],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["low", "high", "max"],
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-official",
+    "status": "published",
+    "inputPer1mTokens": 2.3,
+    "cachedInputPer1mTokens": 0.23,
+    "outputPer1mTokens": 11.5
+  },
+  "proxyTemplate": {},
+  "sources": {
+    "capabilities": "https://ai.azure.com/catalog/models/Kimi-K3.1-Pro",
+    "limits": "https://ai.azure.com/catalog/models/Kimi-K3.1-Pro",
+    "reasoning": "https://platform.kimi.ai/docs/guide/use-reasoning-effort",
+    "publisher": "https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart",
+    "pricing": "https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/moonshot-ai%E2%80%99s-kimi-k3-1-pro-comes-to-microsoft-foundry/4570292"
+  },
+  "notes": [
+    "The template selects Azure-direct Kimi-K3.1-Pro, version 2026-11-04, not Fireworks FW-Kimi-K3 or Moonshot's kimi-k3.1-pro API target. The Foundry catalog marks this offering Preview and publishes Chat Completions, text/image input, text output, a 1,048,576-token context and a 262,144-token output ceiling.",
+    "maxInputTokens is not independently published for this Azure deployment. Do not infer it from contextWindow or subtract maxOutputTokens.",
+    "The exact-model publisher documents function calling, always-on reasoning and reasoning_effort values low/high/max with a max default. The levels are publisher reference metadata, not a local rejection policy. protocolProfiles.chat/completions.reasoning.default remains unverified for Azure and is intentionally omitted; no K2 thinking.type toggle is inferred.",
+    "Pricing uses Microsoft's 2026-11-05 Foundry launch announcement, not Moonshot direct API or Fireworks rates. The announcement does not publish cache-write/TTL, batch or region-specific rates; these remain unknown rather than copying the direct API's separate price table."
+  ]
+}

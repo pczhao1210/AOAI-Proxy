@@ -164,9 +164,15 @@ reasoning, and deliberate pricing overrides remain supported.
 For open-source models, Foundry availability is the admission criterion. Prefer
 the Azure-direct offering for each exact model; use the Foundry Fireworks offering
 only when no Azure-direct offering exists. This is not a family-wide provider
-switch. Keep the selected deployment ID, protocol facts and price provenance
+switch. For the selected deployment's prices, consult Azure Retail Prices API
+and official Azure pricing first, then Azure/Fireworks evidence, then the
+publisher's official table only when higher-priority evidence is unavailable.
+An Azure billing document may explicitly delegate model rates to its publisher,
+as Claude CCU does; retain both links rather than relabeling the publisher.
+Keep the selected deployment ID, protocol facts and price provenance
 aligned. DeepSeek V4.1 Flash has no current Azure-direct roster entry; GLM
-5.3/5.3 Flash and Kimi K3 use their exact Fireworks Foundry targets. The
+5.3/5.3 Flash and Kimi K3 use their exact Fireworks Foundry targets. Kimi
+K3.1 Pro uses the separately verified Azure-direct `Kimi-K3.1-Pro` target. The
 current Azure-direct roster does **not** list DeepSeek V4.1 Flash; its active
 Foundry offering is `FW-DeepSeek-V4.1-Flash`. Regression tests must compare the
 exact model ID and selected hosting surface, not force a direct target when it
@@ -199,6 +205,75 @@ bundled UI template updates without deleting their metadata.
 When archiving a card, verify the provider-specific lifecycle and preserve the
 card's original filename. Do not archive a card solely because another
 provider's deployment of the same model has retired.
+
+#### 2026-11-06 Azure-first source refresh
+
+Fifty existing cards were updated using exact selected-host evidence. All
+existing `pricingCatalogEntry: null` opt-outs, enabled-price states, template
+targets and template routes were retained. No archive, persisted configuration
+or generated admin asset was changed.
+
+- Azure Retail Prices API now groups these products under
+  `serviceName = 'Foundry Models'`. Use exact product/meter names, not an
+  assumed `Azure OpenAI` service name or the public model ID as a meter name.
+  Follow pagination and distinguish `1K`, `1M`, megapixel and duration units.
+  Azure HTML tables can render `$-` while their `data-amount` attributes contain
+  regional numeric rates; a placeholder is not proof of an unpublished price.
+- Azure-direct Kimi K2.5/K2.6 replace historical Fireworks Data Zone references.
+  Their Global input/cache-read/output rates are respectively
+  **0.60/0.10/3.00** and **0.95/0.16/4.00 USD per 1M tokens**.
+  Llama Maverick uses the Azure Llama Models Global meters, not the retained
+  Azure Machine Learning reference.
+- Foundry Fireworks GLM-5.3 Flash uses **0.188/0.038/0.625**, and the unsuffixed
+  DeepSeek V4.1 Flash uses **0.375/0.008/1.50**. Kimi K3 retains its numerical
+  rates but now cites Azure meters instead of Fireworks-account Serverless
+  prices. The separately configured `1017` target is still unverified and is
+  not assigned the unsuffixed model's prices.
+- GPT-5.3 Codex, GPT-5.4/5.5/5.6 and GPT-6.1 Terra now cite verified Azure
+  Global meters. Their existing rates and GPT tier boundaries/IDs are unchanged.
+  Grok 4 gains its verified Azure rates. Grok 4.3/4.6/4.7 retain `reference`
+  status because the numeric boundary and whole-request selection method remain
+  unverified for Azure, even though their short/long rates are now Azure-sourced.
+- GPT Image, MAI-Image-2.6, FLUX.2 and the reviewed Azure audio/Realtime cards
+  record exact token-channel or megapixel rates. Missing text-output/cache
+  rates are not filled with zero. FLUX `pixelRules` remain publisher reference
+  behavior rather than newly verified Azure rounding/minimum-charge rules.
+  Publishing rate metadata does not change the separate media billing safeguards.
+- At the administrator's request, GPT Realtime 2, Translate and Whisper now
+  default to Azure. Exact catalog entries publish version `2026-05-07` and
+  128K context; Learn separately publishes 32K input and 4,096 output. Realtime 2
+  is Preview, while Translate/Whisper are GA. The catalog/Learn `2026-05-06`
+  version disagreement for Translate/Whisper is preserved in their notes.
+  Native Azure WebSocket paths are documented per route. Existing configured
+  upstream URLs, authentication and route overrides are not migrated.
+  OpenAI-direct usage no longer inherits automatic price fallback from these
+  Azure cards; retain independently sourced explicit `model.pricing` or
+  `access.pricingCatalog` entries to preserve direct-provider cost estimates.
+- All eleven Claude cards link Azure's CCU billing authority, which explicitly
+  delegates per-model token rates to Anthropic. Publisher identity, hosting
+  options, rates and TTL-specific cache tables remain unchanged.
+
+Run the focused source, import and safety contracts with:
+
+```bash
+node --test test/model-card-source-priority.test.js test/model-card-format.test.js test/model-catalog.test.js test/pricing-sync.test.js test/media-policy.test.js test/usage-accounting.test.js
+```
+
+#### 2026-11-06 catalog addition
+
+- [Kimi K3.1 Pro](kimi-k3.1-pro.json) selects Azure-direct `Kimi-K3.1-Pro`,
+  version `2026-11-04`, in Preview. The [Foundry catalog](https://ai.azure.com/catalog/models/Kimi-K3.1-Pro)
+  publishes native Chat Completions, text/image input, a 1,048,576-token context
+  and a 262,144-token output ceiling. `maxInputTokens` remains unpublished.
+- Microsoft's [launch announcement](https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/moonshot-ai%E2%80%99s-kimi-k3-1-pro-comes-to-microsoft-foundry/4570292)
+  supplies the Azure input/cache-read/output rates of **2.30/0.23/11.50 USD per
+  1M tokens**. Moonshot direct API prices, cache-write TTLs and batch discounts
+  are not substituted for Azure charges.
+- The exact-model publisher documents `reasoning_effort` values `low`, `high`,
+  `max` and its own `max` default. The card retains the choices as descriptive
+  publisher references with passthrough validation; the Azure omitted-parameter
+  default remains unknown. No K2 thinking toggle or native Responses/Messages
+  interface is inferred for this deployment.
 
 #### 2026-10-27 catalog update
 

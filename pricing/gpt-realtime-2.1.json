@@ -24,8 +24,9 @@
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "azure-openai-global",
-    "status": "reference",
+    "sourceType": "azure-retail-prices-api",
+    "status": "published",
+    "deploymentType": "global-standard",
     "inputPer1mTokens": 4,
     "cachedInputPer1mTokens": 0.4,
     "outputPer1mTokens": 24,
@@ -51,12 +52,14 @@
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?pivots=azure-direct-others",
     "openAiReference": "https://developers.openai.com/api/docs/models/gpt-realtime-2.1",
-    "pricing": "https://prices.azure.com/api/retail/prices"
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
   },
   "notes": [
     "Microsoft Foundry lists model version 2026-07-07 as generally available.",
     "Azure's exact deployment row lists 32K input and 4,096 output; it does not publish a combined context window. OpenAI direct separately lists 128K/32K; those larger direct limits are not substituted for Azure.",
-    "The Azure public price table renders $- for current numeric prices; the retained Azure global rates are reference estimates and were not independently confirmed as current invoice charges.",
-    "protocolProfiles.realtime.reasoning.default remains independently unverified for this exact provider deployment. Client controls remain passthrough; no omitted-parameter default or effort list is inferred from a sibling model."
+    "protocolProfiles.realtime.reasoning.default remains independently unverified for this exact provider deployment. Client controls remain passthrough; no omitted-parameter default or effort list is inferred from a sibling model.",
+    "Text, audio and image usage categories retain their separate rates where published. pricingCatalogEntry=null and the runtime's selected-host media-pricing safeguards are unchanged; published rate metadata does not enable scalar token billing.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure OpenAI Media', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }
