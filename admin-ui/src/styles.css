@@ -785,6 +785,69 @@ code {
   color: var(--muted);
 }
 
+.harness-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.harness-candidate {
+  border-bottom: 1px solid var(--line);
+  padding: 0.85rem 0;
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.harness-reasons {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.harness-reasons small {
+  display: block;
+}
+
+.harness-setup,
+.harness-codex-settings {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.harness-setup > summary,
+.harness-codex-settings > summary {
+  cursor: pointer;
+  padding: 0.7rem 0;
+}
+
+.harness-metadata {
+  margin: 0;
+}
+
+.harness-metadata dd {
+  margin: 0.3rem 0 0.9rem;
+  white-space: pre-wrap;
+}
+
+.harness-metadata small {
+  display: block;
+  color: var(--muted);
+}
+
+.harness-codex-settings pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.harness-overrides {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
 .entity-card-collapsible[open] .entity-summary-action {
   color: var(--accent-warm);
 }

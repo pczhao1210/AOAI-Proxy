@@ -11,6 +11,7 @@ This directory contains the project documentation and deployment guides.
 
 - Git 协作指南（中文）: [development/git-workflow.zh-CN.md](development/git-workflow.zh-CN.md)
 - Claude Code / Codex 接入要求: [development/claude-code-codex-requirements.md](development/claude-code-codex-requirements.md)
+- 管理后台 Harness 优化执行计划: [development/harness-admin-optimization-plan.zh-CN.md](development/harness-admin-optimization-plan.zh-CN.md)
 
 ## Protocols
 

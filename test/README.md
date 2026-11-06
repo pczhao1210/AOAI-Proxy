@@ -24,6 +24,8 @@ node --test test/config-feature-flags.test.js test/config-environment.test.js te
 node --test test/admin-media-form.test.js
 node --test test/admin-routing-form.test.js
 node --test test/admin-capabilities.test.js test/capability-routing.test.js
+node --test test/admin-harness-form.test.js test/harness-client-config.test.js test/codex-models.test.js
+node --test --test-name-pattern='App Harness|App capability' test/admin-runtime-stats.test.js
 node --test test/admin-log-content.test.js
 node --test test/logs.test.js test/admin-auth-logs.test.js
 node --test test/response-reader.test.js
@@ -193,6 +195,13 @@ media mode visibility, numeric zeros, hidden settings, list parsing and exact co
 with controlled-input state feedback. Routing tests additionally freeze beta options, boolean defaults,
 control order and editable policy fields when routes are disabled. Real-browser layout, translations and
 the review/save HTTP workflow remain separate browser checks.
+
+Harness form contracts use the same component helper for stale/failed eligibility, identity-based
+selection, complete blocking reasons, connection snippets, clipboard failures and Codex override editing.
+The full App contracts in `admin-runtime-stats.test.js` cover cancellation, late replies, retry and
+failed-save draft retention. `codex-models.test.js` freezes shared serialization and metadata provenance;
+the `codex-models` route compares admin preview objects with public discovery. These checks do not call
+real providers or establish CLI acceptance. Browser layout and reviewed save/reload remain separate gates.
 
 Log-content tests mock the confirmation prompt, checking that cancellation writes neither configuration
 path, confirmed full mode writes both paths, and leaving full mode does not prompt. They never enable

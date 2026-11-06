@@ -758,3 +758,69 @@ test("App capability previews fence stale responses and preserve legacy labels, 
   assert.equal(Object.hasOwn(saved, "capabilityView"), false);
   await testing.waitFor(() => assert.ok(view.getByText("Active configuration")));
 });
+
+test("App Harness cancels obsolete eligibility requests and fences late responses across tabs", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  const saveAttempts = [];
+  const config = { models: [{ id: "native", clientCompatibility: { codex: true } }], upstreams: [] };
+  const requests = [];
+  const result = eligible => ({
+    items: [{ modelId: "native", clients: { codex: { eligible, reasons: [] } } }]
+  });
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/harness/eligibility")) {
+      const pending = deferred();
+      requests.push({ ...pending, signal: options.signal });
+      return pending.promise;
+    }
+    if (path.endsWith("/config")) {
+      if (options.method === "PUT") {
+        saveAttempts.push(JSON.parse(options.body));
+        return Response.json({ error: "Harness save failed" }, { status: 400 });
+      }
+      return Response.json(config);
+    }
+    if (path.endsWith("/runtime")) return Response.json({ runtime: {} });
+    if (path.endsWith("/stats")) return Response.json({});
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "unused" }] });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
+  testing.fireEvent.click(view.getByRole("button", { name: "Harness", exact: true }));
+  await testing.waitFor(() => assert.equal(requests.length, 1));
+  testing.fireEvent.click(view.getByRole("button", { name: "Upstream / Model" }));
+  assert.equal(requests[0].signal?.aborted, true);
+  testing.fireEvent.click(view.getByRole("button", { name: "Harness", exact: true }));
+  await testing.waitFor(() => assert.equal(requests.length, 2));
+  await testing.act(async () => requests[1].resolve(Response.json(result(false))));
+  await testing.act(async () => requests[0].resolve(Response.json(result(true))));
+  assert.equal(view.queryAllByText(/^(Eligible|Configuration matches native routing)$/).length, 0);
+  testing.fireEvent.click(view.getByRole("button", { name: "Refresh eligibility" }));
+  await testing.waitFor(() => assert.equal(requests.length, 3));
+  assert.equal(requests[2].signal.aborted, false, "The explicit refresh must be the current request");
+  await testing.act(async () => requests[2].reject(new Error("Eligibility offline")));
+  await testing.waitFor(() => assert.ok(view.queryByRole("alert")?.textContent.includes("Eligibility offline"), JSON.stringify({
+    aborted: requests.map(request => request.signal.aborted),
+    text: view.container.querySelector(".tab-content")?.textContent?.slice(0,650)
+  })));
+  assert.ok(view.getAllByRole("button", { name: "Add Model", exact: true }).every(button => button.disabled));
+  testing.fireEvent.click(view.getByRole("button", { name: "Refresh eligibility" }));
+  await testing.waitFor(() => assert.equal(requests.length, 4));
+  await testing.act(async () => requests[3].resolve(Response.json(result(true))));
+  assert.ok(view.getByText("Configuration matches native routing"));
+  assert.equal(view.queryByRole("alert"), null);
+  testing.fireEvent.click(testing.within(view.container.querySelector("#harness-codex")).getByRole("checkbox", { name: "Publish catalog" }));
+  context.mock.method(window, "confirm", () => true);
+  testing.fireEvent.click(view.getByRole("button", { name: "Review & Save", exact: true }));
+  await testing.act(async () => testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true })));
+  await testing.waitFor(() => assert.equal(saveAttempts.length, 1));
+  await testing.waitFor(() => assert.equal(view.getByRole("button", { name: "Review & Save", exact: true }).disabled, false));
+  assert.equal(saveAttempts[0].compatibility.codex.enabled, false);
+  assert.ok(view.getByText("Draft changes: review and save to apply."));
+  assert.equal(config.compatibility, undefined);
+  view.unmount();
+  assert.equal(requests[3].signal.aborted, true);
+});

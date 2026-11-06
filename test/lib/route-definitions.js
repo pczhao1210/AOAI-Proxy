@@ -206,6 +206,11 @@ export const routeTests = [
       assert.equal(result.json?.object, undefined);
       assert.equal(result.json?.data, undefined);
       ensure(Array.isArray(result.json?.models) && result.json.models.length > 0, "Expected Codex model data");
+      const preview = await ctx.adminRequest("/admin/api/harness/eligibility", {
+        method: "POST", headers: { "x-aoai-admin-csrf": "1" }, json: {}
+      });
+      assert.equal(preview.status, 200, preview.text);
+      assert.deepEqual(preview.json.items.filter(item => item.codex).map(item => item.codex.info), result.json.models);
       const codexModel = result.json.models.find((model) => model.slug === "gpt-5.6-luna");
       ensure(codexModel, "Expected native Responses model in Codex catalog");
       assert.equal(codexModel.display_name, "GPT-5.6 Luna");
@@ -355,12 +360,15 @@ export const routeTests = [
     description: "Harness catalogs only accept currently routable native models",
     async run(ctx) {
       const config = await ctx.readConfigFile();
+      ctx.clearUpstreamRequests();
       const preview = await ctx.adminRequest("/admin/api/harness/eligibility", {
         method: "POST",
         headers: { "x-aoai-admin-csrf": "1" },
         json: { config }
       });
       assert.equal(preview.status, 200, preview.text);
+      assert.deepEqual(preview.json.active.items, preview.json.items);
+      assert.deepEqual(preview.json.active.catalogs, preview.json.catalogs);
       const activeCapabilities = preview.json?.capabilities?.active;
       const previewCapabilities = preview.json?.capabilities?.preview;
       assert.ok(activeCapabilities?.sourceDigest);
@@ -386,6 +394,8 @@ export const routeTests = [
         json: { config }
       });
       assert.equal(draftPreview.status, 200, draftPreview.text);
+      assert.deepEqual(draftPreview.json.active, preview.json.active);
+      assert.equal(ctx.upstreamRequests.length, 0, "Static eligibility must never contact the upstream");
       assert.deepEqual(draftPreview.json.capabilities.active, activeCapabilities);
       const draftCapabilityModel = draftPreview.json.capabilities.preview.models.find(item => item.modelId === codexModel.id);
       assert.equal(draftCapabilityModel.configurationMismatch, true);

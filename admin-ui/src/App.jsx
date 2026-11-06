@@ -128,6 +128,7 @@ export default function App() {
   const [harnessEligibility, setHarnessEligibility] = useState(null);
   const [harnessEligibilityLoading, setHarnessEligibilityLoading] = useState(false);
   const [harnessEligibilityError, setHarnessEligibilityError] = useState("");
+  const [harnessEligibilityRevision, setHarnessEligibilityRevision] = useState(0);
   const [pricingSyncSource, setPricingSyncSource] = useState({ owner: "", repo: "", path: "pricing", ref: "" });
   const [databaseConfigForm, setDatabaseConfigForm] = useState(() => normalizeDatabaseConfigForm());
   const [databaseTestResult, setDatabaseTestResult] = useState(null);
@@ -177,6 +178,11 @@ export default function App() {
   const sectionNavigationTargetRef = useRef(null);
 
   const dirty = useMemo(() => JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText]);
+  const harnessEligibilityFresh = !harnessEligibilityLoading && !harnessEligibilityError
+    && harnessEligibilityContextRef.current?.config === config
+    && harnessEligibilityContextRef.current?.pricingLibrary === pricingLibrary
+    && harnessEligibilityContextRef.current?.tab === activeTab
+    && harnessEligibilityContextRef.current?.revision === harnessEligibilityRevision;
   const capabilityFallbackModels = harnessEligibilityContextRef.current?.pricingLibrary === pricingLibrary
     ? (harnessEligibility?.capabilities?.preview?.models || []).filter(model => {
       if (model.source === "catalog") return false;
@@ -557,13 +563,14 @@ export default function App() {
     const requestId = harnessEligibilityRequestRef.current + 1;
     harnessEligibilityRequestRef.current = requestId;
     let cancelled = false;
+    const controller = new AbortController();
     setHarnessEligibilityLoading(true);
     setHarnessEligibilityError("");
     const timer = setTimeout(async () => {
       try {
-        const result = await fetchHarnessEligibility(config);
+        const result = await fetchHarnessEligibility(config, { signal: controller.signal });
         if (!cancelled && requestId === harnessEligibilityRequestRef.current) {
-          harnessEligibilityContextRef.current = { config, pricingLibrary };
+          harnessEligibilityContextRef.current = { config, pricingLibrary, tab: activeTab, revision: harnessEligibilityRevision };
           setHarnessEligibility(result);
         }
       } catch (requestError) {
@@ -578,9 +585,10 @@ export default function App() {
     }, 180);
     return () => {
       cancelled = true;
+      controller.abort();
       clearTimeout(timer);
     };
-  }, [activeTab, config, pricingLibrary, t]);
+  }, [activeTab, config, pricingLibrary, t, harnessEligibilityRevision]);
 
   function updateConfig(mutator) {
     setConfig((current) => {
@@ -1301,6 +1309,24 @@ export default function App() {
     navigate();
   }
 
+  function handleHarnessNavigate({ type, id }) {
+    if (type === "route" || type === "diagnostics") {
+      setActiveTab(type === "route" ? "workspace" : "ops");
+      handleSectionNavClick(type === "route" ? "workspace-routing" : "ops-model-validation");
+      return;
+    }
+    const collection = type === "upstream" ? config.upstreams || [] : config.models || [];
+    const field = type === "upstream" ? "name" : "id";
+    const matches = collection.map((item, index) => ({ item, index })).filter(({ item }) => item?.[field] === id);
+    if (matches.length !== 1) {
+      setError(t("harness.targetMissing", "The target is missing or ambiguous. Edit its identity in Upstream / Model."));
+      setActiveTab("routing");
+      return;
+    }
+    setActiveTab("routing");
+    handleSectionNavClick(`${type === "upstream" ? "upstream" : "model"}-card-${matches[0].index}`);
+  }
+
   if (loading && !config) {
     return <div className="app-shell"><div className="loading">{t("common.loadingAdmin", "Loading React admin...")}</div></div>;
   }
@@ -1562,9 +1588,7 @@ export default function App() {
           config={config}
           pricingLibrary={pricingLibrary}
           capabilityView={
-            !harnessEligibilityLoading && !harnessEligibilityError
-            && harnessEligibilityContextRef.current?.config === config
-            && harnessEligibilityContextRef.current?.pricingLibrary === pricingLibrary
+            harnessEligibilityFresh
               ? harnessEligibility?.capabilities?.[dirty ? "preview" : "active"] || null
               : null
           }
@@ -1583,9 +1607,13 @@ export default function App() {
       {activeTab === "harness" && config ? (
         <HarnessTab
           config={config}
-          eligibility={harnessEligibility}
+          loadedConfig={loadedConfig}
+          dirty={dirty}
+          eligibility={harnessEligibilityFresh ? harnessEligibility : null}
           eligibilityLoading={harnessEligibilityLoading}
           eligibilityError={harnessEligibilityError}
+          onRetry={() => setHarnessEligibilityRevision(value => value + 1)}
+          onNavigate={handleHarnessNavigate}
           updateConfig={updateConfig}
           t={t}
         />

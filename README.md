@@ -580,6 +580,16 @@ For Claude deployments in Microsoft Foundry, configure the upstream route as `me
 
 Set `models[].hostingMode` to `azure` or `anthropic` when the matched Claude pricing template offers both hosting modes. This records the deployment infrastructure for region, data-handling, and capability metadata; it is not evidence of Responses support. The currently documented Azure-hosted and Anthropic-hosted Claude deployments both use Messages. Incoming Responses `reasoning.effort` is therefore converted to `output_config.effort` with `thinking.type="adaptive"`. A route override may select only an interface or transport target allowed by that hosting-resolved Catalog descriptor.
 
+### Harness administration
+
+The admin **Harness** tab manages Claude Code and Codex catalog membership without changing protocol routing. Its model picker includes searchable eligible, already-selected and ineligible models, with blocking reasons and links to the relevant settings. Eligibility is static configuration validation, not a live connectivity or CLI compatibility test. Failed, loading or obsolete previews cannot authorize additions.
+
+Draft additions/removals, saved members and the active publication state are shown separately. Use the normal **Review & Save** workflow; closing a catalog retains its members. Actual model visibility still depends on the caller's API key permissions. The diagnostics link checks the active configuration through the existing operations page, not the unsaved draft.
+
+Each client has a connection guide: explicitly enter the public proxy root or `/v1` address, choose a selected eligible model, and copy the Bash/Zsh or Codex TOML template. Templates use a credential placeholder, never retrieve keys or make upstream calls, and should be merged rather than overwrite existing client settings.
+
+Selected Codex models also expose draft/active catalog JSON and metadata sources. The advanced fields edit existing `models[].codex` overrides for context window, supported/default reasoning efforts, priority, description and base instructions. Blank fields inherit existing behavior; clearing displayed overrides preserves other fields. Comma-separated effort edits apply on blur. Default priority is the index after consumer filtering, so it may differ for restricted API keys. These controls change discovery metadata, not provider capability or request policy.
+
 ### Claude Code
 
 The model endpoint negotiates Anthropic's model-list shape when the request contains `Anthropic-Version`, uses `format=anthropic` / `format=messages`, or has a Claude/Anthropic user agent. When the Claude Code catalog is enabled, a Claude Code User-Agent or `format=claude-code` returns only models explicitly selected in the Harness settings that resolve to native Messages; generic Anthropic SDK discovery retains the broader accessible model list. An explicit `format` takes precedence over User-Agent. Requests for a disabled client catalog return `ClientCatalogDisabled` instead of falling back to another format. Claude Code gateway model discovery can therefore be enabled:

@@ -116,10 +116,11 @@ export async function validateConfiguredModels(payload = {}) {
   }));
 }
 
-export async function fetchHarnessEligibility(config) {
+export async function fetchHarnessEligibility(config, { signal } = {}) {
   return readJson(await adminFetch("/harness/eligibility", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal,
     body: JSON.stringify({ config })
   }));
 }
