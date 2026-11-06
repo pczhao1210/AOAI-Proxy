@@ -5,6 +5,7 @@ import {
   createModelCatalogSyncTransaction,
   getDefaultProtocolProfile,
   getDescriptorProtocolProfile,
+  getModelCapabilityView,
   installModelCatalogSnapshot,
   resolveModelDescriptor
 } from "../src/model-catalog.js";
@@ -1500,6 +1501,55 @@ test("Model Catalog compiler resolves exact model facts and protocol defaults", 
   assert.equal(getDescriptorProtocolProfile(unknown, "responses"), getDefaultProtocolProfile("responses"));
   assert.ok(snapshot.generation > 0);
   assert.equal(snapshot.modelCount, 2);
+});
+
+test("capability views use one snapshot for effective models and upstream summaries without changing configuration", () => {
+  const viewConfig = { ...config, models: [
+    { ...config.models[0], capabilities: ["reasoning"] },
+    { ...config.models[1], capabilities: ["function-calling"] },
+    { id: "undeclared", upstream: "azure" }
+  ] };
+  const original = structuredClone(viewConfig);
+  const snapshot = compileModelCatalog(viewConfig, definitions);
+  const view = getModelCapabilityView(viewConfig, snapshot);
+  assert.equal(view.sourceDigest, snapshot.sourceDigest);
+  assert.deepEqual(view.models.map(model => [model.source, model.configurationMismatch]), [
+    ["catalog", true], ["model-config", false], ["none", false]
+  ]);
+  assert.deepEqual(view.models[0].capabilities, ["reasoning", "vision"]);
+  assert.deepEqual(view.models[0].configuredCapabilities, ["reasoning"]);
+  assert.deepEqual(view.upstreams, [{ name: "azure", capabilities: ["reasoning", "vision", "function-calling"] }]);
+  assert.deepEqual(viewConfig, original);
+  const updated = compileModelCatalog(viewConfig, [{ ...definitions[0], capabilities: ["structured-outputs"] }]);
+  assert.deepEqual(getModelCapabilityView(viewConfig, updated).upstreams[0].capabilities, ["structured-outputs", "function-calling"]);
+  assert.deepEqual(getModelCapabilityView(viewConfig, snapshot).models[0].capabilities, ["reasoning", "vision"]);
+});
+
+test("Model Catalog capability omissions and future labels do not become native route or request gates", () => {
+  const model = config.models[0];
+  const catalogConfig = { ...config, models: [model] };
+  for (const capabilities of [undefined, [], ["future-feature", "tool-calling"]]) {
+    const definition = { ...definitions[0] };
+    if (capabilities === undefined) delete definition.capabilities;
+    else definition.capabilities = capabilities;
+    const snapshot = compileModelCatalog(catalogConfig, [definition]);
+    const descriptor = resolveModelDescriptor(model.id, snapshot);
+    assert.deepEqual(descriptor.capabilities, capabilities || []);
+    assert.deepEqual(getConfiguredModelBindingIssues(catalogConfig, snapshot), []);
+    assert.deepEqual(getDescriptorProtocolProfile(descriptor, "responses"), definition.protocolProfiles.responses);
+    const plan = resolveRoutePlan({ routeKey: "chat/completions", model, upstream: config.upstreams[0], descriptor });
+    assert.equal(plan.backendRouteKey, "chat/completions");
+    assert.equal(plan.targetUrl, "https://example.openai.azure.com/openai/v1/chat/completions");
+    const request = chatToResponsesRequest({
+      messages: [{ role: "user", content: "hello" }],
+      reasoning_effort: "future",
+      tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
+      parallel_tool_calls: true
+    }, model.targetModel, descriptor);
+    assert.equal(request.reasoning.effort, "future");
+    assert.equal(request.tools[0].name, "lookup");
+    assert.equal(request.parallel_tool_calls, true);
+  }
 });
 
 test("invalid proxy adapters cannot activate a catalog or masquerade as native interfaces", () => {

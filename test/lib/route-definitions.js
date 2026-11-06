@@ -98,6 +98,12 @@ export const routeTests = [
 
       const pricing = await ctx.adminRequest("/admin/api/pricing-library");
       assert.equal(pricing.status, 200, pricing.text);
+      const capabilityPreview = await ctx.adminRequest("/admin/api/harness/eligibility", {
+        method: "POST", headers: { "x-aoai-admin-csrf": "1" }, json: {}
+      });
+      assert.equal(capabilityPreview.status, 200, capabilityPreview.text);
+      assert.deepEqual(capabilityPreview.json.capabilities.active, capabilityPreview.json.capabilities.preview);
+      assert.ok(capabilityPreview.json.capabilities.active.models.some(model => model.source === "catalog" && model.capabilities.length));
       const models = await ctx.publicRequest("/v1/models");
       assert.equal(models.status, 200, models.text);
     }
@@ -355,6 +361,13 @@ export const routeTests = [
         json: { config }
       });
       assert.equal(preview.status, 200, preview.text);
+      const activeCapabilities = preview.json?.capabilities?.active;
+      const previewCapabilities = preview.json?.capabilities?.preview;
+      assert.ok(activeCapabilities?.sourceDigest);
+      assert.deepEqual(activeCapabilities, previewCapabilities);
+      const activeCapabilityModel = activeCapabilities.models.find(item => item.modelId === "gpt-5.6-luna");
+      assert.equal(activeCapabilityModel.source, "catalog");
+      assert.equal(activeCapabilityModel.configurationMismatch, false);
       const nativeClaude = preview.json?.items?.find((item) => item.modelId === "claude-native");
       const nativeCodex = preview.json?.items?.find((item) => item.modelId === "gpt-5.6-luna");
       const imageModel = preview.json?.items?.find((item) => item.modelId === "gpt-image-1.5");
@@ -366,12 +379,18 @@ export const routeTests = [
       const codexModel = config.models.find((model) => model.id === "gpt-5.6-luna");
       ensure(codexModel, "Expected native Responses model");
       codexModel.routes = { "*": "chat/completions" };
+      codexModel.capabilities = ["reasoning"];
       const draftPreview = await ctx.adminRequest("/admin/api/harness/eligibility", {
         method: "POST",
         headers: { "x-aoai-admin-csrf": "1" },
         json: { config }
       });
       assert.equal(draftPreview.status, 200, draftPreview.text);
+      assert.deepEqual(draftPreview.json.capabilities.active, activeCapabilities);
+      const draftCapabilityModel = draftPreview.json.capabilities.preview.models.find(item => item.modelId === codexModel.id);
+      assert.equal(draftCapabilityModel.configurationMismatch, true);
+      assert.deepEqual(draftCapabilityModel.configuredCapabilities, ["reasoning"]);
+      assert.deepEqual(draftCapabilityModel.capabilities, activeCapabilityModel.capabilities);
       const draftCodex = draftPreview.json?.items?.find((item) => item.modelId === "gpt-5.6-luna");
       assert.equal(draftCodex?.clients?.codex?.eligible, false);
       assert.ok(draftCodex.clients.codex.reasons.some((reason) => reason.code === "NON_NATIVE_PROTOCOL"));

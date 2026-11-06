@@ -21,7 +21,7 @@ import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus,
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, recordSuppressedAuthRejection, setLogConfig } from "./logs.js";
 import { getConfiguredModelBindingIssues, getHarnessClientEligibility, getHarnessModelEligibility, validateConfiguredModels } from "./model-validation.js";
-import { compileModelCatalog, createModelCatalogSyncTransaction, getDescriptorProtocolProfile, resolveModelDescriptor } from "./model-catalog.js";
+import { compileModelCatalog, createModelCatalogSyncTransaction, getDescriptorProtocolProfile, getModelCapabilityView, resolveModelDescriptor, withModelCatalogUpdateLock } from "./model-catalog.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
@@ -352,7 +352,10 @@ function buildCodexModelInfo(model, index) {
   const hasKnownContextWindow = configuredContextWindow != null
     || (Number.isSafeInteger(catalogContextWindow) && catalogContextWindow > 0)
     || (Number.isSafeInteger(catalogInputLimit) && catalogInputLimit > 0);
-  const supportsVision = capabilities.has("vision");
+  const inputModalities = descriptor?.inputModalities?.length
+    ? descriptor.inputModalities.filter(modality => ["text", "image"].includes(modality))
+    : capabilities.has("vision") ? ["text", "image"] : ["text"];
+  const supportsVision = inputModalities.includes("image");
   const supportsWebSearch = capabilities.has("web-search");
   const codeOptimized = capabilities.has("code-optimized");
   const configuredBaseInstructions = typeof model?.codex?.baseInstructions === "string"
@@ -392,7 +395,7 @@ function buildCodexModelInfo(model, index) {
     max_context_window: contextWindow,
     effective_context_window_percent: hasKnownContextWindow ? 100 : 95,
     experimental_supported_tools: [],
-    input_modalities: supportsVision ? ["text", "image"] : ["text"],
+    input_modalities: inputModalities,
     supports_search_tool: supportsWebSearch,
     use_responses_lite: false
   };
@@ -1042,19 +1045,26 @@ app.post("/admin/api/models/validate", async (req, reply) => {
 app.post("/admin/api/harness/eligibility", async (req, reply) => {
   const body = req.body && typeof req.body === "object" ? req.body : {};
   try {
-    const sourceConfig = body.config && typeof body.config === "object"
-      ? restoreConfigSecrets(body.config, getPersistedConfig())
-      : getPersistedConfig();
-    const config = prepareConfigPreview(sourceConfig);
-    const snapshot = compileModelCatalog(config);
-    reply.send({
-      ok: true,
-      catalogs: {
-        claudeCode: { enabled: config?.compatibility?.claudeCode?.enabled !== false },
-        codex: { enabled: config?.compatibility?.codex?.enabled !== false }
-      },
-      items: getHarnessModelEligibility(config, snapshot)
+    const result = await withModelCatalogUpdateLock(() => {
+      const sourceConfig = body.config && typeof body.config === "object"
+        ? restoreConfigSecrets(body.config, getPersistedConfig())
+        : getPersistedConfig();
+      const config = prepareConfigPreview(sourceConfig);
+      const snapshot = compileModelCatalog(config);
+      return {
+        ok: true,
+        catalogs: {
+          claudeCode: { enabled: config?.compatibility?.claudeCode?.enabled !== false },
+          codex: { enabled: config?.compatibility?.codex?.enabled !== false }
+        },
+        capabilities: {
+          active: getModelCapabilityView(getConfig()),
+          preview: getModelCapabilityView(config, snapshot)
+        },
+        items: getHarnessModelEligibility(config, snapshot)
+      };
     });
+    reply.send(result);
   } catch (error) {
     logAdminApiError("admin.harness_eligibility_failed", error, {
       route: "/admin/api/harness/eligibility",

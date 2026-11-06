@@ -9,7 +9,7 @@ import { compileDefinitionPricing, resolveConfiguredPricing } from "../src/prici
 import { calculateTokenCost } from "../src/token-pricing.js";
 import { listPricingDefinitions } from "../src/pricing-library.js";
 import { applyModelCardTierPricing, buildModelFromPricingTemplate, getModelTierPricing, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
-import { canonicalizeModelCard, formatModelCard, validateModelCard } from "../scripts/model-cards.js";
+import { canonicalizeModelCard, formatModelCard, MODEL_CAPABILITY_LABELS, validateModelCard } from "../scripts/model-cards.js";
 
 const legacy = {
   id: "example", displayName: "Example", provider: "openai", family: "example",
@@ -48,6 +48,106 @@ test("raw card validation catches missing metadata before runtime defaults hide 
   assert.match(validateModelCard(invalid).errors.join("\n"), /contextWindow/);
   assert.match(validateModelCard(invalid).errors.join("\n"), /sources.pricing/);
   assert.match(validateModelCard(invalid).errors.join("\n"), /reasoning.default/);
+});
+
+test("capability authoring rejects unknown, legacy, duplicate and noncanonical labels without rewriting them", () => {
+  for (const capabilities of [
+    [], ["tool-calling"], ["future-feature"], ["Vision"], ["function_calling"],
+    [" reasoning"], ["reasoning", "reasoning"]
+  ]) {
+    const card = { ...authoredCard, capabilities };
+    const original = structuredClone(card);
+    assert.ok(validateModelCard(card).errors.some(error => error.startsWith("capabilities")), JSON.stringify(capabilities));
+    assert.deepEqual(card, original);
+  }
+});
+
+test("capability authoring checks direct modality and parallel-call consistency without inferring other labels", () => {
+  const cases = [
+    { capabilities: ["vision"] },
+    { inputModalities: ["text", "image"] },
+    { capabilities: ["image-generation"] },
+    { capabilities: ["image-editing"], outputModalities: ["image"] },
+    { capabilities: ["vision", "image-editing"], inputModalities: ["image"] },
+    { capabilities: ["audio-input"] },
+    { capabilities: ["audio-output"] },
+    { capabilities: ["parallel-tool-calling"] }
+  ];
+  for (const overrides of cases) {
+    const card = { ...authoredCard, ...overrides };
+    assert.ok(validateModelCard(card).errors.some(error => error.startsWith("capabilities")), JSON.stringify(overrides));
+  }
+  for (const overrides of [
+    { capabilities: ["vision"], inputModalities: ["text", "image"] },
+    { capabilities: ["image-generation"], outputModalities: ["image"] },
+    { capabilities: ["vision", "image-editing"], inputModalities: ["image"], outputModalities: ["image"] },
+    { capabilities: ["audio-input", "audio-output"], inputModalities: ["audio"], outputModalities: ["audio"] },
+    { capabilities: ["transcription"], inputModalities: ["audio"] },
+    { capabilities: ["function-calling", "parallel-tool-calling"] },
+    ...["function-calling", "json-output", "structured-outputs", "streaming", "web-search"]
+      .map(capability => ({ capabilities: [capability] }))
+  ]) {
+    assert.deepEqual(validateModelCard({ ...authoredCard, ...overrides }).errors, [], JSON.stringify(overrides));
+  }
+});
+
+test("capability documentation covers the offline vocabulary", async () => {
+  const readme = await fs.readFile(new URL("../pricing/README.md", import.meta.url), "utf8");
+  const section = readme.split("#### Capability labels\n")[1].split("\nNotes:")[0];
+  const labels = [...section.matchAll(/^\| `([^`]+)` \|/gm)].map(match => match[1]);
+  assert.equal(labels.length, 22);
+  assert.deepEqual(labels, MODEL_CAPABILITY_LABELS);
+  assert.equal(new Set(labels).size, labels.length);
+  assert.ok(labels.includes("web-search"));
+  assert.ok(!labels.includes("tool-calling"));
+  assert.deepEqual(validateModelCard({
+    ...authoredCard, capabilities: labels, inputModalities: ["text", "image", "audio"],
+    outputModalities: ["text", "image", "audio"]
+  }).errors, []);
+});
+
+test("output token parameter authoring requires an evidenced Chat field without defaulting legacy profiles", () => {
+  const card = { ...authoredCard, interfaces: ["chat/completions"], capabilities: ["function-calling"],
+    protocolProfiles: { "chat/completions": { request: { outputTokenParameter: "max_tokens" } } },
+    sources: { ...authoredCard.sources, parameters: "https://example.test/parameters" } };
+  assert.deepEqual(validateModelCard(card).errors, []);
+  assert.equal(JSON.parse(formatModelCard(card)).protocolProfiles["chat/completions"].request.outputTokenParameter, "max_tokens");
+  const missingEvidence = { ...card, sources: { ...authoredCard.sources } };
+  assert.match(validateModelCard(missingEvidence).errors.join("\n"), /sources.parameters/);
+  for (const value of [null, "", "max_output_tokens", "MAX_TOKENS", true, {}, []]) {
+    const invalid = { ...card, protocolProfiles: { "chat/completions": { request: { outputTokenParameter: value } } } };
+    assert.match(validateModelCard(invalid).errors.join("\n"), /request.outputTokenParameter/);
+  }
+  for (const protocol of ["responses", "messages"]) {
+    assert.match(validateModelCard({ ...card, protocolProfiles: {
+      [protocol]: { request: { outputTokenParameter: "max_tokens" } }
+    } }).errors.join("\n"), /request.outputTokenParameter/);
+  }
+});
+
+test("evidenced Chat cards preserve explicit token parameters through raw, loaded and imported Catalog forms", async () => {
+  const ids = ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "gpt-5.2", "gpt-5.4",
+    "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "mai-thinking-1"];
+  const { compileModelCatalog, resolveModelDescriptor } = await import("../src/model-catalog.js");
+  const definitions = listPricingDefinitions();
+  for (const id of ids) {
+    const card = JSON.parse(await fs.readFile(new URL(`../pricing/${id}.json`, import.meta.url), "utf8"));
+    assert.equal(card.protocolProfiles["chat/completions"].request.outputTokenParameter, "max_completion_tokens", id);
+    assert.ok(card.sources.parameters, id);
+    const definition = definitions.find(item => item.id === id);
+    assert.equal(definition.protocolProfiles["chat/completions"].request.outputTokenParameter, "max_completion_tokens", id);
+    const model = buildModelFromPricingTemplate(definition, "provider", { models: [] });
+    const descriptor = resolveModelDescriptor(model.id, compileModelCatalog({ models: [model] }, definitions));
+    assert.equal(descriptor.protocolProfiles["chat/completions"].request.outputTokenParameter, "max_completion_tokens", id);
+  }
+});
+
+test("MAI Thinking uses the evidenced canonical function-calling label in raw and imported cards", async () => {
+  const card = JSON.parse(await fs.readFile(new URL("../pricing/mai-thinking-1.json", import.meta.url), "utf8"));
+  assert.deepEqual(card.capabilities, ["reasoning", "function-calling"]);
+  const definition = listPricingDefinitions().find(item => item.id === card.id);
+  assert.deepEqual(definition.capabilities, card.capabilities);
+  assert.deepEqual(buildModelFromPricingTemplate(definition, "mai", { models: [] }).capabilities, card.capabilities);
 });
 
 test("card completeness reports unknown fields without inventing defaults or prices", () => {

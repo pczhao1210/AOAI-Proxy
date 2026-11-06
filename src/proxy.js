@@ -19,6 +19,7 @@ import {
   getStreamFlag,
   sanitizeRequestBody,
   extractProxyRequestControls,
+  normalizeChatOutputTokens,
   validateImageInputs,
   maybeCompressImages
 } from "./proxy/body.js";
@@ -964,7 +965,8 @@ export async function proxyRequest({
     }
     const unsupportedRequest = sanitizeModernModelRequest(nextBody, {
       backendRouteKey,
-      descriptor: modelDescriptor
+      descriptor: modelDescriptor,
+      originalChatBody: routeKey === "chat/completions" && backendRouteKey === "chat/completions" ? rawBody : undefined
     }) || sanitizeWebSearchRequest(nextBody, {
       backendRouteKey,
       model
@@ -2439,7 +2441,7 @@ function sanitizeWebSearchRequest(body, { backendRouteKey }) {
   return null;
 }
 
-function sanitizeModernModelRequest(body, { backendRouteKey, descriptor }) {
+function sanitizeModernModelRequest(body, { backendRouteKey, descriptor, originalChatBody }) {
   if (!body || typeof body !== "object") {
     return null;
   }
@@ -2450,11 +2452,7 @@ function sanitizeModernModelRequest(body, { backendRouteKey, descriptor }) {
   delete body.serviceTier;
 
   if (backendRouteKey === "chat/completions") {
-    const reasoningRequest = descriptor?.capabilities?.includes("reasoning") || body.reasoning_effort != null;
-    if (reasoningRequest && typeof body.max_completion_tokens !== "number" && typeof body.max_tokens === "number") {
-      body.max_completion_tokens = body.max_tokens;
-    }
-    if (reasoningRequest) delete body.max_tokens;
+    normalizeChatOutputTokens(body, descriptor, originalChatBody);
 
     if (body.top_logprobs != null && body.logprobs == null) {
       body.logprobs = true;

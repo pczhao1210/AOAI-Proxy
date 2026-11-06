@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { getStats, normalizeCacheWrite, recordMediaUsage, recordRequest, recordUsage, summarizeCacheWrite } from "../src/stats.js";
 import { formatEstimatedCost, formatBudgetCost, formatCacheWriteCost, formatCacheWriteTokens } from "../admin-ui/src/utils.js";
 
@@ -127,6 +129,7 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
   const originals = new Map();
   let vite;
+  let viteCacheDir;
   let cleanup;
   try {
     for (const name of ["window", "document", "navigator", "HTMLElement", "HTMLDetailsElement", "Node", "MutationObserver"]) {
@@ -136,9 +139,11 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
     const React = await import("react");
     const testing = await import("@testing-library/react/pure.js");
     cleanup = testing.cleanup;
+    viteCacheDir = await mkdtemp(`${tmpdir()}/aoai-cost-observability-vite-`);
     vite = await createServer({
       configFile: fileURLToPath(new URL("../admin-ui/vite.config.js", import.meta.url)),
       root: fileURLToPath(new URL("..", import.meta.url)),
+      cacheDir: viteCacheDir,
       resolve: { dedupe: ["react", "react-dom"] },
       server: { middlewareMode: true, watch: null, ws: false },
       appType: "custom"
@@ -212,6 +217,7 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
   } finally {
     cleanup?.();
     await vite?.close();
+    if (viteCacheDir) await rm(viteCacheDir, { recursive: true, force: true });
     dom.window.close();
     for (const [name, descriptor] of originals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);

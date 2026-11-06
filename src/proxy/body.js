@@ -1,5 +1,26 @@
 import sharp from "sharp";
 import { optimizeInlineImage } from "./image-optimizer.js";
+import { getDescriptorProtocolProfile } from "../model-catalog.js";
+
+export function normalizeChatOutputTokens(body, descriptor, originalChatBody) {
+  const parameter = getDescriptorProtocolProfile(descriptor, "chat/completions")?.request?.outputTokenParameter;
+  if (parameter) {
+    const alias = parameter === "max_tokens" ? "max_completion_tokens" : "max_tokens";
+    // General cleanup must not erase explicitly supplied token values before profile precedence.
+    for (const field of [parameter, alias]) {
+      if (originalChatBody && Object.hasOwn(originalChatBody, field)) body[field] = originalChatBody[field];
+    }
+    if (!Object.hasOwn(body, parameter) && Object.hasOwn(body, alias)) body[parameter] = body[alias];
+    delete body[alias];
+    return;
+  }
+  // Preserve unmigrated cards' request behavior until an explicit protocol rule is sourced.
+  const reasoningRequest = descriptor?.capabilities?.includes("reasoning") || body.reasoning_effort != null;
+  if (reasoningRequest && typeof body.max_completion_tokens !== "number" && typeof body.max_tokens === "number") {
+    body.max_completion_tokens = body.max_tokens;
+  }
+  if (reasoningRequest) delete body.max_tokens;
+}
 
 const HARD_BLOCKED_HEADERS = new Set([
   "authorization",

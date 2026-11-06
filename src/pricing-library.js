@@ -4,7 +4,7 @@ import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
 import { fileURLToPath } from "node:url";
 import { compileDefinitionPricing } from "./pricing-policy.js";
-import { expandModelCard } from "./model-card.js";
+import { expandModelCard, getModelCardOutputTokenParameter } from "./model-card.js";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BUNDLED_PRICING_DIR = path.resolve(MODULE_DIR, "..", "pricing");
@@ -114,6 +114,7 @@ function normalizeProtocolProfile(value, profileName) {
   const reasoningSource = asPlainObject(profile.reasoning);
   const thinkingSource = asPlainObject(profile.thinking);
   const requestSource = asPlainObject(profile.request);
+  const outputTokenParameter = getModelCardOutputTokenParameter(requestSource, profileName);
   const reasoningLevels = [...new Set(normalizeStringArray(reasoningSource.levels).map((level) => level.toLowerCase()))];
   const thinkingTypes = [...new Set(normalizeStringArray(thinkingSource.types).map((type) => type.toLowerCase()))];
   const reasoningDefault = String(reasoningSource.default || "").trim().toLowerCase();
@@ -198,6 +199,7 @@ function normalizeProtocolProfile(value, profileName) {
     },
     request: {
       transport: requestTransport,
+      ...(outputTokenParameter ? { outputTokenParameter } : {}),
       removeModel: requestSource.removeModel === true,
       qualityAliases: normalizeValueMap(requestSource.qualityAliases),
       dropParameters: [...new Set(normalizeStringArray(requestSource.dropParameters))],

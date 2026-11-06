@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { getModelCardTemplateDefaults } from "../src/model-card.js";
+import { getModelCardOutputTokenParameter, getModelCardTemplateDefaults } from "../src/model-card.js";
 import { compileDefinitionPricing } from "../src/pricing-policy.js";
 import { compilePricingPolicy } from "../src/token-pricing.js";
 
@@ -19,6 +19,13 @@ const PRICE_FIELDS = [
   "promptTokensAtLeast", "promptTokensBelow", ...RATE_NAMES.map(name => `${name}Per1mTokens`),
   "tiering", "tiers", "channels"
 ];
+export const MODEL_CAPABILITY_LABELS = Object.freeze([
+  "audio-input", "audio-output", "code-optimized", "computer-use", "function-calling",
+  "image-editing", "image-generation", "json-output", "parallel-tool-calling", "realtime",
+  "reasoning", "speaker-diarization", "speech-generation", "speech-to-speech", "speech-to-text",
+  "streaming", "structured-outputs", "text-to-speech", "transcription", "translation", "vision", "web-search"
+]);
+const CAPABILITY_LABELS = new Set(MODEL_CAPABILITY_LABELS);
 
 function orderFields(value, fields) {
   return Object.fromEntries([
@@ -51,6 +58,33 @@ export function validateModelCard(card) {
   for (const field of ["interfaces", "inputModalities", "outputModalities", "capabilities"]) {
     if (!strings(card[field])) errors.push(`${field}: required nonempty string array`);
   }
+  if (strings(card.capabilities)) {
+    const capabilities = new Set(card.capabilities);
+    if (capabilities.size !== card.capabilities.length) errors.push("capabilities: duplicate labels are not allowed");
+    for (const capability of capabilities) {
+      if (!CAPABILITY_LABELS.has(capability)) {
+        errors.push(`capabilities: unknown label "${capability}"; use the documented canonical vocabulary`);
+      }
+    }
+    for (const [capability, field, modality] of [
+      ["vision", "inputModalities", "image"],
+      ["image-generation", "outputModalities", "image"],
+      ["image-editing", "inputModalities", "image"],
+      ["image-editing", "outputModalities", "image"],
+      ["audio-input", "inputModalities", "audio"],
+      ["audio-output", "outputModalities", "audio"]
+    ]) {
+      if (capabilities.has(capability) && (!Array.isArray(card[field]) || !card[field].includes(modality))) {
+        errors.push(`capabilities: ${capability} requires ${modality} in ${field}`);
+      }
+    }
+    if (Array.isArray(card.inputModalities) && card.inputModalities.includes("image") && !capabilities.has("vision")) {
+      errors.push("capabilities: image input requires vision");
+    }
+    if (capabilities.has("parallel-tool-calling") && !capabilities.has("function-calling")) {
+      errors.push("capabilities: parallel-tool-calling requires function-calling");
+    }
+  }
   source("capabilities");
   source("pricing");
   const limits = ["contextWindow", "maxInputTokens", "maxOutputTokens"];
@@ -71,6 +105,7 @@ export function validateModelCard(card) {
     }
   }
   const profiles = isObject(card.protocolProfiles) ? card.protocolProfiles : {};
+  if (Object.values(profiles).some(profile => profile?.request?.outputTokenParameter != null)) source("parameters");
   if (card.protocolProfiles != null && !isObject(card.protocolProfiles)) {
     errors.push("protocolProfiles: expected an object");
   }
@@ -82,6 +117,11 @@ export function validateModelCard(card) {
     if (!isObject(profile)) {
       errors.push(`protocolProfiles.${protocol}: expected an object`);
       continue;
+    }
+    try {
+      getModelCardOutputTokenParameter(profile.request, protocol);
+    } catch (error) {
+      errors.push(error.message);
     }
     for (const [kind, choices] of [["reasoning", "levels"], ["thinking", "types"]]) {
       const control = profile[kind];

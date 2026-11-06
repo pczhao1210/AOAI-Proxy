@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test, { after, afterEach, before } from "node:test";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
@@ -10,6 +12,7 @@ import { formatBillingTier, formatCacheHitRatio, formatDateTime, formatRuntimeNu
 
 let dom;
 let vite;
+let viteCacheDir;
 let React;
 let testing;
 let RuntimeTab;
@@ -40,9 +43,11 @@ before(async () => {
   }
   React = await import("react");
   testing = await import("@testing-library/react/pure.js");
+  viteCacheDir = await mkdtemp(`${tmpdir()}/aoai-runtime-stats-vite-`);
   vite = await createServer({
     configFile: fileURLToPath(new URL("../admin-ui/vite.config.js", import.meta.url)),
     root: fileURLToPath(new URL("..", import.meta.url)),
+    cacheDir: viteCacheDir,
     resolve: { dedupe: ["react", "react-dom"] },
     server: { middlewareMode: true, watch: null, ws: false },
     appType: "custom"
@@ -62,6 +67,7 @@ afterEach(async () => {
 
 after(async () => {
   await vite?.close();
+  if (viteCacheDir) await rm(viteCacheDir, { recursive: true, force: true });
   dom?.window.close();
   for (const [name, descriptor] of originals) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -675,4 +681,80 @@ test("App allows reviewed canonical cleanup without editing unrelated settings",
   await testing.waitFor(() => assert.ok(testing.within(view.container.querySelector(".status-strip")).getByText("Synced")));
   assert.equal(view.container.querySelector(".save-dock"), null);
   assert.equal(saved, true);
+});
+
+test("App capability previews fence stale responses and preserve legacy labels, hidden fields and zeros through save/reload", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  let persisted = {
+    models: [{ id: "legacy", pricingRef: "legacy-card", targetModel: "deployment", upstream: "provider",
+      capabilities: ["reasoning"], defaultParams: { temperature: 0 }, routes: {} }],
+    upstreams: [{ name: "provider", capabilities: ["old-summary"], auth: { mode: "apiKey", apiKey: "********" } }]
+  };
+  const original = structuredClone(persisted);
+  const pending = [deferred(), deferred()];
+  let previews = 0;
+  let saved;
+  const capabilityView = config => ({
+    sourceDigest: "catalog-generation",
+    models: [{ modelId: "legacy", source: "model-config", capabilities: config.models[0].capabilities,
+      configuredCapabilities: config.models[0].capabilities, configurationMismatch: false }],
+    upstreams: [{ name: "provider", capabilities: config.models[0].capabilities }]
+  });
+  const previewResult = config => ({
+    ok: true, items: [], capabilities: { active: capabilityView(persisted), preview: capabilityView(config) }
+  });
+  context.mock.method(window, "confirm", () => true);
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/harness/eligibility")) {
+      previews += 1;
+      assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+      if (previews === 2 || previews === 3) return pending[previews - 2].promise;
+      return Response.json(previewResult(JSON.parse(options.body).config));
+    }
+    if (path.endsWith("/config")) {
+      if (options.method === "PUT") {
+        assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+        saved = JSON.parse(options.body);
+        persisted = saved;
+        return Response.json({ config: saved });
+      }
+      return Response.json(persisted);
+    }
+    if (path.endsWith("/runtime")) return Response.json({ runtime: {} });
+    if (path.endsWith("/stats")) return Response.json({});
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "unused" }] });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
+  testing.fireEvent.click(view.getByRole("button", { name: "Upstream / Model" }));
+  await testing.waitFor(() => assert.ok(view.getByText("Active configuration")));
+  view.container.querySelector("#model-card-0").open = true;
+  const input = view.getByRole("textbox", { name: /Legacy configuration capabilities/ });
+  input.focus();
+  testing.fireEvent.change(input, { target: { value: "vision" } });
+  await testing.waitFor(() => assert.equal(previews, 2));
+  assert.equal(document.activeElement, input);
+  assert.equal(input.disabled, false);
+  testing.fireEvent.change(input, { target: { value: "function-calling" } });
+  await testing.waitFor(() => assert.equal(previews, 3));
+  const latest = structuredClone(original);
+  latest.models[0].capabilities = ["function-calling"];
+  await testing.act(async () => pending[1].resolve(Response.json(previewResult(latest))));
+  assert.equal(view.getByRole("textbox", { name: /Effective capabilities/ }).value, "function-calling");
+  const stale = structuredClone(original);
+  stale.models[0].capabilities = ["vision"];
+  await testing.act(async () => pending[0].resolve(Response.json(previewResult(stale))));
+  assert.equal(view.getByRole("textbox", { name: /Effective capabilities/ }).value, "function-calling");
+  assert.ok(view.getByText("Draft preview (not saved)"));
+  testing.fireEvent.click(view.getByRole("button", { name: "Review & Save" }));
+  await testing.act(async () => testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true })));
+  await testing.waitFor(() => assert.ok(saved));
+  assert.deepEqual(saved.models[0].capabilities, ["function-calling"]);
+  assert.deepEqual(saved.models[0].defaultParams, { temperature: 0 });
+  assert.deepEqual(saved.upstreams[0].auth, original.upstreams[0].auth);
+  assert.equal(Object.hasOwn(saved, "capabilityView"), false);
+  await testing.waitFor(() => assert.ok(view.getByText("Active configuration")));
 });

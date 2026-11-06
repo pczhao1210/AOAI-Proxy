@@ -410,7 +410,7 @@ Claude Code 和 Anthropic SDK 会发送版本、运行时和 Stainless 生成器
 
 常见规范化包括：
 
-- Chat 的 `max_tokens` 在现代模型上升级为 `max_completion_tokens`；
+- 最终上游为 Chat 时，优先按模型卡 `protocolProfiles` 中的 `request.outputTokenParameter` 选择 `max_tokens` 或 `max_completion_tokens`，目标字段已存在时优先保留它；显式规则不依赖 capability 标签，也不注入推理档位。尚未声明该规则的旧卡保留由 `reasoning` 标签或显式 `reasoning_effort` 触发的 token 参数兼容逻辑；
 - `top_logprobs` 存在而 `logprobs` 缺失时，补充 `logprobs: true`；
 - `serviceTier` 统一为 `service_tier`；
 - Chat 的 `reasoning_effort` 与 Responses 的 `reasoning.effort` 互相映射；
@@ -1154,6 +1154,8 @@ Codex 模型元数据可包括：
 - 非空 `base_instructions`，或等价的 `model_messages.instructions_template` 指令来源。
 
 Codex `0.153.2` 严格反序列化顶层 `{ "models": [...] }`，并要求 `upgrade` 等无默认字段存在，同时要求每个模型提供上述指令来源。代理输出兼容的可空字段和简短默认指令；`models[].codex.baseInstructions` 可覆盖默认值。这些目录字段是客户端能力声明，不应替代请求阶段的实际上游能力校验。
+
+输入模态优先取 Catalog 的显式 `inputModalities`，仅发布 Codex 支持的 text/image 类型；旧卡缺少或清空模态元数据时才回退到 `vision` 标签。推理档位优先使用显式 Codex 配置和 Responses profile，保留必要的客户端兼容默认值，但不将其写回模型卡当作供应商事实。并行工具、托管搜索和编码专用工具提示仍取有效能力标签；原生路由和媒体模型资格边界不变。
 
 ### 18.5 格式协商优先原则
 

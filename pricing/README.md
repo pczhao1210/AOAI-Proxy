@@ -685,6 +685,9 @@ Opus 5.5 cannot disable adaptive thinking or use a manual thinking budget.
 - `protocolProfiles`
   - Stores protocol-specific parameter facts consumed by runtime routing and request conversion.
   - Text profiles can declare `reasoning.parameter`, `levels`, `default`, `aliases`, and `validation`; Messages profiles can also declare thinking types and a default.
+  - Chat profiles can declare `request.outputTokenParameter` as `max_tokens` or `max_completion_tokens`, with evidence in `sources.parameters`. The final Chat request uses that canonical field, including after a Messages/Responses shim. An existing canonical value wins over its alias; invalid values are preserved for the upstream rather than silently discarded. This rule does not inject reasoning effort.
+  - On native Chat, explicitly supplied token fields retain their original values through general cleanup, including `null`, zero and placeholder strings; other optional controls retain existing cleanup behavior. Administrator request policies still apply after normalization.
+  - Profiles without `request.outputTokenParameter` retain the legacy reasoning-label / explicit-effort token normalization path. Do not infer this field from a capability or model name. Deploy a runtime that understands the field before syncing migrated cards to an older installation.
   - `images/generations.request` can declare `transport`, `removeModel`, `qualityAliases`, `dropParameters`, and `sizeExpansion`.
 
 - `contextWindow`, `maxInputTokens`, and `maxOutputTokens`
@@ -969,7 +972,22 @@ The same modality labels are used in both `inputModalities` and `outputModalitie
 
 #### Capability labels
 
-These labels are provider-native feature hints. They are not a universal ontology, but they should stay stable and readable across pricing definitions.
+These labels describe evidenced, provider-native model features, not gateway
+permissions. Use the canonical vocabulary below in active cards. Labels are
+lowercase kebab-case, unique within a card, and additive; their order has no
+runtime meaning. Missing labels mean "not declared", not "proven unsupported".
+Do not add labels from a model name, sibling card, price, generic protocol
+support, or the fact that a request can pass through the proxy.
+
+Keep these namespaces separate:
+
+- `interfaces` describes native API families; `proxyAdapters` describes explicit
+  proxy-only compatibility.
+- `inputModalities` / `outputModalities` describes content directions.
+- `capabilities` describes features; `protocolProfiles` records their
+  protocol-specific parameter facts and restrictions.
+- `requestPolicy` and feature gates express administrator restrictions.
+  Capability labels are not an alternative to these policies.
 
 | Label | Meaning |
 | --- | --- |
@@ -977,10 +995,10 @@ These labels are provider-native feature hints. They are not a universal ontolog
 | `audio-output` | The model can emit audio output directly. |
 | `code-optimized` | The model is tuned or positioned specifically for coding tasks. |
 | `computer-use` | The model supports computer-use style workflows or tools. |
-| `function-calling` | The model can produce tool or function calls. |
+| `function-calling` | The model can request application-defined function tools with structured arguments. This does not imply provider-hosted tools or parallel calls. |
 | `image-editing` | The model can edit an existing image or use reference or mask images. |
 | `image-generation` | The model can generate new images. |
-| `json-output` | The model supports JSON-mode or JSON-only style output. |
+| `json-output` | The model supports a native JSON-output mode, not just a prompt asking for JSON. This does not imply Schema enforcement. |
 | `parallel-tool-calling` | The model can issue multiple tool calls within one turn. |
 | `realtime` | The model supports realtime session semantics rather than only request/response calls. |
 | `reasoning` | The model supports explicit reasoning or thinking-oriented behavior. |
@@ -988,28 +1006,102 @@ These labels are provider-native feature hints. They are not a universal ontolog
 | `speech-generation` | The model can generate spoken audio responses. |
 | `speech-to-speech` | The model can take speech input and return transformed or translated speech output. |
 | `speech-to-text` | The model can convert speech or audio input into text. |
-| `streaming` | The model API supports streamed partial responses. |
+| `streaming` | The native model API supports streamed partial responses. This does not imply Realtime sessions; absence does not disable SSE. |
 | `structured-outputs` | The model supports schema-constrained structured outputs. |
 | `text-to-speech` | The model is intended for text-to-audio synthesis. |
 | `transcription` | The model supports transcription workloads for recorded or live audio. |
 | `translation` | The model supports translation workloads, including file or realtime speech translation according to its interfaces. |
 | `vision` | The model accepts image input for understanding, reference, or editing workflows. |
+| `web-search` | The model and selected provider API support a provider-hosted web-search tool. An application-defined search function alone is not sufficient. |
 
 Notes:
 
+- Reasoning, vision and output controls are distinct from application tools,
+  provider-hosted tools, media workloads, transport features and coding
+  specialization. Do not collapse these groups into a generic "tools" label.
+- Use `function-calling`, not the legacy spelling `tool-calling`, for function
+  tools. New features require an evidenced definition here and an update to
+  the offline validator's vocabulary; do not silently map unknown labels.
 - Normalized `proxyTemplate.capabilities` inherits root `capabilities`; source cards only need a field when deliberately overriding it.
 - Some labels overlap by design. For example, a text-to-speech model can carry both `text-to-speech` and `speech-generation`, where one describes the product shape and the other describes the output capability.
+- `structured-outputs` and `json-output` are separate API promises; do not
+  automatically add either because the other is present. Likewise, do not
+  blanket-add `streaming`, `parallel-tool-calling`, or `web-search` to text models.
+- Capability support can differ by native protocol, hosting mode or routed
+  backend. Record those boundaries in profiles and `notes`; the flat list is
+  not a promise that every route/request supports every label. Model Router
+  retains its explicit dynamic-pool caveat.
 - Capability labels should describe what the upstream model can do, not the internal AOAI Proxy route name that happens to carry the request.
 
 ### Capability and modality conventions
 
 - If `inputModalities` includes `image`, `capabilities` should also include `vision`.
+- Conversely, `vision` requires `image` in `inputModalities`.
 - If a model supports `image-editing`, it must accept image input; declare both `image` in `inputModalities` and `vision` in `capabilities`.
+- Both `image-generation` and `image-editing` require `image` in
+  `outputModalities`. Editing does not automatically imply independent image generation.
+- `audio-input` and `audio-output` require `audio` in the corresponding modality
+  list. The reverse is not required: workload labels such as `transcription`
+  or `text-to-speech` may describe an audio model without these generic labels.
+- `parallel-tool-calling` requires `function-calling`; the reverse is not required.
+- `reasoning` requires a reasoning or thinking protocol profile. This does not
+  prove that the model has a configurable effort control.
 - Omit duplicate `proxyTemplate.capabilities`; the shared loader keeps templates aligned with root capabilities.
 - If vendor documentation disagrees with the current file, correct the underlying modality declaration instead of adding `vision` speculatively.
 
+`npm run cards:validate` and `cards:check` enforce the canonical labels and these
+direct consistency checks on active source cards. This is offline authoring
+validation, not a new runtime request/configuration or remote-sync capability
+allowlist. Existing runtime handling of legacy/future labels remains unchanged;
+archives are excluded. Structural validation cannot establish provider support:
+retain `sources.capabilities` and model-specific evidence/caveats.
+
 ### Upstream defaults
 
-For runtime config normalization, `upstreams[].capabilities` defaults to the union of all `models[].capabilities` declared by models bound to that upstream.
+Runtime config normalization **replaces** `upstreams[].capabilities` with the
+union of all normalized `models[].capabilities` bound to that upstream, even
+when an upstream list was explicitly supplied. It is a summary, not an
+independent restriction or proof that every bound model supports every label.
+An extra upstream label is overwritten rather than rejected for lacking a
+matching model declaration.
 
-If an upstream explicitly declares a capability that is not declared by any model using that upstream, config validation fails.
+For an empty model list (or legacy route-only labels), config normalization
+fills capabilities from the matched card when available. A nonempty explicit
+model list is preserved in configuration, but the runtime Catalog descriptor
+prefers the card's nonempty list over it. Consequently, serialized upstream
+and model configuration labels can differ from the effective Catalog facts;
+editing that stored summary is not a way to override model capabilities.
+
+The admin routing view instead uses backend Catalog snapshots for effective
+model capabilities and their upstream union. It distinguishes active
+configuration from an unsaved draft preview and labels each model's source
+as Catalog, legacy model configuration, or undeclared. Catalog facts are
+read-only; differing stored labels remain visible and preserved. Legacy
+fallback labels remain editable without writing preview metadata into
+configuration. Loading/errors do not present a stale summary as current.
+The Chat token-parameter display identifies explicit profiles versus the
+remaining legacy compatibility path.
+
+### Runtime consumers and omitted capabilities
+
+| Consumer | Current use of capability labels |
+| --- | --- |
+| Final Chat upstream request | An explicit `request.outputTokenParameter` takes precedence, independent of capabilities. Without it, `reasoning` or explicit `reasoning_effort` retains the legacy `max_tokens` to `max_completion_tokens` normalization. No effort is injected solely because of the label. |
+| Codex model discovery | Explicit `inputModalities` supplies text/image input and image-detail support; `vision` is a fallback only when modality metadata is absent/empty. `parallel-tool-calling`, `web-search` and `code-optimized` still publish the corresponding tool hints. Reasoning levels prefer explicit Codex settings and protocol profiles before the existing client-compatibility fallback; discovery defaults are not written back as provider facts. |
+| Codex eligibility | `image-generation` / `image-editing` excludes media models from the Codex-specific list, in addition to native-route and other eligibility checks. |
+| Templates and admin metadata | Cards supply model/template declarations. Admin effective values and upstream unions come from one backend snapshot; serialized upstream labels remain legacy configuration summaries. |
+
+Omitting `models[].capabilities` and `upstreams[].capabilities` normally leaves
+calls unchanged when the matched card still declares its capabilities. Do not
+remove capabilities from active cards: the required raw-metadata authoring
+checks reject missing/empty lists.
+
+If the effective runtime list really is empty, this is not a blanket request
+rejection: routing still uses native interfaces, route bindings and final URLs;
+request fields still follow protocol normalization and explicit policies.
+Explicit Chat token profiles and Codex input modalities still apply when the
+effective capability list is empty. Unmigrated Chat profiles lose label-triggered
+normalization, and Codex loses label-based tool hints, any legacy vision fallback
+and capability-based media exclusion. Existing reasoning profiles and explicit
+`reasoning_effort` still apply. Do not use capability removal to disable tools,
+images, streaming or structured outputs, or to bypass media feature gates.

@@ -257,6 +257,12 @@ Key/时间筛选与同步按钮。「Log Analytics 上传」只表示 Azure 日�
 | `models[*].clientCompatibility.claudeCode` | `false` | 将模型纳入 Claude Code 专用目录；模型必须启用、上游可用、公共 Messages 开启且最终原生路由到 Messages。不是访问控制。 | Harness；热 |
 | `models[*].clientCompatibility.codex` | `false` | 将模型纳入 Codex 专用目录；模型必须启用、上游可用、公共 Responses 开启、最终原生路由到 Responses，且不是图片生成/编辑模型。不是访问控制。 | Harness；热 |
 
+### 能力元数据不是功能开关
+
+上游/模型页面展示后端 Catalog 计算的有效能力、来源及上游并集，并区分当前生效配置与未保存草稿。模型卡提供的能力只读；不同的已存储模型标签保留但不覆盖 Catalog，旧配置回退值仍可编辑。预览信息不写入配置，旧 `upstreams[].capabilities` 仍只是派生兼容字段。
+
+模型卡的 `protocolProfiles["chat/completions"].request.outputTokenParameter` 是有证据的协议参数规则，不是新增配置开关或 schema 升级；未迁移卡保留旧兼容路径。模型卡文件编辑需要显式重载，远程同步在原子激活 Catalog 后生效；旧运行时应先升级再接收新字段。详见[模型卡能力与参数说明](../../pricing/README.md#runtime-consumers-and-omitted-capabilities)。
+
 ## 固定安全不变量
 
 下列字段虽然是布尔值，但不能作为 Feature Flag 切换：

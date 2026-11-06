@@ -23,6 +23,7 @@ node --test test/admin-runtime-loader.test.js
 node --test test/config-feature-flags.test.js test/config-environment.test.js test/config-v2-upgrade.test.js
 node --test test/admin-media-form.test.js
 node --test test/admin-routing-form.test.js
+node --test test/admin-capabilities.test.js test/capability-routing.test.js
 node --test test/admin-log-content.test.js
 node --test test/logs.test.js test/admin-auth-logs.test.js
 node --test test/response-reader.test.js
@@ -109,8 +110,22 @@ and required raw metadata without touching archives. `npm run cards:validate`
 lists field-path errors and nonblocking missing-information review diagnostics;
 it does not infer provider facts or fill unknown values. `node --test test/model-card-format.test.js` covers
 compact/legacy equivalence, explicit null/zero/overrides, complete tier import,
-formatter idempotence and backend/admin loader parity. Use
+formatter idempotence and backend/admin loader parity. Capability checks freeze
+the documented canonical vocabulary, duplicate/legacy-label rejection, direct
+modality consistency, and parallel/function-call declarations. Catalog tests
+separately retain runtime acceptance of omitted/future capability metadata:
+offline authoring rules are not request or native-route gates. Use
 `npm run cards:format` to normalize active cards, then run the Catalog and sync suites.
+
+Capability contracts cover active/draft snapshot provenance, effective upstream
+unions, editable legacy fallback, stale preview fencing and save/reload preservation.
+Chat token-profile tests freeze URL/body/headers and JSON/SSE terminal behavior
+for Chat, Responses and Messages clients with and without capability labels;
+unit tests retain canonical zero/invalid values and legacy behavior. Sync tests
+reject invalid token parameters without replacing active files or descriptors.
+Codex tests prefer explicit modalities and reasoning profiles while preserving
+legacy vision fallback and existing eligibility/tool hints. UI test servers use
+isolated temporary Vite caches, never the shared dependency cache.
 
 Cache-write regressions cover the documented Chat and Responses detail fields,
 Messages combined/TTL counts, distinct reported zero versus missing evidence,

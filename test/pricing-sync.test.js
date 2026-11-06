@@ -31,20 +31,22 @@ function definition(id, aliases = []) {
   };
 }
 
-test("remote sync rejects invalid shim defaults and retains the active directory and Catalog", async () => {
+test("remote sync rejects invalid shim defaults and token parameters and retains the active directory and Catalog", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-shim-default-sync-"));
   const previousPricingDir = process.env.PRICING_DIR;
   const previousFetch = globalThis.fetch;
   const card = {
     ...definition("thinking-model"),
     provider: "anthropic",
-    interfaces: ["messages"],
+    interfaces: ["messages", "chat/completions"],
     protocolProfiles: {
-      messages: { thinking: { parameter: "thinking.type", types: ["adaptive"], shimDefault: "adaptive", validation: "passthrough" } }
+      messages: { thinking: { parameter: "thinking.type", types: ["adaptive"], shimDefault: "adaptive", validation: "passthrough" } },
+      "chat/completions": { request: { outputTokenParameter: "max_completion_tokens" } }
     }
   };
   const config = {
-    upstreams: [{ name: "test", provider: "anthropic", baseUrl: "https://api.example.test", routes: { messages: "/v1/messages" } }],
+    upstreams: [{ name: "test", provider: "anthropic", baseUrl: "https://api.example.test",
+      routes: { messages: "/v1/messages", "chat/completions": "/v1/chat/completions" } }],
     models: [{ id: "thinking-public", pricingRef: card.id, upstream: "test" }]
   };
   let remote = structuredClone(card);
@@ -60,6 +62,15 @@ test("remote sync rejects invalid shim defaults and retains the active directory
     const filePath = path.join(process.env.PRICING_DIR, "thinking-model.json");
     const original = await fs.readFile(filePath, "utf8");
     const descriptor = resolveModelDescriptor("thinking-public");
+    assert.equal(descriptor.protocolProfiles["chat/completions"].request.outputTokenParameter, "max_completion_tokens");
+    for (const outputTokenParameter of [null, true, {}, "", "max_output_tokens", "MAX_TOKENS"]) {
+      remote = structuredClone(card);
+      remote.protocolProfiles["chat/completions"].request.outputTokenParameter = outputTokenParameter;
+      await assert.rejects(sync(), /request.outputTokenParameter/);
+      assert.deepEqual(getModelCatalogRuntimeInfo(), active);
+      assert.equal(resolveModelDescriptor("thinking-public"), descriptor);
+      assert.equal(await fs.readFile(filePath, "utf8"), original);
+    }
     assert.deepEqual(responsesToMessagesRequest({
       input: "Hello", include: ["reasoning.encrypted_content"]
     }, card.id, descriptor).thinking, { type: "adaptive" });

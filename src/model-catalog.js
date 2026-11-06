@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { listArchivedPricingDefinitions, listPricingDefinitions, normalizeModelTokenLimits } from "./pricing-library.js";
 import { createPricingContext } from "./pricing-policy.js";
+import { getModelCardOutputTokenParameter } from "./model-card.js";
 
 const TEXT_PROTOCOLS = new Set(["chat/completions", "responses", "messages"]);
 const DEFAULT_PROTOCOL_PROFILES = Object.freeze({
@@ -193,6 +194,9 @@ function compileDescriptor(model, definition, upstream, knownRouteInterfaces) {
     ? definition.capabilities
     : (Array.isArray(model?.capabilities) ? model.capabilities : []);
   const protocolProfiles = freezeJson(cloneJson(definition?.protocolProfiles || {}));
+  for (const [protocol, profile] of Object.entries(protocolProfiles)) {
+    getModelCardOutputTokenParameter(profile?.request, protocol);
+  }
   return Object.freeze({
     publicId: String(model.id),
     targetModel: String(model.targetModel || model.id),
@@ -202,11 +206,15 @@ function compileDescriptor(model, definition, upstream, knownRouteInterfaces) {
     provider: String(definition?.provider || upstream?.provider || ""),
     hostingMode: normalizeKey(model.hostingMode || definition?.defaultHostingMode),
     interfaces: Object.freeze(interfaces),
+    inputModalities: Object.freeze([...new Set(
+      (Array.isArray(definition?.inputModalities) ? definition.inputModalities : []).map(normalizeKey).filter(Boolean)
+    )]),
     proxyAdapters: freezeJson(cloneJson(validateProxyAdapters(definition, interfaces))),
     knownRouteInterfaces,
     routeTargets: Object.freeze(routeTargets),
     defaultInterface: resolveDefaultInterface(definition, interfaces),
     capabilities: Object.freeze([...new Set(capabilities.map(normalizeKey).filter(Boolean))]),
+    capabilitySource: definition?.capabilities?.length ? "catalog" : capabilities.length ? "model-config" : "none",
     tokenLimits,
     protocolProfiles,
     definition: definition || null,
@@ -329,6 +337,38 @@ export function resolveModelDescriptor(modelOrId, snapshot = installedSnapshot) 
     if (descriptor) return descriptor;
   }
   return null;
+}
+
+export function getModelCapabilityView(config, snapshot = installedSnapshot) {
+  if (!snapshot) throw new Error("Model Catalog snapshot is not ready");
+  const models = snapshot.descriptors.map(descriptor => {
+    const chatTokenParameter = getDescriptorProtocolProfile(descriptor, "chat/completions")?.request?.outputTokenParameter;
+    const configuredCapabilities = [...new Set(
+      (Array.isArray(descriptor.model.capabilities) ? descriptor.model.capabilities : []).map(normalizeKey).filter(Boolean)
+    )];
+    return {
+      modelId: descriptor.publicId,
+      upstream: descriptor.model.upstream || "",
+      capabilities: descriptor.capabilities,
+      source: descriptor.capabilitySource,
+      chatTokenParameter: descriptor.interfaces.includes("chat/completions")
+        ? { parameter: chatTokenParameter || null, source: chatTokenParameter ? "profile" : "legacy" }
+        : null,
+      configuredCapabilities,
+      configurationMismatch: descriptor.capabilitySource === "catalog" && configuredCapabilities.length > 0 && (
+        configuredCapabilities.length !== descriptor.capabilities.length
+        || configuredCapabilities.some(capability => !descriptor.capabilities.includes(capability))
+      )
+    };
+  });
+  return {
+    sourceDigest: snapshot.sourceDigest,
+    models,
+    upstreams: (config?.upstreams || []).map(upstream => ({
+      name: upstream.name,
+      capabilities: [...new Set(models.filter(model => model.upstream === upstream.name).flatMap(model => model.capabilities))]
+    }))
+  };
 }
 
 export function getModelCatalogRuntimeInfo(snapshot = installedSnapshot) {
