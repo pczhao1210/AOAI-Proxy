@@ -4,11 +4,12 @@
   "provider": "azure-openai",
   "family": "o-series",
   "modelVersion": "2024-09-12",
-  "status": "ga",
+  "status": "unknown",
   "contextWindow": 128000,
   "maxInputTokens": 128000,
   "maxOutputTokens": 65536,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning"],
@@ -32,6 +33,11 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://developers.openai.com/api/docs/models/o1-mini",
+    "lifecycle": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#o-series-models",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+  },
+  "notes": [
+    "Microsoft says this exact deployment is available to all customers for Global Standard but does not explicitly label it GA; status remains unknown.",
+    "The Azure reasoning matrix says request-level reasoning_effort is unsupported. The current Azure public price page renders no numeric rate, so the retained Azure amount was not independently reverified as a current invoice charge."
+  ]
 }

@@ -21,6 +21,7 @@ test("adaptive images freeze all nine JSON/SSE directions and preflight budgets"
   await withTestContext(async ctx => {
     const config = await ctx.readConfigFile();
     config.media = { ...config.media, inputCompression: settings };
+    config.observability.logs.bufferSize = 1000;
     const models = ["gpt-5-mini", "gpt-5.6-luna", "claude-native"];
     for (const [index, protocol] of protocols.entries()) {
       config.models.find(model => model.id === models[index]).routes = { "*": protocol };
@@ -98,6 +99,9 @@ test("adaptive images freeze all nine JSON/SSE directions and preflight budgets"
     assert.equal(denied.status, 429, denied.text);
     assert.equal(ctx.upstreamRequests.length, 0);
     const after = await ctx.adminRequest("/admin/api/logs?event=proxy.image_optimization");
-    assert.equal(after.text, before.text, "Governance-denied requests must not start image processing");
+    assert.equal(before.status, 200, before.text);
+    assert.equal(after.status, 200, after.text);
+    assert.equal(after.json.total, before.json.total);
+    assert.deepEqual(after.json.items, before.json.items, "Governance-denied requests must not start image processing");
   });
 });

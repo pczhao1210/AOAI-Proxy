@@ -27,6 +27,7 @@ import { createRuntimeLoader } from "./runtime-loader.js";
 import toast from "react-hot-toast";
 import {
   applyCompressionPresetToConfig,
+  applyModelCardTierPricing,
   buildLogSummaryText,
   buildConfigDiffPreview,
   buildImagePlaceholderPayload,
@@ -48,7 +49,7 @@ import {
   formatDateTime,
   formatBytes,
   formatEstimatedCost,
-  formatTokenSummary,
+  formatRuntimeNumber,
   getSuggestedModelRouteValues,
   getPayloadEditorNote,
   getLogDetails,
@@ -62,7 +63,8 @@ import {
   REDACTED_SECRET_VALUE,
   runtimeTokenHelp,
   supportsPricingTemplate,
-  setValueByPath
+  setValueByPath,
+  upsertPricingCatalogEntry
 } from "./utils.js";
 
 const AdvancedTab = lazy(() => import("./components/AdvancedTab.jsx"));
@@ -119,17 +121,19 @@ export default function App() {
   const [lastLoadedText, setLastLoadedText] = useState("");
   const [runtime, setRuntime] = useState(null);
   const [stats, setStats] = useState(null);
+  const [statsUpdatedAt, setStatsUpdatedAt] = useState(null);
   const [pricingLibrary, setPricingLibrary] = useState([]);
   const [pricingLibraryStatus, setPricingLibraryStatus] = useState(null);
   const [modelValidationResult, setModelValidationResult] = useState(null);
   const [harnessEligibility, setHarnessEligibility] = useState(null);
   const [harnessEligibilityLoading, setHarnessEligibilityLoading] = useState(false);
   const [harnessEligibilityError, setHarnessEligibilityError] = useState("");
+  const [harnessEligibilityRevision, setHarnessEligibilityRevision] = useState(0);
   const [pricingSyncSource, setPricingSyncSource] = useState({ owner: "", repo: "", path: "pricing", ref: "" });
   const [databaseConfigForm, setDatabaseConfigForm] = useState(() => normalizeDatabaseConfigForm());
   const [databaseTestResult, setDatabaseTestResult] = useState(null);
   const [logAnalyticsInitializationResult, setLogAnalyticsInitializationResult] = useState(null);
-  const [logs, setLogs] = useState({ total: 0, limit: 100, items: [] });
+  const [logs, setLogs] = useState({ view: DEFAULT_LOG_FILTERS.view, total: 0, retainedEvents: 0, limit: 100, items: [] });
   const [caddyStatus, setCaddyStatus] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -169,10 +173,24 @@ export default function App() {
   const loadRequestRef = useRef(0);
   const logsRequestRef = useRef(0);
   const harnessEligibilityRequestRef = useRef(0);
+  const harnessEligibilityContextRef = useRef(null);
   const modelStatsResetRef = useRef(null);
   const sectionNavigationTargetRef = useRef(null);
 
   const dirty = useMemo(() => JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText]);
+  const harnessEligibilityFresh = !harnessEligibilityLoading && !harnessEligibilityError
+    && harnessEligibilityContextRef.current?.config === config
+    && harnessEligibilityContextRef.current?.pricingLibrary === pricingLibrary
+    && harnessEligibilityContextRef.current?.tab === activeTab
+    && harnessEligibilityContextRef.current?.revision === harnessEligibilityRevision;
+  const capabilityFallbackModels = harnessEligibilityContextRef.current?.pricingLibrary === pricingLibrary
+    ? (harnessEligibility?.capabilities?.preview?.models || []).filter(model => {
+      if (model.source === "catalog") return false;
+      const before = harnessEligibilityContextRef.current.config.models?.find(item => item.id === model.modelId);
+      const current = config?.models?.find(item => item.id === model.modelId);
+      return before && current && ["pricingRef", "targetModel"].every(field => before[field] === current[field]);
+    }).map(model => model.modelId)
+    : [];
   const advancedJsonEnabled = getValueByPath(config, "admin.features.enableLegacyJsonEditor") !== false;
   const governanceKeys = stats?.governance?.keys || [];
   const modelStats = stats?.perModel || {};
@@ -181,6 +199,7 @@ export default function App() {
   const loggingRuntime = runtime?.logging || {};
   const runtimeStore = runtime?.runtimeStore || {};
   const distributionCapabilities = runtime?.distribution?.capabilities || {};
+  const configCleanupRequired = runtime?.configuration?.cleanupRequired === true;
   const logLevelKey = logFilters.level.join(",");
   const caddyPreview = useMemo(
     () => buildCaddyPreview(config?.server?.caddy || {}, config?.server?.port),
@@ -286,8 +305,11 @@ export default function App() {
     setLogsLoading(true);
     try {
       const json = await fetchLogs({
+        view: filters.view,
+        outcome: filters.outcome,
         level: filters.level,
         event: filters.event,
+        excludeEvent: filters.hideAuthRejected ? "http.auth_rejected" : "",
         modelId: filters.modelId,
         requestId: filters.requestId,
         keyword: filters.keyword,
@@ -298,6 +320,8 @@ export default function App() {
         setLogs({
           total: json.total || 0,
           limit: json.limit || filters.limit,
+          view: json.view || filters.view,
+          retainedEvents: json.retainedEvents || 0,
           items: Array.isArray(json.items) ? json.items : []
         });
       });
@@ -319,6 +343,7 @@ export default function App() {
       startTransition(() => {
         setRuntime(runtimeJson.runtime || null);
         setStats(statsJson || null);
+        setStatsUpdatedAt(new Date().toISOString());
       });
     } catch (loadError) {
       if (request.isCurrent()) throw loadError;
@@ -370,6 +395,7 @@ export default function App() {
         }
         if (statsResult.status === "fulfilled") {
           setStats(statsResult.value || null);
+          setStatsUpdatedAt(new Date().toISOString());
         } else {
           errors.push(statsResult.reason);
         }
@@ -522,7 +548,7 @@ export default function App() {
       void loadLogsAction(logFilters);
     }, 180);
     return () => clearTimeout(timer);
-  }, [activeTab, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit]);
+  }, [activeTab, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
 
   useEffect(() => {
     if (activeTab !== "ops" || !logFilters.autoRefresh) return undefined;
@@ -530,19 +556,21 @@ export default function App() {
       void loadLogsAction(logFilters);
     }, 5000);
     return () => clearInterval(interval);
-  }, [activeTab, logFilters.autoRefresh, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit]);
+  }, [activeTab, logFilters.autoRefresh, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
 
   useEffect(() => {
-    if (activeTab !== "harness" || !config) return undefined;
+    if (!["harness", "routing"].includes(activeTab) || !config) return undefined;
     const requestId = harnessEligibilityRequestRef.current + 1;
     harnessEligibilityRequestRef.current = requestId;
     let cancelled = false;
+    const controller = new AbortController();
     setHarnessEligibilityLoading(true);
     setHarnessEligibilityError("");
     const timer = setTimeout(async () => {
       try {
-        const result = await fetchHarnessEligibility(config);
+        const result = await fetchHarnessEligibility(config, { signal: controller.signal });
         if (!cancelled && requestId === harnessEligibilityRequestRef.current) {
+          harnessEligibilityContextRef.current = { config, pricingLibrary, tab: activeTab, revision: harnessEligibilityRevision };
           setHarnessEligibility(result);
         }
       } catch (requestError) {
@@ -557,9 +585,10 @@ export default function App() {
     }, 180);
     return () => {
       cancelled = true;
+      controller.abort();
       clearTimeout(timer);
     };
-  }, [activeTab, config, t]);
+  }, [activeTab, config, pricingLibrary, t, harnessEligibilityRevision]);
 
   function updateConfig(mutator) {
     setConfig((current) => {
@@ -831,13 +860,7 @@ export default function App() {
       }
       next.models.push(modelEntry);
 
-      if (templateImportPricing && selectedPricingTemplate.pricingCatalogEntry && modelEntry.pricingRef) {
-        next.access = next.access && typeof next.access === "object" ? next.access : {};
-        next.access.pricingCatalog = next.access.pricingCatalog && typeof next.access.pricingCatalog === "object"
-          ? next.access.pricingCatalog
-          : {};
-        next.access.pricingCatalog[modelEntry.pricingRef] = cloneJson(selectedPricingTemplate.pricingCatalogEntry);
-      }
+      if (templateImportPricing) upsertPricingCatalogEntry(next, selectedPricingTemplate);
 
       const upstream = next.upstreams.find((item) => item?.name === upstreamName);
       if (upstream && (!Array.isArray(upstream.capabilities) || upstream.capabilities.length === 0)) {
@@ -1113,13 +1136,10 @@ export default function App() {
 
   const summary = useMemo(() => {
     const totals = stats?.totals || {};
-    const blocked = governanceKeys.reduce((sum, item) => sum + Number(item?.runtime?.totalBlockedRequests || 0), 0);
     return {
       requests: totals.requests || 0,
       errors: totals.errors || 0,
       cost: formatEstimatedCost(totals, t),
-      tokens: formatTokenSummary(totals, t),
-      blocked,
       persistence: runtime?.persistence?.activeMode || runtime?.persistence?.mode || "file",
       logging: statusLabel(
         runtime?.logging?.memoryEnabled || runtime?.logging?.consoleEnabled || runtime?.logging?.logAnalyticsConfigured,
@@ -1127,7 +1147,7 @@ export default function App() {
       ),
       caddy: caddyStatus?.state || (config?.server?.caddy?.enabled ? "unknown" : "disabled")
     };
-  }, [runtime, stats, governanceKeys, caddyStatus, config?.server?.caddy?.enabled, t]);
+  }, [runtime, stats, caddyStatus, config?.server?.caddy?.enabled, t]);
 
   const categories = [
     {
@@ -1289,12 +1309,30 @@ export default function App() {
     navigate();
   }
 
+  function handleHarnessNavigate({ type, id }) {
+    if (type === "route" || type === "diagnostics") {
+      setActiveTab(type === "route" ? "workspace" : "ops");
+      handleSectionNavClick(type === "route" ? "workspace-routing" : "ops-model-validation");
+      return;
+    }
+    const collection = type === "upstream" ? config.upstreams || [] : config.models || [];
+    const field = type === "upstream" ? "name" : "id";
+    const matches = collection.map((item, index) => ({ item, index })).filter(({ item }) => item?.[field] === id);
+    if (matches.length !== 1) {
+      setError(t("harness.targetMissing", "The target is missing or ambiguous. Edit its identity in Upstream / Model."));
+      setActiveTab("routing");
+      return;
+    }
+    setActiveTab("routing");
+    handleSectionNavClick(`${type === "upstream" ? "upstream" : "model"}-card-${matches[0].index}`);
+  }
+
   if (loading && !config) {
     return <div className="app-shell"><div className="loading">{t("common.loadingAdmin", "Loading React admin...")}</div></div>;
   }
 
   return (
-    <div className={dirty ? "app-shell has-save-dock" : "app-shell"}>
+    <div className={dirty || configCleanupRequired ? "app-shell has-save-dock" : "app-shell"}>
       <header className="app-header">
         <div className="app-identity">
           <span className="app-logo" aria-hidden="true">AP</span>
@@ -1316,10 +1354,10 @@ export default function App() {
       </header>
 
       <section className="summary-grid status-strip" aria-label={t("summary.title", "System status") }>
-        <StatCard label={t("summary.requests", "Requests")} value={summary.requests} note={`${t("summary.errors", "Errors")} ${summary.errors}`} />
-        <StatCard label={t("summary.cost", "Estimated Cost")} value={summary.cost} note={<span title={runtimeTokenHelp(t)}>{`${t("summary.blocked", "Blocked")} ${summary.blocked} · ${summary.tokens}`}</span>} />
+        <StatCard label={t("summary.requests", "Requests")} value={formatRuntimeNumber(summary.requests)} note={`${t("summary.errors", "Errors")} ${formatRuntimeNumber(summary.errors)}`} />
+        <StatCard label={t("summary.cost", "Reference Cost")} value={summary.cost} note={t("runtime.costHint", "Cost estimates may be incomplete.")} />
         <StatCard label={t("summary.persistence", "Persistence")} value={t(`option.${summary.persistence}`, summary.persistence)} note={`${t("summary.logging", "Logging")} ${t(`status.${summary.logging}`, summary.logging)}`} />
-        <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : t("summary.synced", "Synced")} />
+        <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : configCleanupRequired ? t("config.flagCleanupPending", "Configuration cleanup pending") : t("summary.synced", "Synced")} />
       </section>
 
       <Modal 
@@ -1333,6 +1371,14 @@ export default function App() {
         disabled={saving}
       >
         <p>{t("config.save.desc", "You are about to hit Save. Please review the configuration changes below:")}</p>
+        {configCleanupRequired ? (
+          <div className="config-deprecations">
+            <p>{t("config.flagCleanupSave", "Saving will persist the normalized flags and remove the deprecated fields listed below. Existing disabled states are retained.")}</p>
+            <ul>{(runtime?.configuration?.deprecatedFlags || []).map(warning => (
+              <li key={warning.path}><code>{warning.path}</code>{warning.replacement ? <> → <code>{warning.replacement}</code></> : null}</li>
+            ))}</ul>
+          </div>
+        ) : null}
         <div style={{ marginTop: '16px', marginBottom: '16px' }}>
           <strong>{t("config.diff.summary", "Changed paths:")} {configDiffCount}</strong>
         </div>
@@ -1341,7 +1387,7 @@ export default function App() {
             {configDiffPreview}
           </pre>
         ) : (
-          <p className="muted">{t("config.diff.none", "No local diff")}</p>
+          configCleanupRequired ? null : <p className="muted">{t("config.diff.none", "No local diff")}</p>
         )}
       </Modal>
 
@@ -1507,6 +1553,9 @@ export default function App() {
         <WorkspaceTab
           config={config}
           capabilities={distributionCapabilities}
+          effectiveProfile={runtime?.distribution?.profile}
+          configDeprecations={runtime?.configuration?.deprecatedFlags || []}
+          configCleanupRequired={configCleanupRequired}
           updateField={updateField}
           pricingCatalogText={pricingCatalogText}
           updatePricingCatalog={updatePricingCatalog}
@@ -1538,6 +1587,15 @@ export default function App() {
         <RoutingTab
           config={config}
           pricingLibrary={pricingLibrary}
+          capabilityView={
+            harnessEligibilityFresh
+              ? harnessEligibility?.capabilities?.[dirty ? "preview" : "active"] || null
+              : null
+          }
+          capabilitiesLoading={harnessEligibilityLoading}
+          capabilitiesError={harnessEligibilityError}
+          capabilityPreview={dirty}
+          capabilityFallbackModels={capabilityFallbackModels}
           updateConfig={updateConfig}
           addUpstream={addUpstream}
           addModel={addModel}
@@ -1549,9 +1607,13 @@ export default function App() {
       {activeTab === "harness" && config ? (
         <HarnessTab
           config={config}
-          eligibility={harnessEligibility}
+          loadedConfig={loadedConfig}
+          dirty={dirty}
+          eligibility={harnessEligibilityFresh ? harnessEligibility : null}
           eligibilityLoading={harnessEligibilityLoading}
           eligibilityError={harnessEligibilityError}
+          onRetry={() => setHarnessEligibilityRevision(value => value + 1)}
+          onNavigate={handleHarnessNavigate}
           updateConfig={updateConfig}
           t={t}
         />
@@ -1559,9 +1621,15 @@ export default function App() {
 
       {activeTab === "runtime" ? (
         <RuntimeTab
+          config={config}
+          pricingLibrary={pricingLibrary}
+          onApplyCardPricing={(modelIds) => updateConfig((next) => applyModelCardTierPricing(next, modelIds, pricingLibrary))}
+          totals={stats?.totals}
+          snapshotFilters={stats?.filters}
+          statsUpdatedAt={statsUpdatedAt}
           persistenceRuntime={persistenceRuntime}
           loggingRuntime={loggingRuntime}
-                runtimeStore={runtimeStore}
+          runtimeStore={runtimeStore}
           persistenceRuntimeText={persistenceRuntimeText}
           loggingRuntimeText={loggingRuntimeText}
           governanceKeys={governanceKeys}
@@ -1575,8 +1643,8 @@ export default function App() {
           runtimeFilters={runtimeFilters}
           runtimeKeyOptions={runtimeKeyOptions}
           onRuntimeFilterChange={handleRuntimeFilterChange}
-                onSyncRuntime={handleRuntimeSync}
-                runtimeSyncBusy={diagnosticsBusy.runtimeSync === true}
+          onSyncRuntime={handleRuntimeSync}
+          runtimeSyncBusy={diagnosticsBusy.runtimeSync === true}
           formatDateTime={formatDateTime}
           t={t}
         />
@@ -1656,14 +1724,15 @@ export default function App() {
           </Suspense>
             </main>
       </div>
-      {dirty ? (
+      {dirty || configCleanupRequired ? (
         <aside className="save-dock" role="status" aria-live="polite">
           <div className="save-dock-copy">
-            <strong>{t("changes.unsaved", "Unsaved changes")}</strong>
-            <span>{t("changes.count", "{count} changed paths", { count: configDiffCount })}</span>
+            <strong>{dirty ? t("changes.unsaved", "Unsaved changes") : t("config.flagCleanupPending", "Configuration cleanup pending")}</strong>
+            <span>{dirty ? t("changes.count", "{count} changed paths", { count: configDiffCount })
+              : t("config.flagCleanupCount", "{count} deprecated configuration entries", { count: runtime?.configuration?.deprecatedFlags?.length || 0 })}</span>
           </div>
           <div className="toolbar save-dock-actions">
-            <button type="button" className="ghost" onClick={handleDiscardChanges}>{t("changes.discard", "Discard")}</button>
+            {dirty ? <button type="button" className="ghost" onClick={handleDiscardChanges}>{t("changes.discard", "Discard")}</button> : null}
             <button type="button" onClick={handleSave} disabled={saving || !config}>
               {saving ? t("hero.saving", "Saving...") : t("changes.reviewSave", "Review & Save")}
             </button>

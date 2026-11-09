@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getUpstreamAuthHeaders } from "./auth.js";
+import { getCodexModelMetadata } from "./codex-models.js";
 import { getDescriptorRouteTargets, resolveModelDescriptor } from "./model-catalog.js";
 import {
   prepareImageGenerationRequest,
@@ -276,6 +277,24 @@ export function getHarnessModelEligibility(config, snapshot) {
       codex: getHarnessClientEligibility(config, model, "codex", snapshot)
     }
   }));
+}
+
+export function getHarnessCatalogState(config, snapshot) {
+  const items = getHarnessModelEligibility(config, snapshot);
+  let codexIndex = 0;
+  for (const [index, item] of items.entries()) {
+    if (item.selected.codex && item.clients.codex.eligible) {
+      const model = config.models[index];
+      item.codex = getCodexModelMetadata(model, codexIndex++, resolveModelDescriptor(model, snapshot));
+    }
+  }
+  return {
+    catalogs: {
+      claudeCode: { enabled: config?.compatibility?.claudeCode?.enabled !== false },
+      codex: { enabled: config?.compatibility?.codex?.enabled !== false }
+    },
+    items
+  };
 }
 
 function getClientCompatibilityIssues(config, model, upstream, descriptor, snapshot) {

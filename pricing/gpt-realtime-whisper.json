@@ -1,21 +1,27 @@
 {
   "id": "gpt-realtime-whisper",
   "displayName": "GPT Realtime Whisper",
-  "provider": "openai",
+  "provider": "azure-openai",
   "family": "gpt-realtime",
-  "modelVersion": null,
+  "modelVersion": "2026-05-07",
   "status": "ga",
+  "contextWindow": 128000,
+  "maxInputTokens": 32000,
+  "maxOutputTokens": 4096,
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
   "interfaces": ["realtime/transcription_sessions"],
+  "defaultInterface": "realtime/transcription_sessions",
   "inputModalities": ["audio"],
   "outputModalities": ["text"],
   "capabilities": ["realtime", "transcription", "speech-to-text", "streaming"],
   "pricing": {
     "currency": "USD",
     "billingUnit": "minute",
-    "sourceType": "openai-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
-    "realtimeAudioDurationPerMinute": 0.017,
-    "realtimeAudioDurationPerSecond": 0.00028
+    "deploymentType": "global-standard",
+    "realtimeAudioDurationPerMinute": 0.017
   },
   "pricingCatalogEntry": null,
   "proxyTemplate": {
@@ -24,11 +30,20 @@
     }
   },
   "sources": {
-    "capabilities": "https://developers.openai.com/api/docs/models/gpt-realtime-whisper",
-    "pricing": "https://developers.openai.com/api/docs/pricing"
+    "capabilities": "https://ai.azure.com/catalog/models/gpt-realtime-whisper",
+    "limits": "https://ai.azure.com/catalog/models/gpt-realtime-whisper",
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "publisher": "https://developers.openai.com/api/docs/models/gpt-realtime-whisper",
+    "azureDeployment": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
+    "transport": "https://learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets",
+    "pricingReference": "https://developers.openai.com/api/docs/pricing",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
   },
   "notes": [
-    "OpenAI 官方说明 gpt-realtime-whisper 按实时音频时长计费，而不是按文本 token 计费。",
-    "官方公开价格为 0.017 USD/分钟，约 0.00028 USD/秒。"
+    "Administrator approved Azure-default selection on 2026-11-06. The exact Foundry catalog identifies version 2026-05-07 and a 128K context; Microsoft's deployment table separately publishes 32K input and 4,096 output. These independent ceilings are not copied from the OpenAI direct endpoint or added together.",
+    "The provider and hosting metadata select Azure for new imports. Existing upstream URLs, authentication and route overrides are not rewritten; the Realtime transport gates and pricingCatalogEntry=null opt-out remain unchanged. OpenAI-direct usage no longer inherits an automatic price fallback from this Azure card; retain independently sourced explicit model.pricing or access.pricingCatalog entries for that host.",
+    "The Azure catalog's 2026-05-07 version differs from the Learn deployment table's 2026-05-06 label; the exact selected catalog version is retained. Azure bills the duration meter per hour, converted exactly to the existing per-minute field without a rounded per-second duplicate.",
+    "Azure transcription uses /openai/v1/realtime?intent=transcription; the selected model is supplied in the transcription session configuration.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure OpenAI Media', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

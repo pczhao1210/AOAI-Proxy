@@ -9,6 +9,7 @@
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
   "interfaces": ["responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": [
@@ -23,7 +24,8 @@
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
-        "levels": ["low", "medium", "high"]
+        "levels": ["low", "medium", "high"],
+        "validation": "passthrough"
       }
     }
   },
@@ -44,6 +46,12 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-52",
-    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"
-  }
+    "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+    "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
+    "reasoningReference": "https://developers.openai.com/api/docs/models/gpt-5.2-codex"
+  },
+  "notes": [
+    "protocolProfiles.responses.reasoning.default remains independently unverified for this exact provider deployment. Client controls remain passthrough; no omitted-parameter default or effort list is inferred from a sibling model.",
+    "OpenAI's exact-model reference additionally lists xhigh, while Azure's generic xhigh feature list does not independently confirm it for this Codex deployment version. The retained Azure effort metadata is descriptive, not local rejection: explicit xhigh remains passthrough. The Azure omitted-parameter default stays unverified."
+  ]
 }

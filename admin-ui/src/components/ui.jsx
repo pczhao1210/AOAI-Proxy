@@ -7,7 +7,7 @@ export function StatCard({ label, value, note }) {
     <div className="stat-card">
       <div className="stat-label">{label}</div>
       <div className="stat-value">{value}</div>
-      <div className="stat-note">{note}</div>
+      {note ? <div className="stat-note">{note}</div> : null}
     </div>
   );
 }

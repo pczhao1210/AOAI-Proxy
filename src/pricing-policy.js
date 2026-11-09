@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { compilePricingPolicy } from "./token-pricing.js";
-import { getModelCardPricing } from "./model-card.js";
+import { getConfiguredPricingEntry, getModelCardPricing } from "./model-card.js";
 
 export function compilePricingResolution(entry, source) {
   const pricing = compilePricingPolicy(entry, source);
@@ -16,14 +16,8 @@ export function compileDefinitionPricing(definition) {
 }
 
 export function resolveConfiguredPricing(config, model, resolveDefinition) {
-  if (model?.pricing && Object.keys(model.pricing).length) {
-    return compilePricingResolution(model.pricing, "model.pricing");
-  }
-  const ref = String(model?.pricingRef || "").trim();
-  const entry = config?.access?.pricingCatalog?.[ref];
-  if (entry && Object.keys(entry).length) {
-    return compilePricingResolution(entry, `access.pricingCatalog.${ref}`);
-  }
+  const override = getConfiguredPricingEntry(config, model);
+  if (override) return compilePricingResolution(override.entry, override.source);
   return resolveDefinition(model);
 }
 

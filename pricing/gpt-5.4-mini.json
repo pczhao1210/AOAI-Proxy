@@ -9,6 +9,7 @@
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
   "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": [
@@ -21,33 +22,45 @@
   ],
   "protocolProfiles": {
     "chat/completions": {
+      "request": {
+        "outputTokenParameter": "max_completion_tokens"
+      },
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["none", "low", "medium", "high", "xhigh"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     },
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
         "levels": ["none", "low", "medium", "high", "xhigh"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     }
   },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "openai-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
+    "deploymentType": "global-standard",
     "inputPer1mTokens": 0.75,
     "cachedInputPer1mTokens": 0.075,
     "outputPer1mTokens": 4.5
   },
   "proxyTemplate": {},
   "sources": {
+    "parameters": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-54",
-    "pricing": "https://developers.openai.com/api/docs/pricing"
-  }
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "pricingReference": "https://developers.openai.com/api/docs/pricing",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
+  },
+  "notes": [
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure OpenAI GPT5', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
+  ]
 }

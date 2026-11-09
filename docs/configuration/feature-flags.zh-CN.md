@@ -1,6 +1,6 @@
 # Feature Flag 与布尔开关目录
 
-本文是当前用户可配置布尔开关的统一中文索引，适用于配置 schema version 3。它同时列出真正的 Feature Flag、运行策略开关、环境门禁，以及配置中存在但尚未实现的预留字段。
+本文是当前用户可配置布尔开关的统一中文索引，适用于配置 schema version 3。它同时列出真正的 Feature Flag、运行策略开关、环境门禁，以及兼容读取但不再生成的弃用字段。
 
 ## 去哪里配置
 
@@ -10,6 +10,10 @@
 - 环境变量：由容器或进程环境设置，优先于持久化配置。
 
 本文中的“热生效”指通过管理页保存，或编辑持久化配置后调用 `/admin/api/reload`。直接修改磁盘 JSON 不会自动重载。环境变量始终需要重启进程或容器。
+
+JSON 中的所有有效布尔开关及被迁移的旧布尔别名只接受 `true` / `false`。
+字符串 `"false"`、数值 `0/1`、`null`、数组不能代替布尔值；保存或重载会返回包含字段路径的错误，
+失败时保留原配置和 Model Catalog。下文环境变量的字符串解析规则不适用于 JSON。
 
 标记说明：
 
@@ -27,7 +31,7 @@
 | `admin.auth.enabled` | `false` | 启用管理端 Basic Auth。非回环监听还会执行 fail-closed 安全校验。示例配置为 `true`。 | Workspace；热；可被环境变量覆盖 |
 | `admin.security.csrfProtection` | `true` | 要求管理端写请求携带 CSRF header。 | JSON；热 |
 | `admin.features.enableLegacyJsonEditor` | `true` | 显示 Advanced JSON Editor；不影响专用表单。 | Workspace；热 |
-| `server.trustProxy` | 未设置等同 `false` | 信任受控反向代理提供的转发 IP header。只有 Node 无法被客户端直接访问时才应开启。 | Workspace；热；可被环境变量覆盖 |
+| `server.trustProxy` | `false` | 信任受控反向代理提供的转发 IP header。只有 Node 无法被客户端直接访问时才应开启。 | Workspace；热；可被环境变量覆盖 |
 | `server.caddy.enabled` | `false` | 生成并 reload Caddyfile。若容器启动时没有运行 Caddy，首次启用仍需重启容器。 | Ops；参数热，启停可能需重启 |
 
 ### 代理、超时与请求策略
@@ -42,7 +46,7 @@
 | `proxy.guards.maxResponseBodyBytes` | `52428800` | 需要缓冲的上游 JSON 响应上限；不作为 SSE 总流量上限。 | JSON；热 |
 | `proxy.guards.rejectUnknownProxyParams` | `false` | 拒绝未知的代理专属超时控制字段；不是通用 OpenAI 字段白名单。 | JSON；热 |
 | `proxy.guards.dropUnsupportedOpenAiParams` | `false` | 将请求策略判定为不允许的 OpenAI 字段静默删除；关闭时返回错误。 | JSON；热 |
-| `proxy.guards.sanitizeMeaninglessValues` | `true` | 删除目标协议没有意义的空值，减少上游参数校验失败。 | JSON；热 |
+| `proxy.guards.sanitizeMeaninglessValues` | `true` | 清理可选控制参数的空值和 `"undefined"` / `"[undefined]"` 占位值；保留正文、工具数据和 JSON Schema 中有意义的原值。 | JSON；热 |
 | `models[*].requestPolicy.dropUnsupportedParams` | `false` | 模型级参数策略命中时丢弃字段，而不是拒绝请求。 | JSON；热 |
 | `upstreams[*].requestPolicy.dropUnsupportedParams` | `false` | 上游级参数策略命中时丢弃字段，而不是拒绝请求。 | JSON；热 |
 
@@ -60,7 +64,9 @@ HTTP 状态码重试只依据最终解析出的 `statuses` 列表；显式空列
 | `routing.routeProfiles.<route>.nativeErrorPassthrough` | `false` | 在入口协议与后端协议相同且无需 shim 时，透传上游原生错误 body。 | JSON；热 |
 | `upstreams[*].errorPolicy.nativePassthrough` | `false` | 上游级原生错误透传。与 route profile 开关为 OR 关系，仍只适用于原生协议路径。 | JSON；热 |
 
-图片生成还同时受 `media.generation.enabled` 控制；两个开关都为 `true` 时路由才可用。
+图片生成统一由 `routing.routeProfiles.imageGenerations.enabled` 控制，入口位于 Workspace 的路由域；
+媒体策略中保留生成参数，不再放置第二个启用 checkbox。旧 `media.generation.enabled` 在归一化时
+与旧路由开关按 AND 合并，任意一方为 `false` 都保留关闭状态。
 
 ### 媒体处理
 
@@ -70,7 +76,6 @@ HTTP 状态码重试只依据最终解析出的 `statuses` 列表；显式空列
 | `media.inputCompression.progressive` | `false` | JPEG 输出使用 progressive 编码；仅在压缩启用且输出为 JPEG 时有效。 | Workspace；热 |
 | `media.inputCompression.useMozJpeg` | `true` | JPEG 输出优先使用 mozjpeg 编码参数。 | Workspace；热 |
 | `media.remoteImages.allow` | `false` | 允许向上游透传远程图片 URL，并检查 `allowedHosts`；代理不下载图片，也不验证远端文件的 MIME、大小或像素。 | Workspace；热 |
-| `media.generation.enabled` | `true` | 启用图片生成能力；还需要对应 route profile 开启。 | Workspace；热 |
 | `media.http.enabled` | `false` | 启用独立音频、图片 multipart 编辑、MAI Speech 原生入口及显式绑定的 Responses Speech 适配器；不改变既有图片生成开关。 | Workspace；热 |
 | `media.realtime.enabled` | `false` | 启用 Realtime WebSocket 对话、转写和翻译。 | Workspace；热，仅新连接 |
 | `media.webrtc.enabled` | `false` | 启用 WebRTC 建连及所有权校验后的 sideband/hangup；媒体和 data channel 直连 provider。 | Workspace；热，仅新请求 |
@@ -84,7 +89,7 @@ HTTP 状态码重试只依据最终解析出的 `statuses` 列表；显式空列
 
 | 配置前缀 | 参数与默认值 | 行为 |
 | --- | --- | --- |
-| `media.http` | `maxUploadBytes=26214400`、`maxFiles=10`、`maxFields=64`、`maxFieldBytes=65536` | multipart 总上传、文件数量、普通字段数量及单字段限额。模型字段必须唯一。 |
+| `media.http` | `maxUploadBytes=26214400`、`maxFiles=10`、`maxFields=64`、`maxFieldBytes=65536` | multipart 总上传（含边界及头部，chunked 同样受限）、文件数量、普通字段数量及单字段限额。总字节超限立即返回 413，不等待当前 part 或上传结束。模型字段必须唯一。 |
 | `media.http` | `maxConcurrentUploads=4`、`maxBufferedUploadBytes=314572800`、`uploadTimeoutMs=60000` | 上传并发、总缓冲预留与上传期限；每次上传按 `maxUploadBytes * 3` 预留容量。 |
 | `media.http` | `maxResponseBytes=104857600` | 原生音频、文本、JSON、SSE 响应总字节上限；其他上游超时沿用代理策略。 |
 | `media.realtime` | `maxConnections=100`、`maxMessageBytes=8388608`、`maxBufferedBytes=16777216` | 包含等待首配置与握手的连接上限；单消息及发送缓冲上限，超限终止而不重放音频。 |
@@ -140,8 +145,11 @@ JPEG 处理应用 EXIF 方向、等比缩放且不放大、不裁切，转换到
 | `observability.logs.includeClientIp` | `true` | 在结构化日志中保留客户端 IP。 | Workspace；热 |
 | `observability.logs.includeUsage` | `true` | 在日志中保留 token usage 与费用字段。 | Workspace；热 |
 | `observability.logs.includeHeaders` | `false` | 在允许的内容模式下保留经过清洗的 header 信息；凭据仍强制脱敏。 | Workspace；热 |
+| `observability.logs.includeAuthRejected` | `false` | 记录在认证阶段被拒绝的请求，包括缺失或无效的 API Key、管理端 Basic Auth 失败，以及管理端 IP 白名单拒绝。关闭时只累加计数（运维页显示），不写内存、控制台或 Log Analytics；开启后写为 `http.auth_rejected` 事件。此开关只影响新增日志，不清除历史记录；日志页的“隐藏认证拒绝”筛选始终可用，记录状态提示以实际运行配置为准，不随未保存的编辑变化。CSRF 拒绝和其他 4xx 不受影响。 | Workspace；热 |
 | `observability.logAnalytics.enabled` | `false` | 启用 Azure Log Analytics 上传 sink；还需要完整 DCE/DCR 配置。 | Workspace；热 |
 | `observability.runtimeStore.enabled` | `true` | 启用 PostgreSQL runtime event/rollup store；仅当活动持久化模式使用数据库时有效。 | JSON；热 |
+
+管理端运行日志默认按内部请求实例汇总为请求列表，并显示客户端 Request ID；复用客户端 Request ID 不会合并不同请求，展开后可查看对应事件时间线。请求、系统与计费事件、HTTP 访问与认证三个视图共用同一套单行紧凑列表：时间显示为 `MM-DD HH:mm:ss.mmm`（完整时间在悬停提示中），“摘要”列显示来源、错误码与消息，点击行末箭头展开详情（请求视图为事件时间线，其余视图为 JSON 载荷），图标按钮可复制摘要，点击 Request ID 可按该请求筛选；各视图仅按内容调整可见列。重试过程中的错误不决定最终结果；重试成功仍显示成功，HTTP 200 中的流式失败仍显示失败。缺少完成或失败证据时显示“未完成 / 未知”，不推断成功或仍在运行。用量与费用取自实际记录，保留明确的零值，缺失值显示为未知。系统与计费事件、HTTP 访问与认证记录分别保留在独立视图；重复的计价不完整告警按模型和原因汇总，同时保留单次事件明细。该页面读取应用内存日志，不包含 Caddy 的独立标准输出访问日志。列表仅覆盖当前进程仍保留的事件，不等于跨重启历史记录；事件被缓冲区淘汰后，请求详情可能不完整。
 
 ### 持久化与访问治理
 
@@ -160,9 +168,14 @@ JPEG 处理应用 EXIF 方向、等比缩放且不放大、不裁切，转换到
 不是请求前预付费硬上限。旧统计不回填、不重新计价。
 
 缓存写入与缓存读取分别展示。管理端只显示输入总量（含缓存）、缓存读取、缓存写入、
-输出四种 token 和最终估算费用，不再单列总 token 或缓存写入费用。
+输出四种 token 和参考费用，不再单列总 token 或缓存写入费用。
 PostgreSQL event/rollup 仍保留写入 token 和独立费用字段用于内部计费和审计。
-显式 `0` 与上游未报告不同；缺失计数或费率显示未知，不视为免费。
+显式 `0` 与上游未报告不同；缺失计数保留未知用量，不视为零。
+管理端金额只显示已计算的参考小计，不再拼接「未知费用」；无可计算金额时显示 `—`，
+确认零费用时仍显示 `0.0000 USD`。模型统计标题下统一注明
+「计费估算可能不完整，仅供参考，最终费用以 Azure 后台账单为准」。
+参考费用卡片下只显示「费用估算可能不完整」。
+后端的 `unknown/partial` 状态、原因、审计事件与预算治理不因展示调整而改变。
 Chat/Responses 的普通输入量为输入总量减去缓存读取及写入，写入按独立费率收费，
 不得再次加入总 token 或重复收取普通输入费用。相关费率可在定价 JSON 中使用
 `cacheWritePer1mTokens`、`cacheWrite5mPer1mTokens`、`cacheWrite1hPer1mTokens`，
@@ -179,7 +192,27 @@ Grok 4.3/4.6 使用 `short <200K / long >=200K`。数值区间负责选档，不
 同一个实际模型的相同 ID 即使历史费率或阈值不同也合并，费用仍累加各请求原有费用；
 不同 ID 即使区间相同也分行，不根据当前卡重命名历史记录。
 旧汇总若只记录区间、没有 ID，仍按原区间显示；完全缺失档位证据则显示未分类。
-统一费率显示为单独一档，无法确认的历史结算请求数不伪造成零。
+不分档价格显示为单独一档；若当前模型卡有分档，原有不分档记录标注为「历史不分档」，
+不按当前模型卡或汇总输入量回填短/长档。无法确认的历史结算请求数不伪造成零。
+
+模型名称下对有可执行分档规则的模型卡仅显示「分档计费」，展开后显示已记录的档位统计，
+不在主表重复阈值细节。管理端检查所有已配置、可执行分档模型的价格区间，
+不限于 GPT 型号。优先级仍为模型级 `models[].pricing`、配置目录 `access.pricingCatalog`、
+模型卡价格。导入到配置中的旧价格不会因模型库同步自动更新。
+发现配置区间与模型卡不同后，可通过「检查分档价格」预览来源、区间和完整费率，
+经确认将列出模型的模型级价格更新到当前卡的完整快照。共享目录、路由和其他模型不变，
+不会自动替换自定义价格；须经原有配置检查/保存流程后对新请求生效，历史不重算。
+
+运行总览分为范围指标、周期表和系统状态。周期表显示最后一个有记录的自然小时/日/周桶
+及其起始时间，不冒充滚动最近一小时/24 小时/7 天；无周期数据时显示 `—`。
+未启用统计数据库时明确显示累计快照，不宣称已按 Key/时间过滤。
+系统状态是实例级数据，恢复/同步详情默认折叠；标题和更新时间独立于下方对齐的
+Key/时间筛选与同步按钮。「Log Analytics 上传」只表示 Azure 日志上传，不是日志文件导出；
+未启用时只显示「未启用」，隐藏上传队列、丢弃、失败计数。后端历史计数和诊断详情保留，
+管理台内存日志、控制台日志不受该展示控制；独立的统计数据库「事件队列」仍显示。
+输入/输出在概览、周期表、趋势和模型/Key/档位表中统一以 K
+显示，`1 K = 1,000 Token`，最多三位小数保留单 Token 精度，悬停可查看原始计数；
+缓存读取/写入仍使用原始 Token 单位。表格数字使用千位分隔和右对齐，后端原始统计不变。
 
 模型统计区的「清空模型统计」按钮经确认后重置所有模型及其实际模型/计费档位统计，
 不受当前 Key 或时间筛选限制；不清除日志、原始事件、全局/Key/趋势统计或配额。
@@ -192,10 +225,21 @@ Grok 4.3/4.6 使用 `short <200K / long >=200K`。数值区间负责选档，不
 
 | 配置项 | 默认值 | 功能 | 入口与生效方式 |
 | --- | --- | --- | --- |
-| `persistence.compatibilityExport.enabled` | `true` | 允许把规范配置额外导出到兼容路径。 | Workspace；保存时生效 |
-| `persistence.compatibilityExport.exportLegacyConfigOnChange` | `true` | 配置变更时执行兼容导出；与上一开关同时为 `true` 才会写出。 | Workspace；保存时生效 |
+| `persistence.compatibilityExport.enabled` | `true` | 保存变更时允许把规范配置额外写到兼容路径；不关闭主配置存储。 | Workspace；保存时生效 |
 | `access.defaults.requireApiKey` | `true` | 要求公共代理请求通过已配置的客户端 API Key。 | Workspace；热 |
 | `access.budgets.enabled` | `false` | 启用全局预算治理。具有正数独立额度的 Key 仍可进入 Key 级预算逻辑。 | Workspace；热 |
+
+### Runtime 账务恢复与准入
+
+启用 Runtime 数据库时，新事件使用独立 UUID 去重；本地旧缓冲记录在重放前补写稳定 UUID。
+汇总累加与事件检查点在同一 PostgreSQL 事务内提交，失败重试不重复计费。
+升级自动为事件表增加可空 `event_uid` 列和唯一索引；既有历史记录不重新计价，也不自动修正旧版已产生的重复统计。
+
+首次恢复 Key 历史用量失败不会被当作零余额或恢复成功。后续访问间隔至少 1 秒重试；
+恢复期间带 RPM、TPM 或正数硬预算的 Key 返回 `503 / KEY_GOVERNANCE_UNAVAILABLE`，不访问上游。
+没有这些历史额度约束的 Key 仍可按本地并发限制运行，事件继续使用原有缓冲机制。
+恢复时先持久化待写事件，并保留读取期间新结算的用量；文件模式和 minimum 的内存治理不依赖数据库。
+这不新增预算预留，也不承诺跨进程共享配额。
 
 ### 客户端兼容与协议 Shim
 
@@ -206,13 +250,22 @@ Grok 4.3/4.6 使用 `short <200K / long >=200K`。数值区间负责选档，不
 | `compatibility.protocolShim.rejectLossyRequests` | `false` | 默认尽力转换并记录 warning；开启后，跨协议请求无法无损表示时返回 400。 | Workspace；热 |
 | `compatibility.protocolShim.rejectLossyResponses` | `false` | 默认尽力转换并记录 warning；开启后，JSON 或 SSE 响应无法无损表示时拒绝/终止转换。 | Workspace；热 |
 | `compatibility.anthropic.forwardSdkMetadataHeaders` | `true` | 在 Messages 路径转发安全的 `anthropic-*`、`x-anthropic-*`、`x-claude-*`、`x-stainless-*` 元数据；凭据类 header 始终阻断。 | Workspace；热 |
-| `compatibility.anthropic.unknownBetaPolicy` | `allow-direct-anthropic` | `allow-direct-anthropic` 仅对直连 Anthropic 上游保留未知 beta；`allowlist` 对所有上游执行白名单。 | Workspace；热 |
-| `compatibility.anthropic.betaAllowlistEnabled` | `true` | 对 Azure/Foundry Messages 上游过滤未审核的 `anthropic-beta`；直接 Anthropic 上游保留未知值。 | Workspace；热 |
+| `compatibility.anthropic.unknownBetaPolicy` | `allow-direct-anthropic` | `passthrough` 透传全部 beta 值；`allow-direct-anthropic` 仅对直连 Anthropic 上游保留未知 beta；`allowlist` 对所有上游执行白名单。凭据和 hop-by-hop header 的硬过滤不受影响。 | Workspace；热 |
 | `compatibility.anthropic.normalizeManualThinkingToolChoice` | `true` | 修正 manual thinking 与强制工具选择的不兼容组合。 | Workspace；热 |
 | `compatibility.anthropic.sanitizeCacheControl` | `true` | 清理目标 Messages 实现不支持的 `cache_control` 位置或属性。 | Workspace；热 |
 | `compatibility.anthropic.validateThinkingByModel` | `true` | 按模型元数据校验 Claude thinking type 与 effort。 | Workspace；热 |
 | `models[*].clientCompatibility.claudeCode` | `false` | 将模型纳入 Claude Code 专用目录；模型必须启用、上游可用、公共 Messages 开启且最终原生路由到 Messages。不是访问控制。 | Harness；热 |
 | `models[*].clientCompatibility.codex` | `false` | 将模型纳入 Codex 专用目录；模型必须启用、上游可用、公共 Responses 开启、最终原生路由到 Responses，且不是图片生成/编辑模型。不是访问控制。 | Harness；热 |
+
+Harness 会分别展示草稿成员、已保存成员和运行时生效目录；资格只代表静态配置符合原生路由要求，不代表已验证上游、CLI 或工具调用。资格刷新失败、加载中或结果过期时不能添加模型；仍可移除具有唯一 ID 的成员。添加窗口支持搜索、状态筛选、完整阻断原因及配置跳转，修改仍需统一审阅保存。
+
+客户端接入向导需要显式填写公共代理地址，只生成带凭据占位符的 Bash/Zsh 或 Codex TOML，不读取密钥、不发起真实请求。Codex 高级区编辑已有 `models[].codex` 元数据覆盖；留空恢复继承，清除按钮仅移除界面列出的字段。推理档位列表在离开输入框时应用。预览与公开目录共用后端解析器，标记配置、Catalog 与既有回退来源；默认优先级随消费者权限过滤后的顺序变化。以上不新增 Feature Flag，也不改变既有配置校验和请求策略。
+
+### 能力元数据不是功能开关
+
+上游/模型页面展示后端 Catalog 计算的有效能力、来源及上游并集，并区分当前生效配置与未保存草稿。模型卡提供的能力只读；不同的已存储模型标签保留但不覆盖 Catalog，旧配置回退值仍可编辑。预览信息不写入配置，旧 `upstreams[].capabilities` 仍只是派生兼容字段。
+
+模型卡的 `protocolProfiles["chat/completions"].request.outputTokenParameter` 是有证据的协议参数规则，不是新增配置开关或 schema 升级；未迁移卡保留旧兼容路径。模型卡文件编辑需要显式重载，远程同步在原子激活 Catalog 后生效；旧运行时应先升级再接收新字段。详见[模型卡能力与参数说明](../../pricing/README.md#runtime-consumers-and-omitted-capabilities)。
 
 ## 固定安全不变量
 
@@ -232,36 +285,55 @@ Responses 源流始终必须出现顶层 `response.completed` 或 `response.inco
 | --- | --- |
 | `server.adminAuth.enabled` | 由规范字段 `admin.auth.enabled` 重建的运行时兼容镜像。 |
 | `server.imageCompression.enabled` | 由 `media.inputCompression.enabled` 重建的旧版兼容镜像。 |
-| `persistence.configStore.database.enabled` | 仅当原始配置没有 `persistence.configStore.mode` 时作为旧版启动回退。新配置应设置 `mode`；示例配置已有 `mode` 时切换此 checkbox 不会改变活动模式。 |
+| `persistence.configStore.database.enabled` | 仅在原始配置缺少或为空的 `persistence.configStore.mode` 时迁移为 `database` / `file`；显式 mode 优先。UI 只保留模式选择，保存后移除旧字段。 |
+| `media.generation.enabled` | 与原路由开关按 AND 迁移到 `routing.routeProfiles.imageGenerations.enabled`，随后移除旧字段。 |
+| `persistence.compatibilityExport.exportLegacyConfigOnChange` | 与原 `enabled` 按 AND 迁移到 `persistence.compatibilityExport.enabled`；原来关闭的额外导出不会被开启。 |
+| `compatibility.anthropic.betaAllowlistEnabled` | 原值 `false` 迁移为 `unknownBetaPolicy: "passthrough"`；`true` 保留原来的策略。旧布尔值随后移除，新编辑不再被旧字段覆盖。 |
 
-## 预留或当前未接线字段
+## 弃用与未实现字段
 
-以下字段存在于默认 schema，但当前版本不会按名称提供对应功能。不要依赖它们控制生产行为。
+以下字段不再进入新默认配置。读取旧字段会在运行状态的
+`configuration.deprecatedFlags` 中报告路径、是否迁移及替代字段，并记录
+`config.deprecated_flags` warning；管理页 Workspace 显示相同提示，不记录旧字段值。
+归一化后可编辑配置不含这些字段，但不会仅因普通 v3 重载而改写原文件；
+检查并保存后才持久化清理。v2 和已有的必要结构修复仍遵循原来的升级写入流程。
+`configuration.cleanupRequired` 标记旧 v3 文件是否仍待规范化；即使没有普通编辑差异，
+管理页也提供「配置规范化待保存」的检查/保存入口，弹窗列出弃用路径与替代字段。
+已在保存或升级中写入规范配置时不再提示待保存，但保留本次迁移说明直到重载。
+失败的保存/重载不替换旧配置、旧 Catalog 或原弃用提示。
 
 ### 启用即被拒绝
 
-- `routing.fallbacks.enabled`（默认 `false`）
-- `routing.cooldowns.enabled`（默认 `false`）
-- `routing.healthChecks.enabled`（默认 `false`）
+- `routing.fallbacks.enabled`
+- `routing.cooldowns.enabled`
+- `routing.healthChecks.enabled`
 
-这三项是预留能力；设置为 `true` 会被配置校验明确拒绝。
+这三项不再生成默认块。旧配置设置为 `true` 仍被明确拒绝；
+关闭或未启用的旧块会带提示移除，不会补做 fallback、cooldown 或健康检查。
 
-### 当前没有运行时读取点
+### 保留行为、移除无效开关
 
 | 字段 | 当前状态 |
 | --- | --- |
 | `admin.auth.allowBasicAuth`、`admin.auth.allowOidc` | Basic Auth 仍由 `admin.auth.enabled` 控制；当前没有 OIDC 实现。 |
 | `admin.security.auditAllWrites`、`admin.security.maskSecretsInUi` | 管理写日志和 UI secret 脱敏当前为强制行为。 |
 | `admin.features.enableConfigImportExport`、`admin.features.enableDangerousActions` | 当前不控制导入导出、restart API 或对应按钮。 |
-| `routing.healthChecks.trackLatency` | 健康检查调度器尚未实现。 |
-| `routing.preCallChecks.validateModelCapabilities`、`routing.preCallChecks.validateContextWindow`、`routing.preCallChecks.validateImageInput` | 当前没有 pre-call check 消费路径。 |
-| `media.inlineImages.redactInLogs` | 内联二进制日志清洗当前始终强制执行；管理页中的同名 checkbox 不改变行为。 |
+| `routing.healthChecks`、`routing.preCallChecks` | 健康检查和 pre-call check 调度器没有实现；不能据此宣称会校验模型能力、上下文或图片。 |
+| `media.inlineImages.redactInLogs` | 内联二进制日志清洗始终强制执行；UI 改为不可关闭的说明。 |
 | `observability.logs.redactSecrets` | secret 清洗始终强制执行；管理页将其显示为不可关闭。 |
-| `observability.metrics.enabled`、`observability.metrics.exposePrometheus`、`observability.metrics.includePerKeyMetrics`、`observability.metrics.includePerModelMetrics` | 当前没有 metrics collector 或 Prometheus 路由。 |
-| `observability.audit.enabled`、`observability.audit.recordReadActions`、`observability.audit.recordWriteActions` | 当前没有由这些布尔值控制的审计模块；同组 retention 数值可能被 runtime store 使用。 |
+| `observability.metrics` | 当前没有 metrics collector 或 Prometheus 路由，移除整个预留块。 |
+| `observability.audit.enabled`、`observability.audit.recordReadActions`、`observability.audit.recordWriteActions` | 当前没有由这些布尔值控制的审计模块；同组 `retentionDays` 仍保留给原有 runtime store 兼容路径。 |
 | `access.defaults.enforceUserField`、`access.defaults.rejectClientSideMetadataTags` | 当前没有治理消费路径。 |
-| `compatibility.enableLegacyConfigRead`、`compatibility.enableLegacyConfigWrite`、`compatibility.mapServerAdminPathToAdminBasePath`、`compatibility.mapImageCompressionToMediaInputCompression`、`compatibility.mapServerUpstreamToProxyDefaults`、`compatibility.warnOnDeprecatedFields` | 旧配置归一化目前无条件执行，这些开关不改变迁移行为。 |
-| `upstreams[*].healthCheck.enabled` | 上游健康检查调度器尚未实现。 |
+| `compatibility.enableLegacyConfigRead`、`compatibility.enableLegacyConfigWrite`、`compatibility.mapServerAdminPathToAdminBasePath`、`compatibility.mapImageCompressionToMediaInputCompression`、`compatibility.mapServerUpstreamToProxyDefaults`、`compatibility.warnOnDeprecatedFields`、`compatibility.failOnDeprecatedFieldsAfterVersion` | 旧配置兼容归一化继续执行，不再生成不生效的控制字段。 |
+| `upstreams[*].healthCheck` | 上游健康检查调度器尚未实现，移除预留块并提示路径。 |
+
+`minimum/nextgen` 仍是同一代码基线的运行 Profile。minimum 禁用的 Log Analytics、
+Runtime Store 和预算只作用于运行时克隆，保存时仍保留对应持久化配置。
+环境管理的值和 secret 也不会因规范化或 UI 保存而回写；新媒体入口与凭据导出仍默认关闭。
+
+部署时先升级支持这些迁移的 runtime 和管理端，再检查/保存规范配置。
+`unknownBetaPolicy: "passthrough"` 是新增取值，旧 runtime 不接受；
+若需回滚到旧版本，应同时恢复升级前的配置备份，不能只回滚容器镜像。
 
 ## 布尔环境门禁
 

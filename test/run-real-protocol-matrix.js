@@ -1,7 +1,9 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { fileURLToPath } from "node:url";
 
 const PROTOCOLS = ["chat/completions", "responses", "messages"];
 const SCENARIOS = ["basic", "stream", "tool", "reasoning"];
@@ -64,8 +66,8 @@ const MODEL_PROFILES = [
     env: "AOAI_PROXY_MATRIX_GROK_46",
     defaultModel: "grok-4.6",
     capabilities: ["reasoning", "tools"],
-    reasoningSources: ["chat/completions"],
-    targetFor: (source) => source === "chat/completions" ? "chat/completions" : "responses"
+    reasoningSources: [],
+    targetFor: () => "chat/completions"
   }
 ];
 
@@ -74,7 +76,7 @@ const DEFAULT_PREFERRED_MODELS = {
   "chat/completions->responses": "gpt-5.6-terra",
   "chat/completions->messages": "claude-sonnet-5",
   "responses->chat/completions": "deepseek-v4",
-  "responses->responses": "grok-4.6",
+  "responses->responses": "gpt-5.4",
   "responses->messages": "claude-sonnet-4.6",
   "messages->chat/completions": "kimi-k2.6",
   "messages->responses": "gpt-5.4",
@@ -88,7 +90,7 @@ const TOOL_PREFERRED_MODELS = {
 
 const REASONING_PREFERRED_MODELS = {
   ...DEFAULT_PREFERRED_MODELS,
-  "chat/completions->chat/completions": "grok-4.6",
+  "chat/completions->chat/completions": "gpt-5.4",
   "responses->responses": "gpt-5.4",
   "messages->chat/completions": "deepseek-v4",
   "messages->responses": "gpt-5.6-terra"
@@ -676,7 +678,11 @@ async function main() {
   await runMatrix(config, cases, options);
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error?.stack || error}\n`);
-  process.exitCode = 1;
-});
+export { buildPlan, parseArgs, selectMatrixCases };
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`${error?.stack || error}\n`);
+    process.exitCode = 1;
+  });
+}

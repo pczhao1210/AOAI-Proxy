@@ -19,9 +19,10 @@ import { flushRuntimeEvents, getRuntimeStatsSnapshot, resetRuntimeModelStats } f
 import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
-import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, setLogConfig } from "./logs.js";
-import { getConfiguredModelBindingIssues, getHarnessClientEligibility, getHarnessModelEligibility, validateConfiguredModels } from "./model-validation.js";
-import { compileModelCatalog, createModelCatalogSyncTransaction, getDescriptorProtocolProfile, resolveModelDescriptor } from "./model-catalog.js";
+import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, recordSuppressedAuthRejection, setLogConfig } from "./logs.js";
+import { getConfiguredModelBindingIssues, getHarnessClientEligibility, getHarnessCatalogState, validateConfiguredModels } from "./model-validation.js";
+import { compileModelCatalog, createModelCatalogSyncTransaction, getModelCapabilityView, resolveModelDescriptor, withModelCatalogUpdateLock } from "./model-catalog.js";
+import { getCodexModelMetadata } from "./codex-models.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
 import { getRequestNetworkContext } from "./request-network.js";
@@ -102,10 +103,17 @@ function isAdminRoute(url, adminPath) {
   return false;
 }
 
+// Authorize the matched route, not just the raw URL: the router decodes static
+// path segments (e.g. /%61dmin), and custom admin paths are rewritten to /admin.
+function isAdminRequest(req, config) {
+  return isAdminRoute(req.routeOptions?.url, STATIC_ADMIN_PATH)
+    || isAdminRoute(req.raw?.url || req.url, config.server.adminPath);
+}
+
 function shouldSkipSuccessfulAccessLog(url, method, status, adminPath) {
   if (status >= 400) return false;
   const pathOnly = String(url || "").split("?")[0];
-  if (pathOnly === "/healthz" || pathOnly === "/version" || pathOnly === "/favicon.ico") return true;
+  if (pathOnly === "/healthz" || pathOnly === "/version" || pathOnly === "/robots.txt" || pathOnly === "/favicon.ico") return true;
   return ["GET", "HEAD", "OPTIONS"].includes(String(method || "").toUpperCase())
     && isAdminRoute(url, adminPath);
 }
@@ -261,35 +269,6 @@ function buildAnthropicModelList(config, consumer, { claudeCodeOnly = false } = 
   };
 }
 
-const CODEX_REASONING_DESCRIPTIONS = {
-  none: "No reasoning",
-  minimal: "Minimal reasoning",
-  low: "Fast responses with lighter reasoning",
-  medium: "Balanced speed and reasoning depth",
-  high: "Greater reasoning depth for complex problems",
-  xhigh: "Extra high reasoning depth for complex problems",
-  max: "Maximum reasoning depth for the hardest problems"
-};
-
-const DEFAULT_CODEX_BASE_INSTRUCTIONS = [
-  "You are a coding agent working in the user's current workspace.",
-  "Follow the user's instructions, use the available tools when needed, and complete coding tasks accurately.",
-  "Respect repository instructions and preserve unrelated user changes."
-].join(" ");
-
-function normalizeCapabilitySet(model) {
-  const descriptor = resolveModelDescriptor(model?.id);
-  const capabilities = Array.isArray(descriptor?.capabilities) && descriptor.capabilities.length > 0
-    ? descriptor.capabilities
-    : model?.capabilities;
-  return new Set(
-    (Array.isArray(capabilities) ? capabilities : [])
-      .filter((value) => typeof value === "string")
-      .map((value) => value.trim().toLowerCase().replaceAll("_", "-"))
-      .filter(Boolean)
-  );
-}
-
 function modelUsesNativeResponses(config, model) {
   if (model?.clientCompatibility?.codex !== true) {
     return false;
@@ -297,105 +276,11 @@ function modelUsesNativeResponses(config, model) {
   return getHarnessClientEligibility(config, model, "codex").eligible;
 }
 
-function normalizeReasoningLevels(values) {
-  return Array.isArray(values)
-    ? [...new Set(values.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean))]
-    : [];
-}
-
-function getCodexReasoningProfile(model, capabilities) {
-  const configured = Array.isArray(model?.codex?.supportedReasoningEfforts)
-    ? normalizeReasoningLevels(model.codex.supportedReasoningEfforts)
-    : [];
-  const descriptor = resolveModelDescriptor(model?.id);
-  const catalogReasoning = getDescriptorProtocolProfile(descriptor, "responses")?.reasoning;
-  const catalogLevels = normalizeReasoningLevels(catalogReasoning?.levels);
-  const levels = configured.length
-    ? configured
-    : catalogLevels.length
-      ? catalogLevels
-      : capabilities.has("reasoning")
-        ? ["low", "medium", "high"]
-        : [];
-  const configuredDefault = String(model?.codex?.defaultReasoningEffort || "").trim().toLowerCase();
-  const catalogDefault = String(catalogReasoning?.default || "").trim().toLowerCase();
-  const defaultLevel = [configuredDefault, catalogDefault, "medium", levels[0]]
-    .find((value) => value && levels.includes(value)) || "medium";
-  return { levels, defaultLevel };
-}
-
-function buildCodexModelInfo(model, index) {
-  const capabilities = normalizeCapabilitySet(model);
-  const reasoningProfile = getCodexReasoningProfile(model, capabilities);
-  const descriptor = resolveModelDescriptor(model?.id);
-  const configuredContextWindow = [
-    model?.codex?.contextWindow,
-    model?.contextWindow
-  ].find((value) => Number.isSafeInteger(value) && value > 0);
-  const catalogContextWindow = descriptor?.tokenLimits?.contextWindow;
-  const catalogInputLimit = descriptor?.tokenLimits?.maxInputTokens;
-  const contextWindow = configuredContextWindow
-    || (
-      Number.isSafeInteger(catalogContextWindow) && catalogContextWindow > 0
-        ? catalogContextWindow
-        : Number.isSafeInteger(catalogInputLimit) && catalogInputLimit > 0
-          ? catalogInputLimit
-          : 128000
-    );
-  const hasKnownContextWindow = configuredContextWindow != null
-    || (Number.isSafeInteger(catalogContextWindow) && catalogContextWindow > 0)
-    || (Number.isSafeInteger(catalogInputLimit) && catalogInputLimit > 0);
-  const supportsVision = capabilities.has("vision");
-  const supportsWebSearch = capabilities.has("web-search");
-  const codeOptimized = capabilities.has("code-optimized");
-  const configuredBaseInstructions = typeof model?.codex?.baseInstructions === "string"
-    ? model.codex.baseInstructions.trim()
-    : "";
-
-  return {
-    slug: model.id,
-    display_name: model.displayName || model.id,
-    description: model?.codex?.description || `${model.displayName || model.id} via AOAI Proxy`,
-    default_reasoning_level: reasoningProfile.defaultLevel,
-    supported_reasoning_levels: reasoningProfile.levels.map((effort) => ({
-      effort,
-      description: CODEX_REASONING_DESCRIPTIONS[effort] || `${effort} reasoning`
-    })),
-    shell_type: "shell_command",
-    visibility: "list",
-    supported_in_api: true,
-    priority: Number.isInteger(model?.codex?.priority) ? model.codex.priority : index,
-    additional_speed_tiers: [],
-    service_tiers: [],
-    availability_nux: null,
-    upgrade: null,
-    base_instructions: configuredBaseInstructions || DEFAULT_CODEX_BASE_INSTRUCTIONS,
-    include_skills_usage_instructions: false,
-    include_plugin_usage_instructions: false,
-    include_apps_usage_instructions: false,
-    default_reasoning_summary: "none",
-    support_verbosity: false,
-    default_verbosity: null,
-    apply_patch_tool_type: codeOptimized ? "freeform" : null,
-    web_search_tool_type: supportsVision && supportsWebSearch ? "text_and_image" : "text",
-    truncation_policy: { mode: "tokens", limit: 10000 },
-    supports_parallel_tool_calls: capabilities.has("parallel-tool-calling"),
-    supports_image_detail_original: supportsVision,
-    context_window: contextWindow,
-    max_context_window: contextWindow,
-    effective_context_window_percent: hasKnownContextWindow ? 100 : 95,
-    experimental_supported_tools: [],
-    input_modalities: supportsVision ? ["text", "image"] : ["text"],
-    supports_search_tool: supportsWebSearch,
-    use_responses_lite: false
-  };
-}
-
 function buildCodexModelList(config, consumer) {
   return {
     models: filterModelsForConsumer(config.models, consumer)
       .filter((model) => modelUsesNativeResponses(config, model))
-      .map(buildCodexModelInfo)
+      .map((model, index) => getCodexModelMetadata(model, index, resolveModelDescriptor(model.id)).info)
   };
 }
 
@@ -472,6 +357,15 @@ function attachAuth(config) {
 
 function applyLogConfig(config) {
   setLogConfig(config);
+  const deprecatedFlags = getConfigRuntimeInfo().configuration.deprecatedFlags;
+  if (deprecatedFlags.length) {
+    appendStructuredLog("warn", {
+      source: "config",
+      event: "config.deprecated_flags",
+      message: "Legacy configuration flags were normalized or ignored; review and save the canonical configuration",
+      deprecatedFlags
+    });
+  }
   if (process.env.LOG_LEVEL) return;
   const configuredLevel = String(config?.observability?.logs?.level || "info").trim().toLowerCase();
   if (["trace", "debug", "info", "warn", "error", "fatal", "silent"].includes(configuredLevel)) {
@@ -606,8 +500,7 @@ app.addHook("onRequest", async (req) => {
 
 app.addHook("preParsing", async (req, reply, payload) => {
   const config = getConfig();
-  const rawUrl = req.raw?.url || req.url;
-  if (isAdminRoute(rawUrl, config.server.adminPath)) return payload;
+  if (isAdminRequest(req, config)) return payload;
   if (req.routeOptions.config.httpMediaUpload) return payload;
 
   const configuredLimit = getPositiveInteger(config?.proxy?.guards?.maxRequestBodyBytes);
@@ -620,21 +513,24 @@ app.addHook("preParsing", async (req, reply, payload) => {
   return limitRequestBodyStream(payload, configuredLimit);
 });
 
-app.addHook("preHandler", async (req, reply) => {
+app.addHook("onRequest", async (req, reply) => {
   const config = getConfig();
   const rawUrl = req.raw?.url || req.url;
   const pathOnly = (rawUrl || "").split("?")[0];
-  if (pathOnly === "/healthz" || pathOnly === "/version") {
+  if (pathOnly === "/healthz" || pathOnly === "/version" || pathOnly === "/robots.txt") {
     return;
   }
   if (pathOnly === "/favicon.ico") {
     return reply.code(204).send();
   }
-  if (isAdminRoute(rawUrl, config.server.adminPath)) {
+  if (isAdminRequest(req, config)) {
+    reply.header("X-Robots-Tag", "noindex, nofollow");
     if (!verifyAdminIpAccess(config, req)) {
+      req.authRejection = "ADMIN_IP_FORBIDDEN";
       return reply.code(403).send({ error: "AdminForbidden", message: "Admin access is not allowed from this IP address" });
     }
     if (!verifyAdminBasicAuth(config, req.headers)) {
+      req.authRejection = "ADMIN_UNAUTHORIZED";
       reply.header("WWW-Authenticate", 'Basic realm="AOAI Proxy Admin"');
       return reply.code(401).send({ error: "AdminUnauthorized" });
     }
@@ -646,9 +542,20 @@ app.addHook("preHandler", async (req, reply) => {
   const key = extractApiKey(config, req.headers);
   const consumerResult = resolveApiConsumer(config, key);
   if (!consumerResult.ok) {
+    req.authRejection = key ? "API_KEY_INVALID" : "API_KEY_MISSING";
     return reply.code(consumerResult.status || 401).send({ error: consumerResult.error || "Unauthorized", message: consumerResult.message || "Unauthorized" });
   }
   req.proxyAccess = { key, consumer: consumerResult.consumer };
+});
+
+// Record why Fastify rejected a request (e.g. body parsing) so the access log carries the cause.
+app.addHook("onError", async (req, _reply, error) => {
+  const code = typeof error?.code === "string" ? error.code : "";
+  req.accessLogFailure = {
+    errorCode: code || (error instanceof SyntaxError ? "INVALID_REQUEST_BODY" : "REQUEST_FAILED"),
+    // Parser messages can quote request body fragments, so only Fastify's fixed messages are kept.
+    failureReason: code.startsWith("FST_") && !(error instanceof SyntaxError) ? String(error.message || "") : ""
+  };
 });
 
 app.addHook("onResponse", async (req, reply) => {
@@ -658,18 +565,26 @@ app.addHook("onResponse", async (req, reply) => {
   if (shouldSkipSuccessfulAccessLog(rawUrl, req.method, status, config.server.adminPath)) {
     return;
   }
+  if (req.authRejection && config?.observability?.logs?.includeAuthRejected !== true) {
+    recordSuppressedAuthRejection();
+    return;
+  }
 
   const level = status >= 500 ? "error" : status >= 400 ? "warn" : "info";
   const networkContext = getRequestNetworkContext(config, req);
   const payload = {
-    source: isAdminRoute(rawUrl, config.server.adminPath) ? "http.admin" : "http",
-    event: "http.request_completed",
-    message: status >= 400 ? "request completed with error" : "request completed",
+    source: isAdminRequest(req, config) ? "http.admin" : "http",
+    event: req.authRejection ? "http.auth_rejected" : "http.request_completed",
+    message: req.authRejection
+      ? "request rejected by authentication"
+      : status >= 400 ? "request completed with error" : "request completed",
     ...getRequestContext(req),
     method: req.method,
     url: rawUrl,
     status,
     latencyMs: Math.round(reply.elapsedTime || 0),
+    ...(req.authRejection ? { errorCode: req.authRejection } : {}),
+    ...(!req.authRejection && status >= 400 && req.accessLogFailure ? req.accessLogFailure : {}),
     ...networkContext
   };
   if (level === "info") {
@@ -680,6 +595,11 @@ app.addHook("onResponse", async (req, reply) => {
 });
 
 app.get("/healthz", async () => ({ status: "ok" }));
+
+app.get("/robots.txt", async (_req, reply) => {
+  reply.header("Cache-Control", "public, max-age=86400");
+  return reply.type("text/plain; charset=utf-8").send("User-agent: *\nDisallow: /\n");
+});
 
 app.get("/version", async (_req, reply) => {
   reply.header("Cache-Control", "no-store");
@@ -780,7 +700,8 @@ await app.register(async mediaApp => {
     if (!req.routeOptions.config.httpMediaUpload) return payload;
     const limit = getMediaHttpLimits(getConfig()).maxUploadBytes;
     if (Number(req.headers["content-length"]) > limit) throw createPayloadTooLargeError(limit);
-    return limitRequestBodyStream(payload, limit);
+    // Multipart reads req.raw directly; its reader enforces streamed byte limits.
+    return payload;
   });
   for (const routeKey of ["audio/speech", "audio/transcriptions", "audio/translations", "images/edits"]) {
     mediaApp.post(`/v1/${routeKey}`, { config: { httpMediaUpload: routeKey !== "audio/speech" } }, async (req, reply) => {
@@ -999,19 +920,23 @@ app.post("/admin/api/models/validate", async (req, reply) => {
 app.post("/admin/api/harness/eligibility", async (req, reply) => {
   const body = req.body && typeof req.body === "object" ? req.body : {};
   try {
-    const sourceConfig = body.config && typeof body.config === "object"
-      ? restoreConfigSecrets(body.config, getPersistedConfig())
-      : getPersistedConfig();
-    const config = prepareConfigPreview(sourceConfig);
-    const snapshot = compileModelCatalog(config);
-    reply.send({
-      ok: true,
-      catalogs: {
-        claudeCode: { enabled: config?.compatibility?.claudeCode?.enabled !== false },
-        codex: { enabled: config?.compatibility?.codex?.enabled !== false }
-      },
-      items: getHarnessModelEligibility(config, snapshot)
+    const result = await withModelCatalogUpdateLock(() => {
+      const sourceConfig = body.config && typeof body.config === "object"
+        ? restoreConfigSecrets(body.config, getPersistedConfig())
+        : getPersistedConfig();
+      const config = prepareConfigPreview(sourceConfig);
+      const snapshot = compileModelCatalog(config);
+      return {
+        ok: true,
+        ...getHarnessCatalogState(config, snapshot),
+        active: getHarnessCatalogState(getConfig()),
+        capabilities: {
+          active: getModelCapabilityView(getConfig()),
+          preview: getModelCapabilityView(config, snapshot)
+        }
+      };
     });
+    reply.send(result);
   } catch (error) {
     logAdminApiError("admin.harness_eligibility_failed", error, {
       route: "/admin/api/harness/eligibility",

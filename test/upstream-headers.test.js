@@ -99,7 +99,8 @@ test("unknown beta policy preserves direct-provider and final-host rules", () =>
     { provider: "openai", targetUrl: "https://notanthropic.com/messages", accepted: false },
     { provider: "openai", targetUrl: "invalid URL", accepted: false },
     { provider: "anthropic", targetUrl: "https://api.anthropic.com/messages", policy: { unknownBetaPolicy: "allowlist" }, accepted: false },
-    { provider: "openai", targetUrl: "https://upstream.example/messages", policy: { betaAllowlistEnabled: false }, accepted: true }
+    { provider: "openai", targetUrl: "https://upstream.example/messages", policy: { betaAllowlistEnabled: false }, accepted: true },
+    { provider: "openai", targetUrl: "https://upstream.example/messages", policy: { unknownBetaPolicy: "passthrough" }, accepted: true }
   ]) {
     const { headers, filteredBetas } = buildUpstreamHeaders(headerOptions({
       incomingHeaders: { "anthropic-beta": "future-beta,future-beta" },

@@ -12,21 +12,64 @@ Focused reliability and policy regressions:
 node --test test/media-policy.test.js
 node --test test/stream-backpressure.test.js
 node --test test/governance-pricing.test.js
+node --test test/admin-security.test.js test/upstream-redirect.test.js
+node --test test/sse-lifecycle.test.js test/request-cleanup.test.js
+node --test test/runtime-recovery.test.js
 node --test test/token-pricing.test.js test/context-pricing-integration.test.js test/context-pricing-routes.test.js test/text-cost-observability.test.js
 node --test test/model-statistics.test.js test/runtime-store.test.js test/model-stats-routes.test.js test/admin-runtime-stats.test.js
 node --test test/request-policy.test.js
 node --test test/request-body-policy.test.js test/anthropic-body-policy.test.js
 node --test test/admin-runtime-loader.test.js
+node --test test/config-feature-flags.test.js test/config-environment.test.js test/config-v2-upgrade.test.js
 node --test test/admin-media-form.test.js
 node --test test/admin-routing-form.test.js
+node --test test/admin-capabilities.test.js test/capability-routing.test.js
+node --test test/admin-harness-form.test.js test/harness-client-config.test.js test/codex-models.test.js
+node --test --test-name-pattern='App Harness|App capability' test/admin-runtime-stats.test.js
 node --test test/admin-log-content.test.js
+node --test test/logs.test.js test/admin-auth-logs.test.js
 node --test test/response-reader.test.js
 node --test test/usage-accounting.test.js
 node --test test/upstream-headers.test.js
+node --test test/protocol-shim-fidelity.test.js
 node --test test/image-optimization.test.js test/image-work-queue.test.js test/image-config.test.js test/image-routes.test.js
 node --test test/mai-routes.test.js test/media-http.test.js test/azure-speech.test.js
 node --test test/realtime.test.js test/webrtc.test.js
+node --test test/real-protocol-matrix.test.js test/pricing-sync.test.js
+node --test test/model-card-source-priority.test.js test/model-card-format.test.js test/model-catalog.test.js
 ```
+
+Security regressions cover percent-encoded matched admin routes, custom admin paths,
+CSRF/IP policy and header authentication before body parsing. Redirect tests freeze all
+three native JSON/SSE protocols: no 3xx response may forward credentials or content to
+a different target, including a same-origin target. SSE lifecycle checks enforce raw
+per-event byte limits before decoding and cancel/unlock readers on all exits.
+They also check linear split-event copying, bounded fragment storage, and frame
+ownership. The memory regression launches its own Node process with `--expose-gc`;
+it does not require that flag on the test runner.
+Request cleanup keeps client placeholder adaptation for optional controls while
+preserving literal text, tool data and JSON Schema enum/default/const values.
+
+Runtime recovery tests inject failed checkpoints, lost insert/commit acknowledgements,
+legacy spool replay/restart, and failed budget hydration. They assert transactional
+rollups, stable event identities and preservation of settlements during recovery.
+These mocks complement, rather than replace, the disposable PostgreSQL gate below.
+The CI workflow runs patched Node 24 (at least 24.22.1) unit/routes/card/build/security
+checks and that database gate; it never runs real providers, modifies a deployment,
+or rebuilds committed UI assets.
+For local validation, use `nvm install && nvm use` and `npm ci --engine-strict`
+so tests use the checked-in runtime baseline and exact lockfile.
+
+Feature-flag contracts reject non-boolean JSON before legacy upgrades, defaults
+or environment overrides can hide it. Failed legacy upgrades retain the source
+file, active/persisted configuration, Catalog and deprecation diagnostics.
+They freeze legacy export/image AND migration, all three beta policies,
+database-mode precedence, inactive-field diagnostics, ordinary v3
+reload without file rewrites, canonical save/reload, failed-save state retention,
+and minimum/environment-managed persistence. Form checks require one image gate,
+one export toggle, mode-based database controls and non-editable forced redaction.
+The full App contract also permits cleanup-only reviewed saves with no unrelated
+configuration edit and clears the pending-cleanup marker only after persistence.
 
 MAI/media tests freeze provider-specific URLs, authentication, multipart file/field fidelity, SSML,
 binary/text/SSE errors and terminal events. Realtime/WebRTC tests use local mock upstreams and
@@ -35,11 +78,14 @@ provider-specific SDP setup, credential export, expiration and lease cleanup. Us
 cover explicit zeros, cumulative deltas, duplicate terminals, channel/cache rates, duration/character
 units, provider price isolation and known/unknown currency totals. Media form tests cover independent
 transport gates, limits, client-secret confirmation and known/unknown cost labels.
+Duration billing tests freeze zero/exact/fractional boundaries, per-item increments,
+cumulative snapshots and unchanged raw counters/continuous pricing. Remote-sync tests
+reject malformed thinking shim defaults while preserving the previous files and Catalog.
 
 Optional local integration gates (never point these at production):
 
 ```bash
-RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger node --test test/runtime-store.test.js
+RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger node --test test/runtime-store.test.js test/runtime-recovery.test.js
 REALTIME_CADDY_TEST_IMAGE=LOCAL_IMAGE_WITH_CADDY node --test --test-name-pattern='generated Caddy' test/realtime.test.js
 ```
 
@@ -66,8 +112,22 @@ and required raw metadata without touching archives. `npm run cards:validate`
 lists field-path errors and nonblocking missing-information review diagnostics;
 it does not infer provider facts or fill unknown values. `node --test test/model-card-format.test.js` covers
 compact/legacy equivalence, explicit null/zero/overrides, complete tier import,
-formatter idempotence and backend/admin loader parity. Use
+formatter idempotence and backend/admin loader parity. Capability checks freeze
+the documented canonical vocabulary, duplicate/legacy-label rejection, direct
+modality consistency, and parallel/function-call declarations. Catalog tests
+separately retain runtime acceptance of omitted/future capability metadata:
+offline authoring rules are not request or native-route gates. Use
 `npm run cards:format` to normalize active cards, then run the Catalog and sync suites.
+
+Capability contracts cover active/draft snapshot provenance, effective upstream
+unions, editable legacy fallback, stale preview fencing and save/reload preservation.
+Chat token-profile tests freeze URL/body/headers and JSON/SSE terminal behavior
+for Chat, Responses and Messages clients with and without capability labels;
+unit tests retain canonical zero/invalid values and legacy behavior. Sync tests
+reject invalid token parameters without replacing active files or descriptors.
+Codex tests prefer explicit modalities and reasoning profiles while preserving
+legacy vision fallback and existing eligibility/tool hints. UI test servers use
+isolated temporary Vite caches, never the shared dependency cache.
 
 Cache-write regressions cover the documented Chat and Responses detail fields,
 Messages combined/TTL counts, distinct reported zero versus missing evidence,
@@ -85,7 +145,19 @@ contract checks admin authentication, CSRF, custom admin paths, all-model scope
 regardless of active filters, and preservation of global/key/governance counters.
 UI checks distinguish settled tier requests from admitted model requests, derive
 cache-read ratios from aggregated token counts, remove standalone write costs,
-and require confirmation before the model-only reset. No ratio is persisted.
+and require confirmation before the model-only reset. All executable tiered
+cards are also checked through import, override precedence, exact interval
+boundaries and explicit scoped price repair. UI regressions separate card tiers
+from historical non-tiered rows, preserve shared prices and routes, require a
+price-review confirmation and keep repair in the config draft until save.
+Billing breakdown UI checks allow headers and long model/tier labels to wrap,
+align text left and numeric cells right, and explain unrecorded tiers without
+reclassifying history. GPT-6.1 Sol checks freeze the administrator-approved
+OpenAI reference rates, import behavior and cache-inclusive 272K boundary;
+these estimates do not establish verified Azure deployment prices.
+Reference costs omit unknown-fee suffixes without changing backend completeness;
+overview contracts cover scoped totals, dated calendar buckets, empty data and
+instance-wide health. No ratio is persisted.
 Mock storage checks cover restart, reset failure, queued/spilled pre-reset events,
 serialized flush/reset/snapshot operations, nullable history and media accounting.
 Requests already in flight are not cancelled: post-reset settlements remain
@@ -123,6 +195,13 @@ media mode visibility, numeric zeros, hidden settings, list parsing and exact co
 with controlled-input state feedback. Routing tests additionally freeze beta options, boolean defaults,
 control order and editable policy fields when routes are disabled. Real-browser layout, translations and
 the review/save HTTP workflow remain separate browser checks.
+
+Harness form contracts use the same component helper for stale/failed eligibility, identity-based
+selection, complete blocking reasons, connection snippets, clipboard failures and Codex override editing.
+The full App contracts in `admin-runtime-stats.test.js` cover cancellation, late replies, retry and
+failed-save draft retention. `codex-models.test.js` freezes shared serialization and metadata provenance;
+the `codex-models` route compares admin preview objects with public discovery. These checks do not call
+real providers or establish CLI acceptance. Browser layout and reviewed save/reload remain separate gates.
 
 Log-content tests mock the confirmation prompt, checking that cancellation writes neither configuration
 path, confirmed full mode writes both paths, and leaving full mode does not prompt. They never enable
@@ -246,7 +325,13 @@ Configure these public model IDs, or override each ID with the named environment
 - `Kimi-K2.6`
 - `grok-4.6`
 
-The GPT-5.6 Terra model must retain the pricing-template route `chat/completions -> responses`. DeepSeek V4 has no function-tool capability, so Kimi K2.6 covers the Chat-backend tool cells. Kimi K2.6 exposes a thinking toggle rather than a reasoning level, so reasoning-level cells use the other compatible models.
+The GPT-5.6 Terra model must retain the pricing-template route `chat/completions -> responses`.
+The matrix uses Kimi K2.6 for the Chat-backend tool cells. Kimi K2.6 exposes a
+thinking toggle rather than a reasoning level; Grok 4.6's Azure effort choices
+remain unverified. Their profiles explicitly skip reasoning-level scenarios,
+which use the other compatible models. Basic, stream and tool scenarios remain
+available for Grok. The offline selector unit test checks all 36 default cases
+(four scenarios across nine directions); `--list` alone prints only model routing.
 
 Focused reruns:
 

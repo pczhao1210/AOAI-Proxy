@@ -48,8 +48,26 @@ export async function readMediaMultipart(req, config, { requireModel = true } = 
   const fields = Object.create(null);
   const parts = [];
   let bytes = 0;
+  let wireBytes = 0;
+  let wireError;
   let fileCount = 0;
   let fieldCount = 0;
+  const countWireBytes = chunk => {
+    wireBytes += chunk.length;
+    if (wireBytes > limits.maxUploadBytes && !wireError) {
+      wireError = uploadError(413, "UPLOAD_TOO_LARGE", "Media upload exceeded its byte limit");
+      req.raw.pause();
+      // Stop multipart parsing without destroying the socket needed for the 413.
+      req.raw.emit("error", wireError);
+    }
+  };
+  const checkUploadSize = () => {
+    if (bytes > limits.maxUploadBytes || wireBytes > limits.maxUploadBytes) {
+      throw uploadError(413, "UPLOAD_TOO_LARGE", "Media upload exceeded its byte limit");
+    }
+  };
+  req.raw.pause();
+  req.raw.on("data", countWireBytes);
   try {
     for await (const part of req.parts({
       isPartAFile: (name, contentType, filename) => filename !== undefined
@@ -57,6 +75,7 @@ export async function readMediaMultipart(req, config, { requireModel = true } = 
       limits: { fileSize: limits.maxUploadBytes, files: limits.maxFiles + limits.maxFields,
         fields: limits.maxFields, fieldSize: limits.maxFieldBytes, fieldNameSize: 256, parts: limits.maxFiles + limits.maxFields }
     })) {
+      checkUploadSize();
       const jsonField = part.type === "file" && part.filename === undefined && part.mimetype.startsWith("application/json");
       const isFile = part.type === "file" && !jsonField;
       if (isFile) fileCount += 1;
@@ -74,7 +93,7 @@ export async function readMediaMultipart(req, config, { requireModel = true } = 
           bytes += chunk.length;
           partBytes += chunk.length;
           if (jsonField && partBytes > limits.maxFieldBytes) throw uploadError(413, "UPLOAD_FIELD_TOO_LARGE", "Media field exceeded its byte limit");
-          if (bytes > limits.maxUploadBytes) throw uploadError(413, "UPLOAD_TOO_LARGE", "Media upload exceeded its byte limit");
+          checkUploadSize();
           chunks.push(chunk);
         }
         if (part.file.truncated) throw uploadError(413, "UPLOAD_TOO_LARGE", "Media file exceeded its byte limit");
@@ -91,21 +110,24 @@ export async function readMediaMultipart(req, config, { requireModel = true } = 
         if (part.fieldnameTruncated || part.valueTruncated) throw uploadError(413, "UPLOAD_FIELD_TOO_LARGE", "Media field exceeded its byte limit");
         const value = typeof part.value === "string" ? part.value : JSON.stringify(part.value);
         bytes += Buffer.byteLength(value);
-        if (bytes > limits.maxUploadBytes) throw uploadError(413, "UPLOAD_TOO_LARGE", "Media upload exceeded its byte limit");
+        checkUploadSize();
         parts.push({ name: part.fieldname, value });
         fields[part.fieldname] = value;
       }
     }
+    checkUploadSize();
     if (requireModel && (typeof fields.model !== "string" || !fields.model)) throw uploadError(400, "MODEL_REQUIRED", "A public model is required");
     return { fields, parts, bytes, release };
   } catch (error) {
     release();
+    if (wireError) throw wireError;
     if (error.code?.startsWith("FST_")) {
       throw uploadError(error.statusCode || 400, error.code, "Invalid or oversized multipart upload");
     }
     throw error;
   } finally {
     clearTimeout(timer);
+    req.raw.removeListener("data", countWireBytes);
   }
 }
 

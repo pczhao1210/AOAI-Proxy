@@ -22,9 +22,20 @@ const RESPONSES_SHIM_STREAM_LIFECYCLE_EVENTS = new Set([
   "error"
 ]);
 const SUPPORTED_CHAT_FINAL_FINISH_REASONS = new Set(["stop", "length", "tool_calls"]);
-const SUPPORTED_CHAT_STREAM_FINISH_REASONS = new Set([null, undefined, ...SUPPORTED_CHAT_FINAL_FINISH_REASONS]);
 const SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS = new Set(["end_turn", "max_tokens", "stop_sequence", "tool_use"]);
 const SUPPORTED_ANTHROPIC_STREAM_STOP_REASONS = new Set([null, undefined, ...SUPPORTED_ANTHROPIC_FINAL_STOP_REASONS]);
+
+export function chatFinishReasonToResponsesTermination(reason) {
+  if (reason === "length") return { status: "incomplete", reason: "max_output_tokens" };
+  if (reason === "content_filter") return { status: "incomplete", reason: "content_filter" };
+  return { status: "completed", reason: null };
+}
+
+function isSupportedChatFinishReason(reason, context, { allowOpen = false } = {}) {
+  if (SUPPORTED_CHAT_FINAL_FINISH_REASONS.has(reason)) return true;
+  if (allowOpen && reason == null) return true;
+  return reason === "content_filter" && context.targetProtocol === "responses";
+}
 
 export function normalizeWebSearchToolType(type) {
   const normalized = typeof type === "string" ? type.trim().toLowerCase() : "";
@@ -122,7 +133,7 @@ function ensureMessagesThinking(out, descriptor) {
   const configured = getDescriptorProtocolProfile(descriptor, "messages")?.thinking;
   const profile = configured && typeof configured === "object" ? configured : fallback;
   const parameter = profile.parameter || "";
-  const defaultType = profile.default || "";
+  const defaultType = profile.shimDefault || profile.default || "";
   if (parameter && defaultType && getValueAtPath(out, parameter) == null) {
     setValueAtPath(out, parameter, defaultType);
   }
@@ -902,7 +913,7 @@ function validateChatPayload(payload, context) {
       "presence_penalty",
       "seed",
       "top_logprobs",
-      ...(context.targetProtocol === "messages" ? [] : ["stop", "top_k", "top_p"])
+      ...(context.targetProtocol === "messages" ? [] : ["stop", "top_k"])
     ];
     for (const field of droppedControls) {
       const value = payload?.[field];
@@ -963,12 +974,12 @@ function validateChatPayload(payload, context) {
         reason: "non-text Chat modalities cannot be preserved"
       });
     }
-    if (context.targetProtocol === "messages" && payload?.parallel_tool_calls != null) {
+    if (context.targetProtocol === "messages" && payload?.parallel_tool_calls != null && typeof payload.parallel_tool_calls !== "boolean") {
       return createShimCompatibilityIssue({
         ...context,
         path: "parallel_tool_calls",
         type: "parallel_tool_calls",
-        reason: "Chat parallel tool-call policy cannot be preserved by Anthropic Messages"
+        reason: "Chat parallel tool-call policy must be a boolean to map to Anthropic disable_parallel_tool_use"
       });
     }
   } else {
@@ -984,7 +995,7 @@ function validateChatPayload(payload, context) {
       });
     }
     const finishReason = choices[0]?.finish_reason;
-    if (!SUPPORTED_CHAT_FINAL_FINISH_REASONS.has(finishReason)) {
+    if (!isSupportedChatFinishReason(finishReason, context)) {
       return createShimCompatibilityIssue({
         ...context,
         path: "choices[0].finish_reason",
@@ -1082,12 +1093,12 @@ function validateChatPayload(payload, context) {
       }
     }
     if (message?.role === "tool") {
-      if (context.targetProtocol === "responses" && typeof message.content !== "string") {
+      if (context.targetProtocol === "responses" && typeof message.content !== "string" && !Array.isArray(message.content)) {
         return createShimCompatibilityIssue({
           ...context,
           path: `${basePath}.content`,
-          type: Array.isArray(message.content) ? "content_array" : typeof message.content,
-          reason: "Responses function_call_output conversion requires a string tool result"
+          type: typeof message.content,
+          reason: "Responses function_call_output conversion requires a string or text-array tool result"
         });
       }
       const outputIssue = validateTextOnlyValue(message.content, context, `${basePath}.content`);
@@ -1217,7 +1228,7 @@ export function getProtocolShimStreamCompatibilityIssue(event, {
   for (let choiceIndex = 0; choiceIndex < choices.length; choiceIndex += 1) {
     const choice = choices[choiceIndex];
     const delta = choice?.delta || {};
-    if (!SUPPORTED_CHAT_STREAM_FINISH_REASONS.has(choice?.finish_reason)) {
+    if (!isSupportedChatFinishReason(choice?.finish_reason, context, { allowOpen: true })) {
       return createShimCompatibilityIssue({
         ...context,
         path: `choices[${choiceIndex}].finish_reason`,
@@ -1315,9 +1326,7 @@ function normalizeMessageContentToText(content) {
       if (!part) continue;
       if (typeof part === "string") {
         textParts.push(part);
-      } else if (part.type === "text" && typeof part.text === "string") {
-        textParts.push(part.text);
-      } else if (part.type === "input_text" && typeof part.text === "string") {
+      } else if (TEXT_CONTENT_TYPES.has(part.type) && typeof part.text === "string") {
         textParts.push(part.text);
       }
     }
@@ -1498,11 +1507,11 @@ function buildResponsesInputFromMessages(messages) {
       }
       continue;
     }
-    if (role === "tool" && m.tool_call_id && typeof m.content === "string") {
+    if (role === "tool" && m.tool_call_id && (typeof m.content === "string" || Array.isArray(m.content))) {
       input.push({
         type: "function_call_output",
         call_id: m.tool_call_id,
-        output: m.content
+        output: normalizeMessageContentToText(m.content)
       });
       continue;
     }
@@ -1568,6 +1577,11 @@ function extractInstructionTextFromMessages(messages) {
   return instructions.join("\n\n");
 }
 
+// Preserve the non-strict Chat/Messages default; Responses may normalize an omitted `strict` into strict mode.
+function explicitStrictForResponses(strict) {
+  return strict ?? false;
+}
+
 function normalizeToolsForResponses(tools) {
   if (!Array.isArray(tools)) return undefined;
   const out = [];
@@ -1581,7 +1595,7 @@ function normalizeToolsForResponses(tools) {
         name,
         description: tool.function.description,
         parameters: tool.function.parameters,
-        strict: tool.function.strict
+        strict: explicitStrictForResponses(tool.function.strict)
       });
       continue;
     }
@@ -1591,7 +1605,7 @@ function normalizeToolsForResponses(tools) {
         name: tool.name,
         description: tool.description,
         parameters: tool.parameters,
-        strict: tool.strict
+        strict: explicitStrictForResponses(tool.strict)
       });
       continue;
     }
@@ -1609,7 +1623,8 @@ function normalizeFunctionsForResponses(functions) {
       type: "function",
       name: fn.name,
       description: fn.description,
-      parameters: fn.parameters
+      parameters: fn.parameters,
+      strict: false
     });
   }
   return out.length ? out : undefined;
@@ -2102,7 +2117,8 @@ function normalizeAnthropicToolsForResponses(tools) {
       type: "function",
       name: tool.name,
       description: tool.description,
-      parameters: tool.input_schema ?? { type: "object", properties: {} }
+      parameters: tool.input_schema ?? { type: "object", properties: {} },
+      strict: explicitStrictForResponses(tool.strict)
     }));
   return normalized.length ? normalized : undefined;
 }
@@ -2299,22 +2315,7 @@ function buildAnthropicMessagesFromResponses(input) {
   return { messages, system: systemParts.join("\n\n") };
 }
 
-function normalizeChatToolsForAnthropic(tools) {
-  if (!Array.isArray(tools)) return undefined;
-  const normalized = [];
-  for (const tool of tools) {
-    const fn = tool?.type === "function" ? (tool.function || tool) : null;
-    if (!fn?.name) continue;
-    normalized.push({
-      name: fn.name,
-      description: fn.description,
-      input_schema: fn.parameters ?? { type: "object", properties: {} }
-    });
-  }
-  return normalized.length ? normalized : undefined;
-}
-
-function normalizeResponsesToolsForAnthropic(tools) {
+function normalizeToolsForAnthropic(tools) {
   if (!Array.isArray(tools)) return undefined;
   const normalized = [];
   for (const tool of tools) {
@@ -2330,7 +2331,7 @@ function normalizeResponsesToolsForAnthropic(tools) {
   return normalized.length ? normalized : undefined;
 }
 
-function normalizeChatToolChoiceForAnthropic(toolChoice) {
+function normalizeToolChoiceForAnthropic(toolChoice) {
   if (!toolChoice) return undefined;
   if (toolChoice === "auto") return { type: "auto" };
   if (toolChoice === "required") return { type: "any" };
@@ -2342,16 +2343,15 @@ function normalizeChatToolChoiceForAnthropic(toolChoice) {
   return undefined;
 }
 
-function normalizeResponsesToolChoiceForAnthropic(toolChoice) {
-  if (!toolChoice) return undefined;
-  if (toolChoice === "auto") return { type: "auto" };
-  if (toolChoice === "required") return { type: "any" };
-  if (toolChoice === "none") return { type: "none" };
-  if (typeof toolChoice === "object" && toolChoice.type === "function") {
-    const name = toolChoice.function?.name || toolChoice.name;
-    return name ? { type: "tool", name } : undefined;
-  }
-  return undefined;
+function normalizeStopSequencesForAnthropic(stop) {
+  return typeof stop === "string" ? [stop] : stop;
+}
+
+// Messages carries the parallel policy inside tool_choice; it is only meaningful with tools and an active choice.
+function applyParallelToolPolicyForAnthropic(out, parallelToolCalls) {
+  if (parallelToolCalls !== false || !Array.isArray(out.tools) || out.tools.length === 0) return;
+  if (out.tool_choice?.type === "none") return;
+  out.tool_choice = { ...(out.tool_choice || { type: "auto" }), disable_parallel_tool_use: true };
 }
 
 export function messagesToChatRequest(body, deployment, descriptor) {
@@ -2386,20 +2386,22 @@ export function chatToMessagesRequest(body, deployment, descriptor) {
   if (system) out.system = system;
   else delete out.system;
 
-  const tools = normalizeChatToolsForAnthropic(body?.tools);
+  const tools = normalizeToolsForAnthropic(body?.tools);
   if (tools) out.tools = tools;
   else delete out.tools;
 
-  const toolChoice = normalizeChatToolChoiceForAnthropic(body?.tool_choice);
+  const toolChoice = normalizeToolChoiceForAnthropic(body?.tool_choice);
   if (toolChoice !== undefined) out.tool_choice = toolChoice;
   else delete out.tool_choice;
+  applyParallelToolPolicyForAnthropic(out, body?.parallel_tool_calls);
 
   out.max_tokens = body?.max_tokens ?? body?.max_completion_tokens ?? body?.max_output_tokens ?? 4096;
-  if (body?.stop != null) out.stop_sequences = body.stop;
+  if (body?.stop != null) out.stop_sequences = normalizeStopSequencesForAnthropic(body.stop);
   if (transferReasoning(out, body, "chat/completions", "messages", descriptor)) {
     ensureMessagesThinking(out, descriptor);
   }
 
+  delete out.parallel_tool_calls;
   delete out.max_completion_tokens;
   delete out.max_output_tokens;
   delete out.stop;
@@ -2473,19 +2475,17 @@ export function responsesToMessagesRequest(body, deployment, descriptor) {
   if (system) out.system = system;
   else delete out.system;
 
-  const tools = normalizeResponsesToolsForAnthropic(body?.tools);
+  const tools = normalizeToolsForAnthropic(body?.tools);
   if (tools) out.tools = tools;
   else delete out.tools;
 
-  const toolChoice = normalizeResponsesToolChoiceForAnthropic(body?.tool_choice);
+  const toolChoice = normalizeToolChoiceForAnthropic(body?.tool_choice);
   if (toolChoice !== undefined) out.tool_choice = toolChoice;
   else delete out.tool_choice;
-  if (body?.parallel_tool_calls === false && out.tool_choice && typeof out.tool_choice === "object") {
-    out.tool_choice.disable_parallel_tool_use = true;
-  }
+  applyParallelToolPolicyForAnthropic(out, body?.parallel_tool_calls);
 
   out.max_tokens = body?.max_output_tokens ?? body?.max_tokens ?? 4096;
-  if (body?.stop != null) out.stop_sequences = body.stop;
+  if (body?.stop != null) out.stop_sequences = normalizeStopSequencesForAnthropic(body.stop);
   const effort = transferReasoning(out, body, "responses", "messages", descriptor);
   if (effort) ensureMessagesThinking(out, descriptor);
   if (
@@ -2592,7 +2592,6 @@ export function chatToResponsesRequest(body, deployment, descriptor) {
   delete out.stream_options;
   delete out.serviceTier;
   delete out.seed;
-  delete out.top_p;
   delete out.top_k;
   delete out.logprobs;
   delete out.top_logprobs;
@@ -2758,7 +2757,7 @@ export function mapChatCompletionJsonToResponses(payload, modelId) {
       arguments: toolCall.function.arguments || ""
     });
   }
-  const incomplete = choice.finish_reason === "length";
+  const termination = chatFinishReasonToResponsesTermination(choice.finish_reason);
   const usage = payload?.usage ? (() => {
     const inputTokens = payload.usage.prompt_tokens ?? payload.usage.input_tokens ?? 0;
     const outputTokens = payload.usage.completion_tokens ?? payload.usage.output_tokens ?? 0;
@@ -2774,9 +2773,9 @@ export function mapChatCompletionJsonToResponses(payload, modelId) {
     id: responseId,
     object: "response",
     created_at: payload?.created || Math.floor(Date.now() / 1000),
-    status: incomplete ? "incomplete" : "completed",
+    status: termination.status,
     error: null,
-    incomplete_details: incomplete ? { reason: "max_output_tokens" } : null,
+    incomplete_details: termination.reason ? { reason: termination.reason } : null,
     instructions: null,
     model: modelId || payload?.model,
     output,

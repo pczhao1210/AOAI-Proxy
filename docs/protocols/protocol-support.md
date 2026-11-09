@@ -86,7 +86,10 @@
 ### 2.4 当前已知边界
 
 - 请求发往上游时会把公开模型 ID 替换为目标部署名；成功 JSON 与 SSE 响应会把 `model`、`response.model` 或 `message.model` 恢复为公开模型 ID，上游模型名只用于日志、usage 与计价观测。
-- Chat 转 Messages 时，`stop` 映射为 `stop_sequences`，`top_p` 与 `top_k` 保留为同名控制字段；Messages 转 Chat 时执行反向 stop 映射。
+- Chat 转 Messages 时，`stop` 映射为 `stop_sequences`（单个字符串规范化为单元素数组），`top_p` 与 `top_k` 保留为同名控制字段；Messages 转 Chat 时执行反向 stop 映射。Responses 请求中的 `stop` 扩展字段转 Messages 时同样规范化为数组。
+- Chat 的 `parallel_tool_calls: false` 与 Responses 的 `parallel_tool_calls: false` 转 Messages 时映射为 `tool_choice.disable_parallel_tool_use: true`：未显式提供 `tool_choice` 且存在工具时补 `{ "type": "auto" }`；`tool_choice` 为 `none` 或没有工具时不生成；`true` 为 Messages 默认行为，不转发。`parallel_tool_calls` 本身不会出现在 Messages 请求体中。Messages 转 Chat 时 `disable_parallel_tool_use` 仍按有损字段处理。
+- Chat 转 Responses 时保留 `top_p`；`stop`、`top_k` 等 Responses 无对应字段的控制项仍按有损策略处理。
+- Chat 与 Messages function tool 默认非严格；转 Responses 时，缺失或为 `null` 的 `strict` 会写入 `strict: false`，避免省略字段触发 Responses 的严格 schema 归一化。显式值原样保留，包括交由上游校验的非布尔值，不将非法值静默改成 `false`；原生 Responses 请求不受影响。
 - Messages 的 `stop_sequences` 转 Responses 时映射为 `stop`。它是目标上游扩展兼容字段，不应被解释为所有 Responses 服务都原生支持；最终能力由真实上游判断。
 - Responses 转 Chat 时，`service_tier`、`verbosity`、`top_k` 等字段当前会作为顶层扩展字段继续传递；这不代表标准 Chat 语义与其等价，最终是否接受由字段策略和上游决定。
 - Responses 严格流终止是协议不变量：所有 Responses 源流都必须出现 `response.completed` 或 `response.incomplete`，不受目录开关或 User-Agent 影响。
@@ -116,6 +119,8 @@
 配置步骤：从模型模板建立上游及公开模型绑定；设置真实 `upstreams[].baseUrl`、独立上游认证与必要的 `upstreams[].routes`；客户端只发送公开模型 ID；最后开启所需传输。Speech 必须填写实际区域/资源 endpoint，不能从 MAI Foundry endpoint 推导 `/mai/v1/audio/*`。入站凭据与上游凭据隔离，不能通过 headersTemplate 填入 Speech 订阅密钥绕过认证配置。
 
 Azure API 版本、区域、部署、Speech Entra 认证以及专用转写/翻译 WebRTC control 仍需分别验证。不自动迁移已弃用的 Azure Realtime preview URL，也不因 provider 猜测建立全局字段拒绝表。
+
+MAI 转写排障：若上游返回 HTTP 400、`InvalidRequest` / `Enhanced mode with model is currently not supported yet.`，先检查 Speech 资源区域及最终 URL，而不是延长客户端超时。截至 2026-11-03，[官方区域表的 LLM speech 栏](https://learn.microsoft.com/azure/ai-services/speech-service/regions?tabs=llmspeech)列出 `centralindia`、`eastus`、`northeurope`、`southeastasia`、`westus`、`westus2`，不包括 `japaneast`；以最新区域表和真实上游响应为准。[官方 MAI 示例](https://learn.microsoft.com/azure/ai-services/speech-service/mai-transcribe)使用 `2025-10-15` 及 `enhancedMode.enabled=true`、`enhancedMode.model=MAI-Transcribe-2`。应绑定支持区域的 Speech endpoint 和对应凭据，不能通过删除 model 或关闭 enhanced mode 静默改用其他转写模型。兼容入口和原生入口均保留上游错误状态及 body；客户端必须结束等待并展示非 2xx 错误。GPT 转写使用不同的 Azure OpenAI/OpenAI 路径，其成功不能证明 MAI Speech 的区域可用性。
 
 #### HTTP 媒体契约
 
@@ -382,8 +387,8 @@ Claude Code 和 Anthropic SDK 会发送版本、运行时和 Stainless 生成器
 
 请求体进入协议处理前会进行基础规范化：
 
-- 删除值为 `undefined` 或字符串 `"undefined"` 的字段；
-- 非 Responses 路径通常删除无意义的 `null`，Responses 因部分字段以 `null` 表示显式状态而允许保留；
+- 清理可选控制参数中 JavaScript `undefined`、字符串 `"undefined"` / `"[undefined]"` 等客户端占位值；正文、instructions、工具参数/结果和 JSON Schema 的 enum/default/const 值不按占位值清理；
+- 非 Responses 路径仍清理无意义的控制参数 `null`，但保留正文、工具数据和 Schema 中的 `null`；Responses 的其他显式 `null` 状态继续保留；
 - 删除网关自己的超时、重试等控制字段；
 - 没有有效工具时，删除孤立的 `tool_choice`、`function_call`、`parallel_tool_calls` 等控制项；
 - 修复或删除无法与 assistant tool call 对应的 Chat tool message，避免把破损工具历史送到上游；
@@ -405,7 +410,7 @@ Claude Code 和 Anthropic SDK 会发送版本、运行时和 Stainless 生成器
 
 常见规范化包括：
 
-- Chat 的 `max_tokens` 在现代模型上升级为 `max_completion_tokens`；
+- 最终上游为 Chat 时，优先按模型卡 `protocolProfiles` 中的 `request.outputTokenParameter` 选择 `max_tokens` 或 `max_completion_tokens`，目标字段已存在时优先保留它；显式规则不依赖 capability 标签，也不注入推理档位。尚未声明该规则的旧卡保留由 `reasoning` 标签或显式 `reasoning_effort` 触发的 token 参数兼容逻辑；
 - `top_logprobs` 存在而 `logprobs` 缺失时，补充 `logprobs: true`；
 - `serviceTier` 统一为 `service_tier`；
 - Chat 的 `reasoning_effort` 与 Responses 的 `reasoning.effort` 互相映射；
@@ -486,7 +491,7 @@ Chat web search 的路由提升逻辑只在模型没有显式 route override、d
 | `image_url` | `input_image` |
 | function tool | Responses function tool |
 | assistant `tool_calls` | `function_call` item |
-| tool message | `function_call_output` item |
+| tool message | `function_call_output` item；content 为字符串或纯文本 part 数组（字符串 part 及 `text`、`input_text`、`output_text` 按原顺序无分隔符拼接为文本，不序列化为 JSON；非文本或带注解的 part 视为有损内容） |
 | `max_tokens` / `max_completion_tokens` | `max_output_tokens` |
 | `reasoning_effort` | `reasoning.effort` |
 | assistant `reasoning_content` | reasoning item 的 `summary_text` |
@@ -573,14 +578,15 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 - assistant 文本转为 output text；
 - function tool call 转为 `function_call` item；
 - Chat usage 转为 Responses usage；
-- `stop`、`length`、`tool_calls` 转为可表达的 completed 或 incomplete 状态。
+- `stop`、`length`、`tool_calls` 转为可表达的 completed 或 incomplete 状态；
+- `content_filter` 转为 `status = incomplete`、`incomplete_details.reason = content_filter`（JSON 与 SSE 一致，SSE 以 `response.incomplete` 终止）。
 - assistant `reasoning_content` 转为 reasoning item 的 `summary_text`。
 
 #### 限制
 
 - 仅允许一个 choice；
 - 数组化 assistant output、audio、refusal、未知 reasoning extension、复杂 logprobs 或供应商 finish reason 不应被静默简化；
-- Chat 的 `content_filter` 不能伪装成 Responses 正常完成。
+- Chat 的 `content_filter` 不能伪装成 Responses 正常完成，必须映射为 incomplete（`content_filter`）。
 
 ---
 
@@ -600,8 +606,9 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 | assistant tool call | `tool_use` block |
 | tool message | `tool_result` block |
 | `max_tokens` / `max_completion_tokens` | `max_tokens` |
-| `stop` | `stop_sequences` |
+| `stop` | `stop_sequences`（字符串规范化为数组） |
 | `top_p` / `top_k` | 同名 Messages 控制字段 |
+| `parallel_tool_calls: false` | `tool_choice.disable_parallel_tool_use: true` |
 
 #### 必须拒绝的内容
 
@@ -610,7 +617,7 @@ Chat 数组化 content 中的 `input_file` 还有一个单向兼容行为：目�
 - audio、refusal；
 - 只有 `reasoning_effort` 可按目标 Messages profile 转成 effort 并启用 thinking；其他 reasoning 扩展拒绝；
 - 多 choice、best-of、seed、logprobs 和采样惩罚；
-- Chat `parallel_tool_calls`；
+- 非布尔的 `parallel_tool_calls`；
 - legacy `functions` / `function_call`；
 - 非 function tool；
 - 带结构化 metadata 的文本；
@@ -695,7 +702,8 @@ Responses 与 Messages 的转换通过双方都能投影到的基础消息与 fu
 - function tool；
 - function call 和 function call output；
 - 输出 token 上限；
-- `stop` 到 `stop_sequences`；
+- `stop` 到 `stop_sequences`（字符串规范化为数组）；
+- `parallel_tool_calls: false` 到 `tool_choice.disable_parallel_tool_use`；
 - `reasoning.effort` 到 Catalog 声明的 Messages effort/thinking 控制；
 - `include: ["reasoning.encrypted_content"]` 对应的 thinking signature 响应保留；
 - 基础 tool choice 交集。
@@ -842,7 +850,7 @@ Messages 的 `stop_sequences` 会作为 Responses `stop` 扩展字段保留并�
 只有存在有效工具时才保留 `tool_choice`、`parallel_tool_calls` 等控制项。不同协议的 tool choice 并非全等：
 
 - `auto`、`none`、强制某个普通 function 通常可映射；
-- Anthropic 的 `disable_parallel_tool_use` 没有稳定的跨协议等价；
+- Anthropic 的 `disable_parallel_tool_use` 与 `parallel_tool_calls: false` 在 Messages ↔ Responses、Chat/Responses → Messages 方向有明确映射（见 2.4）；Messages → Chat 方向没有稳定等价，仍按有损字段处理；
 - thinking 开启时强制 `any` 或指定工具，某些 Foundry Claude 模型会拒绝，可规范化为 `auto`；
 - custom、server、computer、MCP 和 shell tool 必须留在原生协议路径。
 
@@ -896,11 +904,14 @@ metadata 应按“默认不承诺跨协议无损”处理：
 - 最后一个事件没有尾随换行；
 - 原生流保留完整原始 frame，包括未解释的 `event`、`id`、`retry` 等字段；
 - 跨协议流只拼接并解释 `data:` 行，事件类型依赖 JSON payload 内的 `type`，不读取 SSE 的 `event`、`id` 或 `retry` 语义；
-- 单事件有名义上的 8 MiB 缓冲上限；原生流按原始字节计数，跨协议流按解码后的字符长度计数，因此它不是统一的 8 MiB 网络字节保证；
+- 原生流和跨协议流统一按单事件原始字节数限制为 8 MiB（包含分隔符），在 UTF-8/JSON 解码前检查；
 - backpressure，不能无限缓存慢客户端数据；
 - 客户端断开后取消上游 reader。
 
 网络 chunk 不是协议事件边界，不能按每次读取直接解析 JSON。
+完整事件位于单个 chunk 时保留零拷贝视图；跨 chunk 的事件使用独立、按需指数扩容的字节缓冲，容量不超过事件上限，不逐个保留网络碎片。
+事件输出后交出缓冲所有权，后续事件不得覆盖已输出的字节或长期复用旧的大缓冲。
+8 MiB 是单事件原始字节限制，不是包含输出字符串、JSON 对象和下游写缓冲的进程总内存限制。
 
 ### 14.2 三种源协议的成功终态
 
@@ -986,6 +997,7 @@ Responses 的 `response.failed` 和 provider error 是失败终态。Messages �
 | `stop` | completed | `end_turn` 或 `stop_sequence` | 正常结束 |
 | `length` | incomplete: `max_output_tokens` | `max_tokens` | 达到输出上限 |
 | `tool_calls` | function call output lifecycle | `tool_use` | 等待工具结果 |
+| `content_filter` | incomplete: `content_filter` | 不可安全转换 | 被内容过滤终止 |
 
 `stop_sequence` 转到 Chat 后只能表示为 `stop`，精确触发序列和细分原因不一定保留。
 
@@ -993,7 +1005,7 @@ Responses 的 `response.failed` 和 provider error 是失败终态。Messages �
 
 以下终止原因不应伪装成普通成功：
 
-- Chat `content_filter`；
+- Chat `content_filter`（目标为 Messages 时；转 Responses 时按 incomplete 表示）；
 - Anthropic `pause_turn`；
 - Anthropic `model_context_window_exceeded`；
 - Responses 非 `max_output_tokens` 的未知 incomplete reason；
@@ -1142,6 +1154,8 @@ Codex 模型元数据可包括：
 - 非空 `base_instructions`，或等价的 `model_messages.instructions_template` 指令来源。
 
 Codex `0.153.2` 严格反序列化顶层 `{ "models": [...] }`，并要求 `upgrade` 等无默认字段存在，同时要求每个模型提供上述指令来源。代理输出兼容的可空字段和简短默认指令；`models[].codex.baseInstructions` 可覆盖默认值。这些目录字段是客户端能力声明，不应替代请求阶段的实际上游能力校验。
+
+输入模态优先取 Catalog 的显式 `inputModalities`，仅发布 Codex 支持的 text/image 类型；旧卡缺少或清空模态元数据时才回退到 `vision` 标签。推理档位优先使用显式 Codex 配置和 Responses profile，保留必要的客户端兼容默认值，但不将其写回模型卡当作供应商事实。并行工具、托管搜索和编码专用工具提示仍取有效能力标签；原生路由和媒体模型资格边界不变。
 
 ### 18.5 格式协商优先原则
 
@@ -1494,6 +1508,13 @@ Foundry Claude 的 cache control 应只保留：
 ---
 
 ## 27. 重试、超时与可靠性
+
+上游 HTTP 重定向不属于自动跟随或重试范围。最终配置 URL 返回 3xx 时，文本/图片公共 HTTP 通道返回
+`502 / UPSTREAM_REDIRECT_NOT_ALLOWED`，不把凭据或请求体转发到 Location 指定的位置，即使目标同源。
+
+SSE 的 8 MiB 上限按单个原始事件的字节数计算（包含事件分隔符），在 UTF-8/JSON 解析前检查；
+不把多个合法事件合并在一个网络 chunk 的总大小误当作单事件大小。观察到源协议终态后不再解释尾随内容。
+正常终态、解析/写入异常和客户端取消都必须取消或结束上游读取并释放 reader。
 
 ### 27.1 可重试场景
 

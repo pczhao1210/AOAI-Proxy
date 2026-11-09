@@ -1,4 +1,5 @@
 import { AccordionSection, Field, Section, StatCard } from "./ui.jsx";
+import LogTable from "./LogTable.jsx";
 
 export default function OpsTab({
   config,
@@ -64,6 +65,16 @@ export default function OpsTab({
     { key: "trace", label: t("logs.level.trace", "Trace") }
   ];
   const memoryBufferSize = Math.max(1, Number(loggingRuntime?.memoryBufferSize) || 100);
+  const requestView = logFilters.view !== "events" && logFilters.view !== "access";
+  const logView = requestView ? "requests" : logFilters.view;
+  const logsMatchView = logs.view === logView;
+  const logItems = logsMatchView ? logs.items : [];
+  const logTotal = logsMatchView ? logs.total : 0;
+  const emptyLogsMessage = logsLoading
+    ? t("ops.loadingLogs", "Loading...")
+    : !logsMatchView
+      ? t("logs.viewNotLoaded", "This log view has not loaded. Refresh to retry.")
+      : t("ops.noLogs", "No logs yet. Adjust filters and refresh.");
   const advancedFiltersOpen = Boolean(logFilters.event || logFilters.modelId || logFilters.requestId || logFilters.keyword || Number(logFilters.limit || 100) !== 100);
   const pricingRepoLabel = pricingLibraryStatus?.githubOwner && pricingLibraryStatus?.githubRepo
     ? `${pricingLibraryStatus.githubOwner}/${pricingLibraryStatus.githubRepo}`
@@ -109,7 +120,7 @@ export default function OpsTab({
           />
           <StatCard
             label={t("ops.logsTitle", "Runtime Logs")}
-            value={logs.total || 0}
+            value={logTotal || 0}
             note={`${t("logs.level.info", "Info")}/${t("logs.level.warn", "Warn")}/${t("logs.level.error", "Error")}: ${activeLevelSummary}`}
           />
           <StatCard
@@ -275,7 +286,31 @@ export default function OpsTab({
         </div>
         <div className="log-controls-react">
           <div className="toolbar">
-            {levelOptions.map((item) => (
+            <div className="log-view-tabs" role="tablist" aria-label={t("logs.viewLabel", "Log view")}>
+              <button type="button" role="tab" aria-selected={requestView} className={requestView ? "selected" : "ghost"}
+                onClick={() => setLogFilters((current) => ({ ...current, view: "requests" }))}>
+                {t("logs.view.requests", "Requests")}
+              </button>
+              <button type="button" role="tab" aria-selected={logFilters.view === "events"} className={logFilters.view === "events" ? "selected" : "ghost"}
+                onClick={() => setLogFilters((current) => ({ ...current, view: "events" }))}>
+                {t("logs.view.events", "System & Cost Events")}
+              </button>
+              <button type="button" role="tab" aria-selected={logFilters.view === "access"} className={logFilters.view === "access" ? "selected" : "ghost"}
+                onClick={() => setLogFilters((current) => ({ ...current, view: "access" }))}>
+                {t("logs.view.access", "Access & Auth")}
+              </button>
+            </div>
+            {requestView ? (
+              <div className="log-view-tabs" role="group" aria-label={t("logs.outcomeLabel", "Request outcome")}>
+                {["all", "failed", "warning", "success", "unknown"].map((outcome) => (
+                  <button type="button" key={outcome} className={logFilters.outcome === outcome ? "selected" : "ghost"}
+                    aria-pressed={logFilters.outcome === outcome}
+                    onClick={() => setLogFilters((current) => ({ ...current, outcome }))}>
+                    {t(`logs.outcome.${outcome}`, outcome === "unknown" ? "Pending / Unknown" : outcome)}
+                  </button>
+                ))}
+              </div>
+            ) : levelOptions.map((item) => (
               <label key={item.key} className="inline">
                 <input type="checkbox" checked={logFilters.level.includes(item.key)} onChange={() => toggleLogLevel(item.key)} />
                 <span>{item.label}</span>
@@ -285,7 +320,16 @@ export default function OpsTab({
               <input type="checkbox" checked={logFilters.autoRefresh} onChange={(event) => setLogFilters((current) => ({ ...current, autoRefresh: event.target.checked }))} />
               <span>{t("ops.autoRefresh", "Auto Refresh")}</span>
             </label>
+            {logFilters.view !== "events" ? (
+              <label className="inline">
+                <input type="checkbox" checked={logFilters.hideAuthRejected !== false} onChange={(event) => setLogFilters((current) => ({ ...current, hideAuthRejected: event.target.checked }))} />
+                <span>{t("ops.hideAuthRejected", "Hide auth rejections")}</span>
+              </label>
+            ) : null}
           </div>
+          {loggingRuntime?.includeAuthRejected === false ? (
+            <div className="muted">{t("ops.authRejectedSuppressed", "Requests rejected by authentication are not logged ({count} suppressed since start). Enable them in Workspace log settings.", { count: Number(loggingRuntime?.authRejectedSuppressed) || 0 })}</div>
+          ) : null}
           <div className="muted">{logFilters.autoRefresh ? t("logs.autoRefreshHint.on", "Auto refresh is enabled. The log list updates every 5 seconds.") : t("logs.autoRefreshHint.off", "Auto refresh is disabled. Use Refresh Logs to fetch the latest entries.")}</div>
           <div className="muted">{t("field.logLevel", "Log Level")}: {t(`logs.level.${loggingRuntime?.level || "info"}`, loggingRuntime?.level || "info")}</div>
           <details className="log-advanced-react" open={advancedFiltersOpen}>
@@ -308,48 +352,27 @@ export default function OpsTab({
             </div>
           </details>
           <div className="muted">{t("field.logBufferSize", "Log Buffer Size")}: {memoryBufferSize}</div>
-          <div className="muted">{t("ops.logCount", "Matched {count} log entries{suffix}.", { count: logs.total || 0, suffix: logFilters.autoRefresh ? t("ops.logAutoRefreshSuffix", ", auto refresh enabled") : "" })}</div>
+          <div className="muted">
+            {t(requestView ? "logs.requestCount" : "ops.logCount", requestView ? "Showing {count} requests from the retained event buffer." : "Matched {count} log entries.", { count: logTotal || 0 })}
+            {" "}{t("logs.retainedEvents", "Retained events: {count}", { count: logs.retainedEvents ?? 0 })}
+            {logFilters.autoRefresh ? t("ops.logAutoRefreshSuffix", ", auto refresh enabled") : ""}
+          </div>
         </div>
 
-        <div className="log-list">
-          {logs.items.length ? logs.items.map((entry, index) => {
-            const details = getLogDetails(entry);
-            const isExpanded = entry.level === "error" || entry.level === "fatal";
-            return (
-              <article key={entry.id ?? `${entry.ts || "log"}-${entry.event || "event"}-${index}`} className={`log-entry level-${entry.level || "info"}`}>
-                <div className="log-header-react">
-                  <div className="badge-row">
-                    <span className={`badge level-${entry.level || "info"}`}>{t(`logs.level.${entry.level || "info"}`, entry.level || "info")}</span>
-                    {entry.event ? <span className="badge">{getLogEventLabel(entry.event)}</span> : null}
-                    {entry.source ? <span className="badge">{getLogSourceLabel(entry.source)}</span> : null}
-                    {entry.status != null ? <span className="badge">{t("logs.meta.status", "Status")} {entry.status}</span> : null}
-                    {entry.errorCode ? <span className="badge">{entry.errorCode}</span> : null}
-                  </div>
-                  <div className="muted" title={entry.ts || ""}>{formatDateTime(entry.ts)}</div>
-                </div>
-                {entry.event ? <div className="log-topline-react"><span className="event-label-react">{getLogEventLabel(entry.event)}</span></div> : null}
-                <div className="log-message">{getLogMessage(entry)}</div>
-                <div className="log-meta-react">
-                  {entry.requestId ? <span>{t("logs.meta.requestId", "Request ID")}: {entry.requestId}</span> : null}
-                  {entry.azureRequestId ? <span>{t("logs.meta.azureRequestId", "Azure Request ID")}: {entry.azureRequestId}</span> : null}
-                  {entry.modelId ? <span>{t("logs.meta.model", "Model")}: {entry.modelId}</span> : null}
-                  {entry.routeKey || entry.backendRouteKey ? <span>{t("logs.meta.route", "Route")}: {entry.backendRouteKey && entry.backendRouteKey !== entry.routeKey ? `${entry.routeKey || "-"} -> ${entry.backendRouteKey}` : entry.routeKey || entry.backendRouteKey}</span> : null}
-                  {entry.latencyMs != null ? <span>{t("logs.meta.latency", "Latency")}: {entry.latencyMs} ms</span> : null}
-                </div>
-                <div className="toolbar" style={{ marginTop: "0.85rem" }}>
-                  {entry.requestId ? <button type="button" className="ghost" onClick={() => onApplyRequestIdFilter(entry.requestId)}>{t("logs.filterByRequest", "Filter By Request")}</button> : null}
-                  <button type="button" className="ghost" onClick={() => onCopyLogSummary(entry)}>{t("logs.copySummary", "Copy Summary")}</button>
-                </div>
-                {Object.keys(details).length ? (
-                  <details className="log-details-react" open={isExpanded}>
-                    <summary>{t("logs.details", "Details")}</summary>
-                    <pre>{JSON.stringify(details, null, 2)}</pre>
-                  </details>
-                ) : null}
-              </article>
-            );
-          }) : <div className="empty-state">{t("ops.noLogs", "No logs yet. Adjust filters and refresh.")}</div>}
-        </div>
+        <LogTable
+          key={logView}
+          view={logView}
+          items={logItems}
+          emptyMessage={emptyLogsMessage}
+          t={t}
+          formatDateTime={formatDateTime}
+          getLogDetails={getLogDetails}
+          getLogMessage={getLogMessage}
+          getLogEventLabel={getLogEventLabel}
+          getLogSourceLabel={getLogSourceLabel}
+          onApplyRequestIdFilter={onApplyRequestIdFilter}
+          onCopyLogSummary={onCopyLogSummary}
+        />
       </AccordionSection>
 
       <AccordionSection

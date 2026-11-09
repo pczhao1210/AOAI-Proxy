@@ -9,6 +9,7 @@
   "maxInputTokens": 922000,
   "maxOutputTokens": 128000,
   "interfaces": ["responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs"],
@@ -17,14 +18,15 @@
       "reasoning": {
         "parameter": "reasoning.effort",
         "levels": ["medium", "high", "xhigh"],
-        "default": "medium"
+        "default": "medium",
+        "validation": "passthrough"
       }
     }
   },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "openai-official",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
     "tiering": {
       "basis": "inputTokensIncludingCache",
@@ -33,6 +35,7 @@
     "tiers": [
       {
         "id": "short <=272K",
+        "deploymentType": "global-standard",
         "contextClass": "short",
         "promptTokensBelow": 272001,
         "inputPer1mTokens": 30,
@@ -40,6 +43,7 @@
       },
       {
         "id": "long >272K",
+        "deploymentType": "global-standard",
         "contextClass": "long",
         "promptTokensAtLeast": 272001,
         "inputPer1mTokens": 60,
@@ -55,10 +59,14 @@
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-54",
-    "pricing": "https://developers.openai.com/api/docs/pricing"
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "tiering": "https://developers.openai.com/api/docs/pricing",
+    "pricingReference": "https://developers.openai.com/api/docs/pricing",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
   },
   "notes": [
     "The administrator-confirmed whole-request policy selects the long tier only when this request's input, including cache, exceeds 272000 tokens. Exactly 272000 remains short; session totals and output length do not select the tier.",
-    "The rates are OpenAI standard per-token prices, not Batch, Flex, Priority or independently verified Azure deployment prices."
+    "Azure distinguishes short/long-context meters. The retained whole-request threshold and tier IDs follow the existing independently sourced or administrator-approved policy; this source update does not infer a numeric boundary from a meter name. Cache-write meter rates do not establish an Azure retention TTL.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure OpenAI GPT5', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

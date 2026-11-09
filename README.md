@@ -153,6 +153,10 @@ Guidance:
 
 ## Local Run
 
+Use Node.js 24.22.1 or a newer patched 24.x release. With nvm, run `nvm install`
+and `nvm use` to select the baseline in [.nvmrc](.nvmrc). The proxy uses Node's
+built-in `fetch()`, so updating the npm `undici` package alone does not patch it.
+
 1. Copy the sample config:
    - `cp config/sample_config.json config/config.json`
 2. Edit `config/config.json`:
@@ -164,11 +168,37 @@ Guidance:
     - Omitting the upstream mode preserves compatibility by inheriting the global `auth` configuration
    - Replace the default API key and admin credentials
 3. Install dependencies and start:
-   - `npm install`
+   - `npm ci --engine-strict`
   - Set `AOAI_PROXY_ADMIN_PASSWORD` and `AOAI_PROXY_API_KEY` to strong, unique secrets when `server.host` is not loopback
    - `npm run start`
 
 Non-loopback listeners fail closed when admin authentication is disabled or known placeholder credentials are active. `ALLOW_INSECURE_PUBLIC_ADMIN=true` is an explicit compatibility escape hatch and is not recommended for normal deployments.
+
+Dependency maintenance note (2026-11-04): `@azure/identity` 4.14.1 declares
+`@azure/msal-node` `^7.1.0`, and the `overrides` entry pins MSAL Node 7.1.2, which
+is patched for [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5).
+Change that pin only with authentication validation. `@fastify/static` still
+declares `glob` `^13`, so `overrides` raises `glob` to `^14.0.3` (with minimatch 11)
+for [GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) and
+[GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249); the
+admin asset route keeps the default `wildcard: true` and does not invoke glob.
+Remove that override once `@fastify/static` accepts a patched glob. Keep
+`@fastify/multipart` at 10.1.7 or newer: earlier versions are affected by the
+upload DoS advisories GHSA-62qx-hpj5-j6hc, GHSA-vmph-573x-85f6 and
+GHSA-5849-5m6q-9632, which were published in the
+[fastify-multipart repository](https://github.com/fastify/fastify-multipart/security/advisories)
+but not yet in the global advisory database, so `npm audit` does not report them.
+The CI audit gate (`npm audit --audit-level=moderate`) is expected to pass.
+
+JSON feature flags require literal booleans, not strings such as `"false"` or
+numbers such as `0`. Legacy export/image gates retain their effective AND
+semantics when migrated to one canonical switch; disabled beta filtering becomes
+`compatibility.anthropic.unknownBetaPolicy: "passthrough"`. Inactive flags are
+removed from the editable configuration and reported in Workspace, runtime
+`configuration.deprecatedFlags`, and `config.deprecated_flags` logs. Ordinary v3
+reloads do not rewrite the file: review and save to persist cleanup. Environment
+overrides and profile-disabled persisted settings remain protected. See the
+[flag and migration guide](docs/configuration/feature-flags.zh-CN.md).
 
 ## Environment Variables
 
@@ -549,6 +579,16 @@ Config normalization upgrades version 2 files to version 3. For GPT-5.6 Luna, So
 For Claude deployments in Microsoft Foundry, configure the upstream route as `messages: "/anthropic/v1/messages"`. The proxy automatically switches an Azure OpenAI resource host to `*.services.ai.azure.com`, injects `anthropic-version: 2023-06-01` when absent, uses `x-api-key` for key authentication, and uses the `https://ai.azure.com/.default` scope for AAD authentication.
 
 Set `models[].hostingMode` to `azure` or `anthropic` when the matched Claude pricing template offers both hosting modes. This records the deployment infrastructure for region, data-handling, and capability metadata; it is not evidence of Responses support. The currently documented Azure-hosted and Anthropic-hosted Claude deployments both use Messages. Incoming Responses `reasoning.effort` is therefore converted to `output_config.effort` with `thinking.type="adaptive"`. A route override may select only an interface or transport target allowed by that hosting-resolved Catalog descriptor.
+
+### Harness administration
+
+The admin **Harness** tab manages Claude Code and Codex catalog membership without changing protocol routing. Its model picker includes searchable eligible, already-selected and ineligible models, with blocking reasons and links to the relevant settings. Eligibility is static configuration validation, not a live connectivity or CLI compatibility test. Failed, loading or obsolete previews cannot authorize additions.
+
+Draft additions/removals, saved members and the active publication state are shown separately. Use the normal **Review & Save** workflow; closing a catalog retains its members. Actual model visibility still depends on the caller's API key permissions. The diagnostics link checks the active configuration through the existing operations page, not the unsaved draft.
+
+Each client has a connection guide: explicitly enter the public proxy root or `/v1` address, choose a selected eligible model, and copy the Bash/Zsh or Codex TOML template. Templates use a credential placeholder, never retrieve keys or make upstream calls, and should be merged rather than overwrite existing client settings.
+
+Selected Codex models also expose draft/active catalog JSON and metadata sources. The advanced fields edit existing `models[].codex` overrides for context window, supported/default reasoning efforts, priority, description and base instructions. Blank fields inherit existing behavior; clearing displayed overrides preserves other fields. Comma-separated effort edits apply on blur. Default priority is the index after consumer filtering, so it may differ for restricted API keys. These controls change discovery metadata, not provider capability or request policy.
 
 ### Claude Code
 

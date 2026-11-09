@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { expandModelCard, getModelCardPricing } from "../src/model-card.js";
-import { compileDefinitionPricing } from "../src/pricing-policy.js";
+import { compileDefinitionPricing, resolveConfiguredPricing } from "../src/pricing-policy.js";
+import { calculateTokenCost } from "../src/token-pricing.js";
 import { listPricingDefinitions } from "../src/pricing-library.js";
-import { buildModelFromPricingTemplate, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
-import { canonicalizeModelCard, formatModelCard, validateModelCard } from "../scripts/model-cards.js";
+import { applyModelCardTierPricing, buildModelFromPricingTemplate, getModelTierPricing, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
+import { canonicalizeModelCard, formatModelCard, MODEL_CAPABILITY_LABELS, validateModelCard } from "../scripts/model-cards.js";
 
 const legacy = {
   id: "example", displayName: "Example", provider: "openai", family: "example",
@@ -46,6 +48,106 @@ test("raw card validation catches missing metadata before runtime defaults hide 
   assert.match(validateModelCard(invalid).errors.join("\n"), /contextWindow/);
   assert.match(validateModelCard(invalid).errors.join("\n"), /sources.pricing/);
   assert.match(validateModelCard(invalid).errors.join("\n"), /reasoning.default/);
+});
+
+test("capability authoring rejects unknown, legacy, duplicate and noncanonical labels without rewriting them", () => {
+  for (const capabilities of [
+    [], ["tool-calling"], ["future-feature"], ["Vision"], ["function_calling"],
+    [" reasoning"], ["reasoning", "reasoning"]
+  ]) {
+    const card = { ...authoredCard, capabilities };
+    const original = structuredClone(card);
+    assert.ok(validateModelCard(card).errors.some(error => error.startsWith("capabilities")), JSON.stringify(capabilities));
+    assert.deepEqual(card, original);
+  }
+});
+
+test("capability authoring checks direct modality and parallel-call consistency without inferring other labels", () => {
+  const cases = [
+    { capabilities: ["vision"] },
+    { inputModalities: ["text", "image"] },
+    { capabilities: ["image-generation"] },
+    { capabilities: ["image-editing"], outputModalities: ["image"] },
+    { capabilities: ["vision", "image-editing"], inputModalities: ["image"] },
+    { capabilities: ["audio-input"] },
+    { capabilities: ["audio-output"] },
+    { capabilities: ["parallel-tool-calling"] }
+  ];
+  for (const overrides of cases) {
+    const card = { ...authoredCard, ...overrides };
+    assert.ok(validateModelCard(card).errors.some(error => error.startsWith("capabilities")), JSON.stringify(overrides));
+  }
+  for (const overrides of [
+    { capabilities: ["vision"], inputModalities: ["text", "image"] },
+    { capabilities: ["image-generation"], outputModalities: ["image"] },
+    { capabilities: ["vision", "image-editing"], inputModalities: ["image"], outputModalities: ["image"] },
+    { capabilities: ["audio-input", "audio-output"], inputModalities: ["audio"], outputModalities: ["audio"] },
+    { capabilities: ["transcription"], inputModalities: ["audio"] },
+    { capabilities: ["function-calling", "parallel-tool-calling"] },
+    ...["function-calling", "json-output", "structured-outputs", "streaming", "web-search"]
+      .map(capability => ({ capabilities: [capability] }))
+  ]) {
+    assert.deepEqual(validateModelCard({ ...authoredCard, ...overrides }).errors, [], JSON.stringify(overrides));
+  }
+});
+
+test("capability documentation covers the offline vocabulary", async () => {
+  const readme = await fs.readFile(new URL("../pricing/README.md", import.meta.url), "utf8");
+  const section = readme.split("#### Capability labels\n")[1].split("\nNotes:")[0];
+  const labels = [...section.matchAll(/^\| `([^`]+)` \|/gm)].map(match => match[1]);
+  assert.equal(labels.length, 22);
+  assert.deepEqual(labels, MODEL_CAPABILITY_LABELS);
+  assert.equal(new Set(labels).size, labels.length);
+  assert.ok(labels.includes("web-search"));
+  assert.ok(!labels.includes("tool-calling"));
+  assert.deepEqual(validateModelCard({
+    ...authoredCard, capabilities: labels, inputModalities: ["text", "image", "audio"],
+    outputModalities: ["text", "image", "audio"]
+  }).errors, []);
+});
+
+test("output token parameter authoring requires an evidenced Chat field without defaulting legacy profiles", () => {
+  const card = { ...authoredCard, interfaces: ["chat/completions"], capabilities: ["function-calling"],
+    protocolProfiles: { "chat/completions": { request: { outputTokenParameter: "max_tokens" } } },
+    sources: { ...authoredCard.sources, parameters: "https://example.test/parameters" } };
+  assert.deepEqual(validateModelCard(card).errors, []);
+  assert.equal(JSON.parse(formatModelCard(card)).protocolProfiles["chat/completions"].request.outputTokenParameter, "max_tokens");
+  const missingEvidence = { ...card, sources: { ...authoredCard.sources } };
+  assert.match(validateModelCard(missingEvidence).errors.join("\n"), /sources.parameters/);
+  for (const value of [null, "", "max_output_tokens", "MAX_TOKENS", true, {}, []]) {
+    const invalid = { ...card, protocolProfiles: { "chat/completions": { request: { outputTokenParameter: value } } } };
+    assert.match(validateModelCard(invalid).errors.join("\n"), /request.outputTokenParameter/);
+  }
+  for (const protocol of ["responses", "messages"]) {
+    assert.match(validateModelCard({ ...card, protocolProfiles: {
+      [protocol]: { request: { outputTokenParameter: "max_tokens" } }
+    } }).errors.join("\n"), /request.outputTokenParameter/);
+  }
+});
+
+test("evidenced Chat cards preserve explicit token parameters through raw, loaded and imported Catalog forms", async () => {
+  const ids = ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "gpt-5.2", "gpt-5.4",
+    "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "mai-thinking-1"];
+  const { compileModelCatalog, resolveModelDescriptor } = await import("../src/model-catalog.js");
+  const definitions = listPricingDefinitions();
+  for (const id of ids) {
+    const card = JSON.parse(await fs.readFile(new URL(`../pricing/${id}.json`, import.meta.url), "utf8"));
+    assert.equal(card.protocolProfiles["chat/completions"].request.outputTokenParameter, "max_completion_tokens", id);
+    assert.ok(card.sources.parameters, id);
+    const definition = definitions.find(item => item.id === id);
+    assert.equal(definition.protocolProfiles["chat/completions"].request.outputTokenParameter, "max_completion_tokens", id);
+    const model = buildModelFromPricingTemplate(definition, "provider", { models: [] });
+    const descriptor = resolveModelDescriptor(model.id, compileModelCatalog({ models: [model] }, definitions));
+    assert.equal(descriptor.protocolProfiles["chat/completions"].request.outputTokenParameter, "max_completion_tokens", id);
+  }
+});
+
+test("MAI Thinking uses the evidenced canonical function-calling label in raw and imported cards", async () => {
+  const card = JSON.parse(await fs.readFile(new URL("../pricing/mai-thinking-1.json", import.meta.url), "utf8"));
+  assert.deepEqual(card.capabilities, ["reasoning", "function-calling"]);
+  const definition = listPricingDefinitions().find(item => item.id === card.id);
+  assert.deepEqual(definition.capabilities, card.capabilities);
+  assert.deepEqual(buildModelFromPricingTemplate(definition, "mai", { models: [] }).capabilities, card.capabilities);
 });
 
 test("card completeness reports unknown fields without inventing defaults or prices", () => {
@@ -96,6 +198,8 @@ test("raw validation rejects malformed controls, limits and executable tiers wit
   card.protocolProfiles.responses.reasoning.levels = ["low", 1];
   assert.match(validateModelCard(card).errors.join("\n"), /maxOutputTokens/);
   assert.match(validateModelCard(card).errors.join("\n"), /reasoning.levels/);
+  card.protocolProfiles.responses.reasoning.shimDefault = "unknown";
+  assert.match(validateModelCard(card).errors.join("\n"), /reasoning.shimDefault/);
   card.pricing = { currency: "USD", billingUnit: "1M tokens",
     tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
     tiers: [
@@ -109,6 +213,21 @@ test("raw validation rejects malformed controls, limits and executable tiers wit
   assert.ok(validateModelCard(unavailable).warnings.some(warning => warning.startsWith("pricing.billingUnit")));
   for (const provider of ["deepseek", "fireworks-ai", "future-provider"]) {
     assert.deepEqual(validateModelCard({ ...authoredCard, provider }).errors, []);
+  }
+});
+
+test("raw duration cards validate billing increments and preserve them through formatting and import", () => {
+  const card = { ...authoredCard, interfaces: ["audio/transcriptions"], capabilities: ["transcription"], protocolProfiles: {},
+    pricing: { currency: "USD", billingUnit: "second", perSecond: 0.10 / 3600, billingIncrementSeconds: 1 } };
+  assert.deepEqual(validateModelCard(card).errors, []);
+  const formatted = JSON.parse(formatModelCard(card));
+  assert.equal(formatted.pricing.billingIncrementSeconds, 1);
+  const imported = {};
+  upsertPricingCatalogEntry(imported, expandModelCard(formatted));
+  assert.equal(imported.access.pricingCatalog[card.id].billingIncrementSeconds, 1);
+  for (const value of [0, -1, 0.5, "1", null, true]) {
+    assert.match(validateModelCard({ ...card, pricingCatalogEntry: null, pricing: { ...card.pricing, billingIncrementSeconds: value } }).errors.join("\n"),
+      /billingIncrementSeconds/);
   }
 });
 
@@ -184,6 +303,67 @@ test("tier tables are stored once without inventing missing rates or flattening 
   assert.throws(() => canonicalizeModelCard({ ...card, pricing: { ...card.pricing, inputPer1mTokens: 99 } }), /Conflicting whole-request/);
 });
 
+test("every executable tiered card survives import, override review and explicit scoped price repair", () => {
+  const definitions = listPricingDefinitions();
+  const tiered = definitions.filter(card => compileDefinitionPricing(card).pricing?.tiering);
+  assert.ok(tiered.some(card => card.id === "gpt-6-astra"));
+  assert.ok(tiered.some(card => card.id === "gpt-5.6-sol"));
+  const config = {
+    models: tiered.map(card => ({
+      id: `public-${card.id}`, targetModel: card.id, pricingRef: `custom-${card.id}`,
+      routes: { "*": "responses" }, pricing: { inputPer1mTokens: 1, outputPer1mTokens: 2 }
+    })),
+    access: { pricingCatalog: { shared: { inputPer1mTokens: 99 } } }
+  };
+  const original = structuredClone(config);
+  const reviews = getModelTierPricing(config, definitions);
+  assert.equal(reviews.length, tiered.length);
+  assert.ok(reviews.every(review => review.needsUpdate && review.source === "model.pricing"));
+  assert.deepEqual(config, original);
+  const first = reviews[0];
+  applyModelCardTierPricing(config, [first.modelId], definitions);
+  assert.deepEqual(config.models.slice(1), original.models.slice(1));
+  assert.deepEqual(config.access, original.access);
+  assert.deepEqual(config.models[0].routes, original.models[0].routes);
+  applyModelCardTierPricing(config, reviews.map(review => review.modelId), definitions);
+  assert.ok(getModelTierPricing(config, definitions).every(review => !review.needsUpdate));
+  for (const [index, card] of tiered.entries()) {
+    const imported = {};
+    upsertPricingCatalogEntry(imported, card);
+    assert.deepEqual(imported.access.pricingCatalog[card.proxyTemplate?.pricingRef || card.id], getModelCardPricing(card));
+    const policy = resolveConfiguredPricing(config, config.models[index], () => compileDefinitionPricing(card)).pricing;
+    for (const tier of policy.tiers) {
+      const input = tier.promptTokensAtLeast;
+      for (const prompt of [input, ...(tier.promptTokensBelow === null ? [] : [tier.promptTokensBelow - 1])]) {
+        const cost = calculateTokenCost(policy, {
+          input_tokens: prompt, output_tokens: 0,
+          input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }
+        }, { backendProtocol: "responses" });
+        assert.equal(cost.tier.id, tier.id, card.id);
+        assert.equal(cost.costStatus, "priced", card.id);
+      }
+    }
+  }
+  assert.deepEqual(config.access, original.access);
+  assert.throws(() => applyModelCardTierPricing(config, ["missing"], definitions), /unavailable/);
+});
+
+test("tier review uses runtime override precedence and never enables card pricing opt-outs", () => {
+  const definition = { id: "example", pricing: {
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [{ id: "short", promptTokensBelow: 100, inputPer1mTokens: 1 },
+      { id: "long", promptTokensAtLeast: 100, inputPer1mTokens: 2 }]
+  } };
+  const config = { models: [{ id: "alias", targetModel: "example", pricingRef: "custom" }],
+    access: { pricingCatalog: { custom: { inputPer1mTokens: 0 } } } };
+  assert.equal(getModelTierPricing(config, [definition])[0].source, "access.pricingCatalog.custom");
+  config.models[0].pricing = structuredClone(definition.pricing);
+  config.models[0].pricing.tiers[0].inputPer1mTokens = 0;
+  assert.equal(getModelTierPricing(config, [definition])[0].needsUpdate, false);
+  assert.deepEqual(getModelTierPricing(config, [{ ...definition, pricingCatalogEntry: null }]), []);
+  assert.throws(() => resolveConfiguredPricing({}, { pricing: "invalid" }, () => null), /token pricing must be an object/);
+});
+
 test("model-card formatter is deterministic, idempotent and preserves media and evidence", () => {
   const card = { ...legacy, pricingCatalogEntry: null,
     pricing: { ...legacy.pricing, channels: { audio: { inputPer1mTokens: 32, inputPer1kTokens: 0.032 } },
@@ -205,6 +385,128 @@ test("model-card formatter is deterministic, idempotent and preserves media and 
   assert.deepEqual(override.pricingCatalogEntry.channels, { audio: { inputPer1mTokens: 64 } });
 });
 
+test("GPT-6.1 Sol raw card is complete without loader-supplied reasoning metadata", async () => {
+  const card = JSON.parse(await fs.readFile(new URL("../pricing/gpt-6.1-sol.json", import.meta.url), "utf8"));
+  assert.deepEqual(validateModelCard(card), { errors: [], warnings: [] });
+  for (const protocol of card.interfaces) {
+    const profile = card.protocolProfiles[protocol].reasoning;
+    assert.equal(profile.default, "medium");
+    assert.equal(profile.validation, "passthrough");
+    assert.deepEqual(profile.levels, protocol === "responses"
+      ? ["none", "low", "medium", "high", "xhigh", "max"]
+      : ["none", "low", "medium", "high", "xhigh"]);
+  }
+});
+
+test("Kimi K3.1 Pro raw card preserves exact Azure facts and publisher-only reasoning metadata", async () => {
+  const card = JSON.parse(await fs.readFile(new URL("../pricing/kimi-k3.1-pro.json", import.meta.url), "utf8"));
+  assert.equal(card.id, "Kimi-K3.1-Pro");
+  assert.equal(card.modelVersion, "2026-11-04");
+  assert.equal(card.status, "preview");
+  assert.equal(card.contextWindow, 1048576);
+  assert.equal(card.maxOutputTokens, 262144);
+  assert.equal(Object.hasOwn(card, "maxInputTokens"), false);
+  assert.deepEqual(card.hostingModes, ["azure"]);
+  assert.equal(card.defaultHostingMode, "azure");
+  assert.deepEqual(card.interfaces, ["chat/completions"]);
+  assert.equal(card.defaultInterface, "chat/completions");
+  assert.deepEqual(card.protocolProfiles, {
+    "chat/completions": {
+      reasoning: {
+        parameter: "reasoning_effort",
+        levels: ["low", "high", "max"],
+        validation: "passthrough"
+      }
+    }
+  });
+  assert.deepEqual(card.pricing, {
+    currency: "USD",
+    billingUnit: "1M tokens",
+    sourceType: "azure-official",
+    status: "published",
+    inputPer1mTokens: 2.3,
+    cachedInputPer1mTokens: 0.23,
+    outputPer1mTokens: 11.5
+  });
+  assert.equal(Object.hasOwn(card, "pricingCatalogEntry"), false);
+  assert.deepEqual(card.proxyTemplate, {});
+  assert.equal(card.sources.limits, "https://ai.azure.com/catalog/models/Kimi-K3.1-Pro");
+  assert.deepEqual(validateModelCard(card), {
+    errors: [],
+    warnings: [
+      "maxInputTokens: not recorded; add only with deployment-specific evidence",
+      "protocolProfiles.chat/completions.reasoning.default: not recorded; do not assume a family default"
+    ]
+  });
+});
+
+test("October additions retain raw reference metadata without loader-supplied deployment facts", async () => {
+  const terra = JSON.parse(await fs.readFile(new URL("../pricing/gpt-6.1-terra.json", import.meta.url), "utf8"));
+  for (const protocol of terra.interfaces) {
+    const reasoning = terra.protocolProfiles[protocol].reasoning;
+    assert.deepEqual(reasoning.levels, protocol === "responses"
+      ? ["none", "low", "medium", "high", "xhigh", "max"]
+      : ["none", "low", "medium", "high", "xhigh"]);
+    assert.equal(reasoning.parameter, protocol === "responses" ? "reasoning.effort" : "reasoning_effort");
+    assert.equal(Object.hasOwn(reasoning, "default"), false);
+  }
+  assert.equal(terra.pricingCatalogEntry, null);
+  const deepseek = JSON.parse(await fs.readFile(new URL("../pricing/deepseek-v4.1-flash-1017.json", import.meta.url), "utf8"));
+  assert.equal(deepseek.proxyTemplate.targetModel, "FW-Deepseek-v4.1-Flash-1017");
+  assert.equal(deepseek.pricingCatalogEntry, null);
+  for (const field of ["contextWindow", "maxInputTokens", "maxOutputTokens"]) {
+    assert.equal(Object.hasOwn(deepseek, field), false);
+  }
+  for (const protocol of deepseek.interfaces) {
+    const reasoning = deepseek.protocolProfiles[protocol].reasoning;
+    assert.equal(reasoning.parameter, protocol === "responses" ? "reasoning.effort" : "reasoning_effort");
+    assert.equal(Object.hasOwn(reasoning, "levels"), false);
+    assert.equal(Object.hasOwn(reasoning, "default"), false);
+  }
+  assert.equal(Object.hasOwn(deepseek.protocolProfiles["chat/completions"].thinking, "types"), false);
+  assert.equal(Object.hasOwn(deepseek.protocolProfiles["chat/completions"].thinking, "default"), false);
+  for (const card of [terra, deepseek]) {
+    const validation = validateModelCard(card);
+    assert.deepEqual(validation.errors, []);
+    for (const warning of validation.warnings) {
+      assert.ok(card.notes.join(" ").includes(warning.slice(0, warning.indexOf(":"))), warning);
+    }
+  }
+});
+
+test("active cards declare native defaults and explain every unresolved metadata field", async () => {
+  const directory = new URL("../pricing/", import.meta.url);
+  const names = (await fs.readdir(directory)).filter(name => name.endsWith(".json"));
+  for (const name of names) {
+    const card = JSON.parse(await fs.readFile(new URL(name, directory), "utf8"));
+    assert.ok(card.interfaces.includes(card.defaultInterface), `${name}: explicit native default`);
+    if (card.capabilities.includes("reasoning")) {
+      for (const protocol of card.interfaces) {
+        const profile = card.protocolProfiles?.[protocol];
+        assert.ok(profile?.reasoning || profile?.thinking, `${name}: ${protocol} control profile`);
+      }
+    }
+    if (["grok-4.3.json", "grok-4.6.json", "grok-4.7.json"].includes(name)) {
+      for (const protocol of card.interfaces) {
+        const reasoning = card.protocolProfiles[protocol].reasoning;
+        assert.equal(Object.hasOwn(reasoning, "levels"), false, `${name}: ${protocol} levels stay unknown`);
+        assert.equal(Object.hasOwn(reasoning, "default"), false, `${name}: ${protocol} default stays unknown`);
+      }
+    }
+    if (["claude-opus-4-6.json", "claude-opus-4-7.json", "claude-opus-4-8.json", "claude-sonnet-4-6.json"].includes(name)) {
+      const thinking = card.protocolProfiles.messages.thinking;
+      assert.equal(Object.hasOwn(thinking, "default"), false, `${name}: native omitted thinking remains off`);
+      assert.equal(thinking.shimDefault, "adaptive", `${name}: proxy activation is explicit`);
+    }
+    const notes = (card.notes || []).join(" ");
+    for (const warning of validateModelCard(card).warnings) {
+      const field = warning.slice(0, warning.indexOf(":"));
+      assert.ok(notes.includes(field), `${name}: ${field} needs a per-card explanation`);
+    }
+    if (card.modelVersion == null) assert.ok(notes.includes("modelVersion"), `${name}: modelVersion`);
+  }
+});
+
 test("all active model cards use canonical self-contained formatting", async () => {
   const directory = new URL("../pricing/", import.meta.url);
   const names = (await fs.readdir(directory)).filter(name => name.endsWith(".json"));
@@ -220,8 +522,11 @@ test("all active model cards use canonical self-contained formatting", async () 
   }
 });
 
-test("bundled admin and backend loaders expand the same compact model-card contracts", async () => {
+test("bundled admin and backend loaders expand the same compact model-card contracts", async (t) => {
+  const cacheDir = await fs.mkdtemp(`${tmpdir()}/aoai-model-card-vite-`);
+  t.after(() => fs.rm(cacheDir, { recursive: true, force: true }));
   const vite = await createServer({
+    cacheDir,
     configFile: fileURLToPath(new URL("../admin-ui/vite.config.js", import.meta.url)),
     root: fileURLToPath(new URL("..", import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: "custom"

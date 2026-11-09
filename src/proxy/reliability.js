@@ -174,6 +174,9 @@ export function classifyFetchError(error) {
   if (code === "CLIENT_DISCONNECTED") {
     return { code: "CLIENT_DISCONNECTED", retryable: false, status: 499, detail: message || "client disconnected" };
   }
+  if (code === "UPSTREAM_REDIRECT_NOT_ALLOWED") {
+    return { code, retryable: false, status: 502, detail: message };
+  }
   if (code === "UPSTREAM_STREAM_EVENT_TOO_LARGE") {
     return { code: "UPSTREAM_STREAM_EVENT_TOO_LARGE", retryable: false, status: 502, detail: message };
   }
@@ -319,12 +322,20 @@ export async function fetchOnceWithConnectTimeout({
     controller.abort(timeoutCode);
   }, timeoutMs);
   try {
-    return await fetch(targetUrl, {
+    const response = await fetch(targetUrl, {
       method: "POST",
       headers,
       body: bodyText,
+      redirect: "manual",
       signal: controller.signal
     });
+    // A redirect must not move credentials, content or protocol-specific state
+    // outside the administrator's validated final route, even on the same host.
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel("redirect-not-allowed").catch(() => {});
+      throw markErrorWithCode(new Error("Upstream redirects are not allowed"), "UPSTREAM_REDIRECT_NOT_ALLOWED");
+    }
+    return response;
   } catch (error) {
     if (controller.signal.aborted && controller.signal.reason === "client-disconnected") {
       throw markErrorWithCode(error, "CLIENT_DISCONNECTED", "client disconnected");

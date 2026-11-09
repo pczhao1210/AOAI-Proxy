@@ -8,6 +8,7 @@
   "contextWindow": 131072,
   "maxOutputTokens": 131072,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "streaming", "function-calling", "structured-outputs"],
@@ -34,6 +35,7 @@
   },
   "notes": [
     "Azure documents model version 1 and exposes gpt-oss-120b through Chat Completions, but does not list it in the Azure reasoning_effort support matrix.",
-    "OpenAI documents low, medium, and high reasoning effort for gpt-oss as a system-message instruction; the proxy therefore does not synthesize a request-level reasoning_effort field."
+    "OpenAI documents low, medium, and high reasoning effort for gpt-oss as a system-message instruction; the proxy therefore does not synthesize a request-level reasoning_effort field.",
+    "maxInputTokens remains independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits."
   ]
 }

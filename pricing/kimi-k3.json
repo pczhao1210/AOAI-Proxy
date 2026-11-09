@@ -7,6 +7,7 @@
   "status": "ga",
   "contextWindow": 1000000,
   "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling"],
@@ -15,19 +16,22 @@
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["low", "high", "max"],
-        "default": "max"
+        "default": "max",
+        "validation": "passthrough"
       }
     }
   },
   "pricing": {
     "currency": "USD",
     "billingUnit": "1M tokens",
-    "sourceType": "fireworks-serverless",
+    "sourceType": "azure-retail-prices-api",
     "status": "published",
+    "deploymentType": "global-standard",
     "inputPer1mTokens": 3,
     "cachedInputPer1mTokens": 0.3,
     "outputPer1mTokens": 15
   },
+  "pricingCatalogEntry": null,
   "proxyTemplate": {
     "targetModel": "FW-Kimi-K3"
   },
@@ -35,11 +39,14 @@
     "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
     "providerModel": "https://fireworks.ai/models/fireworks/kimi-k3",
     "limits": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart",
-    "pricing": "https://fireworks.ai/models/fireworks/kimi-k3"
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/fireworks/"
   },
   "notes": [
-    "The template selects Foundry's FW-Kimi-K3 deployment, not a Fireworks-account model path. Prices remain Fireworks Serverless reference rates, not independently verified Foundry meter prices.",
-    "Fireworks 的 Serverless 价格为输入、缓存输入、输出分别 3、0.3、15 USD 每 1M tokens。",
-    "Fireworks 将模型路径标识为 accounts/fireworks/models/kimi-k3，并标明支持图像输入和函数调用。"
+    "The template selects Foundry's FW-Kimi-K3 Global Standard deployment, not a Fireworks-account endpoint. The exact Azure Fireworks Models meters now establish the selected-host rates; the earlier Serverless reference is no longer the price authority.",
+    "Fireworks 将模型路径标识为 accounts/fireworks/models/kimi-k3，并标明支持图像输入和函数调用。",
+    "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "modelVersion has not been independently verified as an exact deployment snapshot; the stable model ID is retained rather than inventing a release date or copying a sibling version.",
+    "Verified 2026-11-06 against Azure Retail Prices API serviceName='Foundry Models', productName='Azure Fireworks Models', using exact-model Global consumption meters and their published units. Batch, Flex, Priority, Data Zone and negotiated discounts are not selected. Existing pricingCatalogEntry opt-outs are retained."
   ]
 }

@@ -4,7 +4,7 @@
   "provider": "azure-openai",
   "family": "gpt-6",
   "modelVersion": "2026-09-03",
-  "status": "ga",
+  "status": "unknown",
   "contextWindow": 1050000,
   "maxInputTokens": 922000,
   "maxOutputTokens": 128000,
@@ -79,11 +79,13 @@
     "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning",
     "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-6",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-6",
+    "lifecycle": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-6",
     "pricing": "https://azure.microsoft.com/en-us/blog/gpt-6-astra-sol-and-luna-for-production-agents-in-microsoft-foundry/"
   },
   "notes": [
-    "The root rates represent Global Standard short-context pricing. The tier table records Global Standard short/long-context rates, including cache writes, per 1M tokens.",
+    "The tier table contains Global Standard short/long-context rates, including cache writes; rates are stored only in pricing.tiers, not duplicated at the root.",
     "The administrator-specified whole-request policy selects the long tier only when this request's input, including cache, exceeds 272000 tokens. Exactly 272000 remains short; session totals and output length do not select the tier.",
-    "The cited Azure post supplies Global Standard prices but does not establish this numeric threshold or whole-request rule. These policy choices were explicitly supplied by the administrator, not independently verified from that source."
+    "The cited Azure post supplies Global Standard prices but does not establish this numeric threshold or whole-request rule. These policy choices were explicitly supplied by the administrator, not independently verified from that source.",
+    "Azure lists version 2026-09-03 but the exact model row does not explicitly label GA or Preview; status remains unknown. The Azure capability matrix does not specify a Chat-versus-Responses tool restriction."
   ]
 }

@@ -116,10 +116,11 @@ export async function validateConfiguredModels(payload = {}) {
   }));
 }
 
-export async function fetchHarnessEligibility(config) {
+export async function fetchHarnessEligibility(config, { signal } = {}) {
   return readJson(await adminFetch("/harness/eligibility", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal,
     body: JSON.stringify({ config })
   }));
 }
@@ -147,10 +148,12 @@ export async function fetchStats(params = {}) {
 
 export async function fetchLogs(params = {}) {
   const search = new URLSearchParams();
+  if (params.view) search.set("view", String(params.view));
+  if (params.outcome) search.set("outcome", String(params.outcome));
   if (Array.isArray(params.level) && params.level.length > 0) {
     search.set("level", params.level.join(","));
   }
-  ["event", "modelId", "requestId", "keyword", "since", "limit"].forEach((key) => {
+  ["event", "excludeEvent", "modelId", "requestId", "keyword", "since", "limit"].forEach((key) => {
     const value = params[key];
     if (value != null && value !== "") {
       search.set(key, String(value));

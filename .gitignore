@@ -34,5 +34,8 @@ config/config.local.json
 
 # custom agents and skills
 .agents/
-.github/
+.github/*
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/ci.yml
 

@@ -1,10 +1,14 @@
 import { after, afterEach, before } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { JSDOM } from "jsdom";
 import { setValueByPath } from "../../admin-ui/src/utils.js";
 
 let vite;
+let viteCacheDir;
 let dom;
 let React;
 let WorkspaceTab;
@@ -23,9 +27,11 @@ export function setupWorkspaceFormTests() {
     }
     React = await import("react");
     ({ render, fireEvent, within, cleanup } = await import("@testing-library/react/pure.js"));
+    viteCacheDir = await mkdtemp(path.join(tmpdir(), "aoai-proxy-vite-test-"));
     vite = await createServer({
       configFile: fileURLToPath(new URL("../../admin-ui/vite.config.js", import.meta.url)),
       root: fileURLToPath(new URL("../..", import.meta.url)),
+      cacheDir: viteCacheDir,
       resolve: { dedupe: ["react", "react-dom"] },
       server: { middlewareMode: true, watch: null, ws: false },
       appType: "custom"
@@ -36,6 +42,7 @@ export function setupWorkspaceFormTests() {
   afterEach(() => cleanup?.());
   after(async () => {
     await vite?.close();
+    if (viteCacheDir) await rm(viteCacheDir, { recursive: true, force: true });
     dom?.window.close();
     for (const [name, descriptor] of originalGlobals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -44,21 +51,34 @@ export function setupWorkspaceFormTests() {
   });
 }
 
-export function renderWorkspace(config, sectionId = "workspace-media") {
+export function renderWorkspace(config, sectionId = "workspace-media", overrides = {}) {
   const changes = [];
   let currentConfig = config;
   const updateConfig = next => {
     currentConfig = next;
     view.rerender(React.createElement(WorkspaceTab, { ...props, config: currentConfig }));
   };
-  const props = { config, updateField: (path, value) => {
+  const props = { ...overrides, config, updateField: (path, value) => {
     changes.push([path, value]);
     const next = structuredClone(currentConfig);
     setValueByPath(next, path, value);
     updateConfig(next);
-  }, t: (_key, fallback) => fallback };
+  }, t: overrides.t || ((_key, fallback) => fallback) };
   const view = render(React.createElement(WorkspaceTab, props));
   const section = view.container.querySelector(`#${sectionId}`);
   section.open = true;
   return { ...view, section, fields: within(section), changes, updateConfig };
+}
+
+export async function renderAdminComponent(modulePath, props) {
+  const { default: Component } = await vite.ssrLoadModule(modulePath);
+  return render(React.createElement(Component, props));
+}
+
+export function loadAdminModule(modulePath) {
+  return vite.ssrLoadModule(modulePath);
+}
+
+export function renderElement(element) {
+  return render(element);
 }

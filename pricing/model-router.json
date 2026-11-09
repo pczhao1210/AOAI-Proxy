@@ -5,8 +5,8 @@
   "family": "model-router",
   "modelVersion": "2025-11-18",
   "status": "ga",
-  "contextWindow": 200000,
   "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs", "parallel-tool-calling"],
@@ -43,6 +43,11 @@
   },
   "notes": [
     "Azure 定价页当前列出的 model-router 费用为 input only，每 1M tokens 0.14 USD。",
-    "model-router 总费用需要再叠加实际路由到底层模型的 input/cache/output 成本。"
+    "model-router 总费用需要再叠加实际路由到底层模型的 input/cache/output 成本。",
+    "There is no router-wide contextWindow, maxInputTokens or maxOutputTokens: the effective budget depends on the selected backend model. vision, tool and structured-output capabilities vary by route and are not guaranteed for every request.",
+    "The $0.14/1M input rate applies only to the published router SKU in its listed regions. Underlying model charges are separate and region/deployment dependent.",
+    "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
+    "protocolProfiles.chat/completions.reasoning.levels, protocolProfiles.chat/completions.reasoning.default, protocolProfiles.responses.reasoning.levels, protocolProfiles.responses.reasoning.default depend on the selected backend model and have no single fixed router-wide value. Client controls remain passthrough; no family default is invented.",
+    "pricing.outputPer1mTokens is inapplicable to the input-only router fee, not an unverified zero rate. The routed model's input/cache/output prices are accounted for separately."
   ]
 }

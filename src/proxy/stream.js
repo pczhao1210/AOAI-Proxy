@@ -1,7 +1,7 @@
 import { markErrorWithCode } from "./reliability.js";
-import { getProtocolShimStreamCompatibilityIssue } from "./shim.js";
+import { chatFinishReasonToResponsesTermination, getProtocolShimStreamCompatibilityIssue } from "./shim.js";
 
-const MAX_SSE_BUFFER_CHARS = 8 * 1024 * 1024;
+const MAX_SSE_EVENT_BYTES = 8 * 1024 * 1024;
 
 function sseDataFromBlock(block) {
   const dataLines = [];
@@ -17,84 +17,121 @@ function sseDataFromBlock(block) {
 }
 
 function createSseDataParser() {
-  let buffer = "";
-
-  const drain = (final = false) => {
-    const payloads = [];
-    while (true) {
-      const match = /\r?\n\r?\n/.exec(buffer);
-      if (!match) break;
-      const payload = sseDataFromBlock(buffer.slice(0, match.index));
-      buffer = buffer.slice(match.index + match[0].length);
-      if (payload != null) payloads.push(payload);
-    }
-    if (final && buffer.trim()) {
-      const payload = sseDataFromBlock(buffer);
-      buffer = "";
-      if (payload != null) payloads.push(payload);
-    }
-    return payloads;
-  };
-
+  const parser = createRawSseParser();
+  function* payloads(events) {
+    for (const event of events) if (event.payload != null) yield event.payload;
+  }
   return {
-    feed(text) {
-      buffer += text;
-      return drain(false);
-    },
-    finish(text = "") {
-      buffer += text;
-      return drain(true);
-    },
-    get bufferedLength() {
-      return buffer.length;
-    }
+    feed: chunk => payloads(parser.feed(chunk)),
+    finish: () => payloads(parser.finish())
   };
 }
 
-export function createRawSseParser() {
-  let buffer = Buffer.alloc(0);
-  const lfDelimiter = Buffer.from("\n\n");
-  const crlfDelimiter = Buffer.from("\r\n\r\n");
+const LF = 0x0a;
+const CR = 0x0d;
+const EMPTY_BUFFER = Buffer.alloc(0);
 
-  const nextEvent = () => {
-    const lfIndex = buffer.indexOf(lfDelimiter);
-    const crlfIndex = buffer.indexOf(crlfDelimiter);
-    if (lfIndex < 0 && crlfIndex < 0) return null;
-    const useCrlf = crlfIndex >= 0 && (lfIndex < 0 || crlfIndex < lfIndex);
-    const index = useCrlf ? crlfIndex : lfIndex;
-    const delimiter = useCrlf ? crlfDelimiter : lfDelimiter;
-    const raw = buffer.subarray(0, index + delimiter.length);
-    const block = buffer.subarray(0, index).toString("utf8");
-    buffer = buffer.subarray(index + delimiter.length);
-    return { raw, payload: sseDataFromBlock(block) };
-  };
+// First event delimiter in `buf`: "\n\n" or "\r\n\r\n", whichever starts first.
+// Walking newlines keeps the scan linear in the bytes consumed.
+function findEventDelimiter(buf) {
+  for (let lf = buf.indexOf(LF); lf !== -1; lf = buf.indexOf(LF, lf + 1)) {
+    const next = buf[lf + 1];
+    if (next === LF) return { index: lf, length: 2 };
+    if (next === CR && buf[lf + 2] === LF && lf > 0 && buf[lf - 1] === CR) return { index: lf - 1, length: 4 };
+  }
+  return null;
+}
 
-  const drain = () => {
-    const events = [];
-    while (true) {
-      const event = nextEvent();
-      if (!event) return events;
-      events.push(event);
+function findBoundaryDelimiter(pending, pendingLength, buf) {
+  // A delimiter can start up to three bytes before this chunk, giving a negative index.
+  let suffix = 0;
+  for (let i = Math.max(0, pendingLength - 3); i < pendingLength; i++) {
+    suffix = (suffix << 8) | pending[i];
+  }
+  for (let i = 0; i < Math.min(3, buf.length); i++) {
+    suffix = ((suffix << 8) | buf[i]) >>> 0;
+    if ((suffix & 0xffff) === 0x0a0a) return { index: i - 1, length: 2 };
+    if (suffix === 0x0d0a0d0a) return { index: i - 3, length: 4 };
+  }
+  return null;
+}
+
+export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {}) {
+  let pending = EMPTY_BUFFER;
+  let pendingLength = 0;
+  const queue = [];
+  let queuedLength = 0;
+  const checkSize = length => {
+    if (length > maxEventBytes) {
+      throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
     }
   };
+  const appendPending = (buf, length = buf.length) => {
+    const required = pendingLength + length;
+    checkSize(required);
+    if (required > pending.length) {
+      const capacity = Math.min(maxEventBytes, Math.max(required, pending.length ? pending.length * 2 : 4096));
+      // Own the storage rather than retaining one wrapper per fragment or a pooled slab.
+      const next = Buffer.allocUnsafeSlow(capacity);
+      pending.copy(next, 0, 0, pendingLength);
+      pending = next;
+    }
+    buf.copy(pending, pendingLength, 0, length);
+    pendingLength = required;
+  };
+  const takePending = () => {
+    const raw = pending.subarray(0, pendingLength);
+    // The consumer owns raw until it finishes writing; never reuse its backing buffer.
+    pending = EMPTY_BUFFER;
+    pendingLength = 0;
+    return raw;
+  };
+
+  // Parse lazily so terminal evidence stops interpretation of trailing bytes.
+  // Enforce the complete raw frame size before UTF-8 or JSON decoding; checking
+  // only the remaining buffer misses oversized events ending in this chunk.
+  function* drain(final = false) {
+    while (queue.length) {
+      const buf = queue[0];
+      const hit = (pendingLength ? findBoundaryDelimiter(pending, pendingLength, buf) : null)
+        || findEventDelimiter(buf);
+      if (!hit) {
+        appendPending(buf);
+        queuedLength -= buf.length;
+        queue.shift();
+        continue;
+      }
+      const consumed = hit.index + hit.length;
+      checkSize(pendingLength + consumed);
+      let raw;
+      if (pendingLength) {
+        appendPending(buf, consumed);
+        raw = takePending();
+      } else {
+        raw = buf.subarray(0, consumed);
+      }
+      queuedLength -= consumed;
+      if (consumed < buf.length) queue[0] = buf.subarray(consumed);
+      else queue.shift();
+      yield { raw, payload: sseDataFromBlock(raw.subarray(0, raw.length - hit.length).toString("utf8")) };
+    }
+    if (final && pendingLength) {
+      const raw = takePending();
+      yield { raw, payload: sseDataFromBlock(raw.toString("utf8")) };
+    }
+  }
 
   return {
     feed(chunk) {
-      buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      if (buf.length) {
+        queue.push(buf);
+        queuedLength += buf.length;
+      }
       return drain();
     },
-    finish() {
-      const events = drain();
-      if (buffer.length > 0) {
-        const raw = buffer;
-        buffer = Buffer.alloc(0);
-        events.push({ raw, payload: sseDataFromBlock(raw.toString("utf8")) });
-      }
-      return events;
-    },
-    get bufferedLength() {
-      return buffer.length;
-    }
+    finish: () => drain(true),
+    get bufferedLength() { return pendingLength + queuedLength; }
   };
 }
 
@@ -205,10 +242,15 @@ async function writeWithBackpressure(replyRaw, data, signal) {
 
 function createStreamCancellation(replyRaw, reader, onClientDisconnect) {
   const controller = new AbortController();
+  let closePromise;
+  const closeReader = reason => {
+    closePromise ||= Promise.resolve().then(() => reader.cancel(reason)).catch(() => {});
+    return closePromise;
+  };
   const cancel = (reason, code, message) => {
     if (controller.signal.aborted) return;
     controller.abort(markErrorWithCode(new Error(message), code));
-    reader.cancel(reason).catch(() => {});
+    void closeReader(reason);
   };
   const onClose = () => {
     if (replyRaw.writableEnded || controller.signal.aborted) return;
@@ -219,7 +261,77 @@ function createStreamCancellation(replyRaw, reader, onClientDisconnect) {
   return {
     signal: controller.signal,
     cancel,
-    cleanup() { replyRaw.removeListener?.("close", onClose); }
+    closeReader,
+    async finish() {
+      replyRaw.removeListener?.("close", onClose);
+      await closeReader("stream-finished");
+      reader.releaseLock?.();
+    }
+  };
+}
+
+// Owns the first-byte, idle and max-duration timers shared by both stream paths.
+// Timeouts cancel the upstream reader; timeoutFailure() reports which one fired.
+function createStreamWatchdog(policy, cancellation) {
+  const fired = { firstByte: false, idle: false, maxDuration: false };
+  let firstChunkSeen = false;
+  let idleTimer = null;
+  const clearIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = null;
+  };
+  const firstByteTimer = setTimeout(() => {
+    if (firstChunkSeen) return;
+    fired.firstByte = true;
+    cancellation.cancel("first-byte-timeout", "UPSTREAM_FIRST_BYTE_TIMEOUT", `first byte timeout after ${policy.firstByteTimeoutMs}ms`);
+  }, policy.firstByteTimeoutMs);
+  const maxDurationTimer = policy.maxStreamDurationMs > 0
+    ? setTimeout(() => {
+      fired.maxDuration = true;
+      cancellation.cancel("max-stream-duration", "UPSTREAM_MAX_STREAM_DURATION", `stream exceeded max duration after ${policy.maxStreamDurationMs}ms`);
+    }, policy.maxStreamDurationMs)
+    : null;
+  return {
+    firstChunk() {
+      firstChunkSeen = true;
+      clearTimeout(firstByteTimer);
+    },
+    resetIdle() {
+      clearIdle();
+      idleTimer = setTimeout(() => {
+        fired.idle = true;
+        cancellation.cancel("idle-timeout", "UPSTREAM_IDLE_TIMEOUT", `idle timeout after ${policy.idleTimeoutMs}ms`);
+      }, policy.idleTimeoutMs);
+    },
+    dispose() {
+      clearTimeout(firstByteTimer);
+      clearIdle();
+      if (maxDurationTimer) clearTimeout(maxDurationTimer);
+    },
+    timeoutFailure() {
+      if (fired.firstByte) {
+        return {
+          ok: false,
+          beforeFirstChunk: true,
+          error: markErrorWithCode(new Error(`first byte timeout after ${policy.firstByteTimeoutMs}ms`), "UPSTREAM_FIRST_BYTE_TIMEOUT")
+        };
+      }
+      if (fired.idle) {
+        return {
+          ok: false,
+          beforeFirstChunk: !firstChunkSeen,
+          error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
+        };
+      }
+      if (fired.maxDuration) {
+        return {
+          ok: false,
+          beforeFirstChunk: !firstChunkSeen,
+          error: markErrorWithCode(new Error(`stream exceeded max duration after ${policy.maxStreamDurationMs}ms`), "UPSTREAM_MAX_STREAM_DURATION")
+        };
+      }
+      return null;
+    }
   };
 }
 
@@ -276,6 +388,15 @@ function normalizeAnthropicUsage(usage) {
     total_tokens: Number(usage.total_tokens ?? inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens),
     cached_tokens: cacheReadTokens
   };
+}
+
+// Cached prompt tokens as reported by Chat, Responses or Messages usage objects.
+function cachedTokensFromUsage(usage) {
+  return usage.prompt_tokens_details?.cached_tokens
+    ?? usage.input_tokens_details?.cached_tokens
+    ?? usage.cache_read_input_tokens
+    ?? usage.cached_tokens
+    ?? 0;
 }
 
 function normalizeChatUsage(usage) {
@@ -421,11 +542,6 @@ export async function streamPassthrough({
     return { ok: false, beforeFirstChunk: true, error: markErrorWithCode(new Error("stream body unavailable"), "STREAM_INTERRUPTED") };
   }
   let firstChunkSeen = false;
-  let firstByteTimedOut = false;
-  let idleTimedOut = false;
-  let maxDurationTimedOut = false;
-  let idleTimer = null;
-  let maxDurationTimer = null;
   const usageState = { recorded: false, anthropicUsage: null, genericUsage: null };
   const sseParser = createRawSseParser();
   let providerError = null;
@@ -485,33 +601,7 @@ export async function streamPassthrough({
       chatFinishReasonSeen = true;
     }
   };
-  const clearIdle = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = null;
-  };
-  const clearMaxDuration = () => {
-    if (maxDurationTimer) clearTimeout(maxDurationTimer);
-    maxDurationTimer = null;
-  };
-  const resetIdle = () => {
-    clearIdle();
-    idleTimer = setTimeout(() => {
-      idleTimedOut = true;
-      cancellation.cancel("idle-timeout", "UPSTREAM_IDLE_TIMEOUT", `idle timeout after ${policy.idleTimeoutMs}ms`);
-    }, policy.idleTimeoutMs);
-  };
-  const firstByteTimer = setTimeout(() => {
-    if (!firstChunkSeen) {
-      firstByteTimedOut = true;
-      cancellation.cancel("first-byte-timeout", "UPSTREAM_FIRST_BYTE_TIMEOUT", `first byte timeout after ${policy.firstByteTimeoutMs}ms`);
-    }
-  }, policy.firstByteTimeoutMs);
-  if (policy.maxStreamDurationMs > 0) {
-    maxDurationTimer = setTimeout(() => {
-      maxDurationTimedOut = true;
-      cancellation.cancel("max-stream-duration", "UPSTREAM_MAX_STREAM_DURATION", `stream exceeded max duration after ${policy.maxStreamDurationMs}ms`);
-    }, policy.maxStreamDurationMs);
-  }
+  const watchdog = createStreamWatchdog(policy, cancellation);
 
   try {
     while (true) {
@@ -520,22 +610,20 @@ export async function streamPassthrough({
       if (clientDisconnected) break;
       if (!firstChunkSeen) {
         firstChunkSeen = true;
-        clearTimeout(firstByteTimer);
+        watchdog.firstChunk();
         onFirstChunk();
       }
-      resetIdle();
+      watchdog.resetIdle();
       for (const event of sseParser.feed(value)) {
         if (reachedTerminal()) break;
         processPayload(event.payload);
         if (!providerError || forwardProviderErrors) {
           await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);
         }
-      }
-      if (sseParser.bufferedLength > MAX_SSE_BUFFER_CHARS) {
-        throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
+        if (reachedTerminal()) break;
       }
       if (reachedTerminal()) {
-        await reader.cancel(providerError ? "provider-error" : "terminal-event").catch(() => {});
+        await cancellation.closeReader(providerError ? "provider-error" : "terminal-event");
         break;
       }
     }
@@ -546,19 +634,15 @@ export async function streamPassthrough({
         if (!providerError || forwardProviderErrors) {
           await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);
         }
+        if (reachedTerminal()) break;
       }
     }
   } catch (error) {
-    clearTimeout(firstByteTimer);
-    clearIdle();
-    clearMaxDuration();
-    cancellation.cleanup();
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
+  } finally {
+    watchdog.dispose();
+    await cancellation.finish();
   }
-  clearTimeout(firstByteTimer);
-  clearIdle();
-  clearMaxDuration();
-  cancellation.cleanup();
   if (clientDisconnected) {
     return {
       ok: false,
@@ -567,27 +651,8 @@ export async function streamPassthrough({
       clientDisconnected: true
     };
   }
-  if (firstByteTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: true,
-      error: markErrorWithCode(new Error(`first byte timeout after ${policy.firstByteTimeoutMs}ms`), "UPSTREAM_FIRST_BYTE_TIMEOUT")
-    };
-  }
-  if (idleTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: !firstChunkSeen,
-      error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
-    };
-  }
-  if (maxDurationTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: !firstChunkSeen,
-      error: markErrorWithCode(new Error(`stream exceeded max duration after ${policy.maxStreamDurationMs}ms`), "UPSTREAM_MAX_STREAM_DURATION")
-    };
-  }
+  const timeoutFailure = watchdog.timeoutFailure();
+  if (timeoutFailure) return timeoutFailure;
   if (providerError) {
     return {
       ok: false,
@@ -639,13 +704,6 @@ export async function streamShim({
     return { ok: false, beforeFirstChunk: true, error: markErrorWithCode(new Error("stream body unavailable"), "STREAM_INTERRUPTED") };
   }
   let firstChunkSeen = false;
-  let firstByteTimedOut = false;
-  let idleTimedOut = false;
-  let maxDurationTimedOut = false;
-  let idleTimer = null;
-  let maxDurationTimer = null;
-  let buffer = "";
-  const decoder = new TextDecoder();
   const sourceSseParser = createSseDataParser();
   let providerError = null;
   let sourceTerminalSeen = false;
@@ -784,11 +842,7 @@ export async function streamShim({
   };
   const buildReverseUsage = () => {
     if (!reverseUsage) return null;
-    const cachedTokens = reverseUsage.prompt_tokens_details?.cached_tokens
-      ?? reverseUsage.input_tokens_details?.cached_tokens
-      ?? reverseUsage.cache_read_input_tokens
-      ?? reverseUsage.cached_tokens
-      ?? 0;
+    const cachedTokens = cachedTokensFromUsage(reverseUsage);
     const cacheCreationTokens = reverseUsage.cache_creation_input_tokens ?? 0;
     const hasAnthropicBreakdown = reverseUsage.cache_read_input_tokens != null
       || reverseUsage.cache_creation_input_tokens != null;
@@ -811,13 +865,13 @@ export async function streamShim({
     ...(reverseUsage.completion_tokens_details ? { output_tokens_details: reverseUsage.completion_tokens_details } : {})
     };
   };
-  const buildReverseResponse = (status, output = []) => ({
+  const buildReverseResponse = (status, output = [], incompleteReason = "max_output_tokens") => ({
     id: reverseResponseId,
     object: "response",
     created_at: created,
     status,
     error: null,
-    incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null,
+    incomplete_details: status === "incomplete" ? { reason: incompleteReason } : null,
     instructions: null,
     model: resolvedModel,
     output,
@@ -1029,21 +1083,18 @@ export async function streamShim({
       completedOutput.push(outputItem);
       await writeResponsesEvent({ type: "response.output_item.done", output_index: item.outputIndex, item: outputItem });
     }
-    const status = reverseFinishReason === "length" ? "incomplete" : "completed";
+    const termination = chatFinishReasonToResponsesTermination(reverseFinishReason);
+    const status = termination.status;
     await writeResponsesEvent({
       type: status === "completed" ? "response.completed" : "response.incomplete",
-      response: buildReverseResponse(status, completedOutput)
+      response: buildReverseResponse(status, completedOutput, termination.reason)
     });
     await writeSseDone(reply.raw);
     reverseCompleted = true;
   };
   const buildMessagesUsage = (usage) => {
     if (!usage) return null;
-    const cachedTokens = usage.prompt_tokens_details?.cached_tokens
-      ?? usage.input_tokens_details?.cached_tokens
-      ?? usage.cache_read_input_tokens
-      ?? usage.cached_tokens
-      ?? 0;
+    const cachedTokens = cachedTokensFromUsage(usage);
     const sourceInputTokens = usage.prompt_tokens ?? usage.input_tokens ?? 0;
     const inputTokens = Math.max(0, sourceInputTokens - cachedTokens);
     const outputTokens = usage.completion_tokens ?? usage.output_tokens ?? 0;
@@ -1266,33 +1317,7 @@ export async function streamShim({
     await writeAnthropicSse(reply.raw, { type: "message_stop" });
     messagesCompleted = true;
   };
-  const clearIdle = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = null;
-  };
-  const clearMaxDuration = () => {
-    if (maxDurationTimer) clearTimeout(maxDurationTimer);
-    maxDurationTimer = null;
-  };
-  const resetIdle = () => {
-    clearIdle();
-    idleTimer = setTimeout(() => {
-      idleTimedOut = true;
-      cancellation.cancel("idle-timeout", "UPSTREAM_IDLE_TIMEOUT", `idle timeout after ${policy.idleTimeoutMs}ms`);
-    }, policy.idleTimeoutMs);
-  };
-  const firstByteTimer = setTimeout(() => {
-    if (!firstChunkSeen) {
-      firstByteTimedOut = true;
-      cancellation.cancel("first-byte-timeout", "UPSTREAM_FIRST_BYTE_TIMEOUT", `first byte timeout after ${policy.firstByteTimeoutMs}ms`);
-    }
-  }, policy.firstByteTimeoutMs);
-  if (policy.maxStreamDurationMs > 0) {
-    maxDurationTimer = setTimeout(() => {
-      maxDurationTimedOut = true;
-      cancellation.cancel("max-stream-duration", "UPSTREAM_MAX_STREAM_DURATION", `stream exceeded max duration after ${policy.maxStreamDurationMs}ms`);
-    }, policy.maxStreamDurationMs);
-  }
+  const watchdog = createStreamWatchdog(policy, cancellation);
 
   try {
     while (true) {
@@ -1301,30 +1326,15 @@ export async function streamShim({
       if (clientDisconnected) break;
       if (!reachedEof && !firstChunkSeen) {
         firstChunkSeen = true;
-        clearTimeout(firstByteTimer);
+        watchdog.firstChunk();
         onFirstChunk();
       }
-      if (!reachedEof) {
-        resetIdle();
-        for (const payload of sourceSseParser.feed(decoder.decode(value, { stream: true }))) {
-          buffer += `data: ${payload.replace(/\r?\n/g, " ")}\n`;
-        }
-      } else {
-        for (const payload of sourceSseParser.finish(decoder.decode())) {
-          buffer += `data: ${payload.replace(/\r?\n/g, " ")}\n`;
-        }
-      }
-      let idx;
-      while ((idx = buffer.indexOf("\n")) >= 0) {
-        if (providerError || sourceTerminalSeen) {
-          buffer = "";
-          break;
-        }
-        const rawLine = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 1);
-        const line = rawLine.trim();
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
+      if (!reachedEof) watchdog.resetIdle();
+      const payloads = reachedEof ? sourceSseParser.finish() : sourceSseParser.feed(value);
+      while (!providerError && !sourceTerminalSeen) {
+        const next = payloads.next();
+        if (next.done) break;
+        const payload = next.value.replace(/\r?\n/g, " ").trim();
         if (!payload) continue;
         if (payload === "[DONE]") {
           if (backendRouteKey === "messages") {
@@ -1527,9 +1537,7 @@ export async function streamShim({
                     delta: {
                       tool_calls: [{
                         index: sourceBlock.toolIndex,
-                        id: sourceBlock.id,
-                        type: "function",
-                        function: { name: sourceBlock.name || "", arguments: delta }
+                        function: { arguments: delta }
                       }]
                     },
                     finish_reason: null
@@ -1822,11 +1830,8 @@ export async function streamShim({
           if (choice?.finish_reason) reverseFinishReason = choice.finish_reason;
         }
       }
-      if (buffer.length > MAX_SSE_BUFFER_CHARS || sourceSseParser.bufferedLength > MAX_SSE_BUFFER_CHARS) {
-        throw markErrorWithCode(new Error("upstream SSE event exceeded buffer limit"), "UPSTREAM_STREAM_EVENT_TOO_LARGE");
-      }
       if (providerError) {
-        await reader.cancel("provider-error").catch(() => {});
+        await cancellation.closeReader("provider-error");
         break;
       }
       if (reachedEof && !sourceTerminalSeen) {
@@ -1840,16 +1845,11 @@ export async function streamShim({
       if (sourceTerminalSeen || reachedEof) break;
     }
   } catch (error) {
-    clearTimeout(firstByteTimer);
-    clearIdle();
-    clearMaxDuration();
-    cancellation.cleanup();
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
+  } finally {
+    watchdog.dispose();
+    await cancellation.finish();
   }
-  clearTimeout(firstByteTimer);
-  clearIdle();
-  clearMaxDuration();
-  cancellation.cleanup();
   if (clientDisconnected) {
     return {
       ok: false,
@@ -1858,27 +1858,8 @@ export async function streamShim({
       clientDisconnected: true
     };
   }
-  if (firstByteTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: true,
-      error: markErrorWithCode(new Error(`first byte timeout after ${policy.firstByteTimeoutMs}ms`), "UPSTREAM_FIRST_BYTE_TIMEOUT")
-    };
-  }
-  if (idleTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: !firstChunkSeen,
-      error: markErrorWithCode(new Error(`idle timeout after ${policy.idleTimeoutMs}ms`), "UPSTREAM_IDLE_TIMEOUT")
-    };
-  }
-  if (maxDurationTimedOut) {
-    return {
-      ok: false,
-      beforeFirstChunk: !firstChunkSeen,
-      error: markErrorWithCode(new Error(`stream exceeded max duration after ${policy.maxStreamDurationMs}ms`), "UPSTREAM_MAX_STREAM_DURATION")
-    };
-  }
+  const timeoutFailure = watchdog.timeoutFailure();
+  if (timeoutFailure) return timeoutFailure;
   if (providerError) {
     return {
       ok: false,

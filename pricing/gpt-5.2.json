@@ -9,22 +9,28 @@
   "maxInputTokens": 272000,
   "maxOutputTokens": 128000,
   "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs", "parallel-tool-calling"],
   "protocolProfiles": {
     "chat/completions": {
+      "request": {
+        "outputTokenParameter": "max_completion_tokens"
+      },
       "reasoning": {
         "parameter": "reasoning_effort",
         "levels": ["none", "low", "medium", "high"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     },
     "responses": {
       "reasoning": {
         "parameter": "reasoning.effort",
         "levels": ["none", "low", "medium", "high"],
-        "default": "none"
+        "default": "none",
+        "validation": "passthrough"
       }
     }
   },
@@ -39,6 +45,7 @@
   },
   "proxyTemplate": {},
   "sources": {
+    "parameters": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-52",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/"

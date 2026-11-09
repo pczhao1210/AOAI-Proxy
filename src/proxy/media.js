@@ -191,8 +191,8 @@ export async function proxyMediaRequest({ config, routeKey, req, reply, nativeSp
       } catch {}
     }
     completed = response.ok && !providerErrorSeen;
-    req.log.info({ ...requestContext, event: response.ok && !providerErrorSeen ? "proxy.media_completed" : "proxy.media_failed", routeKey: clientRouteKey, backendRouteKey, modelId: model.id,
-      status: response.status, responseBytes: bytes, ...usageTracker.snapshot() }, "media request completed");
+    req.log.info({ ...requestContext, source: "proxy", event: response.ok && !providerErrorSeen ? "proxy.media_completed" : "proxy.media_failed", routeKey: clientRouteKey, backendRouteKey, modelId: model.id,
+      status: response.status, responseBytes: bytes, ...usageTracker.snapshot() }, response.ok && !providerErrorSeen ? "media request completed" : "media upstream request failed");
   } catch (error) {
     const failure = controller.signal.reason instanceof Error ? controller.signal.reason : error;
     controller.abort(failure);
@@ -202,8 +202,10 @@ export async function proxyMediaRequest({ config, routeKey, req, reply, nativeSp
     } else if (!reply.raw.destroyed) {
       reply.raw.destroy();
     }
-    req.log.warn({ ...requestContext, event: "proxy.media_failed", routeKey: clientRouteKey, backendRouteKey, modelId: model?.id,
-      errorCode: failure.code || "MEDIA_REQUEST_FAILED", responseBytes: bytes, ...usageTracker.snapshot(), usageStatus: "partial" }, "media request failed");
+    req.log.warn({ ...requestContext, source: "proxy", event: "proxy.media_failed", routeKey: clientRouteKey, backendRouteKey, modelId: model?.id,
+      status: failure.status || 502, errorCode: failure.code || "MEDIA_REQUEST_FAILED",
+      failureReason: failure.status ? failure.message : "Media upstream request failed",
+      responseBytes: bytes, ...usageTracker.snapshot(), usageStatus: "partial" }, "media request failed");
   } finally {
     clearTimeout(requestTimer);
     clearTimeout(idleTimer);

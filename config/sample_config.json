@@ -182,7 +182,6 @@
       "maxTotalBytes": 0
     },
     "generation": {
-      "enabled": true,
       "defaultModel": "",
       "requestTimeoutMs": 600000,
       "maxImages": 4,
@@ -196,7 +195,8 @@
       "bufferSize": 100,
       "maxBufferBytes": 16777216,
       "messageContentMode": "summary",
-      "maxPayloadLogBytes": 102400
+      "maxPayloadLogBytes": 102400,
+      "includeAuthRejected": false
     },
     "logAnalytics": {
       "enabled": false,
@@ -245,7 +245,6 @@
       "mode": "file",
       "filePath": "./config/config.json",
       "database": {
-        "enabled": false,
         "provider": "postgresql",
         "connectionRef": "",
         "schema": "public",
@@ -257,7 +256,6 @@
     },
     "compatibilityExport": {
       "enabled": true,
-      "exportLegacyConfigOnChange": true,
       "legacyConfigPath": "./config/config.json"
     }
   },
@@ -308,7 +306,6 @@
     "anthropic": {
       "forwardSdkMetadataHeaders": true,
       "unknownBetaPolicy": "allow-direct-anthropic",
-      "betaAllowlistEnabled": true,
       "betaAllowlist": [
         "fine-grained-tool-streaming-2025-05-14",
         "interleaved-thinking-2025-05-14",

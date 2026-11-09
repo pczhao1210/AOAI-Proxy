@@ -50,7 +50,10 @@ function syncModelUpstreams(next, modelIndex, previousUpstream) {
   }
 }
 
-export default function RoutingTab({ config, pricingLibrary, updateConfig, addUpstream, addModel, addBlankModel, t }) {
+export default function RoutingTab({
+  config, pricingLibrary, capabilityView, capabilitiesLoading, capabilitiesError, capabilityPreview, capabilityFallbackModels = [],
+  updateConfig, addUpstream, addModel, addBlankModel, t
+}) {
   const [search, setSearch] = useState("");
   const searchTerm = search.trim().toLowerCase();
   const upstreams = config.upstreams || [];
@@ -114,11 +117,22 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
       }
     >
       <div className="stack-lg">
+        <p className="muted" role="status">
+          {capabilitiesLoading
+            ? t("routing.capabilities.loading", "Loading effective capabilities...")
+            : capabilityView
+              ? capabilityPreview
+                ? t("routing.capabilities.draft", "Draft preview (not saved)")
+                : t("routing.capabilities.active", "Active configuration")
+              : t("routing.capabilities.unavailable", "Capability information unavailable.")}
+        </p>
+        {capabilitiesError ? <p role="alert">{capabilitiesError}</p> : null}
         <div id="routing-upstreams">
           <h3 className="subhead">{t("entity.upstreams", "Upstreams")}</h3>
           <div className="entity-grid">
             {filteredUpstreams.map(({ item, index }) => {
-              const capabilityCount = Array.isArray(item.capabilities) ? item.capabilities.length : 0;
+              const capabilities = capabilityView?.upstreams?.find(upstream => upstream.name === item.name)?.capabilities;
+              const capabilityCount = capabilities ? capabilities.length : "-";
               const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
               const authMode = item.auth?.mode || "inherit";
               return (
@@ -169,7 +183,10 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                       </Field>
                     ) : null}
                   </div>
-                  <Field label={t("field.capabilities", "Capabilities")}><input value={formatList(item.capabilities)} readOnly /></Field>
+                  <Field
+                    label={t("routing.capabilities.combined", "Combined model capabilities")}
+                    hint={t("routing.capabilities.unionHint", "Union of bound models' effective capabilities; not a guarantee for every model or an upstream restriction.")}
+                  ><input value={formatList(capabilities)} readOnly disabled={!capabilities} /></Field>
                 </EntityCard>
               );
             })}
@@ -180,6 +197,8 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
           <h3 className="subhead">{t("entity.models", "Models")}</h3>
           <div className="entity-grid">
             {filteredModels.map(({ item, index }) => {
+              const capabilityModel = capabilityView?.models?.find(model => model.modelId === item.id);
+              const catalogCapabilities = capabilityModel?.source === "catalog";
               const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
               const clientCompatibilityMeta = getClientCompatibilityMeta(t, item);
               const matchedDefinition = findPricingTemplateForModel(catalogDefinitions, item);
@@ -273,10 +292,42 @@ export default function RoutingTab({ config, pricingLibrary, updateConfig, addUp
                       hint={t("routing.hint.pricingTemplateId", "Used to match pricing library metadata and governance pricing, not the Azure deployment name.")}
                     ><input value={item.pricingRef || ""} onChange={(event) => updateConfig((next) => { next.models[index].pricingRef = event.target.value; autoMatchTemplate(next, index); })} /></Field>
                   </div>
-                  <Field label={t("field.capabilities", "Capabilities")}><input value={formatList(item.capabilities)} onChange={(event) => updateConfig((next) => {
-                    next.models[index].capabilities = parseList(event.target.value);
-                    syncUpstreamCapabilities(next, next.models[index].upstream);
-                  })} /></Field>
+                  <Field
+                    label={t("routing.capabilities.effective", "Effective capabilities")}
+                    hint={capabilityModel
+                      ? catalogCapabilities
+                        ? t("routing.capabilities.catalog", "Source: Model Catalog (read-only).")
+                        : capabilityModel.source === "model-config"
+                          ? t("routing.capabilities.legacy", "Source: Model configuration (legacy fallback).")
+                          : t("routing.capabilities.none", "Undeclared; legacy configuration fallback can be supplied here.")
+                      : t("routing.capabilities.unavailable", "Capability information unavailable.")}
+                  ><input
+                    value={formatList(capabilityModel?.capabilities)}
+                    readOnly
+                    disabled={!capabilityModel}
+                  /></Field>
+                  {capabilityModel?.chatTokenParameter ? (
+                    <p className="muted">
+                      {t("routing.capabilities.tokenParameter", "Chat output token parameter")}:{" "}
+                      {capabilityModel.chatTokenParameter.parameter
+                        || t("routing.capabilities.legacyTokens", "Legacy compatibility (profile not yet declared)")}
+                    </p>
+                  ) : null}
+                  {(capabilityModel && !catalogCapabilities) || capabilityFallbackModels.includes(item.id) ? (
+                    <Field
+                      label={t("routing.capabilities.fallback", "Legacy configuration capabilities")}
+                      hint={t("routing.capabilities.legacy", "Source: Model configuration (legacy fallback).")}
+                    ><input value={formatList(item.capabilities)} onChange={(event) => updateConfig((next) => {
+                      next.models[index].capabilities = parseList(event.target.value);
+                      syncUpstreamCapabilities(next, next.models[index].upstream);
+                    })} /></Field>
+                  ) : null}
+                  {capabilityModel?.configurationMismatch ? (
+                    <Field
+                      label={t("routing.capabilities.stored", "Stored configuration labels")}
+                      hint={t("routing.capabilities.mismatch", "These stored labels differ from the effective Catalog facts. They are retained, not used as a Catalog override.")}
+                    ><input value={formatList(capabilityModel.configuredCapabilities)} readOnly /></Field>
+                  ) : null}
                   <Field label={t("field.accessTags", "Access Tags")}><input value={formatList(item.accessTags)} onChange={(event) => updateConfig((next) => { next.models[index].accessTags = parseList(event.target.value); })} /></Field>
                 </EntityCard>
               );

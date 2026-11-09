@@ -154,6 +154,7 @@ test("request context normalizes correlation IDs and falls back to request ID", 
   });
   assert.deepEqual(complete, {
     requestId: "request-id",
+    requestInstanceId: "generated-id",
     conversationId: "conversation-id",
     sessionId: "session-id"
   });
@@ -168,6 +169,7 @@ test("request context normalizes correlation IDs and falls back to request ID", 
     headers: { "x-session-id": "session-only" }
   }), {
     requestId: "generated-id",
+    requestInstanceId: "generated-id",
     conversationId: "session-only",
     sessionId: "session-only"
   });
@@ -177,12 +179,14 @@ test("request context normalizes correlation IDs and falls back to request ID", 
     headers: { "x-request-id": "   ", "x-correlation-id": "legacy-id" }
   }), {
     requestId: "generated-id",
+    requestInstanceId: "generated-id",
     conversationId: "legacy-id",
     sessionId: "legacy-id"
   });
 
   assert.deepEqual(resolveRequestContext({ id: "generated-id", headers: {} }), {
     requestId: "generated-id",
+    requestInstanceId: "generated-id",
     conversationId: "generated-id",
     sessionId: "generated-id"
   });
@@ -446,17 +450,19 @@ test("pricing protocol metadata distinguishes GPT, Claude, DeepSeek, and Grok in
   }
 
   const grok43 = getPricingDefinition("grok-4.3");
-  assert.deepEqual(grok43?.interfaces, ["chat/completions", "responses"]);
-  assert.equal(grok43?.pricingCatalogEntry?.tiering?.method, "whole-request");
-  assert.equal(grok43?.pricingCatalogEntry?.tiers?.[1]?.promptTokensAtLeast, 200000);
+  assert.deepEqual(grok43?.interfaces, ["chat/completions"]);
+  assert.equal(grok43?.provider, "azure-openai");
+  assert.equal(grok43?.pricing?.status, "reference");
+  assert.equal(grok43?.pricingCatalogEntry, null);
   assert.equal(grok43?.pricing?.tiers?.[1]?.promptTokensAtLeast, 200000);
   assert.equal(grok43?.pricing?.tiers?.[1]?.inputPer1mTokens, 2.5);
 
   const grok46 = getPricingDefinition("grok-4.6");
-  assert.deepEqual(grok46?.interfaces, ["chat/completions", "responses"]);
+  assert.deepEqual(grok46?.interfaces, ["chat/completions"]);
   assert.deepEqual(grok46?.inputModalities, ["text", "image"]);
-  assert.equal(grok46?.pricingCatalogEntry?.tiering?.method, "whole-request");
-  assert.equal(grok46?.pricingCatalogEntry?.tiers?.[1]?.promptTokensAtLeast, 200000);
+  assert.equal(grok46?.provider, "azure-openai");
+  assert.equal(grok46?.pricing?.status, "reference");
+  assert.equal(grok46?.pricingCatalogEntry, null);
   assert.equal(grok46?.pricing?.tiers?.[1]?.promptTokensAtLeast, 200000);
   assert.equal(grok46?.pricing?.tiers?.[1]?.inputPer1mTokens, 4);
 });
@@ -874,13 +880,6 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     {
       sourceProtocol: "chat/completions",
       targetProtocol: "responses",
-      payload: { top_p: 0.5, messages: [{ role: "user", content: "hello" }] },
-      path: "top_p",
-      type: "top_p"
-    },
-    {
-      sourceProtocol: "chat/completions",
-      targetProtocol: "responses",
       payload: { stream_options: { include_usage: true, unknown: true }, messages: [{ role: "user", content: "hello" }] },
       path: "stream_options.unknown",
       type: "unknown"
@@ -888,7 +887,7 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     {
       sourceProtocol: "chat/completions",
       targetProtocol: "messages",
-      payload: { parallel_tool_calls: false, messages: [{ role: "user", content: "hello" }] },
+      payload: { parallel_tool_calls: "false", messages: [{ role: "user", content: "hello" }] },
       path: "parallel_tool_calls",
       type: "parallel_tool_calls"
     },
@@ -916,9 +915,16 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
     {
       sourceProtocol: "chat/completions",
       targetProtocol: "responses",
-      payload: { messages: [{ role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "done" }] }] },
+      payload: { messages: [{ role: "tool", tool_call_id: "call_1", content: [{ type: "image_url", image_url: { url: "https://example.test/a.png" } }] }] },
+      path: "messages[0].content[0]",
+      type: "image_url"
+    },
+    {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "responses",
+      payload: { messages: [{ role: "tool", tool_call_id: "call_1", content: { text: "done" } }] },
       path: "messages[0].content",
-      type: "content_array"
+      type: "object"
     },
     {
       phase: "response",
@@ -1037,6 +1043,13 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
   }
 
   assert.equal(getProtocolShimCompatibilityIssue({
+    messages: [{ role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "done" }] }]
+  }, {
+    sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  }), null);
+
+  assert.equal(getProtocolShimCompatibilityIssue({
     input: [
       { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }, { type: "input_image", image_url: "data:image/png;base64,AAAA" }] },
       { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" },
@@ -1087,6 +1100,21 @@ test("protocol shim compatibility rejects structured semantics it cannot preserv
   assert.deepEqual(convertedMessagesControls.stop_sequences, ["END"]);
   assert.equal(convertedMessagesControls.top_k, 20);
   assert.equal(convertedMessagesControls.top_p, 0.5);
+  const compatibleResponsesControls = { top_p: 0.5, messages: [{ role: "user", content: "hello" }] };
+  assert.equal(getProtocolShimCompatibilityIssue(compatibleResponsesControls, {
+    sourceProtocol: "chat/completions",
+    targetProtocol: "responses"
+  }), null);
+  assert.equal(chatToResponsesRequest(compatibleResponsesControls, "gpt-deployment").top_p, 0.5);
+  for (const parallel of [true, false]) {
+    assert.equal(getProtocolShimCompatibilityIssue({
+      parallel_tool_calls: parallel,
+      messages: [{ role: "user", content: "hello" }]
+    }, {
+      sourceProtocol: "chat/completions",
+      targetProtocol: "messages"
+    }), null);
+  }
   assert.equal(getProtocolShimCompatibilityIssue({
     stop_reason: "end_turn",
     content: [{ type: "redacted_thinking", data: "opaque" }]

@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import test, { after, afterEach, before } from "node:test";
+import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
+import toast from "react-hot-toast";
 import { resetModelStats } from "../admin-ui/src/api.js";
-import { formatBillingTier, formatCacheHitRatio, formatDateTime, getModelBillingRows } from "../admin-ui/src/utils.js";
+import { formatBillingTier, formatCacheHitRatio, formatDateTime, formatRuntimeNumber, formatTokenCountK, formatTokenSummary, getModelBillingRows } from "../admin-ui/src/utils.js";
 
 let dom;
 let vite;
+let viteCacheDir;
 let React;
 let testing;
 let RuntimeTab;
@@ -38,9 +43,11 @@ before(async () => {
   }
   React = await import("react");
   testing = await import("@testing-library/react/pure.js");
+  viteCacheDir = await mkdtemp(`${tmpdir()}/aoai-runtime-stats-vite-`);
   vite = await createServer({
     configFile: fileURLToPath(new URL("../admin-ui/vite.config.js", import.meta.url)),
     root: fileURLToPath(new URL("..", import.meta.url)),
+    cacheDir: viteCacheDir,
     resolve: { dedupe: ["react", "react-dom"] },
     server: { middlewareMode: true, watch: null, ws: false },
     appType: "custom"
@@ -49,14 +56,18 @@ before(async () => {
   ({ I18nProvider, useI18n } = await vite.ssrLoadModule("/admin-ui/src/i18n.jsx"));
 });
 
-afterEach(() => {
-  testing.cleanup();
+afterEach(async () => {
+  await testing.act(async () => {
+    toast.remove();
+    testing.cleanup();
+  });
   window.history.replaceState(null, "", "/admin/");
   window.localStorage.clear();
 });
 
 after(async () => {
   await vite?.close();
+  if (viteCacheDir) await rm(viteCacheDir, { recursive: true, force: true });
   dom?.window.close();
   for (const [name, descriptor] of originals) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -79,6 +90,229 @@ function renderRuntime(overrides = {}) {
   view.container.querySelector("#runtime-models").open = true;
   return view;
 }
+
+test("overview separates scoped metrics, dated buckets and unfiltered system health", () => {
+  const view = renderRuntime({
+    totals: { ...tokens, requests: 12, errors: 2 },
+    snapshotFilters: { keyId: "key", timeRange: "24h" },
+    runtimeFilters: { keyId: "key", timeRange: "24h" },
+    persistenceRuntime: { databaseAccessState: "ready" },
+    analytics: { rollups: { hourly: [{ ...tokens, bucketStart: "2026-01-01T00:00:00.000Z" }] } }
+  });
+  const overview = view.container.querySelector("#runtime-overview");
+  const metrics = overview.querySelector(".runtime-metrics");
+  assert.deepEqual([...metrics.querySelectorAll(".stat-label")].map(label => label.textContent), [
+    "Requests", "Errors", "Reference Cost", "Input Total (Including Cache)", "Output Tokens", "Cache Hit Ratio"
+  ]);
+  assert.ok(testing.within(metrics).getByText("1 K"));
+  assert.ok(testing.within(metrics).getByText("0.1 K"));
+  assert.equal(metrics.querySelector(".stat-note").textContent, "Cost estimates may be incomplete.");
+  assert.match(overview.querySelector(".runtime-periods").textContent, /2026-01-01T00:00:00.000Z/);
+  assert.ok(overview.querySelector(".runtime-health-grid"));
+  assert.equal(overview.querySelector(".runtime-sync-details").open, false);
+});
+
+test("disabled Log Analytics upload hides historical counters without hiding the statistics event queue", () => {
+  for (const loggingRuntime of [
+    { logAnalyticsEnabled: false, logAnalyticsConfigured: false },
+    { logAnalyticsEnabled: false, logAnalyticsConfigured: true, enabled: true, configured: true },
+    { enabled: false, configured: false },
+    {}
+  ]) {
+    const view = renderRuntime({
+      loggingRuntime: { ...loggingRuntime, queueLength: 0, queueBytes: 0, droppedEntries: 73, flushFailures: 91 },
+      runtimeStore: { queueLength: 12 }
+    });
+    const card = view.getByText("Log Analytics Upload").closest("div");
+    assert.equal(card.querySelector("dd").textContent, "Disabled");
+    assert.equal(card.querySelector("small"), null);
+    assert.equal(card.textContent.includes("73"), false);
+    assert.equal(card.textContent.includes("91"), false);
+    assert.equal(view.getByText("Event Queue").closest("div").querySelector("dd").textContent, "12");
+    view.unmount();
+  }
+});
+
+test("enabled Log Analytics upload retains queue, drops and failures for configured and incomplete states", () => {
+  for (const loggingRuntime of [
+    { logAnalyticsEnabled: true, logAnalyticsConfigured: true },
+    { logAnalyticsEnabled: true, logAnalyticsConfigured: false },
+    { enabled: true, configured: true }
+  ]) {
+    const noteCalls = [];
+    const view = renderRuntime({
+      loggingRuntime: { ...loggingRuntime, queueLength: 2, queueBytes: 100, droppedEntries: 3, flushFailures: 4 },
+      t: (key, value, params) => {
+        if (key === "runtime.logSinkNote") noteCalls.push(params);
+        return value;
+      }
+    });
+    const card = view.getByText("Log Analytics Upload").closest("div");
+    assert.equal(card.querySelector("dd").textContent,
+      (loggingRuntime.logAnalyticsConfigured ?? loggingRuntime.configured) ? "configured" : "incomplete");
+    assert.ok(card.querySelector("small"));
+    assert.match(card.querySelector("small").textContent, /Queue.*Drops.*Failures/);
+    assert.deepEqual(noteCalls, [{ count: 2, bytes: 100, drops: 3, failures: 4 }]);
+    view.unmount();
+  }
+});
+
+test("overview keeps aligned filters below its heading and timestamp out of the filter row", () => {
+  const changes = [];
+  let syncs = 0;
+  const view = renderRuntime({
+    statsUpdatedAt: "2026-10-10T03:23:53.555Z",
+    runtimeKeyOptions: [{ value: "key", label: "Example Key" }],
+    onRuntimeFilterChange: patch => changes.push(patch),
+    onSyncRuntime: () => { syncs += 1; }
+  });
+  const overview = view.container.querySelector("#runtime-overview");
+  assert.equal(overview.querySelector(".panel-head .runtime-filter-toolbar"), null);
+  const toolbar = overview.querySelector(".section-body > .runtime-filter-toolbar");
+  assert.ok(toolbar);
+  assert.match(overview.querySelector(".panel-head").textContent, /Updated: 2026-10-10T03:23:53.555Z/);
+  assert.equal(toolbar.textContent.includes("Updated:"), false);
+  assert.deepEqual([...toolbar.querySelectorAll(".field-label")].map(label => label.textContent), ["Key", "Time Range"]);
+  testing.fireEvent.change(view.getByLabelText("Key"), { target: { value: "key" } });
+  testing.fireEvent.change(view.getByLabelText("Time Range"), { target: { value: "7d" } });
+  testing.fireEvent.click(view.getByRole("button", { name: "Sync Now" }));
+  assert.deepEqual(changes, [{ keyId: "key" }, { timeRange: "7d" }]);
+  assert.equal(syncs, 1);
+  view.rerender(React.createElement(RuntimeTab, runtimeProps({ runtimeSyncBusy: true })));
+  assert.equal(view.getByRole("button", { name: "Syncing..." }).disabled, true);
+});
+
+test("runtime numbers retain exact small rates and large integer token counters", () => {
+  assert.equal(formatRuntimeNumber(123456789), "123,456,789");
+  assert.equal(formatRuntimeNumber(0.0028), "0.0028");
+  assert.equal(formatRuntimeNumber(0), "0");
+  for (const value of [undefined, null, NaN, Infinity, -1, "100"]) assert.equal(formatRuntimeNumber(value), "—");
+});
+
+test("input and output K formatting preserves single-token precision and never rounds missing counts to zero", () => {
+  for (const [value, expected] of [
+    [0, "0 K"], [1, "0.001 K"], [10, "0.01 K"], [999, "0.999 K"],
+    [1000, "1 K"], [1001, "1.001 K"], [272001, "272.001 K"], [12458632, "12,458.632 K"],
+    [Number.MAX_SAFE_INTEGER, "9,007,199,254,740.991 K"]
+  ]) assert.equal(formatTokenCountK(value), expected);
+  for (const value of [undefined, null, NaN, Infinity, -1, 0.5, "1000", Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(formatTokenCountK(value), "—");
+  }
+});
+
+test("tiered cards expose flat history without fabricating short tiers and require explicit price repair", async () => {
+  const definition = { id: "gpt-6-astra", pricing: {
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [{ id: "short <=272K", promptTokensBelow: 272001, inputPer1mTokens: 10 },
+      { id: "long >272K", promptTokensAtLeast: 272001, inputPer1mTokens: 20 }]
+  } };
+  let repairs = 0;
+  const view = renderRuntime({
+    pricingLibrary: [definition],
+    config: { models: [{ id: "gpt-6-astra", pricing: { inputPer1mTokens: 10 } }] },
+    modelStats: { "gpt-6-astra": { ...tokens, billingTiers: [row("gpt-6-astra", { kind: "flat" })] } },
+    onApplyCardPricing: ids => { repairs += 1; assert.deepEqual(ids, ["gpt-6-astra"]); }
+  });
+  assert.equal(repairs, 0);
+  testing.fireEvent.click(view.getByRole("button", { name: "Expand gpt-6-astra" }));
+  assert.equal(view.container.querySelector(".model-breakdown tbody tr").children[1].textContent, "Historical non-tiered");
+  assert.equal(view.container.querySelector(".model-tier-label").textContent, "Tiered billing");
+  assert.equal(view.container.querySelector(".model-cell").textContent.includes("short"), false);
+  testing.fireEvent.click(view.getByRole("button", { name: "Review tier pricing" }));
+  const dialog = testing.within(view.getByRole("dialog"));
+  assert.match(dialog.getByText(/Replaces model-level prices/).textContent, /Save configuration/);
+  testing.fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+  assert.equal(repairs, 0);
+  testing.fireEvent.click(view.getByRole("button", { name: "Review tier pricing" }));
+  await testing.act(async () => testing.fireEvent.click(view.getByRole("button", { name: "Apply card prices to draft" })));
+  assert.equal(repairs, 1);
+  assert.equal(view.queryByRole("dialog"), null);
+});
+
+test("collapsed models show only a tiered marker while expansion preserves recorded tier statistics", () => {
+  const definition = { id: "tiered", pricing: {
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [{ id: "short <=272K", promptTokensBelow: 272001, inputPer1mTokens: 1 },
+      { id: "long >272K", promptTokensAtLeast: 272001, inputPer1mTokens: 2 }]
+  } };
+  const modelStats = {
+    "public-model": { ...tokens, billingTiers: [
+      row("tiered", { ...tier(0, 272001), id: "short <=272K" }),
+      row("tiered", { ...tier(272001, null), id: "long >272K" }, { promptTokens: 272001, completionTokens: 1 })
+    ] },
+    flat: { ...tokens, billingTiers: [row("flat", { kind: "flat" })] }
+  };
+  const before = structuredClone(modelStats);
+  const view = renderRuntime({
+    pricingLibrary: [definition],
+    config: { models: [{ id: "public-model", targetModel: "tiered" }] },
+    modelStats
+  });
+  assert.equal(view.container.querySelectorAll(".model-tier-label").length, 1);
+  assert.equal(view.container.querySelector(".model-tier-label").textContent, "Tiered billing");
+  assert.equal(view.container.querySelector(".model-breakdown"), null);
+  testing.fireEvent.click(view.getByRole("button", { name: "Expand public-model" }));
+  const rows = view.container.querySelectorAll(".model-breakdown tbody tr");
+  assert.equal(rows[0].children[1].textContent, "short <=272K");
+  assert.equal(rows[1].children[1].textContent, "long >272K");
+  assert.equal(rows[1].children[3].textContent, "272.001 K");
+  assert.equal(rows[1].children[3].querySelector("span").title, "272,001 tokens");
+  assert.equal(rows[1].children[6].textContent, "0.001 K");
+  assert.deepEqual(modelStats, before);
+  assert.match(formatTokenSummary(tokens), /Input Total \(Including Cache\) 1 K.*Output Tokens 0.1 K/);
+});
+
+test("GPT-6.1 Sol card updates explain unrecorded tiers without reclassifying historical usage", () => {
+  const definition = JSON.parse(readFileSync(new URL("../pricing/gpt-6.1-sol.json", import.meta.url), "utf8"));
+  const modelStats = {
+    "gpt-6.1-sol": { ...tokens, billingTiers: [row("gpt-6.1-sol", { kind: "unknown" }, { requests: null })] }
+  };
+  const before = structuredClone(modelStats);
+  const view = renderRuntime({
+    pricingLibrary: [definition],
+    config: { models: [{ id: definition.id }] },
+    modelStats
+  });
+  assert.equal(view.container.querySelector(".model-tier-label").textContent, "Tiered billing");
+  testing.fireEvent.click(view.getByRole("button", { name: "Expand gpt-6.1-sol" }));
+  const unknown = view.getByText("Tier not recorded");
+  assert.match(unknown.title, /pricing was unavailable or disabled.*historical/);
+  assert.equal(unknown.closest("tr").children[2].textContent, "—");
+  assert.deepEqual(modelStats, before);
+});
+
+test("billing breakdown aligns labels and numbers separately and allows headers and long labels to wrap", context => {
+  const style = document.createElement("style");
+  style.textContent = readFileSync(new URL("../admin-ui/src/styles.css", import.meta.url), "utf8");
+  document.head.append(style);
+  context.after(() => style.remove());
+  const actualModelId = "a-very-long-provider-deployment-name-without-short-aliases";
+  const id = "a-long-custom-billing-tier-name <=272K";
+  const view = renderRuntime({ modelStats: {
+    model: { ...tokens, billingTiers: [row(actualModelId, { ...tier(0, 272001), id })] }
+  } });
+  testing.fireEvent.click(view.getByRole("button", { name: "Expand model" }));
+  const breakdown = view.container.querySelector(".model-breakdown");
+  assert.equal(window.getComputedStyle(breakdown).textAlign, "left");
+  for (const header of breakdown.querySelectorAll("th")) {
+    assert.equal(window.getComputedStyle(header).whiteSpace, "normal");
+  }
+  const cells = breakdown.querySelectorAll("tbody tr > td");
+  for (const cell of [...cells].slice(0, 2)) {
+    const computed = window.getComputedStyle(cell);
+    assert.equal(computed.textAlign, "left");
+    assert.equal(computed.whiteSpace, "normal");
+    assert.equal(computed.overflowWrap, "anywhere");
+    assert.ok(cell.querySelector(".model-billing-label"));
+  }
+  for (const cell of [...cells].slice(2)) {
+    const computed = window.getComputedStyle(cell);
+    assert.equal(computed.textAlign, "right");
+    assert.equal(computed.whiteSpace, "nowrap");
+  }
+  assert.equal(cells[0].textContent, actualModelId);
+  assert.equal(cells[1].textContent, id);
+});
 
 test("cache hit ratio uses aggregate recorded input including cache without inventing coverage", () => {
   assert.equal(formatCacheHitRatio({ promptTokens: 1000, cachedTokens: 250 }), "25.0%");
@@ -109,10 +343,10 @@ test("billing tier labels preserve integer inclusivity and arbitrary intervals w
     [[0, 1], "<1"], [[1, 2], "≥1 · <2"],
     [[0, null], "≥0"], [[null, 100], "<100"]
   ]) assert.equal(formatBillingTier(tier(...bounds)), label);
-  assert.equal(formatBillingTier({ kind: "flat" }), "Single rate");
-  assert.equal(formatBillingTier({ kind: "unknown" }), "Unclassified");
+  assert.equal(formatBillingTier({ kind: "flat" }), "Not tiered");
+  assert.equal(formatBillingTier({ kind: "unknown" }), "Tier not recorded");
   for (const invalid of [undefined, tier(null, null), tier(3, 3), tier(-1, 3), tier(0, 1.5), tier("0", 10)]) {
-    assert.equal(formatBillingTier(invalid), "Unclassified");
+    assert.equal(formatBillingTier(invalid), "Tier not recorded");
   }
 });
 
@@ -127,7 +361,7 @@ test("billing rows preserve recorded tiers and settlement counts and sort unknow
   const before = structuredClone(stats);
   const rows = getModelBillingRows("router", stats);
   assert.deepEqual(rows.map(item => [item.actualModelId, formatBillingTier(item.tier), item.requests]), [
-    ["a", "≤272K", 0], ["a", ">272K", 1], ["a", "Unclassified", null], ["z", "Single rate", 1]
+    ["a", "≤272K", 0], ["a", ">272K", 1], ["a", "Tier not recorded", null], ["z", "Not tiered", 1]
   ]);
   assert.deepEqual(stats, before);
   for (const legacy of [
@@ -138,7 +372,7 @@ test("billing rows preserve recorded tiers and settlement counts and sort unknow
     const [entry] = getModelBillingRows("model", legacy);
     assert.equal(entry.actualModelId, "model");
     assert.equal(entry.requests, null);
-    assert.equal(formatBillingTier(entry.tier), "Unclassified");
+    assert.equal(formatBillingTier(entry.tier), "Tier not recorded");
     assert.equal(entry.promptTokens, 1000);
   }
 });
@@ -162,19 +396,19 @@ test("model rows and horizontal tier breakdown expose four token counters, ratio
   const modelSection = view.container.querySelector("#runtime-models");
   const mainRow = modelSection.querySelector("tbody tr");
   assert.deepEqual([...mainRow.children].slice(1).map(cell => cell.textContent), [
-    "8", "2", "1000", "250", "50", "100", "25.0%", "0.7500 USD"
+    "8", "2", "1 K", "250", "50", "0.1 K", "25.0%", "0.7500 USD"
   ]);
   testing.fireEvent.click(view.getByRole("button", { name: "Expand model-router" }));
   const breakdown = modelSection.querySelector(".model-breakdown");
   assert.deepEqual([...breakdown.querySelectorAll("th")].map(th => th.textContent), [
     "Actual Model", "Billing Tier", "Settled Requests", "Input Total (Including Cache)",
-    "Cache Read Tokens", "Cache Write Tokens", "Output Tokens", "Cache Hit Ratio", "Estimated Cost"
+    "Cache Read Tokens", "Cache Write Tokens", "Output Tokens", "Cache Hit Ratio", "Reference Cost"
   ]);
   assert.deepEqual([...breakdown.querySelectorAll(":scope table > tbody > tr")].map(tr => [...tr.children].slice(0, 3).map(td => td.textContent)), [
-    ["gpt", "short <=272K", "3"], ["gpt", "long >272K", "1"], ["gpt", "Unclassified", "—"],
+    ["gpt", "short <=272K", "3"], ["gpt", "long >272K", "1"], ["gpt", "Tier not recorded", "—"],
     ["grok", "<200K", "1"], ["grok", "≥200K", "1"]
   ]);
-  assert.equal(breakdown.querySelectorAll(":scope table > tbody > tr")[2].lastElementChild.textContent, "0.7500 USD + Unknown");
+  assert.equal(breakdown.querySelectorAll(":scope table > tbody > tr")[2].lastElementChild.textContent, "0.7500 USD");
   for (const label of ["Total Tokens", "Cache Write Cost", "Model Router Cost", "Actual Model Cost"]) {
     assert.equal(modelSection.textContent.includes(label), false);
   }
@@ -182,7 +416,9 @@ test("model rows and horizontal tier breakdown expose four token counters, ratio
   assert.match(help, /do not add them again/);
   assert.match(help, /Legacy missing cache reads may already be recorded as 0/);
   testing.fireEvent.click(view.getByRole("button", { name: "Expand direct" }));
-  assert.ok(view.getByText("Single rate"));
+  assert.ok(view.getByText("Not tiered"));
+  assert.equal(modelSection.querySelectorAll(".model-breakdown .field-hint").length, 0);
+  assert.match(modelSection.querySelector(".accordion-copy p").textContent, /incomplete.*reference.*Azure/);
 });
 
 test("legacy model expansion stays unclassified and does not infer tiers or settled requests", () => {
@@ -196,7 +432,7 @@ test("legacy model expansion stays unclassified and does not infer tiers or sett
   const rows = view.container.querySelectorAll(".model-breakdown tbody tr");
   assert.equal(rows.length, 2);
   for (const entry of rows) {
-    assert.equal(entry.children[1].textContent, "Unclassified");
+    assert.equal(entry.children[1].textContent, "Tier not recorded");
     assert.equal(entry.children[2].textContent, "—");
   }
 });
@@ -264,6 +500,7 @@ test("Chinese runtime labels, tier statuses, reset explanation and timestamp are
       React.createElement("button", { onClick: () => setLanguage("zh-CN") }, "中文"),
       React.createElement(RuntimeTab, runtimeProps({
         t, onResetModelStats: async () => {},
+        loggingRuntime: { logAnalyticsEnabled: false, droppedEntries: 73, flushFailures: 91 },
         modelsResetAt: "2026-09-23T04:00:00.000Z",
         modelStats: { model: { ...tokens, billingTiers: [row("model", { kind: "flat" }), row("model", { kind: "unknown" }, { requests: null })] } }
       }))
@@ -273,9 +510,13 @@ test("Chinese runtime labels, tier statuses, reset explanation and timestamp are
   testing.fireEvent.click(view.getByRole("button", { name: "中文" }));
   view.container.querySelector("#runtime-models").open = true;
   testing.fireEvent.click(view.getByRole("button", { name: "展开 model" }));
-  assert.ok(view.getByText("统一费率"));
-  assert.ok(view.getByText("未分类"));
+  assert.ok(view.getByText("不分档"));
+  assert.ok(view.getByText("未记录档位"));
   assert.ok(view.getByText("模型统计清空时间: 2026-09-23T04:00:00.000Z"));
+  assert.ok(view.getByText("费用估算可能不完整"));
+  const uploadCard = view.getByText("Log Analytics 上传").closest("div");
+  assert.equal(uploadCard.querySelector("dd").textContent, "未启用");
+  assert.equal(uploadCard.querySelector("small"), null);
   for (const label of ["输入总量（含缓存）", "缓存命中率", "计费档位", "已结算请求"]) {
     assert.ok(view.getAllByRole("columnheader", { name: label }).length);
   }
@@ -316,6 +557,7 @@ test("App reset refreshes with latest filters and fences pre-reset responses whi
     if (parsed.pathname.endsWith("/config")) return Response.json({});
     throw new Error(`Unexpected request ${url}`);
   });
+
   const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
   await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
   testing.fireEvent.click(view.getByRole("button", { name: "Runtime" }));
@@ -336,9 +578,249 @@ test("App reset refreshes with latest filters and fences pre-reset responses whi
   assert.ok(view.getByText(`Model stats reset at: ${formatDateTime(timestamp)}`));
   const summary = view.container.querySelector(".status-strip");
   assert.ok(testing.within(summary).getByText("99"));
-  assert.match(summary.textContent, /Input Total \(Including Cache\) 1000/);
-  assert.match(summary.textContent, /Cache Hit Ratio 25.0%/);
+  assert.match(summary.textContent, /Cost estimates may be incomplete\./);
+  assert.equal(summary.textContent.includes("Azure"), false);
+  assert.equal(summary.textContent.includes("Input Total (Including Cache)"), false);
   assert.equal(summary.textContent.includes("Cache Write Cost"), false);
   const mutation = fetchMock.mock.calls.find(call => String(call.arguments[0]).endsWith("/stats/models/reset"));
   assert.equal(mutation.arguments[1].headers["x-aoai-admin-csrf"], "1");
+});
+
+test("App tier repair stays in the draft until reviewed save and preserves shared prices and historical tiers", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  const pricing = {
+    tiering: { basis: "inputTokensIncludingCache", method: "whole-request" },
+    tiers: [{ id: "short", promptTokensBelow: 101, inputPer1mTokens: 1, cachedInputPer1mTokens: 0, cacheWritePer1mTokens: 1.25, outputPer1mTokens: 2 },
+      { id: "long", promptTokensAtLeast: 101, inputPer1mTokens: 2, cachedInputPer1mTokens: 0, cacheWritePer1mTokens: 2.5, outputPer1mTokens: 3 }]
+  };
+  const original = {
+    models: [{ id: "public-model", targetModel: "tiered", pricingRef: "shared", upstream: "mock",
+      pricing: { inputPer1mTokens: 7 }, routes: { "*": "responses" }, defaultParams: { temperature: 0 } }],
+    upstreams: [{ name: "mock", baseUrl: "http://localhost" }],
+    access: { pricingCatalog: { shared: { inputPer1mTokens: 9 } } }
+  };
+  let saved;
+  context.mock.method(window, "confirm", () => true);
+  const fetchMock = context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/config")) {
+      if (options.method === "PUT") {
+        saved = JSON.parse(options.body);
+        assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+        return Response.json({ config: saved });
+      }
+      return Response.json(original);
+    }
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "tiered", pricing }] });
+    if (path.endsWith("/stats")) return Response.json({
+      totals: tokens, perModel: { "public-model": { ...tokens, billingTiers: [row("tiered", { kind: "flat" })] } }
+    });
+    if (path.endsWith("/runtime")) return Response.json({ runtime: {} });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
+  testing.fireEvent.click(view.getByRole("button", { name: "Runtime" }));
+  await testing.waitFor(() => assert.ok(view.container.querySelector("#runtime-models")));
+  view.container.querySelector("#runtime-models").open = true;
+  testing.fireEvent.click(view.getByRole("button", { name: "Review tier pricing" }));
+  testing.fireEvent.click(view.getByRole("button", { name: "Apply card prices to draft" }));
+  assert.equal(saved, undefined);
+  await testing.waitFor(() => assert.match(testing.within(view.container.querySelector("#runtime-models")).getByRole("status").textContent, /applied to the draft/));
+  testing.fireEvent.click(view.getByRole("button", { name: "Review & Save" }));
+  testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true }));
+  await testing.waitFor(() => assert.ok(saved));
+  assert.deepEqual(saved.models[0].pricing, pricing);
+  assert.deepEqual(saved.access, original.access);
+  assert.deepEqual(saved.models[0].routes, original.models[0].routes);
+  assert.deepEqual(saved.models[0].defaultParams, { temperature: 0 });
+  assert.equal(fetchMock.mock.calls.filter(call => call.arguments[1]?.method === "PUT").length, 1);
+  await testing.waitFor(() => assert.ok(testing.within(view.container.querySelector(".status-strip")).getByText("Synced")));
+});
+
+test("App allows reviewed canonical cleanup without editing unrelated settings", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  const canonical = { models: [], upstreams: [], persistence: { compatibilityExport: { enabled: false } } };
+  const deprecatedFlags = [{
+    path: "persistence.compatibilityExport.exportLegacyConfigOnChange",
+    replacement: "persistence.compatibilityExport.enabled", kind: "migrated"
+  }];
+  let saved = false;
+  context.mock.method(window, "confirm", () => true);
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/config")) {
+      if (options.method === "PUT") {
+        assert.deepEqual(JSON.parse(options.body), canonical);
+        assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+        saved = true;
+        return Response.json({ config: canonical });
+      }
+      return Response.json(canonical);
+    }
+    if (path.endsWith("/runtime")) return Response.json({ runtime: {
+      configuration: { cleanupRequired: !saved, deprecatedFlags: saved ? [] : deprecatedFlags }
+    } });
+    if (path.endsWith("/stats")) return Response.json({});
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "unused" }] });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.getByRole("button", { name: "Review & Save" })));
+  const dock = testing.within(view.container.querySelector(".save-dock"));
+  assert.ok(dock.getByText("Configuration cleanup pending"));
+  assert.equal(dock.queryByRole("button", { name: "Discard" }), null);
+  testing.fireEvent.click(dock.getByRole("button", { name: "Review & Save" }));
+  const dialog = testing.within(view.getByRole("dialog"));
+  assert.ok(dialog.getByText(/Existing disabled states are retained/));
+  assert.ok(dialog.getByText(deprecatedFlags[0].path));
+  assert.equal(saved, false);
+  await testing.act(async () => testing.fireEvent.click(dialog.getByRole("button", { name: "Save", exact: true })));
+  await testing.waitFor(() => assert.ok(testing.within(view.container.querySelector(".status-strip")).getByText("Synced")));
+  assert.equal(view.container.querySelector(".save-dock"), null);
+  assert.equal(saved, true);
+});
+
+test("App capability previews fence stale responses and preserve legacy labels, hidden fields and zeros through save/reload", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  let persisted = {
+    models: [{ id: "legacy", pricingRef: "legacy-card", targetModel: "deployment", upstream: "provider",
+      capabilities: ["reasoning"], defaultParams: { temperature: 0 }, routes: {} }],
+    upstreams: [{ name: "provider", capabilities: ["old-summary"], auth: { mode: "apiKey", apiKey: "********" } }]
+  };
+  const original = structuredClone(persisted);
+  const pending = [deferred(), deferred()];
+  let previews = 0;
+  let saved;
+  const capabilityView = config => ({
+    sourceDigest: "catalog-generation",
+    models: [{ modelId: "legacy", source: "model-config", capabilities: config.models[0].capabilities,
+      configuredCapabilities: config.models[0].capabilities, configurationMismatch: false }],
+    upstreams: [{ name: "provider", capabilities: config.models[0].capabilities }]
+  });
+  const previewResult = config => ({
+    ok: true, items: [], capabilities: { active: capabilityView(persisted), preview: capabilityView(config) }
+  });
+  context.mock.method(window, "confirm", () => true);
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/harness/eligibility")) {
+      previews += 1;
+      assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+      if (previews === 2 || previews === 3) return pending[previews - 2].promise;
+      return Response.json(previewResult(JSON.parse(options.body).config));
+    }
+    if (path.endsWith("/config")) {
+      if (options.method === "PUT") {
+        assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+        saved = JSON.parse(options.body);
+        persisted = saved;
+        return Response.json({ config: saved });
+      }
+      return Response.json(persisted);
+    }
+    if (path.endsWith("/runtime")) return Response.json({ runtime: {} });
+    if (path.endsWith("/stats")) return Response.json({});
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "unused" }] });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
+  testing.fireEvent.click(view.getByRole("button", { name: "Upstream / Model" }));
+  await testing.waitFor(() => assert.ok(view.getByText("Active configuration")));
+  view.container.querySelector("#model-card-0").open = true;
+  const input = view.getByRole("textbox", { name: /Legacy configuration capabilities/ });
+  input.focus();
+  testing.fireEvent.change(input, { target: { value: "vision" } });
+  await testing.waitFor(() => assert.equal(previews, 2));
+  assert.equal(document.activeElement, input);
+  assert.equal(input.disabled, false);
+  testing.fireEvent.change(input, { target: { value: "function-calling" } });
+  await testing.waitFor(() => assert.equal(previews, 3));
+  const latest = structuredClone(original);
+  latest.models[0].capabilities = ["function-calling"];
+  await testing.act(async () => pending[1].resolve(Response.json(previewResult(latest))));
+  assert.equal(view.getByRole("textbox", { name: /Effective capabilities/ }).value, "function-calling");
+  const stale = structuredClone(original);
+  stale.models[0].capabilities = ["vision"];
+  await testing.act(async () => pending[0].resolve(Response.json(previewResult(stale))));
+  assert.equal(view.getByRole("textbox", { name: /Effective capabilities/ }).value, "function-calling");
+  assert.ok(view.getByText("Draft preview (not saved)"));
+  testing.fireEvent.click(view.getByRole("button", { name: "Review & Save" }));
+  await testing.act(async () => testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true })));
+  await testing.waitFor(() => assert.ok(saved));
+  assert.deepEqual(saved.models[0].capabilities, ["function-calling"]);
+  assert.deepEqual(saved.models[0].defaultParams, { temperature: 0 });
+  assert.deepEqual(saved.upstreams[0].auth, original.upstreams[0].auth);
+  assert.equal(Object.hasOwn(saved, "capabilityView"), false);
+  await testing.waitFor(() => assert.ok(view.getByText("Active configuration")));
+});
+
+test("App Harness cancels obsolete eligibility requests and fences late responses across tabs", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  const saveAttempts = [];
+  const config = { models: [{ id: "native", clientCompatibility: { codex: true } }], upstreams: [] };
+  const requests = [];
+  const result = eligible => ({
+    items: [{ modelId: "native", clients: { codex: { eligible, reasons: [] } } }]
+  });
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/harness/eligibility")) {
+      const pending = deferred();
+      requests.push({ ...pending, signal: options.signal });
+      return pending.promise;
+    }
+    if (path.endsWith("/config")) {
+      if (options.method === "PUT") {
+        saveAttempts.push(JSON.parse(options.body));
+        return Response.json({ error: "Harness save failed" }, { status: 400 });
+      }
+      return Response.json(config);
+    }
+    if (path.endsWith("/runtime")) return Response.json({ runtime: {} });
+    if (path.endsWith("/stats")) return Response.json({});
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "unused" }] });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
+  testing.fireEvent.click(view.getByRole("button", { name: "Harness", exact: true }));
+  await testing.waitFor(() => assert.equal(requests.length, 1));
+  testing.fireEvent.click(view.getByRole("button", { name: "Upstream / Model" }));
+  assert.equal(requests[0].signal?.aborted, true);
+  testing.fireEvent.click(view.getByRole("button", { name: "Harness", exact: true }));
+  await testing.waitFor(() => assert.equal(requests.length, 2));
+  await testing.act(async () => requests[1].resolve(Response.json(result(false))));
+  await testing.act(async () => requests[0].resolve(Response.json(result(true))));
+  assert.equal(view.queryAllByText(/^(Eligible|Configuration matches native routing)$/).length, 0);
+  testing.fireEvent.click(view.getByRole("button", { name: "Refresh eligibility" }));
+  await testing.waitFor(() => assert.equal(requests.length, 3));
+  assert.equal(requests[2].signal.aborted, false, "The explicit refresh must be the current request");
+  await testing.act(async () => requests[2].reject(new Error("Eligibility offline")));
+  await testing.waitFor(() => assert.ok(view.queryByRole("alert")?.textContent.includes("Eligibility offline"), JSON.stringify({
+    aborted: requests.map(request => request.signal.aborted),
+    text: view.container.querySelector(".tab-content")?.textContent?.slice(0,650)
+  })));
+  assert.ok(view.getAllByRole("button", { name: "Add Model", exact: true }).every(button => button.disabled));
+  testing.fireEvent.click(view.getByRole("button", { name: "Refresh eligibility" }));
+  await testing.waitFor(() => assert.equal(requests.length, 4));
+  await testing.act(async () => requests[3].resolve(Response.json(result(true))));
+  assert.ok(view.getByText("Configuration matches native routing"));
+  assert.equal(view.queryByRole("alert"), null);
+  testing.fireEvent.click(testing.within(view.container.querySelector("#harness-codex")).getByRole("checkbox", { name: "Publish catalog" }));
+  context.mock.method(window, "confirm", () => true);
+  testing.fireEvent.click(view.getByRole("button", { name: "Review & Save", exact: true }));
+  await testing.act(async () => testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true })));
+  await testing.waitFor(() => assert.equal(saveAttempts.length, 1));
+  await testing.waitFor(() => assert.equal(view.getByRole("button", { name: "Review & Save", exact: true }).disabled, false));
+  assert.equal(saveAttempts[0].compatibility.codex.enabled, false);
+  assert.ok(view.getByText("Draft changes: review and save to apply."));
+  assert.equal(config.compatibility, undefined);
+  view.unmount();
+  assert.equal(requests[3].signal.aborted, true);
 });

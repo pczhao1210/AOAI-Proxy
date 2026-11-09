@@ -19,6 +19,7 @@ export function resolveRequestContext(req) {
 
   return {
     requestId,
+    requestInstanceId: generatedRequestId,
     conversationId: requestedConversationId || requestedSessionId || correlationId || requestId,
     sessionId: requestedSessionId || requestedConversationId || correlationId || requestId
   };

@@ -19,6 +19,7 @@ import {
   getStreamFlag,
   sanitizeRequestBody,
   extractProxyRequestControls,
+  normalizeChatOutputTokens,
   validateImageInputs,
   maybeCompressImages
 } from "./proxy/body.js";
@@ -434,12 +435,25 @@ export async function proxyRequest({
     sanitizeMeaninglessValues: config?.proxy?.guards?.sanitizeMeaninglessValues !== false
   });
   let requestOverrides = {};
+  const rejectProxyControl = (status, { code, exposedCode, message, detail }) => {
+    log.warn({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      routeKey,
+      status,
+      event: "proxy.request_rejected",
+      errorCode: code,
+      failureReason: message
+    }, `request rejected: ${message}`);
+    sendProxyError(status, { code, exposedCode, message, detail });
+  };
   try {
     const extractedControls = extractProxyRequestControls(body, config);
     body = extractedControls.body;
     requestOverrides = extractedControls.overrides;
     if (extractedControls.rejectedFields.length) {
-      sendProxyError(400, {
+      rejectProxyControl(400, {
         code: "UNKNOWN_PROXY_CONTROL_FIELDS",
         exposedCode: "UnknownProxyControlFields",
         message: `Unsupported proxy control fields: ${extractedControls.rejectedFields.join(", ")}`,
@@ -448,7 +462,7 @@ export async function proxyRequest({
       return;
     }
   } catch (error) {
-    sendProxyError(error?.status || 400, {
+    rejectProxyControl(error?.status || 400, {
       code: "INVALID_PROXY_CONTROL_FIELD",
       exposedCode: error?.code || "InvalidProxyControlField",
       message: error?.message || "Invalid proxy control field"
@@ -951,7 +965,8 @@ export async function proxyRequest({
     }
     const unsupportedRequest = sanitizeModernModelRequest(nextBody, {
       backendRouteKey,
-      descriptor: modelDescriptor
+      descriptor: modelDescriptor,
+      originalChatBody: routeKey === "chat/completions" && backendRouteKey === "chat/completions" ? rawBody : undefined
     }) || sanitizeWebSearchRequest(nextBody, {
       backendRouteKey,
       model
@@ -1084,6 +1099,7 @@ export async function proxyRequest({
     sendProxyError(governanceResult.status || 429, {
       code: governanceResult.code || "REQUEST_REJECTED",
       exposedCode: governanceResult.error || governanceResult.code || "RequestRejected",
+      retryable: governanceResult.retryable === true,
       message: governanceResult.message
     });
     finishTiming({
@@ -2425,7 +2441,7 @@ function sanitizeWebSearchRequest(body, { backendRouteKey }) {
   return null;
 }
 
-function sanitizeModernModelRequest(body, { backendRouteKey, descriptor }) {
+function sanitizeModernModelRequest(body, { backendRouteKey, descriptor, originalChatBody }) {
   if (!body || typeof body !== "object") {
     return null;
   }
@@ -2436,11 +2452,7 @@ function sanitizeModernModelRequest(body, { backendRouteKey, descriptor }) {
   delete body.serviceTier;
 
   if (backendRouteKey === "chat/completions") {
-    const reasoningRequest = descriptor?.capabilities?.includes("reasoning") || body.reasoning_effort != null;
-    if (reasoningRequest && typeof body.max_completion_tokens !== "number" && typeof body.max_tokens === "number") {
-      body.max_completion_tokens = body.max_tokens;
-    }
-    if (reasoningRequest) delete body.max_tokens;
+    normalizeChatOutputTokens(body, descriptor, originalChatBody);
 
     if (body.top_logprobs != null && body.logprobs == null) {
       body.logprobs = true;

@@ -1,4 +1,5 @@
-import { getModelCardPricing } from "../../src/model-card.js";
+import { getConfiguredPricingEntry, getModelCardPricing } from "../../src/model-card.js";
+import { compilePricingPolicy } from "../../src/token-pricing.js";
 
 export const REDACTED_SECRET_VALUE = "__AOAI_PROXY_REDACTED__";
 
@@ -6,28 +7,39 @@ export function formatEstimatedCost(stats = {}, t = (_key, fallback) => fallback
   const amount = Number(stats.estimatedCostAmount ?? stats.knownCostAmount ?? stats.amount ?? 0);
   const textIncomplete = stats.textUnknownCostRequests > 0
     || (stats.pricing && ["partial", "unknown"].includes(stats.costStatus));
-  const parts = textIncomplete && amount === 0 ? [] : [`${amount.toFixed(4)} ${currency || "USD"}`];
-  if (textIncomplete || stats.media?.unknownCostRequests > 0) parts.push(t("runtime.costUnknown", "Unknown"));
-  return parts.join(" + ");
+  if (!Number.isFinite(amount) || amount < 0
+    || (amount === 0 && (textIncomplete || stats.media?.unknownCostRequests > 0))) return "—";
+  return `${amount.toFixed(4)} ${currency || "USD"}`;
 }
 
 export function formatBudgetCost(window = {}, budget = {}, t = (_key, fallback) => fallback) {
   const currency = budget.currency || "USD";
   const limit = Number(budget.limitAmount || 0);
   const amount = Number(window.spentAmount || 0);
-  if (window.textUnknownCostRequests > 0) {
-    const cost = formatEstimatedCost({ estimatedCostAmount: amount, textUnknownCostRequests: window.textUnknownCostRequests }, t, currency);
-    return limit > 0 ? `${cost} / ${limit.toFixed(2)} ${currency}` : cost;
-  }
-  return limit > 0 ? `${amount.toFixed(4)} / ${limit.toFixed(2)} ${currency}` : `${amount.toFixed(4)} ${currency}`;
+  const cost = formatEstimatedCost({
+    estimatedCostAmount: amount, textUnknownCostRequests: window.textUnknownCostRequests,
+    media: { unknownCostRequests: window.mediaUnknownCostRequests }
+  }, t, currency);
+  return limit > 0 ? `${cost === "—" ? cost : amount.toFixed(4)} / ${limit.toFixed(2)} ${currency}` : cost;
+}
+
+export function formatRuntimeNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value.toLocaleString("en-US", { maximumFractionDigits: 20 }) : "—";
+}
+
+export function formatTokenCountK(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return "—";
+  const fraction = String(value % 1000).padStart(3, "0").replace(/0+$/, "");
+  return `${formatRuntimeNumber(Math.floor(value / 1000))}${fraction ? `.${fraction}` : ""} K`;
 }
 
 export function formatCacheWriteTokens(cacheWrite, t = (_key, fallback) => fallback) {
   if (!cacheWrite || cacheWrite.requests === 0) return t("runtime.notReported", "Not reported");
-  if (Number.isInteger(cacheWrite.tokens) && cacheWrite.tokens >= 0) return String(cacheWrite.tokens);
+  if (Number.isInteger(cacheWrite.tokens) && cacheWrite.tokens >= 0) return formatRuntimeNumber(cacheWrite.tokens);
   const unknown = t("runtime.usageUnknown", "Unknown");
   return cacheWrite.observedRequests > 0 && Number.isInteger(cacheWrite.observedTokens)
-    ? `${cacheWrite.observedTokens} + ${unknown}` : unknown;
+    ? `${formatRuntimeNumber(cacheWrite.observedTokens)} + ${unknown}` : unknown;
 }
 
 export function formatCacheWriteCost(cacheWrite, t = (_key, fallback) => fallback) {
@@ -35,9 +47,9 @@ export function formatCacheWriteCost(cacheWrite, t = (_key, fallback) => fallbac
   if (cacheWrite.costStatus === "priced" && Number.isFinite(cacheWrite.estimatedCostAmount)) {
     return `${cacheWrite.estimatedCostAmount.toFixed(4)} USD`;
   }
-  const unknown = t("runtime.costUnknown", "Unknown");
-  return Number.isFinite(cacheWrite.knownCostAmount) && (cacheWrite.knownCostAmount > 0 || cacheWrite.costStatus === "partial")
-    ? `${cacheWrite.knownCostAmount.toFixed(4)} USD + ${unknown}` : unknown;
+  return formatEstimatedCost({
+    knownCostAmount: cacheWrite.knownCostAmount, textUnknownCostRequests: 1
+  }, t);
 }
 
 export function formatCacheHitRatio(stats = {}) {
@@ -48,15 +60,15 @@ export function formatCacheHitRatio(stats = {}) {
 }
 
 export function runtimeTokenHelp(t = (_key, fallback) => fallback) {
-  return t("runtime.tokenHelp", "Input includes cache read and cache write tokens; do not add them again. Cache hit ratio is cache read / input, based on recorded tokens. Legacy missing cache reads may already be recorded as 0.");
+  return t("runtime.tokenHelp", "Input and output use K: 1 K = 1,000 tokens; hover for raw counts. Input includes cache read and cache write tokens; do not add them again. Cache hit ratio is cache read / input, based on recorded tokens. Legacy missing cache reads may already be recorded as 0.");
 }
 
 export function formatTokenSummary(stats = {}, t = (_key, fallback) => fallback) {
   return [
-    `${t("table.inputTokensIncludingCache", "Input Total (Including Cache)")} ${stats.promptTokens ?? "—"}`,
-    `${t("table.cacheReadTokens", "Cache Read Tokens")} ${stats.cachedTokens ?? "—"}`,
+    `${t("table.inputTokensIncludingCache", "Input Total (Including Cache)")} ${formatTokenCountK(stats.promptTokens)}`,
+    `${t("table.cacheReadTokens", "Cache Read Tokens")} ${formatRuntimeNumber(stats.cachedTokens)}`,
     `${t("table.cacheWriteTokens", "Cache Write Tokens")} ${formatCacheWriteTokens(stats.cacheWrite, t)}`,
-    `${t("table.outputTokens", "Output Tokens")} ${stats.completionTokens ?? "—"}`,
+    `${t("table.outputTokens", "Output Tokens")} ${formatTokenCountK(stats.completionTokens)}`,
     `${t("table.cacheHitRatio", "Cache Hit Ratio")} ${formatCacheHitRatio(stats)}`
   ].join(" · ");
 }
@@ -66,8 +78,8 @@ function formatTokenBoundary(value) {
 }
 
 export function formatBillingTier(tier, t = (_key, fallback) => fallback) {
-  const unknown = t("runtime.tierUnknown", "Unclassified");
-  if (tier?.kind === "flat") return t("runtime.tierFlat", "Single rate");
+  const unknown = t("runtime.tierUnknown", "Tier not recorded");
+  if (tier?.kind === "flat") return t("runtime.tierFlat", "Not tiered");
   if (tier?.kind !== "tier") return unknown;
   if (typeof tier.id === "string" && tier.id.trim()) return tier.id.trim();
   const lower = tier.promptTokensAtLeast;
@@ -198,13 +210,16 @@ export const DEFAULT_MODEL_TEMPLATE = {
 const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "messages", "stream", "images", "image"]);
 
 export const DEFAULT_LOG_FILTERS = {
+  view: "requests",
+  outcome: "all",
   level: ["fatal", "error", "warn", "info"],
   event: "",
   modelId: "",
   requestId: "",
   keyword: "",
   limit: 100,
-  autoRefresh: true
+  autoRefresh: true,
+  hideAuthRejected: true
 };
 
 export const TEST_ENDPOINTS = [
@@ -365,6 +380,37 @@ export function findPricingTemplateForModel(definitions, model) {
     model?.targetModel,
     model?.displayName
   );
+}
+
+export function getModelTierPricing(config = {}, definitions = []) {
+  return (config.models || []).flatMap((model) => {
+    const definition = findPricingTemplateForModel(definitions, model);
+    if (!definition) return [];
+    const entry = getModelCardPricing(definition);
+    const cardPolicy = compilePricingPolicy(entry, `pricing-library.${definition.id}`);
+    if (!cardPolicy?.tiering) return [];
+    const override = getConfiguredPricingEntry(config, model);
+    const effectivePolicy = override ? compilePricingPolicy(override.entry, override.source) : cardPolicy;
+    const bounds = policy => policy?.tiers.map(tier => [tier.promptTokensAtLeast, tier.promptTokensBelow]) || [];
+    return [{
+      modelId: model.id, definition,
+      source: override?.source || `pricing-library.${definition.id}`,
+      cardTiers: cardPolicy.tiers,
+      effectiveTiers: effectivePolicy?.tiers || [],
+      needsUpdate: JSON.stringify(bounds(effectivePolicy)) !== JSON.stringify(bounds(cardPolicy))
+    }];
+  });
+}
+
+export function applyModelCardTierPricing(config, modelIds, definitions) {
+  const reviews = getModelTierPricing(config, definitions);
+  const updates = modelIds.map(id => {
+    const review = reviews.find(item => item.modelId === id);
+    const model = config.models?.find(item => item.id === id);
+    if (!review || !model) throw new Error(`Tiered model card unavailable for ${id}`);
+    return { model, entry: getModelCardPricing(review.definition) };
+  });
+  for (const { model, entry } of updates) model.pricing = cloneJson(entry);
 }
 
 export function applyPricingTemplateToModel(config, model, definition) {
@@ -554,8 +600,14 @@ export function buildLogSummaryText(entry, t, formatDateTimeFn = formatDateTime)
     entry?.requestId ? `${t("logs.meta.requestId", "Request ID")}: ${entry.requestId}` : "",
     entry?.azureRequestId ? `${t("logs.meta.azureRequestId", "Azure Request ID")}: ${entry.azureRequestId}` : "",
     entry?.modelId ? `${t("logs.meta.model", "Model")}: ${entry.modelId}` : "",
+    entry?.routeKey || entry?.backendRouteKey
+      ? `${t("logs.meta.route", "Route")}: ${entry.backendRouteKey && entry.backendRouteKey !== entry.routeKey ? `${entry.routeKey || "-"} -> ${entry.backendRouteKey}` : entry.routeKey || entry.backendRouteKey}`
+      : "",
+    entry?.method || entry?.url ? `${entry.method || ""} ${entry.url || ""}`.trim() : "",
     entry?.errorCode ? `${t("logs.meta.errorCode", "Error Code")}: ${entry.errorCode}` : "",
-    entry?.status != null ? `${t("logs.meta.status", "Status")}: ${entry.status}` : ""
+    entry?.status != null ? `${t("logs.meta.status", "Status")}: ${entry.status}` : "",
+    entry?.latencyMs != null ? `${t("logs.meta.latency", "Latency")}: ${entry.latencyMs} ms` : "",
+    entry?.retryCount > 0 ? `${t("logs.retryCount", "{count} retries", { count: entry.retryCount })}` : ""
   ].filter(Boolean);
   return lines.join("\n");
 }

@@ -5,6 +5,9 @@ import { getStats, recordUsage, recordMediaUsage } from "../src/stats.js";
 import { createMediaUsageTracker, normalizeMediaUsage, estimateMediaCost } from "../src/proxy/media-usage.js";
 import { resolveMediaPricing, settleMediaUsage } from "../src/proxy/media-accounting.js";
 import { getCacheWriteUsage, getUsageTotals } from "../src/usage.js";
+import { findPricingDefinitionForModel } from "../src/pricing-library.js";
+import { compilePricingPolicy } from "../src/token-pricing.js";
+import { upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
 
 const model = { id: "gpt-4o", targetModel: "gpt-4o", pricingRef: "gpt-4o" };
 const config = { models: [model], access: { budgets: { enabled: false, defaultCurrency: "USD" } } };
@@ -146,6 +149,55 @@ test("media duration and character pricing use explicit units and distinguish un
     assert.equal(estimateMediaCost(duration, pricing).estimatedCostAmount, null);
   }
   assert.equal(estimateMediaCost(normalizeMediaUsage(null), realtime).estimatedCostAmount, null);
+});
+
+test("duration billing increments round each item without changing raw counters or unconfigured prices", () => {
+  const pricing = { billingUnit: "second", perSecond: 0.10 / 3600, billingIncrementSeconds: 1 };
+  for (const [seconds, billed] of [[0, 0], [0.001, 1], [0.999, 1], [1, 1], [1.001, 2], [1.5, 2], [2, 2]]) {
+    const usage = normalizeMediaUsage({ type: "duration", seconds });
+    const cost = estimateMediaCost(usage, pricing);
+    assert.equal(cost.costStatus, "priced");
+    assert.equal(cost.estimatedCostAmount, billed * pricing.perSecond, `${seconds} seconds`);
+    assert.equal(cost.components[0].quantity, billed);
+    assert.equal(usage.counters.durationSeconds, seconds);
+    assert.equal(usage.raw.seconds, seconds);
+  }
+  const usage = normalizeMediaUsage({ type: "duration", seconds: 1.5 });
+  assert.equal(estimateMediaCost(usage, { billingUnit: "second", perSecond: 1 }).estimatedCostAmount, 1.5);
+  assert.equal(estimateMediaCost(usage, { billingUnit: "minute", perMinute: 60 }).estimatedCostAmount, 1.5);
+  assert.equal(estimateMediaCost(usage, { billingUnit: "minute", perMinute: 60, billingIncrementSeconds: 1 }).estimatedCostAmount, 2);
+  assert.equal(estimateMediaCost(usage, { ...pricing, perSecond: 0 }).estimatedCostAmount, 0);
+  assert.equal(estimateMediaCost(normalizeMediaUsage(null), pricing).costStatus, "unknown");
+  const tracker = createMediaUsageTracker({ pricing });
+  pricing.billingIncrementSeconds = 10;
+  tracker.observe("first", { type: "duration", seconds: 0.4 }, { cumulative: true });
+  tracker.observe("first", { type: "duration", seconds: 0.9 }, { cumulative: true });
+  tracker.observe("second", { type: "duration", seconds: 0.4 });
+  assert.equal(tracker.snapshot().estimatedCostAmount, 2 * pricing.perSecond);
+  assert.equal(tracker.observe("second", { type: "duration", seconds: 0.4 }), null);
+  tracker.observe("first", { type: "duration", seconds: 1.1 }, { cumulative: true });
+  assert.equal(tracker.snapshot().estimatedCostAmount, 3 * pricing.perSecond);
+  assert.equal(tracker.snapshot().counters.durationSeconds, 1.5);
+});
+
+test("invalid duration billing increments are rejected rather than treated as continuous prices", () => {
+  for (const value of [0, -1, "1", null, true, Infinity, NaN]) {
+    const pricing = { billingUnit: "second", perSecond: 1, billingIncrementSeconds: value };
+    assert.throws(() => compilePricingPolicy(pricing), /billingIncrementSeconds/);
+    assert.throws(() => estimateMediaCost(normalizeMediaUsage({ type: "duration", seconds: 1.5 }), pricing), /billingIncrementSeconds/);
+  }
+  assert.throws(() => compilePricingPolicy({ billingUnit: "1M tokens", billingIncrementSeconds: 1 }), /billingIncrementSeconds/);
+});
+
+test("imported MAI transcription prices retain their second increment in Azure media accounting", () => {
+  const card = findPricingDefinitionForModel({ pricingRef: "mai-transcribe-2" });
+  const imported = {};
+  upsertPricingCatalogEntry(imported, card);
+  const model = { id: "transcribe", pricingRef: card.id, hostingMode: "azure" };
+  const pricing = resolveMediaPricing(imported, model, { provider: "azure-speech" }, { definition: card },
+    "https://resource.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe");
+  assert.equal(pricing.billingIncrementSeconds, 1);
+  assert.equal(estimateMediaCost(normalizeMediaUsage({ type: "duration", seconds: 1.5 }), pricing).estimatedCostAmount, 2 * card.pricing.perSecond);
 });
 
 test("media tracker sums USD unit prices regardless of legacy labels and preserves unknowns and snapshots", () => {

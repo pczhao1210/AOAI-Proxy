@@ -1,0 +1,58 @@
+{
+  "id": "DeepSeek-V4.1-Flash-1017",
+  "displayName": "DeepSeek V4.1 Flash 1017",
+  "provider": "fireworks-ai",
+  "family": "deepseek-v4",
+  "modelVersion": null,
+  "status": "unknown",
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "chat/completions",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["reasoning", "vision", "function-calling", "json-output"],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "validation": "passthrough"
+      },
+      "thinking": {
+        "parameter": "thinking.type",
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-retail-prices-api",
+    "status": "unavailable"
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "targetModel": "FW-Deepseek-v4.1-Flash-1017"
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models",
+    "hosting": "https://learn.microsoft.com/azure/foundry/how-to/fireworks/fireworks-model-catalog",
+    "limits": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "publisher": "https://api-docs.deepseek.com/news/news261017/",
+    "reasoning": "https://api-docs.deepseek.com/guides/thinking_mode/",
+    "pricing": "https://prices.azure.com/api/retail/prices"
+  },
+  "notes": [
+    "The administrator supplied the exact Foundry target FW-Deepseek-v4.1-Flash-1017 on 2026-10-27; preserve its spelling and case. Microsoft's public roster currently names FW-DeepSeek-V4.1-Flash without the 1017 suffix, so the suffixed offering's lifecycle, modelVersion and deployment revision remain independently unverified. The publisher's 2026-10-17 announcement is not proof of a Foundry snapshot.",
+    "Chat Completions and Responses follow the documented Fireworks on Foundry interface contract. Vision, function calling and JSON output are exact publisher model reference capabilities, not live-verified deployment guarantees. Do not copy the DeepSeek API's Anthropic endpoint into this Foundry template.",
+    "contextWindow, maxInputTokens and maxOutputTokens remain unverified for this exact Foundry target. The publisher lists a 1M context and 384K maximum output for its own deepseek-flash endpoint; these are not silently assigned as Foundry deployment limits.",
+    "protocolProfiles.chat/completions.reasoning.levels, protocolProfiles.chat/completions.reasoning.default, protocolProfiles.chat/completions.thinking.types, protocolProfiles.chat/completions.thinking.default, protocolProfiles.responses.reasoning.levels and protocolProfiles.responses.reasoning.default remain unverified for this exact Foundry deployment. Known parameter paths stay passthrough without inventing deployment-specific defaults or mapping publisher aliases locally.",
+    "pricing.inputPer1mTokens and pricing.outputPer1mTokens, including cache rates, remain unavailable for this exact Foundry target. pricingCatalogEntry=null disables automatic text pricing. DeepSeek direct peak/off-peak prices and the unsuffixed Fireworks model's prices do not establish this offering's charges; configure independently verified deployment rates explicitly."
+  ]
+}
