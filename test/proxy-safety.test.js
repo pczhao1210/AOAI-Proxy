@@ -431,10 +431,13 @@ test("pricing protocol metadata distinguishes GPT, Claude, DeepSeek, and Grok in
   const modelRouter = getPricingDefinition("model-router");
   assert.deepEqual(modelRouter?.interfaces, ["chat/completions", "responses"]);
   assert.equal(modelRouter?.protocolProfiles?.responses?.reasoning?.parameter, "reasoning.effort");
-  assert.deepEqual(modelRouter?.proxyTemplate?.routes, { messages: "chat/completions" });
+  assert.deepEqual(modelRouter?.proxyTemplate?.routes, {
+    messages: "chat/completions",
+    responses: "chat/completions"
+  });
   assert.deepEqual(
     buildModelFromPricingTemplate(modelRouter, "foundry", { models: [] }).routes,
-    { messages: "chat/completions" }
+    { messages: "chat/completions", responses: "chat/completions" }
   );
 
   for (const modelId of ["claude-opus-4-8", "claude-opus-5"]) {
