@@ -6,7 +6,7 @@
   "modelVersion": "2025-11-18",
   "status": "ga",
   "interfaces": ["chat/completions", "responses"],
-  "defaultInterface": "responses",
+  "defaultInterface": "chat/completions",
   "inputModalities": ["text", "image"],
   "outputModalities": ["text"],
   "capabilities": ["reasoning", "vision", "function-calling", "structured-outputs", "parallel-tool-calling"],
@@ -33,11 +33,13 @@
   },
   "proxyTemplate": {
     "routes": {
-      "messages": "chat/completions"
+      "messages": "chat/completions",
+      "responses": "chat/completions"
     }
   },
   "sources": {
     "capabilities": "https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-router",
+    "interfaces": "https://learn.microsoft.com/azure/foundry/openai/how-to/model-router#test-model-router-with-foundry-responses-and-chat-completions",
     "limits": "https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-router",
     "pricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/model-router/"
   },
@@ -48,6 +50,7 @@
     "The $0.14/1M input rate applies only to the published router SKU in its listed regions. Underlying model charges are separate and region/deployment dependent.",
     "maxInputTokens, maxOutputTokens remain independently unverified for this exact deployment/endpoint. No token ceiling is inferred from a sibling model, billing unit, or subtraction of other limits.",
     "protocolProfiles.chat/completions.reasoning.levels, protocolProfiles.chat/completions.reasoning.default, protocolProfiles.responses.reasoning.levels, protocolProfiles.responses.reasoning.default depend on the selected backend model and have no single fixed router-wide value. Client controls remain passthrough; no family default is invented.",
+    "Microsoft documents native Responses for model-router through the Foundry project client (AIProjectClient). A 2025-11-18 deployment called through the resource-level /openai/v1/responses returned 400 'The requested operation is unsupported.' while /openai/v1/chat/completions succeeded, so proxyTemplate.routes sends Responses through Chat and defaultInterface is chat/completions. responses stays in interfaces; clear the model's responses route to use a project endpoint that supports native Responses.",
     "pricing.outputPer1mTokens is inapplicable to the input-only router fee, not an unverified zero rate. The routed model's input/cache/output prices are accounted for separately."
   ]
 }

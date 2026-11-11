@@ -1981,11 +1981,15 @@ test("fallback routing honors the catalog default interface", () => {
   );
 });
 
-test("bundled Model Router preserves native Chat and Responses routes", () => {
+test("bundled Model Router template sends Responses through Chat while keeping native Responses available", () => {
   const definition = listPricingDefinitions().find((item) => item.id === "model-router");
   assert.ok(definition, "Expected bundled model-router definition");
   assert.deepEqual(definition.interfaces, ["chat/completions", "responses"]);
-  assert.deepEqual(definition.proxyTemplate?.routes, { messages: "chat/completions" });
+  assert.equal(definition.defaultInterface, "chat/completions");
+  assert.deepEqual(definition.proxyTemplate?.routes, {
+    messages: "chat/completions",
+    responses: "chat/completions"
+  });
 
   const routeConfig = {
     upstreams: [{
@@ -2002,7 +2006,7 @@ test("bundled Model Router preserves native Chat and Responses routes", () => {
       targetModel: "model-router",
       pricingRef: "model-router",
       upstream: "azure",
-      routes: { messages: "chat/completions" }
+      routes: { ...definition.proxyTemplate.routes }
     }]
   };
   const snapshot = compileModelCatalog(routeConfig, [definition]);
@@ -2023,8 +2027,8 @@ test("bundled Model Router preserves native Chat and Responses routes", () => {
     upstream: routeConfig.upstreams[0],
     descriptor
   });
-  assert.equal(responsesPlan.backendRouteKey, "responses");
-  assert.equal(new URL(responsesPlan.targetUrl).pathname, "/openai/v1/responses");
+  assert.equal(responsesPlan.backendRouteKey, "chat/completions");
+  assert.equal(new URL(responsesPlan.targetUrl).pathname, "/openai/v1/chat/completions");
 
   const messagesPlan = resolveRoutePlan({
     routeKey: "messages",
