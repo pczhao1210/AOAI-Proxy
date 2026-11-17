@@ -980,6 +980,12 @@ Responses 原生错误透传启用时，对缺少 `type` 的嵌套错误或缺�
 - Responses：输出带接续 `sequence_number` 的 `event: error`；
 - Messages：输出 Anthropic `event: error`，不能伪造 `message_stop`。
 
+错误分类映射：
+
+- Messages 客户端的 `error.type` 必须是 Anthropic 错误类型。已是 Anthropic 类型时原样保留；否则按 `code` 优先、`type` 其次映射：`no_capacity`/overload → `overloaded_error`，`insufficient_quota` → `billing_error`，`rate_limit_exceeded`/`too_many_requests` → `rate_limit_error`，超时 → `timeout_error`，认证/权限/未找到/无效请求类错误映射到对应类型，其余为 `api_error`。
+- 上游流内 provider 错误没有 `code`（例如 Anthropic 只有 `error.type`）时，以该 type 作为 code，使 Chat/Responses 客户端仍能看到 `overloaded_error` 等原始分类。
+- Chat 错误帧顶层 `code` 对流内 provider 错误为 `UPSTREAM_PROVIDER_STREAM_ERROR`；`retryable` 仅表示客户端是否可稍后重试（容量、限流、超时、服务端错误为 `true`）。代理不会在下游已开始输出后自动重试。
+
 流提前 EOF、空流或缺失终态不能被转换为成功：
 
 - 完全没有可写数据的流：根据原生或 shim 处理路径，当前可能表现为 `UPSTREAM_EMPTY_STREAM` 或 `UPSTREAM_INCOMPLETE_STREAM`；

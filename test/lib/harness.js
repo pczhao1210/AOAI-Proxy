@@ -225,11 +225,13 @@ function createMockUpstreamServer(upstreamHandler = null) {
         if (nativeProviderStreamError) {
           res.write(`data: ${JSON.stringify({ type: "response.created", sequence_number: 4, response: { ...response, status: "in_progress" } })}\n\n`);
           const variant = typeof body.input === "string" ? body.input : "";
-          const error = {
-            type: "server_error",
-            code: "native_stream_failure",
-            message: "native upstream stream failed"
-          };
+          const error = JSON.stringify(body).includes("trigger native stream error capacity")
+            ? { type: "too_many_requests", code: "no_capacity", message: "high demand" }
+            : {
+                type: "server_error",
+                code: "native_stream_failure",
+                message: "native upstream stream failed"
+              };
           res.end(`data: ${JSON.stringify({
             ...(variant.includes("missing-type") ? {} : { type: "error" }),
             ...(variant.includes("complete") ? { sequence_number: 5 } : {}),

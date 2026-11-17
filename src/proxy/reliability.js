@@ -168,11 +168,59 @@ export function classifyHttpStatus(status) {
   return { code: "UPSTREAM_HTTP_ERROR", retryable: false, status };
 }
 
+const ANTHROPIC_ERROR_TYPES = new Set([
+  "invalid_request_error",
+  "authentication_error",
+  "billing_error",
+  "permission_error",
+  "not_found_error",
+  "request_too_large",
+  "rate_limit_error",
+  "timeout_error",
+  "api_error",
+  "overloaded_error"
+]);
+
+// Order matters: capacity must win over the generic too_many_requests/rate-limit wording.
+const ANTHROPIC_ERROR_TYPE_RULES = [
+  [/capacity|overload/, "overloaded_error"],
+  [/insufficient_quota|billing/, "billing_error"],
+  [/rate_limit|too_many_requests|quota/, "rate_limit_error"],
+  [/timeout|timed_out/, "timeout_error"],
+  [/authenticat|unauthori[sz]ed|invalid_api_key/, "authentication_error"],
+  [/permission|forbidden|access_denied/, "permission_error"],
+  [/not_found/, "not_found_error"],
+  [/invalid|bad_request|context_length|content_filter|unsupported/, "invalid_request_error"]
+];
+
+const RETRYABLE_ANTHROPIC_ERROR_TYPES = new Set(["overloaded_error", "rate_limit_error", "timeout_error", "api_error"]);
+
+export function toAnthropicErrorType({ code, type } = {}) {
+  const candidates = [code, type]
+    .filter(value => typeof value === "string" && value.trim())
+    .map(value => value.trim().toLowerCase());
+  const native = candidates.find(value => ANTHROPIC_ERROR_TYPES.has(value));
+  if (native) return native;
+  for (const value of candidates) {
+    const rule = ANTHROPIC_ERROR_TYPE_RULES.find(([pattern]) => pattern.test(value));
+    if (rule) return rule[1];
+  }
+  return "api_error";
+}
+
+export function isRetryableProviderStreamError(providerError) {
+  return RETRYABLE_ANTHROPIC_ERROR_TYPES.has(toAnthropicErrorType(providerError));
+}
+
 export function classifyFetchError(error) {
   const code = String(error?.code || error?.cause?.code || "");
   const message = [error?.message, error?.cause?.message].filter(Boolean).map(String).join(": ");
   if (code === "CLIENT_DISCONNECTED") {
     return { code: "CLIENT_DISCONNECTED", retryable: false, status: 499, detail: message || "client disconnected" };
+  }
+  if (code === "UPSTREAM_PROVIDER_STREAM_ERROR") {
+    // Provider stream errors are only observed after downstream output has started, so the proxy never retries them.
+    return { code, retryable: false, status: 502, detail: message || "upstream provider stream error" };
   }
   if (code === "UPSTREAM_REDIRECT_NOT_ALLOWED") {
     return { code, retryable: false, status: 502, detail: message };

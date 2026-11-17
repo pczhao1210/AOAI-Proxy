@@ -1,4 +1,4 @@
-import { markErrorWithCode } from "./reliability.js";
+import { markErrorWithCode, toAnthropicErrorType } from "./reliability.js";
 import { chatFinishReasonToResponsesTermination, getProtocolShimStreamCompatibilityIssue } from "./shim.js";
 
 const MAX_SSE_EVENT_BYTES = 8 * 1024 * 1024;
@@ -193,9 +193,11 @@ function buildProviderStreamError(evt) {
     || (typeof evt?.request_id === "string" && evt.request_id)
     || extractAzureRequestId(message);
 
+  const errorType = typeof error.type === "string" && error.type !== "error" ? error.type : "";
   return {
-    type: typeof error.type === "string" ? error.type : typeof evt?.type === "string" ? evt.type : "error",
-    code: typeof error.code === "string" ? error.code : "UPSTREAM_PROVIDER_STREAM_ERROR",
+    type: errorType || (typeof evt?.type === "string" ? evt.type : "error"),
+    // Anthropic errors carry only a type; keep it as the code so other client protocols retain it.
+    code: typeof error.code === "string" ? error.code : (errorType || "UPSTREAM_PROVIDER_STREAM_ERROR"),
     message,
     param: error?.param ?? null,
     azureRequestId
@@ -504,7 +506,7 @@ export async function writeSseError(replyRaw, errorBody, routeKey = "chat/comple
     await writeAnthropicSse(replyRaw, {
       type: "error",
       error: {
-        type: sourceError.type || sourceError.code || "api_error",
+        type: toAnthropicErrorType(sourceError),
         message: sourceError.message || "stream request failed"
       }
     });

@@ -57,6 +57,7 @@ import {
   shouldRetryUpstream,
   classifyHttpStatus,
   classifyFetchError,
+  isRetryableProviderStreamError,
   buildErrorBody,
   fetchOnceWithConnectTimeout,
   fetchWithRetry,
@@ -1789,7 +1790,9 @@ export async function proxyRequest({
           source: providerError ? "provider" : "upstream"
         });
         const errBody = buildErrorBody({
-          classified,
+          classified: providerError
+            ? { ...classified, retryable: isRetryableProviderStreamError(providerError) }
+            : classified,
           requestId,
           detail: providerError?.message || classified.detail,
           message: providerError?.message,

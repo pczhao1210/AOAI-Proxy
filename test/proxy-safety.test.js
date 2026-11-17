@@ -4,7 +4,7 @@ import http from "node:http";
 import test from "node:test";
 import { resolveApiConsumer, filterModelsForConsumer, checkConsumerModelAccess, getGovernanceSnapshot } from "../src/governance.js";
 import { extractProxyRequestControls, sanitizeIncomingHeaders } from "../src/proxy/body.js";
-import { classifyFetchError, fetchOnceWithConnectTimeout, fetchWithRetry, parseJsonWithTimeout } from "../src/proxy/reliability.js";
+import { classifyFetchError, fetchOnceWithConnectTimeout, isRetryableProviderStreamError, fetchWithRetry, parseJsonWithTimeout } from "../src/proxy/reliability.js";
 import { buildMessagesCountTokensUrl, buildResponsesCompactUrl, buildUpstreamUrl, inferBackendRouteKey, resolveEffectiveRouteKey } from "../src/proxy/routing.js";
 import { streamPassthrough, streamShim, writeSseError } from "../src/proxy/stream.js";
 import {
@@ -3038,6 +3038,46 @@ test("Responses shim-generated error continues the emitted sequence", async () =
   const error = JSON.parse(raw.output.match(/event: error\ndata: (.+)/)[1]);
   assert.equal(error.sequence_number, emitted.at(-1).sequence_number + 1);
   assert.equal(error.code, "no_capacity");
+});
+
+test("Messages stream errors use Anthropic error types", async () => {
+  const cases = [
+    [{ code: "no_capacity", type: "too_many_requests" }, "overloaded_error"],
+    [{ code: "rate_limit_exceeded", type: "too_many_requests" }, "rate_limit_error"],
+    [{ code: "overloaded_error", type: "overloaded_error" }, "overloaded_error"],
+    [{ code: "insufficient_quota", type: "insufficient_quota" }, "billing_error"],
+    [{ code: "context_length_exceeded", type: "invalid_request_error" }, "invalid_request_error"],
+    [{ code: "UPSTREAM_IDLE_TIMEOUT", type: "UPSTREAM_IDLE_TIMEOUT" }, "timeout_error"],
+    [{ code: "UPSTREAM_INCOMPLETE_STREAM", type: "UPSTREAM_INCOMPLETE_STREAM" }, "api_error"],
+    [{}, "api_error"]
+  ];
+  for (const [error, type] of cases) {
+    const raw = new FakeReplyRaw();
+    await writeSseError(raw, { error: { ...error, message: "high demand" }, code: "UPSTREAM_PROVIDER_STREAM_ERROR" }, "messages");
+    assert.equal(raw.output, `event: error\ndata: ${JSON.stringify({ type: "error", error: { type, message: "high demand" } })}\n\n`);
+  }
+});
+
+test("Anthropic provider stream error type is kept as the code for other client protocols", async () => {
+  const source = encodeEvents([
+    { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "m", content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
+    { type: "error", error: { type: "overloaded_error", message: "high demand" } }
+  ]);
+  for (const routeKey of ["chat/completions", "responses"]) {
+    const { result } = await runProtocolShim(routeKey, "messages", source);
+    assert.equal(result.ok, false);
+    assert.equal(result.providerError?.type, "overloaded_error");
+    assert.equal(result.providerError?.code, "overloaded_error");
+    assert.deepEqual(classifyFetchError(result.error), {
+      code: "UPSTREAM_PROVIDER_STREAM_ERROR", retryable: false, status: 502, detail: "high demand"
+    });
+  }
+});
+
+test("provider stream error retry hints follow the error category", () => {
+  assert.equal(isRetryableProviderStreamError({ code: "no_capacity", type: "too_many_requests" }), true);
+  assert.equal(isRetryableProviderStreamError({ code: "server_error", type: "server_error" }), true);
+  assert.equal(isRetryableProviderStreamError({ code: "context_length_exceeded", type: "invalid_request_error" }), false);
 });
 
 test("Responses passthrough hides provider error events by default", async () => {

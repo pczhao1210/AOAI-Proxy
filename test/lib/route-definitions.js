@@ -2153,6 +2153,22 @@ export const routeTests = [
       assert.equal(normalizedError.sequence_number, 5);
       assert.equal(normalizedError.code, "native_stream_failure");
 
+      const messagesCapacityError = await ctx.publicRequest("/v1/messages", {
+        method: "POST",
+        json: {
+          model: "gpt-5.6-luna",
+          max_tokens: 16,
+          stream: true,
+          messages: [{ role: "user", content: "trigger native stream error capacity" }]
+        }
+      });
+      assert.equal(messagesCapacityError.status, 200, messagesCapacityError.text);
+      assert.match(ctx.upstreamRequests.at(-1).url, /\/openai\/v1\/responses(?:\?|$)/);
+      assert.equal(
+        messagesCapacityError.text.trim().split("\n\n").at(-1),
+        `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "high demand" } })}`
+      );
+
       const interruptedStream = await ctx.publicRequest("/v1/responses", {
         method: "POST",
         json: { model: "gpt-5.6-luna", input: "trigger native interrupted stream", stream: true }
