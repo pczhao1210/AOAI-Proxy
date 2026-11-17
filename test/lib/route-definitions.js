@@ -2062,8 +2062,10 @@ export const routeTests = [
       assert.equal(result.status, 200, result.text);
       assert.match(result.text, /event: message_start/);
       assert.match(result.text, /event: error/);
-      assert.match(result.text, /"type":"provider_error"/);
-      assert.match(result.text, /mock provider failed/);
+      assert.equal(
+        result.text.trim().split("\n\n").at(-1),
+        `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "mock provider failed" } })}`
+      );
       assert.doesNotMatch(result.text, /data: \[DONE\]/);
       assert.doesNotMatch(result.text, /event: message_stop/);
     }
