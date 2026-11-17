@@ -199,6 +199,7 @@ function createMockUpstreamServer(upstreamHandler = null) {
       const toolSearchItemResponse = JSON.stringify(body).includes("trigger Tool Search Responses item");
       const toolSearchItemStream = JSON.stringify(body).includes("trigger Tool Search Responses stream item");
       const nativeProviderStreamError = JSON.stringify(body).includes("trigger native stream error");
+      const interruptedNativeStream = body?.input === "trigger native interrupted stream";
       if (body?.stream === true) {
         const outputText = "ok from mock responses stream";
         const outputItem = {
@@ -222,15 +223,23 @@ function createMockUpstreamServer(upstreamHandler = null) {
           "cache-control": "no-cache"
         });
         if (nativeProviderStreamError) {
+          res.write(`data: ${JSON.stringify({ type: "response.created", sequence_number: 4, response: { ...response, status: "in_progress" } })}\n\n`);
+          const variant = typeof body.input === "string" ? body.input : "";
+          const error = {
+            type: "server_error",
+            code: "native_stream_failure",
+            message: "native upstream stream failed"
+          };
           res.end(`data: ${JSON.stringify({
-            type: "error",
-            error: {
-              type: "server_error",
-              code: "native_stream_failure",
-              message: "native upstream stream failed"
-            },
+            ...(variant.includes("missing-type") ? {} : { type: "error" }),
+            ...(variant.includes("complete") ? { sequence_number: 5 } : {}),
+            error,
             native_marker: "preserved"
           })}\n\n`);
+          return;
+        }
+        if (interruptedNativeStream) {
+          res.end(`data: ${JSON.stringify({ type: "response.created", sequence_number: 7, response: { ...response, status: "in_progress" } })}\n\n`);
           return;
         }
         res.write(`data: ${JSON.stringify({ type: "response.created", response: { ...response, status: "in_progress" } })}\n\n`);

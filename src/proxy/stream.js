@@ -135,6 +135,22 @@ export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {})
   };
 }
 
+function replaceSseEventPayload(event, payload) {
+  const rawText = event.raw.toString("utf8");
+  const delimiterMatch = rawText.match(/(\r\n\r\n|\n\n)$/);
+  const delimiter = delimiterMatch?.[0] || "";
+  const block = delimiter ? rawText.slice(0, -delimiter.length) : rawText;
+  const lineEnding = block.includes("\r\n") ? "\r\n" : "\n";
+  let dataWritten = false;
+  const lines = block.split(/\r?\n/).flatMap((line) => {
+    if (line !== "data" && !line.startsWith("data:")) return [line];
+    if (dataWritten) return [];
+    dataWritten = true;
+    return [`data: ${JSON.stringify(payload)}`];
+  });
+  return dataWritten ? Buffer.from(`${lines.join(lineEnding)}${delimiter}`) : event.raw;
+}
+
 function restorePublicModelInSseEvent(event, modelId) {
   if (!modelId || !event?.payload || event.payload === "[DONE]") return event.raw;
 
@@ -152,21 +168,11 @@ function restorePublicModelInSseEvent(event, modelId) {
       changed = true;
     }
   }
-  if (!changed) return event.raw;
+  return changed ? replaceSseEventPayload(event, payload) : event.raw;
+}
 
-  const rawText = event.raw.toString("utf8");
-  const delimiterMatch = rawText.match(/(\r\n\r\n|\n\n)$/);
-  const delimiter = delimiterMatch?.[0] || "";
-  const block = delimiter ? rawText.slice(0, -delimiter.length) : rawText;
-  const lineEnding = block.includes("\r\n") ? "\r\n" : "\n";
-  let dataWritten = false;
-  const lines = block.split(/\r?\n/).flatMap((line) => {
-    if (line !== "data" && !line.startsWith("data:")) return [line];
-    if (dataWritten) return [];
-    dataWritten = true;
-    return [`data: ${JSON.stringify(payload)}`];
-  });
-  return dataWritten ? Buffer.from(`${lines.join(lineEnding)}${delimiter}`) : event.raw;
+function isResponsesSequenceNumber(value) {
+  return Number.isSafeInteger(value) && value >= 0;
 }
 
 function extractAzureRequestId(value) {
@@ -490,7 +496,7 @@ export function setSseResponseHeaders(replyRaw) {
   });
 }
 
-export async function writeSseError(replyRaw, errorBody, routeKey = "chat/completions") {
+export async function writeSseError(replyRaw, errorBody, routeKey = "chat/completions", sequenceNumber = 0) {
   const sourceError = errorBody?.error && typeof errorBody.error === "object"
     ? errorBody.error
     : {};
@@ -509,6 +515,7 @@ export async function writeSseError(replyRaw, errorBody, routeKey = "chat/comple
       replyRaw,
       `event: error\ndata: ${JSON.stringify({
         type: "error",
+        sequence_number: sequenceNumber,
         code: sourceError.code || errorBody?.code || "server_error",
         message: sourceError.message || "stream request failed",
         param: sourceError.param ?? null
@@ -535,7 +542,8 @@ export async function streamPassthrough({
   onFirstChunk,
   onUsage,
   onModel,
-  onContent
+  onContent,
+  onResponsesSequence
 }) {
   const reader = upstreamResponse.body?.getReader();
   if (!reader) {
@@ -549,8 +557,42 @@ export async function streamPassthrough({
   let awaitingErrorTerminal = false;
   const reachedTerminal = () => terminalMarkerSeen || (providerError && !awaitingErrorTerminal);
   let chatFinishReasonSeen = false;
+  let nextResponsesSequence = 0;
   let clientDisconnected = false;
   const cancellation = createStreamCancellation(reply.raw, reader, () => { clientDisconnected = true; });
+
+  const forwardEvent = async (event, parsedPayload) => {
+    let forwarded = event;
+    const responsesPayload = backendRouteKey === "responses" ? parsedPayload : null;
+    if (responsesPayload) {
+      if (responsesPayload && typeof responsesPayload === "object" && !Array.isArray(responsesPayload)) {
+        const hasNestedError = responsesPayload.error && typeof responsesPayload.error === "object"
+          && !Array.isArray(responsesPayload.error);
+        const isError = responsesPayload.type === "error" || responsesPayload.type === "response.failed"
+          || (responsesPayload.type == null && hasNestedError);
+        let changed = false;
+        if (isError && responsesPayload.type == null) {
+          responsesPayload.type = "error";
+          changed = true;
+        }
+        if (isError && !isResponsesSequenceNumber(responsesPayload.sequence_number)) {
+          responsesPayload.sequence_number = nextResponsesSequence;
+          changed = true;
+        }
+        if (changed) {
+          forwarded = { ...event, raw: replaceSseEventPayload(event, responsesPayload), payload: JSON.stringify(responsesPayload) };
+        }
+      }
+    }
+    await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(forwarded, modelId), cancellation.signal);
+    if (responsesPayload && typeof responsesPayload === "object" && !Array.isArray(responsesPayload)
+      && typeof responsesPayload.type === "string") {
+      nextResponsesSequence = isResponsesSequenceNumber(responsesPayload.sequence_number)
+        ? Math.max(nextResponsesSequence, responsesPayload.sequence_number + 1)
+        : nextResponsesSequence + 1;
+      onResponsesSequence?.(nextResponsesSequence);
+    }
+  };
 
   const processPayload = (payload) => {
     if (!payload) return;
@@ -586,7 +628,7 @@ export async function streamPassthrough({
       providerError = buildProviderStreamError(event);
       awaitingErrorTerminal = awaitSafetyErrorDone && forwardProviderErrors
         && backendRouteKey === "chat/completions" && event?.error?.type === "SafetyBlockedError";
-      return;
+      return event;
     }
     if (
       (!backendRouteKey || backendRouteKey === "responses")
@@ -600,6 +642,7 @@ export async function streamPassthrough({
     if (Array.isArray(event?.choices) && event.choices.some((choice) => choice?.finish_reason)) {
       chatFinishReasonSeen = true;
     }
+    return event;
   };
   const watchdog = createStreamWatchdog(policy, cancellation);
 
@@ -616,9 +659,9 @@ export async function streamPassthrough({
       watchdog.resetIdle();
       for (const event of sseParser.feed(value)) {
         if (reachedTerminal()) break;
-        processPayload(event.payload);
+        const parsedPayload = processPayload(event.payload);
         if (!providerError || forwardProviderErrors) {
-          await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);
+          await forwardEvent(event, parsedPayload);
         }
         if (reachedTerminal()) break;
       }
@@ -630,9 +673,9 @@ export async function streamPassthrough({
     if (!reachedTerminal()) {
       for (const event of sseParser.finish()) {
         if (reachedTerminal()) break;
-        processPayload(event.payload);
+        const parsedPayload = processPayload(event.payload);
         if (!providerError || forwardProviderErrors) {
-          await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(event, modelId), cancellation.signal);
+          await forwardEvent(event, parsedPayload);
         }
         if (reachedTerminal()) break;
       }
@@ -697,7 +740,8 @@ export async function streamShim({
   onUsage,
   onModel,
   onContent,
-  onCompatibilityIssue
+  onCompatibilityIssue,
+  onResponsesSequence
 }) {
   const reader = upstreamResponse.body?.getReader();
   if (!reader) {
@@ -888,6 +932,7 @@ export async function streamShim({
       sequence_number: reverseSequenceNumber
     });
     reverseSequenceNumber += 1;
+    onResponsesSequence?.(reverseSequenceNumber);
   };
   const ensureReverseEnvelope = async () => {
     if (reverseEnvelopeStarted) return;

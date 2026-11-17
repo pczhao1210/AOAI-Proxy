@@ -2148,6 +2148,19 @@ export const routeTests = [
       assert.match(normalizedStreamEvent.text, /event: error/);
       assert.match(normalizedStreamEvent.text, /native_stream_failure/);
       assert.doesNotMatch(normalizedStreamEvent.text, /native_marker/);
+      const normalizedError = JSON.parse(normalizedStreamEvent.text.match(/event: error\ndata: (.+)/)[1]);
+      assert.equal(normalizedError.type, "error");
+      assert.equal(normalizedError.sequence_number, 5);
+      assert.equal(normalizedError.code, "native_stream_failure");
+
+      const interruptedStream = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: { model: "gpt-5.6-luna", input: "trigger native interrupted stream", stream: true }
+      });
+      assert.equal(interruptedStream.status, 200, interruptedStream.text);
+      const interruptedError = JSON.parse(interruptedStream.text.match(/event: error\ndata: (.+)/)[1]);
+      assert.equal(interruptedError.sequence_number, 8);
+      assert.equal(interruptedError.code, "UPSTREAM_INCOMPLETE_STREAM");
 
       const upstreamConfig = await ctx.readConfigFile();
       const foundryUpstream = upstreamConfig.upstreams.find((upstream) => upstream.name === "mock-foundry");
@@ -2206,6 +2219,44 @@ export const routeTests = [
       assert.equal(nativeStreamEvent.status, 200, nativeStreamEvent.text);
       assert.match(nativeStreamEvent.text, /"native_marker":"preserved"/);
       assert.doesNotMatch(nativeStreamEvent.text, /event: error/);
+      const nativeEvents = nativeStreamEvent.text.trim().split("\n\n").map(frame => JSON.parse(frame.slice(6)));
+      assert.equal(nativeEvents[0].sequence_number, 4);
+      assert.deepEqual(nativeEvents[1], {
+        type: "error",
+        error: { type: "server_error", code: "native_stream_failure", message: "native upstream stream failed" },
+        native_marker: "preserved",
+        sequence_number: 5
+      });
+      const nativeRequest = ctx.upstreamRequests.at(-1);
+      assert.equal(nativeRequest.method, "POST");
+      assert.match(nativeRequest.url, /\/openai\/v1\/responses(?:\?|$)/);
+      assert.equal(nativeRequest.headers["api-key"], "test-upstream-key");
+      assert.notEqual(nativeRequest.headers.authorization, "Bearer test-client-key");
+      assert.equal(nativeRequest.body.model, "gpt-5.6-luna");
+      assert.equal(nativeRequest.body.input, "trigger native stream error");
+      assert.equal(nativeRequest.body.stream, true);
+
+      for (const input of ["trigger native stream error missing-type", "trigger native stream error complete"]) {
+        const result = await ctx.publicRequest("/v1/responses", {
+          method: "POST",
+          json: { model: "gpt-5.6-luna", input, stream: true }
+        });
+        assert.equal(result.status, 200, result.text);
+        const errorFrame = result.text.trim().split("\n\n")[1];
+        const error = JSON.parse(errorFrame.slice(6));
+        assert.equal(error.type, "error");
+        assert.equal(error.sequence_number, 5);
+        assert.equal(error.error.code, "native_stream_failure");
+        assert.equal(error.native_marker, "preserved");
+        if (input.endsWith("complete")) {
+          assert.equal(errorFrame, `data: ${JSON.stringify({
+            type: "error",
+            sequence_number: 5,
+            error: { type: "server_error", code: "native_stream_failure", message: "native upstream stream failed" },
+            native_marker: "preserved"
+          })}`);
+        }
+      }
 
       const nativeProviderFailure = await ctx.publicRequest("/v1/responses", {
         method: "POST",

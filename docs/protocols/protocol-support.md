@@ -937,6 +937,8 @@ Responses 的 `response.failed` 和 provider error 是失败终态。Messages �
 - 最终完成证据；
 - 客户端取消。
 
+Responses 原生错误透传启用时，对缺少 `type` 的嵌套错误或缺少有效 `sequence_number` 的 `error` / `response.failed` 事件，代理只补齐这些字段，保留错误内容及其他 SSE 字段；合法的原生错误帧仍按原始字节透传。补齐的序号接续已转发事件的最大有效序号；对于未带序号的事件按事件数量递增。其他原生事件不作此兼容处理。
+
 只有在第一个上游 chunk 到达之前才允许自动重试。一旦向客户端写出任何流内容，就不能重放请求。
 
 ### 14.4 跨协议流
@@ -975,7 +977,7 @@ Responses 的 `response.failed` 和 provider error 是失败终态。Messages �
 如果错误发生在任何下游数据写出之前，可以返回正常 HTTP 错误状态。如果流已经开始，HTTP 状态通常已经是 `200`，此时必须用目标协议的错误事件结束：
 
 - Chat：输出错误 SSE，并以 `[DONE]` 关闭；
-- Responses：输出 `event: error`；
+- Responses：输出带接续 `sequence_number` 的 `event: error`；
 - Messages：输出 Anthropic `event: error`，不能伪造 `message_stop`。
 
 流提前 EOF、空流或缺失终态不能被转换为成功：

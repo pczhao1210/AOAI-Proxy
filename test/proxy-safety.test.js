@@ -6,7 +6,7 @@ import { resolveApiConsumer, filterModelsForConsumer, checkConsumerModelAccess, 
 import { extractProxyRequestControls, sanitizeIncomingHeaders } from "../src/proxy/body.js";
 import { classifyFetchError, fetchOnceWithConnectTimeout, fetchWithRetry, parseJsonWithTimeout } from "../src/proxy/reliability.js";
 import { buildMessagesCountTokensUrl, buildResponsesCompactUrl, buildUpstreamUrl, inferBackendRouteKey, resolveEffectiveRouteKey } from "../src/proxy/routing.js";
-import { streamPassthrough, streamShim } from "../src/proxy/stream.js";
+import { streamPassthrough, streamShim, writeSseError } from "../src/proxy/stream.js";
 import {
   chatToMessagesRequest,
   chatToResponsesRequest,
@@ -2951,6 +2951,93 @@ test("Responses passthrough recognizes top-level provider error events", async (
   assert.equal(result.providerErrorForwarded, true);
   assert.equal(result.providerError?.code, "provider_failed");
   assert.match(raw.output, /"type":"error"/);
+});
+
+test("Responses passthrough repairs only incomplete native error frames", async () => {
+  const prefix = 'id: first\r\nevent: response.created\r\ndata: {"type":"response.created","sequence_number":9}\r\n\r\n';
+  const error = { code: "no_capacity", type: "too_many_requests", message: "high demand", param: null };
+  const cases = [
+    {
+      input: { error, extension: { id: 1 } },
+      expected: { error, extension: { id: 1 }, type: "error", sequence_number: 10 }
+    },
+    {
+      input: { type: "error", error, sequence_number: null },
+      expected: { type: "error", error, sequence_number: 10 }
+    },
+    {
+      input: { type: "response.failed", response: { error }, extension: true },
+      expected: { type: "response.failed", response: { error }, extension: true, sequence_number: 10 }
+    },
+    {
+      input: { type: "error", sequence_number: 42, error },
+      expected: { type: "error", sequence_number: 42, error },
+      unchanged: true
+    }
+  ];
+
+  for (const { input, expected, unchanged } of cases) {
+    const frame = `id: failure\r\nevent: ${input.type || "error"}\r\nretry: 2000\r\ndata: ${JSON.stringify(input)}\r\n\r\n`;
+    const source = Buffer.from(prefix + frame);
+    const raw = new FakeReplyRaw();
+    const result = await streamPassthrough({
+      upstreamResponse: { body: { getReader: () => createReader([source.subarray(0, 33), source.subarray(33)]) } },
+      reply: { raw },
+      backendRouteKey: "responses",
+      forwardProviderErrors: true,
+      policy: STREAM_POLICY,
+      onFirstChunk() {},
+      onUsage() {},
+      onModel() {}
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.providerError?.code, "no_capacity");
+    assert.ok(raw.output.startsWith(prefix));
+    const actualFrame = raw.output.slice(prefix.length);
+    assert.match(actualFrame, /^id: failure\r\nevent: .+\r\nretry: 2000\r\ndata: /);
+    assert.deepEqual(JSON.parse(actualFrame.match(/\r\ndata: (.+)\r\n/)[1]), expected);
+    if (unchanged) assert.equal(actualFrame, frame);
+  }
+});
+
+test("Responses passthrough uses forwarded unnumbered events to number a native error", async () => {
+  const prefix = ': keepalive\n\nid: created\ndata: {"type":"response.created"}\n\n';
+  const failure = 'event: error\ndata: {"type":"error","code":"no_capacity","message":"high demand"}';
+  const raw = new FakeReplyRaw();
+  const result = await streamPassthrough({
+    upstreamResponse: { body: { getReader: () => createReader([Buffer.from(prefix + failure)]) } },
+    reply: { raw },
+    backendRouteKey: "responses",
+    forwardProviderErrors: true,
+    policy: STREAM_POLICY,
+    onFirstChunk() {},
+    onUsage() {},
+    onModel() {}
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(raw.output.startsWith(prefix));
+  assert.deepEqual(JSON.parse(raw.output.slice(prefix.length).split("data: ")[1]), {
+    type: "error", code: "no_capacity", message: "high demand", sequence_number: 1
+  });
+});
+
+test("Responses shim-generated error continues the emitted sequence", async () => {
+  let nextSequence = 0;
+  const { result, raw } = await runProtocolShim("responses", "chat/completions", encodeEvents([
+    { choices: [{ index: 0, delta: { content: "partial" }, finish_reason: null }] },
+    { error: { code: "no_capacity", type: "too_many_requests", message: "high demand" } }
+  ]), { onResponsesSequence(value) { nextSequence = value; } });
+
+  assert.equal(result.ok, false);
+  const emitted = raw.output.trim().split("\n\n").map(frame => JSON.parse(frame.slice(6)));
+  assert.ok(emitted.length > 0);
+  assert.equal(nextSequence, emitted.at(-1).sequence_number + 1);
+  await writeSseError(raw, { error: { code: "no_capacity", message: "high demand" } }, "responses", nextSequence);
+  const error = JSON.parse(raw.output.match(/event: error\ndata: (.+)/)[1]);
+  assert.equal(error.sequence_number, emitted.at(-1).sequence_number + 1);
+  assert.equal(error.code, "no_capacity");
 });
 
 test("Responses passthrough hides provider error events by default", async () => {

@@ -1595,6 +1595,8 @@ export async function proxyRequest({
           return;
         }
 
+        let nextResponsesSequence = 0;
+        const onResponsesSequence = (sequenceNumber) => { nextResponsesSequence = sequenceNumber; };
         const streamResult = !needsProtocolShim
           ? await streamPassthrough({
             upstreamResponse,
@@ -1610,7 +1612,8 @@ export async function proxyRequest({
             },
             onUsage: recordProxyUsage,
             onModel: noteResolvedUpstreamModel,
-            onContent: streamContentCollector.append
+            onContent: streamContentCollector.append,
+            onResponsesSequence
           })
           : await streamShim({
             upstreamResponse,
@@ -1633,6 +1636,7 @@ export async function proxyRequest({
             onUsage: recordProxyUsage,
             onModel: noteResolvedUpstreamModel,
             onContent: streamContentCollector.append,
+            onResponsesSequence,
             onCompatibilityIssue: (issue) => {
               log.warn({
                 source: "proxy",
@@ -1797,7 +1801,7 @@ export async function proxyRequest({
           if (!streamingStarted) {
             reply.code(classified.status || 502).send(errBody);
           } else if (!streamResult.providerErrorForwarded) {
-            await writeSseError(reply.raw, errBody, routeKey);
+            await writeSseError(reply.raw, errBody, routeKey, nextResponsesSequence);
             reply.raw.end();
           } else {
             reply.raw.end();
