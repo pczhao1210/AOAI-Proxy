@@ -89,8 +89,10 @@ test("adaptive images freeze all nine JSON/SSE directions and preflight budgets"
       assert.equal(ctx.upstreamRequests.length, 0);
     }
     config.media.inlineImages = { maxImages: 0, maxTotalBytes: 0 };
-    config.apiKeys[0].rateLimit = { rpm: 1, windowSeconds: 60 };
+    // Rate windows align to wall-clock boundaries; a long window plus a primer avoids a boundary reset flake.
+    config.apiKeys[0].rateLimit = { rpm: 1, windowSeconds: 3600 };
     await save();
+    await ctx.publicRequest("/v1/chat/completions", { method: "POST", json: makeBody("chat/completions", models[0], false) });
     const before = await ctx.adminRequest("/admin/api/logs?event=proxy.image_optimization");
     ctx.clearUpstreamRequests();
     const denied = await ctx.publicRequest("/v1/chat/completions", {
