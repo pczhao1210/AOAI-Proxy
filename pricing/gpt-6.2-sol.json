@@ -1,0 +1,108 @@
+{
+  "id": "gpt-6.2-sol",
+  "displayName": "GPT-6.2 Sol",
+  "provider": "azure-openai",
+  "family": "gpt-6.2",
+  "modelVersion": "2026-11-17",
+  "status": "ga",
+  "contextWindow": 1050000,
+  "maxInputTokens": 922000,
+  "maxOutputTokens": 128000,
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": [
+    "reasoning",
+    "vision",
+    "function-calling",
+    "structured-outputs",
+    "parallel-tool-calling",
+    "computer-use",
+    "streaming"
+  ],
+  "protocolProfiles": {
+    "chat/completions": {
+      "request": {
+        "outputTokenParameter": "max_completion_tokens"
+      },
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["low", "medium", "high", "xhigh"],
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-openai-global",
+    "status": "published",
+    "tiering": {
+      "basis": "inputTokensIncludingCache",
+      "method": "whole-request"
+    },
+    "tiers": [
+      {
+        "id": "short <=272K",
+        "deploymentType": "global-standard",
+        "contextClass": "short",
+        "promptTokensBelow": 272001,
+        "inputPer1mTokens": 2,
+        "cachedInputPer1mTokens": 0.1,
+        "cacheWritePer1mTokens": 2.5,
+        "outputPer1mTokens": 10,
+        "cacheWrite12hPer1mTokens": 5
+      },
+      {
+        "id": "long >272K",
+        "deploymentType": "global-standard",
+        "contextClass": "long",
+        "promptTokensAtLeast": 272001,
+        "inputPer1mTokens": 4,
+        "cachedInputPer1mTokens": 0.2,
+        "cacheWritePer1mTokens": 5,
+        "outputPer1mTokens": 15,
+        "cacheWrite12hPer1mTokens": 10
+      }
+    ]
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "routes": {
+      "chat/completions": "responses"
+    }
+  },
+  "sources": {
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-62",
+    "limits": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#gpt-62",
+    "lifecycle": "https://ai.azure.com/catalog/models/gpt-6.2-sol",
+    "reasoning": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#api-and-feature-support",
+    "reasoningReference": "https://developers.openai.com/api/docs/guides/latest-model",
+    "reasoningMeasurements": "https://artificialanalysis.ai/models/gpt-6-2-sol",
+    "parameters": "https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning#control-costs",
+    "pricing": "https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/gpt-6-2-astra-and-gpt-6-2-sol-now-generally-available-in-microsoft-foundry/4574122",
+    "tiering": "https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#short-context-and-long-context",
+    "tieringReference": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/"
+  },
+  "notes": [
+    "Azure lists version 2026-11-17 as generally available. Input and output maxima are individual limits sharing the context budget with reasoning tokens.",
+    "Azure lists native Chat and Responses, with functions and parallel tools on Responses only. The Responses-first Chat template route is proxy policy; capability metadata does not impose a local rejection.",
+    "Reasoning choices reflect independent measurements of this exact model through OpenAI's API, combined with Azure's GPT-6 protocol guidance: max is Responses-only and minimal is not a GPT-6 choice. OpenAI rejects none. Azure's exact-model effort list is not separately published; validation remains passthrough so the upstream decides.",
+    "protocolProfiles.chat/completions.reasoning.default and protocolProfiles.responses.reasoning.default are not published for this Azure deployment. OpenAI recommends starting at medium, which is not evidence of an omitted-parameter default.",
+    "Azure's GPT-6 feature matrix marks temperature, top_p and logprobs supported, while OpenAI's GPT-6.2 migration guidance says to omit them. The proxy does not reject these fields based on catalog metadata.",
+    "Microsoft's launch table supplies Azure Global Standard short/long rates, including separate 30-minute and 12-hour cache writes. pricing.tiers[].cacheWritePer1mTokens is the 30-minute rate; pricing.tiers[].cacheWrite12hPer1mTokens is reference metadata, not an executable runtime rate.",
+    "Automatic pricing is disabled because the runtime cannot select between 30-minute and 12-hour cache-write rates; otherwise opt-in 12-hour writes would be underpriced. Existing administrator overrides still take precedence.",
+    "Azure states that its short/long boundary matches OpenAI's. OpenAI's exact-model documentation selects the long tier for the whole request only above 272000 input tokens, including cache; exactly 272000 remains short. Data Zone and provisioned deployment prices are not included."
+  ]
+}

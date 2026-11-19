@@ -5,11 +5,12 @@ import { withTestContext } from "./lib/harness.js";
 
 test("MAI image edits preserve multipart bytes and route legacy model bindings", async () => {
   const image = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00, 0xfe]);
+  const secondImage = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01, 0x02]);
   let received;
   await withTestContext(async ctx => {
     const config = await ctx.readConfigFile();
     config.media = { ...config.media, http: { enabled: true } };
-    for (const pricingRef of ["mai-image-2.6", "mai-image-2.6-flash"]) {
+    for (const pricingRef of ["mai-image-2.6", "mai-image-2.6-flash", "mai-image-2.7", "mai-image-2.7-flash"]) {
       const definition = listPricingDefinitions().find(entry => entry.id === pricingRef);
       for (const legacy of [false, true]) config.models.push({ ...definition.proxyTemplate, id: `${pricingRef}-${legacy}`,
         targetModel: "my-image-deployment", upstream: config.upstreams[0].name,
@@ -20,10 +21,15 @@ test("MAI image edits preserve multipart bytes and route legacy model bindings",
     for (const model of config.models.filter(entry => entry.id.startsWith("mai-image-"))) {
       const form = new FormData();
       form.append("image", new Blob([image], { type: "image/png" }), "source.png");
+      if (model.id.startsWith("mai-image-2.7")) {
+        form.append("image", new Blob([secondImage], { type: "image/png" }), "reference.png");
+      }
       form.append("model", model.id);
       form.append("prompt", "Edit the label");
-      form.append("auto_aspect_ratio", "true");
-      form.append("web_grounding", "true");
+      if (model.id.startsWith("mai-image-2.6")) {
+        form.append("auto_aspect_ratio", "true");
+        form.append("web_grounding", "true");
+      }
       ctx.clearUpstreamRequests();
       const response = await ctx.publicRequest("/v1/images/edits", { method: "POST", body: form });
       assert.equal(response.status, 200, response.text);
@@ -32,12 +38,20 @@ test("MAI image edits preserve multipart bytes and route legacy model bindings",
       assert.equal(ctx.getUpstreamRequest().url, "/mai/v1/images/edits");
       assert.equal(ctx.getUpstreamRequest().headers["api-key"], "test-upstream-key");
       assert.equal(received.get("model"), "my-image-deployment");
-      assert.equal(received.get("auto_aspect_ratio"), "true");
-      assert.equal(received.get("web_grounding"), "true");
+      if (model.id.startsWith("mai-image-2.6")) {
+        assert.equal(received.get("auto_aspect_ratio"), "true");
+        assert.equal(received.get("web_grounding"), "true");
+      }
       const file = received.get("image");
       assert.equal(file.name, "source.png");
       assert.equal(file.type, "image/png");
       assert.deepEqual(Buffer.from(await file.arrayBuffer()), image);
+      if (model.id.startsWith("mai-image-2.7")) {
+        const files = received.getAll("image");
+        assert.equal(files.length, 2);
+        assert.equal(files[1].name, "reference.png");
+        assert.deepEqual(Buffer.from(await files[1].arrayBuffer()), secondImage);
+      }
     }
   }, { upstreamHandler: async ({ req, res, rawBody }) => {
     if (req.url !== "/mai/v1/images/edits") return false;
@@ -63,7 +77,7 @@ test("MAI native Image and Thinking wire contracts", async context => {
     const upstream = config.upstreams[0];
     upstream.errorPolicy = { nativePassthrough: true };
     config.observability.logs = { ...config.observability.logs, messageContentMode: "full", bufferSize: 500 };
-    for (const pricingRef of ["mai-image-2.6", "mai-image-2.6-flash", "mai-thinking-1"]) {
+    for (const pricingRef of ["mai-image-2.6", "mai-image-2.6-flash", "mai-image-2.7", "mai-image-2.7-flash", "mai-thinking-1"]) {
       const definition = listPricingDefinitions().find(entry => entry.id === pricingRef);
       config.models.push({ ...definition.proxyTemplate, id: `public-${pricingRef}`, targetModel: `deployment-${pricingRef}`, upstream: upstream.name });
     }
@@ -82,15 +96,19 @@ test("MAI native Image and Thinking wire contracts", async context => {
       assert.equal(request.headers["api-key"], "test-upstream-key");
       for (const name of ["authorization", "x-api-key", "ocp-apim-subscription-key"]) assert.equal(request.headers[name], undefined);
     };
-    for (const pricingRef of ["mai-image-2.6", "mai-image-2.6-flash"]) {
+    for (const pricingRef of ["mai-image-2.6", "mai-image-2.6-flash", "mai-image-2.7", "mai-image-2.7-flash"]) {
       await context.test(`${pricingRef} generation JSON`, async () => {
         ctx.clearUpstreamRequests();
-        const body = { model: `public-${pricingRef}`, prompt: "A poster", size: "1024x1024", web_grounding: true, auto_aspect_ratio: false, extension: { preserve: true } };
+        const dimension = pricingRef.startsWith("mai-image-2.7") ? 2048 : 1024;
+        const body = { model: `public-${pricingRef}`, prompt: "A poster", size: `${dimension}x${dimension}`,
+          ...(pricingRef.startsWith("mai-image-2.7") ? { background: "transparent" }
+            : { web_grounding: true, auto_aspect_ratio: false }),
+          extension: { preserve: true } };
         const response = await ctx.publicRequest("/v1/images/generations", { method: "POST", json: body });
         assert.equal(response.status, 200, response.text);
         assert.deepEqual(response.json, JSON.parse(upstreamPayload));
         const { size, ...expected } = body;
-        assertRequest("/mai/v1/images/generations", { ...expected, model: `deployment-${pricingRef}`, width: 1024, height: 1024 });
+        assertRequest("/mai/v1/images/generations", { ...expected, model: `deployment-${pricingRef}`, width: dimension, height: dimension });
       });
     }
 

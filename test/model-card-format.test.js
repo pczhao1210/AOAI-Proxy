@@ -127,7 +127,8 @@ test("output token parameter authoring requires an evidenced Chat field without 
 
 test("evidenced Chat cards preserve explicit token parameters through raw, loaded and imported Catalog forms", async () => {
   const ids = ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "gpt-5.2", "gpt-5.4",
-    "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "mai-thinking-1"];
+    "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+    "gpt-6.2-sol", "gpt-6.2-astra", "mai-thinking-1"];
   const { compileModelCatalog, resolveModelDescriptor } = await import("../src/model-catalog.js");
   const definitions = listPricingDefinitions();
   for (const id of ids) {
@@ -395,6 +396,27 @@ test("GPT-6.1 Sol raw card is complete without loader-supplied reasoning metadat
     assert.deepEqual(profile.levels, protocol === "responses"
       ? ["none", "low", "medium", "high", "xhigh", "max"]
       : ["none", "low", "medium", "high", "xhigh"]);
+  }
+});
+
+test("GPT-6.2 raw cards preserve reasoning choices without inventing Azure defaults", async () => {
+  for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+    const card = JSON.parse(await fs.readFile(new URL(`../pricing/${id}.json`, import.meta.url), "utf8"));
+    const { errors, warnings } = validateModelCard(card);
+    assert.deepEqual(errors, [], id);
+    assert.deepEqual(warnings, [
+      "protocolProfiles.chat/completions.reasoning.default: not recorded; do not assume a family default",
+      "protocolProfiles.responses.reasoning.default: not recorded; do not assume a family default"
+    ], id);
+    for (const protocol of card.interfaces) {
+      const profile = card.protocolProfiles[protocol].reasoning;
+      assert.equal(profile.parameter, protocol === "responses" ? "reasoning.effort" : "reasoning_effort");
+      assert.equal(profile.validation, "passthrough");
+      assert.equal(Object.hasOwn(profile, "default"), false);
+      assert.deepEqual(profile.levels, protocol === "responses"
+        ? ["low", "medium", "high", "xhigh", "max"]
+        : ["low", "medium", "high", "xhigh"]);
+    }
   }
 });
 

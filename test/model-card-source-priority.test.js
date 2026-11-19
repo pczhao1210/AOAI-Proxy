@@ -87,7 +87,9 @@ test("Azure image prices preserve separate media channels, missing text output a
     ["gpt-image-2.5-sunburst", 5, 8, 30, 1.25, 2],
     ["gpt-image-2", 5, 8, 30, 1.25, 2],
     ["mai-image-2.6", 5, 8, 38, undefined, undefined],
-    ["mai-image-2.6-flash", 1.75, 2.5, 19, undefined, undefined]
+    ["mai-image-2.6-flash", 1.75, 2.5, 19, undefined, undefined],
+    ["mai-image-2.7", 5, 8, 34, undefined, undefined],
+    ["mai-image-2.7-flash", 1.75, 2.5, 10, undefined, undefined]
   ]) {
     const card = await rawCard(file);
     assert.equal(card.pricing.sourceType, "azure-retail-prices-api", file);
@@ -101,6 +103,11 @@ test("Azure image prices preserve separate media channels, missing text output a
     }, file);
     assert.equal(Object.hasOwn(card.pricing, "outputPer1mTokens"), false, file);
     assert.equal(card.pricingCatalogEntry, null, file);
+    if (file.startsWith("mai-image-2.7")) {
+      assert.deepEqual([card.contextWindow, card.maxOutputTokens], [32000, 4096], file);
+      assert.equal(Object.hasOwn(card, "maxInputTokens"), false, file);
+      assert.match(card.sources.limits, /ai\.azure\.com\/catalog\/models\/MAI-Image-2\.7/, file);
+    }
     assert.deepEqual(validateModelCard(card).errors, [], file);
   }
   for (const file of ["flux-2-pro", "flux-2-flex"]) {
@@ -110,6 +117,19 @@ test("Azure image prices preserve separate media channels, missing text output a
     assert.equal(card.pricing.billingUnit, "megapixels", file);
     assert.equal(card.pricingCatalogEntry, null, file);
     assert.match(card.notes.join(" "), /pixelRules.*reference/);
+  }
+});
+
+test("MAI Image 2.7 Azure media prices require an explicit override", () => {
+  const definitions = listPricingDefinitions();
+  for (const id of ["mai-image-2.7", "mai-image-2.7-flash"]) {
+    const definition = definitions.find(card => card.id === id);
+    const model = { id, pricingRef: id, hostingMode: "azure" };
+    const upstream = { provider: "azure-openai" };
+    const target = "https://example.services.ai.azure.com/mai/v1/images/generations";
+    assert.equal(resolveMediaPricing({}, model, upstream, { definition }, target), null, id);
+    assert.deepEqual(resolveMediaPricing({}, { ...model, pricing: definition.pricing }, upstream, { definition }, target),
+      { ...definition.pricing, source: "model.pricing" }, id);
   }
 });
 

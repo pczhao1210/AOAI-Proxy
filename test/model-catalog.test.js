@@ -186,7 +186,8 @@ test("bundled Model Catalog definitions satisfy metadata and protocol contracts"
 
   for (const id of [
     "glm-5.3", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "claude-fable-5-1", "claude-opus-5-5",
-    "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "mai-image-2.6", "mai-image-2.6-flash",
+    "gpt-6.2-sol", "gpt-6.2-astra", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+    "mai-image-2.6", "mai-image-2.6-flash", "mai-image-2.7", "mai-image-2.7-flash",
     "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "gpt-6.1-terra",
     "glm-5.3-flash", "grok-4.7", "claude-haiku-5-5"
   ]) {
@@ -822,7 +823,9 @@ test("new image model cards preserve deployment identities and native request pa
     ["gpt-image-2.5-flare", "gpt-image-2.5-flare", "2026-09-09", "ga"],
     ["gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst", "2026-09-09", "ga"],
     ["mai-image-2.6", "MAI-Image-2.6", "2026-07-31", "preview"],
-    ["mai-image-2.6-flash", "MAI-Image-2.6-Flash", "2026-07-31", "preview"]
+    ["mai-image-2.6-flash", "MAI-Image-2.6-Flash", "2026-07-31", "preview"],
+    ["mai-image-2.7", "MAI-Image-2.7", "2026-11-02", "preview"],
+    ["mai-image-2.7-flash", "MAI-Image-2.7-Flash", "2026-11-02", "preview"]
   ];
   for (const [id, targetModel, modelVersion, status] of expectedModels) {
     const definition = definitionsById.get(id);
@@ -841,7 +844,8 @@ test("new image model cards preserve deployment identities and native request pa
       model: targetModel,
       prompt: "A geometric poster",
       size: "1024x1024",
-      ...(isMai ? { auto_aspect_ratio: true, web_grounding: true } : { quality: "max" })
+      ...(id.startsWith("mai-image-2.7") ? { background: "transparent" }
+        : isMai ? { auto_aspect_ratio: true, web_grounding: true } : { quality: "max" })
     };
     const originalBody = structuredClone(body);
     const prepared = prepareImageGenerationRequest({
@@ -868,7 +872,7 @@ test("new image model cards preserve deployment identities and native request pa
 
 test("MAI image route plans use the Foundry provider endpoint", () => {
   const bundledDefinitions = listPricingDefinitions();
-  for (const pricingRef of ["mai-image-2.6", "mai-image-2.6-flash"]) {
+  for (const pricingRef of ["mai-image-2.6", "mai-image-2.6-flash", "mai-image-2.7", "mai-image-2.7-flash"]) {
     const definition = bundledDefinitions.find((entry) => entry.id === pricingRef);
     const model = {
       ...definition.proxyTemplate,
@@ -888,12 +892,83 @@ test("MAI image route plans use the Foundry provider endpoint", () => {
     const plan = resolveRoutePlan({ routeKey: "images/generations", model, upstream, descriptor });
     assert.equal(plan.backendRouteKey, "images/generations");
     assert.equal(plan.targetUrl, "https://example.services.ai.azure.com/mai/v1/images/generations");
+    const extra = pricingRef.startsWith("mai-image-2.7") ? { background: "transparent" } : { web_grounding: true };
     assert.deepEqual(prepareImageGenerationRequest({
-      body: { model: model.targetModel, prompt: "A poster", size: "1024x1024", web_grounding: true },
+      body: { model: model.targetModel, prompt: "A poster", size: "1024x1024", ...extra },
       model,
       descriptor,
       ...plan
-    }), { model: model.targetModel, prompt: "A poster", width: 1024, height: 1024, web_grounding: true });
+    }), { model: model.targetModel, prompt: "A poster", width: 1024, height: 1024, ...extra });
+  }
+});
+
+test("GPT-6.2 cards import native profiles and retain safe, complete Azure price references", () => {
+  const definitions = listPricingDefinitions();
+  for (const [id, shortRates, longRates] of [
+    ["gpt-6.2-sol", [2, 0.1, 2.5, 5, 10], [4, 0.2, 5, 10, 15]],
+    ["gpt-6.2-astra", [8, 0.4, 10, 20, 40], [16, 0.8, 20, 40, 60]]
+  ]) {
+    const card = definitions.find(definition => definition.id === id);
+    assert.ok(card, id);
+    assert.equal(card.modelVersion, "2026-11-17");
+    assert.equal(card.status, "ga");
+    assert.deepEqual([card.contextWindow, card.maxInputTokens, card.maxOutputTokens], [1050000, 922000, 128000]);
+    assert.deepEqual(card.interfaces, ["chat/completions", "responses"]);
+    assert.equal(card.defaultInterface, "responses");
+    assert.deepEqual(card.inputModalities, ["text", "image"]);
+    assert.deepEqual(card.outputModalities, ["text"]);
+    assert.deepEqual(card.capabilities, [
+      "reasoning", "vision", "function-calling", "structured-outputs", "parallel-tool-calling", "computer-use", "streaming"
+    ]);
+    assert.equal(card.pricing.sourceType, "azure-openai-global");
+    assert.equal(card.pricing.status, "published");
+    assert.match(card.sources.pricing, /^https:\/\/techcommunity\.microsoft\.com\/blog\/azure-ai-foundry-blog\//);
+    assert.equal(card.sources.tieringReference, `https://developers.openai.com/api/docs/models/${id}`);
+    assert.deepEqual(card.pricing.tiers.map(tier => [
+      tier.inputPer1mTokens, tier.cachedInputPer1mTokens, tier.cacheWritePer1mTokens,
+      tier.cacheWrite12hPer1mTokens, tier.outputPer1mTokens
+    ]), [shortRates, longRates]);
+    assert.deepEqual(card.pricing.tiers.map(tier => [
+      tier.id, tier.promptTokensBelow ?? null, tier.promptTokensAtLeast ?? null
+    ]), [["short <=272K", 272001, null], ["long >272K", null, 272001]]);
+    const reference = compilePricingPolicy(card.pricing);
+    for (const [input, index] of [[271999, 0], [272000, 0], [272001, 1]]) {
+      const cost = calculateTokenCost(reference, {
+        input_tokens: input, output_tokens: 1000,
+        input_tokens_details: { cached_tokens: 1000, cache_write_tokens: 2000 }
+      }, { backendProtocol: "responses" });
+      const [inputRate, cachedRate, write30mRate, , outputRate] = index ? longRates : shortRates;
+      const expected = ((input - 3000) * inputRate + 1000 * cachedRate
+        + 2000 * write30mRate + 1000 * outputRate) / 1e6;
+      assert.equal(cost.tier.id, index ? "long >272K" : "short <=272K");
+      assert.equal(cost.costStatus, "priced");
+      assert.ok(Math.abs(cost.amount - expected) < 1e-12);
+      assert.equal(Object.hasOwn(reference.tiers[index].rates, "cacheWrite12hPer1mTokens"), false);
+    }
+    assert.equal(card.pricingCatalogEntry, null);
+    assert.equal(getModelCardPricing(card), null);
+    const importedConfig = { models: [] };
+    const model = buildModelFromPricingTemplate(card, "azure", importedConfig);
+    importedConfig.models.push(model);
+    upsertPricingCatalogEntry(importedConfig, card);
+    assert.equal(importedConfig.access?.pricingCatalog?.[id], undefined);
+    assert.equal(model.targetModel, id);
+    assert.equal(model.pricingRef, id);
+    assert.deepEqual(model.routes, { "chat/completions": "responses" });
+    const descriptor = resolveModelDescriptor(id, compileModelCatalog({ ...config, models: [model] }, definitions));
+    for (const protocol of card.interfaces) {
+      assert.deepEqual(getDescriptorProtocolProfile(descriptor, protocol), card.protocolProfiles[protocol]);
+      const plan = resolveRoutePlan({ routeKey: protocol, model, upstream: config.upstreams[0], descriptor });
+      assert.equal(plan.backendRouteKey, "responses");
+      assert.equal(plan.targetUrl, "https://example.openai.azure.com/openai/v1/responses");
+    }
+    for (const effort of ["none", "low", "medium", "high", "xhigh", "max", "future-effort"]) {
+      const request = chatToResponsesRequest({ messages: [{ role: "user", content: "hello" }], reasoning_effort: effort },
+        model.targetModel, descriptor);
+      assert.equal(request.reasoning.effort, effort);
+    }
+    const request = chatToResponsesRequest({ messages: [{ role: "user", content: "hello" }] }, model.targetModel, descriptor);
+    assert.equal(request.reasoning?.effort, undefined);
   }
 });
 

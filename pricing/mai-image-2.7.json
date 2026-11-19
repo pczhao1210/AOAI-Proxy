@@ -1,0 +1,70 @@
+{
+  "id": "mai-image-2.7",
+  "displayName": "MAI-Image-2.7",
+  "provider": "microsoft",
+  "family": "mai-image",
+  "modelVersion": "2026-11-02",
+  "status": "preview",
+  "contextWindow": 32000,
+  "maxOutputTokens": 4096,
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["images/generations", "images/edits"],
+  "defaultInterface": "images/generations",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["image"],
+  "capabilities": ["vision", "image-generation", "image-editing"],
+  "protocolProfiles": {
+    "images/generations": {
+      "request": {
+        "transport": "any",
+        "dropParameters": ["size"],
+        "sizeExpansion": {
+          "source": "size",
+          "width": "width",
+          "height": "height"
+        }
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-retail-prices-api",
+    "status": "published",
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 5,
+    "channels": {
+      "image": {
+        "inputPer1mTokens": 8,
+        "outputPer1mTokens": 34
+      }
+    }
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {
+    "targetModel": "MAI-Image-2.7",
+    "routes": {
+      "*": "mai-image",
+      "images/edits": "mai-image-edits"
+    }
+  },
+  "sources": {
+    "limits": "https://ai.azure.com/catalog/models/MAI-Image-2.7",
+    "capabilities": "https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-mai-image",
+    "lifecycle": "https://ai.azure.com/catalog/models/MAI-Image-2.7",
+    "imageLimits": "https://microsoft.ai/pdf/MAI-Image-2.7-Model-Card.pdf",
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "azurePricing": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/",
+    "announcement": "https://microsoft.ai/news/introducing-mai-image-2-7/"
+  },
+  "notes": [
+    "Azure lists version 2026-11-02 as Global Standard Preview with native text-to-image generation and image editing. The Foundry catalog publishes a 32000-token context and 4096 output-token limit; maxInputTokens is not independently published.",
+    "The mai-image route uses /mai/v1/images/generations on the Foundry services endpoint, and mai-image-edits uses /mai/v1/images/edits with multipart reference images. Set targetModel to the actual deployment name; HTTP media must be enabled.",
+    "Generation expands an explicit WIDTHxHEIGHT size into width and height. Microsoft documents transparent backgrounds for this model; generation size expansion does not apply to edits.",
+    "Microsoft's model card lists a maximum of 4194304 output pixels, equivalent to 2048x2048; either dimension can exceed 2048 within that area. The edits API accepts up to five JPEG or PNG reference images.",
+    "Microsoft's MAI API guide documents auto_aspect_ratio and web_grounding for the 2.6 models, not this 2.7 deployment. The proxy does not locally reject native parameters on that basis.",
+    "Azure Retail Prices API MAI Models Global consumption meters checked 2026-11-18 separately publish text input, image input and image output per 1M tokens, effective 2026-11-01. Cache and text-output prices are not published in these meters.",
+    "Scalar text pricing and automatic Azure media price fallback are disabled. The media rates are references unless an administrator supplies a media pricing override and sufficient usage is reported."
+  ]
+}

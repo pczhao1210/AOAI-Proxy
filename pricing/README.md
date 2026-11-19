@@ -259,6 +259,26 @@ Run the focused source, import and safety contracts with:
 node --test test/model-card-source-priority.test.js test/model-card-format.test.js test/model-catalog.test.js test/pricing-sync.test.js test/media-policy.test.js test/usage-accounting.test.js
 ```
 
+#### 2026-11-18 catalog additions
+
+- [MAI Image 2.7](mai-image-2.7.json) and
+  [MAI Image 2.7 Flash](mai-image-2.7-flash.json) use Azure's native image
+  generation and editing routes. Their exact Global Standard token-channel
+  prices come from Azure Retail Prices API. Both are Preview; their separate
+  maximum input-token limits remain unpublished. The runtime does not
+  automatically apply Azure media rates; administrators must configure a
+  media price override, and sufficient usage must be reported.
+- [GPT-6.2 Sol](gpt-6.2-sol.json) and [GPT-6.2 Astra](gpt-6.2-astra.json)
+  use Azure's generally available deployments and Responses-first templates.
+  Their effort choices combine exact-model OpenAI API measurements with
+  Azure's GPT-6 protocol guidance; Azure's exact-model lists and omitted
+  defaults remain unverified, and validation is passthrough. The cards
+  record Azure Global Standard short/long rates and the 30-minute and 12-hour
+  cache-write prices. The 12-hour `cacheWrite12hPer1mTokens` fields are
+  reference-only: the current runtime cannot select write rates by these TTLs,
+  so automatic pricing is disabled rather than underpricing a 12-hour write.
+  Existing administrator price overrides still take precedence.
+
 #### 2026-11-06 catalog addition
 
 - [Kimi K3.1 Pro](kimi-k3.1-pro.json) selects Azure-direct `Kimi-K3.1-Pro`,

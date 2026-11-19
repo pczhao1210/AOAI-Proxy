@@ -47,6 +47,20 @@ test("xAI Grok prices remain references and do not create automatic Azure costs"
   }
 });
 
+test("GPT-6.2 cache TTL reference prices do not create automatic costs", () => {
+  for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+    const config = { models: [{ id, pricingRef: id }] };
+    for (const input of [272000, 272001]) {
+      const { cost } = settle(config, {
+        input_tokens: input, output_tokens: 1000,
+        input_tokens_details: { cached_tokens: 1000, cache_write_tokens: 2000 }
+      }, id, { backendRouteKey: "responses" });
+      assert.equal(cost.costStatus, "unknown", id);
+      assert.equal(cost.estimatedCostAmount, null, id);
+    }
+  }
+});
+
 test("GPT catalog policies select the whole-request rate only above 272000 input tokens", () => {
   for (const [id, shortRates, longRates] of [
     ["gpt-5.4", [2.5, 0.25, 15], [5, 0.5, 22.5]],

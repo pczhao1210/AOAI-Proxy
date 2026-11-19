@@ -167,6 +167,59 @@ test("remote compact cards preserve source form and activate complete template a
   }
 });
 
+test("remote sync retains new model routes, reference prices and disabled automatic token pricing", async () => {
+  const ids = ["gpt-6.2-sol", "gpt-6.2-astra", "mai-image-2.7", "mai-image-2.7-flash"];
+  const cards = await Promise.all(ids.map(async id => JSON.parse(
+    await fs.readFile(new URL(`../pricing/${id}.json`, import.meta.url), "utf8")
+  )));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-new-card-sync-"));
+  const previousPricingDir = process.env.PRICING_DIR;
+  const previousFetch = globalThis.fetch;
+  const config = {
+    upstreams: [{
+      name: "azure", provider: "azure-openai", baseUrl: "https://example.openai.azure.com",
+      routes: {
+        "chat/completions": "/openai/v1/chat/completions",
+        responses: "/openai/v1/responses",
+        "mai-image": "/mai/v1/images/generations",
+        "mai-image-edits": "/mai/v1/images/edits"
+      }
+    }],
+    models: []
+  };
+  for (const card of cards) config.models.push(buildModelFromPricingTemplate(card, "azure", config));
+  const files = cards.map(card => ({
+    type: "file", name: `${card.id}.json`, download_url: `https://download.test/${card.id}.json`
+  }));
+  const downloads = new Map(files.map((file, index) => [file.download_url, cards[index]]));
+  process.env.PRICING_DIR = path.join(tempDir, "pricing");
+  globalThis.fetch = async url => {
+    const key = String(url);
+    if (key.includes("/contents/")) return new Response(JSON.stringify(files));
+    assert.ok(downloads.has(key), `unexpected download: ${key}`);
+    return new Response(JSON.stringify(downloads.get(key)));
+  };
+  try {
+    const transaction = createModelCatalogSyncTransaction(() => config, getConfiguredModelBindingIssues);
+    await syncPricingDefinitionsFromGitHub({ owner: "test", repo: "catalog", ref: "new-cards" }, transaction);
+    for (const raw of cards) {
+      const saved = JSON.parse(await fs.readFile(path.join(process.env.PRICING_DIR, `${raw.id}.json`), "utf8"));
+      assert.deepEqual(saved, raw, raw.id);
+      const card = findPricingDefinitionForModel({ pricingRef: raw.id });
+      assert.deepEqual(card.pricing, raw.pricing, raw.id);
+      assert.equal(card.pricingCatalogEntry, null, raw.id);
+      assert.equal(compileDefinitionPricing(card).pricing, null, raw.id);
+      assert.equal(resolveModelDescriptor(raw.id).catalogId, raw.id);
+      assert.deepEqual(config.models.find(model => model.id === raw.id).routes, raw.proxyTemplate.routes, raw.id);
+    }
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousPricingDir == null) delete process.env.PRICING_DIR;
+    else process.env.PRICING_DIR = previousPricingDir;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("remote Model Catalog sync swaps directory and snapshot only after candidate compilation", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-pricing-sync-"));
   const pricingDir = path.join(tempDir, "pricing");
