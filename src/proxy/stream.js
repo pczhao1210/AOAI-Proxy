@@ -447,13 +447,13 @@ function mergeUsageSnapshot(current, update) {
   return merged;
 }
 
-function flushSseUsage(usageState, onUsage) {
+function flushSseUsage(usageState, onUsage, metadata = {}) {
   if (usageState.recorded) return;
   const usage = usageState.anthropicUsage
     ? normalizeAnthropicUsage(usageState.anthropicUsage)
     : usageState.genericUsage;
   if (!usage) return;
-  onUsage?.(usage);
+  onUsage?.(usage, undefined, metadata);
   usageState.recorded = true;
 }
 
@@ -683,12 +683,14 @@ export async function streamPassthrough({
       }
     }
   } catch (error) {
+    if (clientDisconnected) flushSseUsage(usageState, onUsage, { complete: false });
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
   } finally {
     watchdog.dispose();
     await cancellation.finish();
   }
   if (clientDisconnected) {
+    flushSseUsage(usageState, onUsage, { complete: false });
     return {
       ok: false,
       beforeFirstChunk: !firstChunkSeen,
@@ -799,9 +801,9 @@ export async function streamShim({
     if (!usage || usageRecorded) return;
     pendingUsage = mergeUsageSnapshot(pendingUsage, usage);
   };
-  const flushUsage = () => {
+  const flushUsage = (metadata = {}) => {
     if (!pendingUsage || usageRecorded) return;
-    onUsage?.(pendingUsage);
+    onUsage?.(pendingUsage, undefined, metadata);
     usageRecorded = true;
   };
   const finishChatCompletionStream = async (finishReason = sawToolCall ? "tool_calls" : "stop") => {
@@ -1892,12 +1894,14 @@ export async function streamShim({
       if (sourceTerminalSeen || reachedEof) break;
     }
   } catch (error) {
+    if (clientDisconnected) flushUsage({ complete: false });
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
   } finally {
     watchdog.dispose();
     await cancellation.finish();
   }
   if (clientDisconnected) {
+    flushUsage({ complete: false });
     return {
       ok: false,
       beforeFirstChunk: !firstChunkSeen,

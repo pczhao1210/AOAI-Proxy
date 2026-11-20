@@ -124,6 +124,7 @@ test("upstream JSON/SSE usage reconciles after database outage, hard restart and
   runtimeUrl.username = role;
   runtimeUrl.password = randomUUID();
   const database = decodeURIComponent(runtimeUrl.pathname.slice(1));
+  const upstreamReported = { events: 0, tokens: 0 };
   let ctx;
   t.after(async () => {
     await ctx?.cleanup();
@@ -148,11 +149,44 @@ test("upstream JSON/SSE usage reconciles after database outage, hard restart and
       config.models = [{
         id: "recovery-chat", targetModel: "recovery-upstream", pricingRef: "gpt-5-mini", upstream: "mock-foundry",
         routes: { "*": "chat/completions" }, pricing: { inputPer1mTokens: 1, outputPer1mTokens: 2 }
+      }, {
+        id: "recovery-responses", targetModel: "recovery-responses-upstream", pricingRef: "gpt-5-mini", upstream: "mock-foundry",
+        routes: { "*": "responses" }, pricing: { inputPer1mTokens: 1, outputPer1mTokens: 2 }
       }];
     },
-    upstreamHandler({ res, body }) {
+    async upstreamHandler({ req, res, body }) {
+      if (body?.model === "recovery-responses-upstream") {
+        const usage = { input_tokens: 7, output_tokens: 4, total_tokens: 11 };
+        upstreamReported.events++;
+        upstreamReported.tokens += usage.total_tokens;
+        const response = {
+          id: "response", object: "response", model: body.model, status: "completed",
+          output: [{ id: "message", type: "message", role: "assistant", status: "completed",
+            content: [{ type: "output_text", text: "ok", annotations: [] }] }],
+          usage
+        };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(response));
+        return true;
+      }
       if (body?.model !== "recovery-upstream") return false;
       const usage = { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 };
+      upstreamReported.events++;
+      upstreamReported.tokens += usage.total_tokens;
+      const isClientDisconnect = body.stream && body.messages?.some(message => message.content === "abort after usage");
+      if (isClientDisconnect) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ id: "disconnect", object: "chat.completion.chunk", model: body.model,
+          choices: [{ index: 0, delta: {}, finish_reason: null }], usage })}\n\n`);
+        await delay(30);
+        if (!res.destroyed) {
+          res.write(`data: ${JSON.stringify({ id: "disconnect", object: "chat.completion.chunk", model: body.model,
+            choices: [{ index: 0, delta: { content: "partial" }, finish_reason: null }] })}\n\n`);
+          await Promise.race([new Promise(resolve => res.once("close", resolve)), delay(1000)]);
+        }
+        if (!res.destroyed) res.end();
+        return true;
+      }
       res.writeHead(200, { "content-type": body.stream ? "text/event-stream" : "application/json" });
       res.end(body.stream
         ? `data: ${JSON.stringify({ id: "stream", object: "chat.completion.chunk", model: body.model, choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`
@@ -163,18 +197,64 @@ test("upstream JSON/SSE usage reconciles after database outage, hard restart and
   const request = (messages = false, stream = false) => ctx.publicRequest(messages ? "/v1/messages" : "/v1/chat/completions", {
     method: "POST", json: { model: "recovery-chat", messages: [{ role: "user", content: "hello" }], max_tokens: 64, stream }
   });
+  const responsesRequest = () => ctx.publicRequest("/v1/responses", {
+    method: "POST", json: { model: "recovery-responses", input: "hello", max_output_tokens: 64 }
+  });
+  const cancelAfterContent = async () => {
+    const config = await ctx.readConfigFile();
+    const response = await fetch(`${ctx.baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.apiKeys[0].key}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "recovery-chat", messages: [{ role: "user", content: "abort after usage" }], max_tokens: 64, stream: true
+      })
+    });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      assert.equal(done, false, "Upstream should send content before the client cancels");
+      pending += decoder.decode(value, { stream: true });
+      let boundary;
+      while ((boundary = pending.indexOf("\n\n")) >= 0) {
+        const event = pending.slice(0, boundary);
+        pending = pending.slice(boundary + 2);
+        const data = event.split("\n").find(line => line.startsWith("data: "))?.slice(6);
+        if (data && data !== "[DONE]" && JSON.parse(data).choices?.some(choice => choice.delta?.content)) {
+          await reader.cancel();
+          return;
+        }
+      }
+    }
+  };
   const sync = () => ctx.adminRequest("/admin/api/runtime/sync", { method: "POST", headers: { "x-aoai-admin-csrf": "1" } });
   const totals = async () => {
     const { rows } = await admin.query(`SELECT COUNT(*) AS events, COUNT(DISTINCT event_uid) AS identities,
-      SUM(total_tokens) AS tokens, SUM(estimated_cost_amount) AS cost
+      SUM(total_tokens) AS tokens, SUM(estimated_cost_amount) AS cost,
+      json_agg(json_build_object('model', model_id, 'prompt', prompt_tokens,
+        'completion', completion_tokens, 'total', total_tokens,
+        'source', payload->>'usageSource', 'estimated', payload->>'usageEstimated',
+        'costStatus', payload->'textCost'->>'costStatus') ORDER BY event_id) AS details
       FROM ${identifier(schema)}.runtime_events WHERE event_type = 'usage'`);
-    return Object.fromEntries(Object.entries(rows[0]).map(([key, value]) => [key, Number(value)]));
+    return {
+      ...Object.fromEntries(["events", "identities", "tokens", "cost"].map(key => [key, Number(rows[0][key])])),
+      details: rows[0].details
+    };
   };
   const refused = await request(true);
   assert.equal(refused.status, 502, refused.text);
   assert.equal(refused.json.error.code, "UnsupportedProtocolShimResponse");
   await sync();
+  assert.deepEqual(upstreamReported, { events: 1, tokens: 5 });
   assert.equal((await totals()).tokens, 5, "Strict conversion rejection must retain reported upstream usage");
+  const nativeResponses = await responsesRequest();
+  assert.equal(nativeResponses.status, 200, nativeResponses.text);
+  assert.equal(nativeResponses.json.usage.total_tokens, 11);
+  await sync();
+  assert.deepEqual(upstreamReported, { events: 2, tokens: 16 });
+  assert.equal((await totals()).tokens, upstreamReported.tokens, "Native Responses usage must reconcile with the upstream report");
   const loaded = await ctx.adminRequest("/admin/api/config");
   const persistedBefore = await ctx.readConfigFile();
   loaded.json.observability.runtimeStore.localBufferPath = path.join(ctx.tempDir, "different-buffer.ndjson");
@@ -191,10 +271,11 @@ test("upstream JSON/SSE usage reconciles after database outage, hard restart and
   const stream = await request(false, true);
   assert.equal(stream.status, 200);
   assert.match(stream.text, /data: \[DONE\]/);
+  await cancelAfterContent();
   assert.equal((await request(true)).status, 502);
   const offline = await sync();
   assert.ok(offline.json.runtime.runtimeStore.persistedEventCount > 0, offline.text);
-  assert.equal((await totals()).tokens, 5);
+  assert.equal((await totals()).tokens, 16, "Database outage must not write new usage before replay");
   await ctx.restartProxy({ force: true });
   const recoveredSpool = await ctx.adminRequest("/admin/api/runtime");
   assert.ok(recoveredSpool.json.runtime.runtimeStore.persistedEventCount > 0);
@@ -206,18 +287,23 @@ test("upstream JSON/SSE usage reconciles after database outage, hard restart and
   }
   await sync();
   let ledger = await totals();
-  assert.equal(ledger.events, 4);
-  assert.equal(ledger.identities, 4);
-  assert.equal(ledger.tokens, 20);
-  assert.ok(Math.abs(ledger.cost - 28 / 1e6) < 1e-12, JSON.stringify(ledger));
+  assert.deepEqual(upstreamReported, { events: 6, tokens: 36 });
+  assert.equal(ledger.events, upstreamReported.events);
+  assert.equal(ledger.identities, upstreamReported.events);
+  assert.equal(ledger.tokens, upstreamReported.tokens, JSON.stringify(ledger.details));
+  assert.deepEqual(ledger.details.filter(event => event.costStatus === "partial"), [{
+    model: "recovery-chat", prompt: 3, completion: 2, total: 5,
+    source: "upstream", estimated: "false", costStatus: "partial"
+  }], "A client disconnect must retain received upstream usage, marked incomplete rather than estimated");
+  assert.ok(Math.abs(ledger.cost - 50 / 1e6) < 1e-12, JSON.stringify(ledger));
   const stats = await ctx.adminRequest("/admin/api/stats");
-  assert.equal(stats.json.totals.totalTokens, 20);
+  assert.equal(stats.json.totals.totalTokens, upstreamReported.tokens);
   assert.equal(stats.json.totals.errors, 2);
   assert.equal((await request()).status, 200);
   await ctx.restartProxy();
   ledger = await totals();
-  assert.equal(ledger.events, 5);
-  assert.equal(ledger.identities, 5);
-  assert.equal(ledger.tokens, 25);
-  assert.ok(Math.abs(ledger.cost - 35 / 1e6) < 1e-12);
+  assert.equal(ledger.events, upstreamReported.events);
+  assert.equal(ledger.identities, upstreamReported.events);
+  assert.equal(ledger.tokens, upstreamReported.tokens);
+  assert.ok(Math.abs(ledger.cost - 57 / 1e6) < 1e-12);
 });

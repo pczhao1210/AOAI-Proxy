@@ -121,22 +121,32 @@ overflow while an earlier batch is in flight. Runtime buffer path changes are re
 `test:perf:offline` enforces [runtime-performance-baseline.json](runtime-performance-baseline.json)
 and prints a JSON report. It uses only a mock upstream, disposable proxy, and loopback PostgreSQL;
 it consumes 40 complete 1 MiB SSE streams at concurrency eight, measures the proxy process's
-post-warmup event-loop delay, writes/drains 1000 buffered events, and reads statistics/governance
-with fresh client pools. "Cold" means new client connections, **not** an evicted database disk cache.
-The benchmark requires Linux/POSIX signals for the test-only event-loop probe.
+post-warmup event-loop delay, terminates a dedicated test-only database role while buffering
+1000 events locally, restores access and drains them, and reads statistics/governance with fresh
+client pools. The report includes the local spool's average bytes per event, actual outage-buffer
+time, drain time, and comparable latency deltas against the recorded reference. "Cold" means new
+client connections, **not** an evicted database disk cache. The benchmark requires Linux/POSIX
+signals and permission to create/drop a role and schema in the disposable database.
 
-A representative Node 24.22.1 run on the shared Linux test host measured:
+CI runs this gate and retains each JSON report as a 90-day workflow artifact, so measurements from
+successive runs can be compared. The checked-in reference predates the outage-backed spool case;
+its spool metrics are deliberately excluded from percentage comparisons.
+
+A Node 24.22.1 run on the shared Linux test host measured:
 
 | Metric | Measured | Regression ceiling |
 | --- | ---: | ---: |
-| First content token P95 / P99 | 150.35 / 152.66 ms | P99 1000 ms |
-| Proxy event-loop delay P99 | 88.01 ms | 100 ms |
-| Cold statistics + governance P95 | 65.40 ms | 1000 ms |
-| Spool write amplification (including compaction) | 1.40x | 2.50x |
-| Drain 1000 events | 1378.51 ms | 10000 ms |
+| First content token P95 / P99 | 133.23 / 134.23 ms | P99 1000 ms |
+| Proxy event-loop delay P99 | 78.45 ms | 100 ms |
+| Fresh-connection statistics + governance P95 | 89.52 ms | 1000 ms |
+| Spool bytes per buffered event | 1921.90 bytes | 4096 bytes |
+| Spool write amplification (including compaction) | 1.00x | 2.50x |
+| Buffer 1000 events during database outage | 89.29 ms | 5000 ms |
+| Drain 1000 events | 329.33 ms | 10000 ms |
 
-This is a reproducible coarse regression gate, not a production throughput/SLO claim or a
-before/after speedup estimate. Retain each JSON result and account for shared-host load.
+This is a reproducible coarse regression gate, not a production throughput/SLO claim. The
+checked-in reference is a prior measurement rather than an optimization claim; account for shared-host load.
+The measurements above are one local run; CI retains each later report as a workflow artifact.
 It does not establish real-provider latency, provider billing, or deployment acceptance.
 
 Whole-request pricing tests cover exact interval boundaries, cache-inclusive

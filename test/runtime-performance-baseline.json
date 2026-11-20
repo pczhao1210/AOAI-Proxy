@@ -5,11 +5,23 @@
   "frameTextBytes": 1024,
   "bufferedEvents": 1000,
   "coldQuerySamples": 12,
+  "reference": {
+    "commit": "3292c04",
+    "node": "v24.22.1",
+    "firstTokenP99Ms": 152.66,
+    "eventLoopP99Ms": 88.01,
+    "coldStatsP95Ms": 65.4,
+    "spoolWriteAmplification": 1.4,
+    "spoolDrainMs": 1378.51,
+    "note": "Recorded before outage-backed spool benchmarking; spool metrics are not directly comparable."
+  },
   "limits": {
     "firstTokenP99Ms": 1000,
     "eventLoopP99Ms": 100,
     "coldStatsP95Ms": 1000,
     "spoolWriteAmplification": 2.5,
+    "spoolBytesPerEvent": 4096,
+    "spoolOutageBufferMs": 5000,
     "spoolDrainMs": 10000
   },
   "notes": "Offline regression ceilings, not a capacity SLO. Node 24, disposable loopback PostgreSQL, eight concurrent 1 MiB SSE responses, 1000 buffered events. Shared-host load can affect latency; retain the measured report."

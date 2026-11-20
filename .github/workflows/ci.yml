@@ -42,6 +42,19 @@ jobs:
       - run: npm run test:unit
         env:
           RUNTIME_MEDIA_TEST_DATABASE_URL: postgresql://postgres:local-ci-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/aoai_test
+      - name: Run offline runtime performance regression
+        run: npm run test:perf:offline
+        env:
+          RUNTIME_MEDIA_TEST_DATABASE_URL: postgresql://postgres:local-ci-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/aoai_test
+          RUNTIME_PERF_REPORT_PATH: ${{ runner.temp }}/runtime-performance-report.json
+      - name: Retain performance report
+        if: always()
+        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v4.6.2
+        with:
+          name: runtime-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-performance-report.json
+          if-no-files-found: ignore
+          retention-days: 90
       - run: npm run test:routes
       - name: Check admin compilation without replacing committed assets
         run: ./node_modules/.bin/vite build --config admin-ui/vite.config.js --outDir "$RUNNER_TEMP/aoai-admin-build"

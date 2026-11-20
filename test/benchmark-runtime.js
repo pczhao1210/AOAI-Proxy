@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -16,6 +17,12 @@ assert.ok(databaseUrl, "Supply a disposable RUNTIME_MEDIA_TEST_DATABASE_URL; no 
 assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(new URL(databaseUrl).hostname), "Only loopback test PostgreSQL is allowed");
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-runtime-benchmark-"));
 const schema = `benchmark_${process.pid}_${Date.now()}`;
+const role = `${schema}_writer`;
+const identifier = value => quoteIdentifier(value, "benchmark identifier");
+const runtimeUrl = new URL(databaseUrl);
+runtimeUrl.username = role;
+runtimeUrl.password = randomUUID();
+const database = decodeURIComponent(runtimeUrl.pathname.slice(1));
 const admin = new pg.Pool({ connectionString: databaseUrl });
 const envNames = ["RUNTIME_DB_CONNECTION_STRING", "CONFIG_DB_CONNECTION_STRING", "DATABASE_URL"];
 const previousEnvironment = Object.fromEntries(envNames.map(name => [name, process.env[name]]));
@@ -24,8 +31,13 @@ const originalRename = fs.rename;
 const report = { node: process.version, platform: `${os.platform()} ${os.arch()}`, settings: baseline };
 const percentile = (values, rank) => Number([...values].sort((a, b) => a - b)[Math.ceil(values.length * rank / 100) - 1].toFixed(2));
 let ctx;
+let roleCreated = false;
 
 try {
+  await admin.query(`CREATE ROLE ${identifier(role)} LOGIN PASSWORD '${runtimeUrl.password}'`);
+  roleCreated = true;
+  await admin.query(`GRANT CREATE ON DATABASE ${identifier(database)} TO ${identifier(role)}`);
+  await admin.query(`CREATE SCHEMA ${identifier(schema)} AUTHORIZATION ${identifier(role)}`);
   const probeFile = path.join(dir, "event-loop.json");
   const text = "x".repeat(baseline.frameTextBytes);
   const frame = `data: ${JSON.stringify({ id: "benchmark", object: "chat.completion.chunk", model: "gpt-5-mini", choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\n`;
@@ -107,8 +119,13 @@ try {
   for (const name of envNames) delete process.env[name];
   const spool = path.join(dir, "pending.ndjson");
   const runtimeConfig = {
-    persistence: { configStore: { mode: "database", filePath: path.join(dir, "config.json") } },
-    observability: { runtimeStore: { schema, localBufferPath: spool, batchSize: 100, flushIntervalMs: 60000 } },
+    persistence: {
+      configStore: {
+        mode: "database", filePath: path.join(dir, "config.json"),
+        database: { pool: { connectionTimeoutMs: 300, max: 2 } }
+      }
+    },
+    observability: { runtimeStore: { schema, localBufferPath: spool, batchSize: baseline.bufferedEvents + 1, flushIntervalMs: 60000 } },
     apiKeys: Array.from({ length: 100 }, (_, index) => ({ id: `key-${index}` }))
   };
   let appendBytes = 0;
@@ -123,36 +140,49 @@ try {
     if (destination === `${spool}.offset`) checkpointBytes += (await fs.stat(source)).size;
     return originalRename.call(this, source, destination);
   };
+  process.env.RUNTIME_DB_CONNECTION_STRING = runtimeUrl.toString();
   store.setRuntimeStoreConfig(runtimeConfig);
+  store.recordRuntimeUsage(runtimeConfig, {
+    keyId: "key-initial", modelId: "model-initial", totalTokens: 3, estimatedCostAmount: 0.01
+  });
+  const initialized = await store.drainRuntimeEvents();
+  assert.equal(initialized.pendingMemoryEvents, 0);
+  assert.equal(initialized.pendingPersistedEvents, 0);
+  assert.equal(Number((await admin.query(`SELECT COUNT(*) AS count FROM ${identifier(schema)}.runtime_events`)).rows[0].count), 1);
+
+  await admin.query(`ALTER ROLE ${identifier(role)} NOLOGIN`);
+  await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1", [role]);
   const appendStart = performance.now();
-  for (let offset = 0; offset < baseline.bufferedEvents; offset += 25) {
-    for (let index = offset; index < Math.min(offset + 25, baseline.bufferedEvents); index++) {
-      store.recordRuntimeUsage(runtimeConfig, {
-        keyId: `key-${index % 100}`, modelId: `model-${index % 10}`, totalTokens: 3, estimatedCostAmount: 0.01,
-        usageEstimationReason: `benchmark-${"x".repeat(1024)}`
-      });
-    }
-    const expected = Math.min(offset + 25, baseline.bufferedEvents);
-    const deadline = performance.now() + 5000;
-    while (store.getRuntimeStoreInfo().persistedEventCount < expected && performance.now() < deadline) await yieldTurn();
-    assert.equal(store.getRuntimeStoreInfo().persistedEventCount, expected);
+  for (let index = 0; index < baseline.bufferedEvents; index++) {
+    store.recordRuntimeUsage(runtimeConfig, {
+      keyId: `key-${index % 100}`, modelId: `model-${index % 10}`, totalTokens: 3, estimatedCostAmount: 0.01,
+      usageEstimationReason: `benchmark-${"x".repeat(1024)}`
+    });
   }
+  const failedFlush = await store.flushRuntimeEvents();
+  assert.ok(failedFlush.error, "PostgreSQL must be unavailable while events spill to the local buffer");
+  const persistedDeadline = performance.now() + 5000;
+  while (store.getRuntimeStoreInfo().persistedEventCount !== baseline.bufferedEvents && performance.now() < persistedDeadline) {
+    await yieldTurn();
+  }
+  assert.equal(store.getRuntimeStoreInfo().persistedEventCount, baseline.bufferedEvents);
   const appendMs = performance.now() - appendStart;
   const initialBytes = (await fs.stat(spool)).size;
-  process.env.RUNTIME_DB_CONNECTION_STRING = databaseUrl;
+  await admin.query(`ALTER ROLE ${identifier(role)} LOGIN`);
   const drainStart = performance.now();
   store.setRuntimeStoreConfig(runtimeConfig, { refreshLocalBuffer: false });
   const drained = await store.drainRuntimeEvents();
   const drainMs = performance.now() - drainStart;
   assert.equal(drained.pendingMemoryEvents, 0);
   assert.equal(drained.pendingPersistedEvents, 0);
-  const ledger = await admin.query(`SELECT COUNT(*) AS count, SUM(total_tokens) AS tokens FROM ${quoteIdentifier(schema, "test schema")}.runtime_events`);
-  assert.equal(Number(ledger.rows[0].count), baseline.bufferedEvents);
-  assert.equal(Number(ledger.rows[0].tokens), baseline.bufferedEvents * 3);
+  const ledger = await admin.query(`SELECT COUNT(*) AS count, SUM(total_tokens) AS tokens FROM ${identifier(schema)}.runtime_events`);
+  assert.equal(Number(ledger.rows[0].count), baseline.bufferedEvents + 1);
+  assert.equal(Number(ledger.rows[0].tokens), (baseline.bufferedEvents + 1) * 3);
   report.spool = {
     events: baseline.bufferedEvents, initialBytes, appendBytes, compactionBytes, checkpointBytes,
+    bytesPerEvent: Number((initialBytes / baseline.bufferedEvents).toFixed(2)),
     writeAmplification: Number(((appendBytes + compactionBytes) / initialBytes).toFixed(3)),
-    appendMs: Number(appendMs.toFixed(2)), drainMs: Number(drainMs.toFixed(2))
+    outageBufferMs: Number(appendMs.toFixed(2)), drainMs: Number(drainMs.toFixed(2))
   };
   const queries = [];
   for (let index = 0; index < baseline.coldQuerySamples; index++) {
@@ -164,19 +194,33 @@ try {
     ]);
     queries.push(performance.now() - start);
     assert.equal(snapshot.snapshot.source, "database");
-    assert.equal(snapshot.totals.totalTokens, baseline.bufferedEvents * 3);
+    assert.equal(snapshot.totals.totalTokens, (baseline.bufferedEvents + 1) * 3);
     assert.equal(governance.keys.length, 100);
     assert.ok(governance.keys.every(key => key.runtime.known));
   }
   report.coldStatistics = { samples: queries.length, p95Ms: percentile(queries, 95), p99Ms: percentile(queries, 99) };
-  report.limitations = "Synthetic loopback load, cold client connections (not cold PostgreSQL disk cache), and shared-host timing. No live-provider, deployment capacity or billing acceptance.";
+  report.comparison = {
+    referenceCommit: baseline.reference.commit,
+    percentChange: {
+      firstTokenP99: Number(((report.streaming.firstTokenP99Ms / baseline.reference.firstTokenP99Ms - 1) * 100).toFixed(2)),
+      eventLoopP99: Number(((report.streaming.eventLoop.p99Ms / baseline.reference.eventLoopP99Ms - 1) * 100).toFixed(2)),
+      coldStatisticsP95: Number(((report.coldStatistics.p95Ms / baseline.reference.coldStatsP95Ms - 1) * 100).toFixed(2))
+    },
+    note: "The reference predates the real-outage spool measurement; spool metrics are not compared across runs."
+  };
+  report.limitations = "Synthetic loopback load, cold client connections (not cold PostgreSQL disk cache), and shared-host timing. The outage is simulated by terminating a dedicated test-only PostgreSQL role. No live-provider, deployment capacity or billing acceptance.";
   console.log(JSON.stringify(report, null, 2));
+  if (process.env.RUNTIME_PERF_REPORT_PATH) {
+    await fs.writeFile(process.env.RUNTIME_PERF_REPORT_PATH, `${JSON.stringify(report, null, 2)}\n`);
+  }
   if (process.argv.includes("--check")) {
     const measured = {
       firstTokenP99Ms: report.streaming.firstTokenP99Ms,
       eventLoopP99Ms: report.streaming.eventLoop.p99Ms,
       coldStatsP95Ms: report.coldStatistics.p95Ms,
       spoolWriteAmplification: report.spool.writeAmplification,
+      spoolBytesPerEvent: report.spool.bytesPerEvent,
+      spoolOutageBufferMs: report.spool.outageBufferMs,
       spoolDrainMs: report.spool.drainMs
     };
     for (const [metric, value] of Object.entries(measured)) assert.ok(value <= baseline.limits[metric], `${metric}: ${value} exceeds ${baseline.limits[metric]}`);
@@ -187,7 +231,12 @@ try {
   await ctx?.cleanup();
   store.setRuntimeStoreConfig(null);
   await closeSharedPostgresPools();
-  await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema, "test schema")} CASCADE`);
+  await admin.query(`ALTER ROLE ${identifier(role)} LOGIN`).catch(() => {});
+  await admin.query(`DROP SCHEMA IF EXISTS ${identifier(schema)} CASCADE`);
+  if (roleCreated) {
+    await admin.query(`REVOKE CREATE ON DATABASE ${identifier(database)} FROM ${identifier(role)}`);
+    await admin.query(`DROP ROLE IF EXISTS ${identifier(role)}`);
+  }
   await admin.end();
   for (const [name, value] of Object.entries(previousEnvironment)) {
     if (value === undefined) delete process.env[name];
