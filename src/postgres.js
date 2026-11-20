@@ -216,7 +216,7 @@ export async function probePostgresConnection(databaseSettings = {}, options = {
   }
 }
 
-export function getSharedPostgresPool(poolOptions) {
+export function getSharedPostgresPool(poolOptions, scope = "shared") {
   const normalizedOptions = {
     connectionString: String(poolOptions?.connectionString || "").trim(),
     max: resolveInt(poolOptions?.max, 10, 1),
@@ -229,9 +229,9 @@ export function getSharedPostgresPool(poolOptions) {
     throw new Error("PostgreSQL connection string is required");
   }
 
-  const poolKey = JSON.stringify(normalizedOptions);
+  const poolKey = JSON.stringify([scope, normalizedOptions]);
   if (!sharedPools.has(poolKey)) {
-    sharedPools.set(poolKey, createPostgresPool(normalizedOptions, "shared"));
+    sharedPools.set(poolKey, createPostgresPool(normalizedOptions, scope));
   }
 
   return sharedPools.get(poolKey);

@@ -182,6 +182,19 @@ test("overview keeps aligned filters below its heading and timestamp out of the 
   assert.equal(view.getByRole("button", { name: "Syncing..." }).disabled, true);
 });
 
+test("partial memory snapshots and unloaded governance balances are explicit instead of zero-cost success", () => {
+  const view = renderRuntime({
+    statsSnapshot: { source: "memory", partial: true, error: { message: "database unavailable" } },
+    governanceKeys: [{ keyId: "unloaded-key", budget: { enabled: true, limitAmount: 5 },
+      runtime: { known: false, totalRequests: 0, totalErrors: 0, budgetWindow: { spentAmount: 0 } } }]
+  });
+  assert.ok(view.getByText(/Current-process cumulative counters/));
+  assert.ok(view.getByText(/database unavailable/));
+  const row = view.getByText("unloaded-key").closest("tr");
+  assert.match(row.textContent, /Not loaded/);
+  assert.doesNotMatch(row.textContent, /0\.0000/);
+});
+
 test("runtime numbers retain exact small rates and large integer token counters", () => {
   assert.equal(formatRuntimeNumber(123456789), "123,456,789");
   assert.equal(formatRuntimeNumber(0.0028), "0.0028");
@@ -673,6 +686,106 @@ test("configuration conflict compares latest settings without replacing the draf
   testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true }));
   await testing.waitFor(() => assert.equal(revisions.length, 2));
   assert.deepEqual(revisions, ['"original-revision"', '"original-revision"']);
+});
+
+test("closed configuration comparisons stay closed and pending reload uses the reviewed active revision", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  const original = { server: { host: "old-host" }, models: [], upstreams: [], access: {} };
+  const latest = { ...original, server: { host: "remote-host" } };
+  const late = deferred();
+  let comparisons = 0;
+  let reloaded = false;
+  context.mock.method(window, "confirm", () => true);
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/config/latest")) {
+      comparisons++;
+      if (comparisons === 1) return late.promise;
+      return Response.json(latest, { headers: { "x-aoai-active-config-revision": '"reviewed-active"' } });
+    }
+    if (path.endsWith("/config")) return Response.json(original, { headers: { etag: '"draft-revision"' } });
+    if (path.endsWith("/reload")) {
+      assert.deepEqual(JSON.parse(options.body), { discardPendingDatabaseSync: true });
+      assert.equal(options.headers["If-Match"], '"reviewed-active"');
+      assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+      reloaded = true;
+      return Response.json({ config: latest, apply: { caddy: { ok: false, error: "Caddy unavailable" } } }, { headers: { etag: '"new-revision"' } });
+    }
+    if (path.endsWith("/runtime")) return Response.json({ runtime: { persistence: { pendingDatabaseSync: !reloaded } } });
+    if (path.endsWith("/stats")) return Response.json({});
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "unused" }] });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.getByRole("button", { name: "Compare latest configuration" })));
+  testing.fireEvent.click(view.getByRole("button", { name: "Compare latest configuration" }));
+  let dialog = testing.within(view.getByRole("dialog"));
+  assert.equal(dialog.getByRole("button", { name: "Reload from store", exact: true }).disabled, true);
+  testing.fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+  await testing.act(async () => late.resolve(Response.json(latest)));
+  assert.equal(view.queryByRole("dialog"), null);
+  testing.fireEvent.click(view.getByRole("button", { name: "Compare latest configuration" }));
+  await testing.waitFor(() => assert.match(view.getByRole("dialog").textContent, /server\.host/));
+  dialog = testing.within(view.getByRole("dialog"));
+  testing.fireEvent.click(dialog.getByRole("button", { name: "Reload from store", exact: true }));
+  await testing.waitFor(() => assert.equal(view.getByLabelText("Server Host").value, "remote-host"));
+  assert.ok(reloaded);
+  assert.ok(view.getByRole("button", { name: "Retry Caddy only" }));
+});
+
+test("application retry keeps the draft and history rollback is on demand and revision protected", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  const original = { server: { host: "old-host" }, models: [], upstreams: [], access: {} };
+  const historical = { ...original, server: { host: "historical-host" } };
+  let historyReads = 0;
+  let retried = false;
+  let restored = false;
+  context.mock.method(window, "confirm", () => true);
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path.endsWith("/config")) return Response.json(original, { headers: { etag: '"loaded-revision"' } });
+    if (path.endsWith("/config/apply")) {
+      assert.equal(options.headers["If-Match"], '"loaded-revision"');
+      assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+      assert.deepEqual(JSON.parse(options.body), { stage: "caddy" });
+      retried = true;
+      return Response.json({ config: original, apply: { caddy: { ok: true } } });
+    }
+    if (path.endsWith("/config/history")) {
+      historyReads++;
+      return Response.json({ items: [{ id: "old-version", createdAt: "2026-01-01T00:00:00Z", actor: "admin", action: "save" }] });
+    }
+    if (path.endsWith("/config/history/old-version")) return Response.json({ entry: { config: historical } });
+    if (path.endsWith("/config/history/old-version/rollback")) {
+      assert.equal(options.headers["If-Match"], '"loaded-revision"');
+      assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+      restored = true;
+      return Response.json({ config: historical, apply: { proxy: { ok: true }, caddy: { ok: true } } }, { headers: { etag: '"restored-revision"' } });
+    }
+    if (path.endsWith("/runtime")) return Response.json({ runtime: { configuration: { application: { caddy: { ok: retried } } } } });
+    if (path.endsWith("/stats")) return Response.json({});
+    if (path.endsWith("/pricing-library")) return Response.json({ items: [{ id: "unused" }] });
+    if (path.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.getByRole("button", { name: "Retry Caddy only" })));
+  testing.fireEvent.change(view.getByLabelText("Server Host"), { target: { value: "unsaved-host" } });
+  testing.fireEvent.click(view.getByRole("button", { name: "Retry Caddy only" }));
+  await testing.waitFor(() => assert.ok(retried));
+  assert.equal(view.getByLabelText("Server Host").value, "unsaved-host");
+  assert.equal(historyReads, 0);
+  testing.fireEvent.click(view.getByRole("button", { name: "Configuration history" }));
+  await testing.waitFor(() => assert.ok(view.getByRole("option", { name: /admin/ })));
+  testing.fireEvent.change(view.getByLabelText("Historical version"), { target: { value: "old-version" } });
+  await testing.waitFor(() => assert.match(view.getByRole("dialog").textContent, /server\.host/));
+  assert.match(view.getByRole("dialog").textContent, /current credentials and storage settings/);
+  testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Restore as new revision" }));
+  await testing.waitFor(() => assert.equal(view.getByLabelText("Server Host").value, "historical-host"));
+  assert.ok(restored);
+  assert.equal(historyReads, 1);
+  assert.equal(view.queryByRole("dialog"), null);
 });
 
 test("App allows reviewed canonical cleanup without editing unrelated settings", async context => {

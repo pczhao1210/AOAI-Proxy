@@ -216,7 +216,7 @@ else
 fi
 
 # Generate Caddyfile if enabled (server will write on startup)
-node /app/src/server.js &
+AOAI_PROXY_SUPERVISOR_PID=$$ node /app/src/server.js &
 NODE_PID=$!
 
 # Database bootstrap and credential warmup may delay Caddyfile generation.

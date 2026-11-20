@@ -19,6 +19,8 @@ test("database config CAS rejects stale instances and preserves conflicting offl
   const pool = new pg.Pool({ connectionString });
   const first = await import("../src/persistence.js?cas-instance=first");
   const second = await import("../src/persistence.js?cas-instance=second");
+  const unknown = await import("../src/persistence.js?cas-instance=unknown");
+  const resumed = await import("../src/persistence.js?cas-instance=resumed");
   const config = filePath => ({
     persistence: {
       configStore: { mode: "database", filePath, database: { schema } },
@@ -30,6 +32,8 @@ test("database config CAS rejects stale instances and preserves conflicting offl
   t.after(async () => {
     first.setPersistenceConfig(null);
     second.setPersistenceConfig(null);
+    unknown.setPersistenceConfig(null);
+    resumed.setPersistenceConfig(null);
     await closeSharedPostgresPools();
     await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema, "test schema")} CASCADE`);
     await pool.end();
@@ -53,6 +57,17 @@ test("database config CAS rejects stale instances and preserves conflicting offl
     code: "CONFIG_REVISION_CONFLICT"
   });
   assert.deepEqual(JSON.parse(await fs.readFile(secondConfig.persistence.configStore.filePath, "utf8")), { value: "initial" });
+  assert.deepEqual(JSON.parse(await second.readLatestPersistedConfigText()), { value: "first" });
+  await assert.rejects(second.writePersistedConfigText(JSON.stringify({ value: "stale-after-preview" }), secondConfig), {
+    code: "CONFIG_REVISION_CONFLICT"
+  });
+  await assert.rejects(second.readPersistedConfigText({
+    validate() { throw new Error("Invalid remote configuration"); }
+  }), /Invalid remote configuration/);
+  assert.deepEqual(JSON.parse(await fs.readFile(secondConfig.persistence.configStore.filePath, "utf8")), { value: "initial" });
+  await assert.rejects(second.writePersistedConfigText(JSON.stringify({ value: "stale-after-failed-reload" }), secondConfig), {
+    code: "CONFIG_REVISION_CONFLICT"
+  });
 
   await second.readPersistedConfigText();
   const query = pg.Pool.prototype.query;
@@ -72,6 +87,7 @@ test("database config CAS rejects stale instances and preserves conflicting offl
   assert.deepEqual(JSON.parse(await fs.readFile(secondConfig.persistence.configStore.filePath, "utf8")), { value: "offline" });
 
   await second.discardPendingDatabaseSync();
+  await second.readPersistedConfigText();
   assert.equal(second.getPersistenceSummary(secondConfig).pendingDatabaseSync, false);
   assert.deepEqual(JSON.parse(await fs.readFile(secondConfig.persistence.configStore.filePath, "utf8")), { value: "remote" });
   const unavailable = t.mock.method(pg.Pool.prototype, "query", async () => { throw new Error("database unavailable"); });
@@ -95,4 +111,58 @@ test("database config CAS rejects stale instances and preserves conflicting offl
   const acknowledged = await second.syncPersistenceState(secondConfig);
   assert.equal(acknowledged.pendingDatabaseSync, false);
   assert.deepEqual(JSON.parse(await second.readLatestPersistedConfigText()), { value: "committed" });
+
+  const unknownConfig = config(path.join(dir, "unknown.json"));
+  await fs.writeFile(unknownConfig.persistence.configStore.filePath, JSON.stringify({ value: "old-cache" }));
+  unknown.setPersistenceConfig(unknownConfig);
+  const offlineStartup = t.mock.method(pg.Pool.prototype, "query", async () => { throw new Error("offline startup"); });
+  await unknown.readPersistedConfigText();
+  offlineStartup.mock.restore();
+  await unknown.syncPersistenceState(unknownConfig);
+  await unknown.readLatestPersistedConfigText();
+  await unknown.writePersistedConfigText(JSON.stringify({ value: "unknown-baseline-edit" }), unknownConfig);
+  const unresolved = await unknown.syncPersistenceState(unknownConfig);
+  assert.equal(unresolved.pendingDatabaseSync, true);
+  assert.equal(unresolved.lastDatabaseError.code, "CONFIG_REVISION_UNKNOWN");
+  assert.deepEqual(JSON.parse(await second.readLatestPersistedConfigText()), { value: "committed" });
+
+  for (let index = 0; index < 14; index++) {
+    await second.writePersistedConfigText(JSON.stringify({ value: `history-${index}`, auth: { apiKey: "history-database-secret" } }), secondConfig);
+  }
+  const history = await second.readConfigHistory();
+  assert.equal(history.length, 12);
+  assert.equal(history[0].config.value, "history-2");
+  assert.doesNotMatch(JSON.stringify(history), /history-database-secret/);
+  await assert.rejects(first.writePersistedConfigText(JSON.stringify({ value: "stale-history" }), firstConfig), { code: "CONFIG_REVISION_CONFLICT" });
+  assert.deepEqual(await second.readConfigHistory(), history);
+
+  const completedId = history.at(-1).id;
+  const beforeHistoryUpdate = pg.Pool.prototype.query;
+  let injectedApply = false;
+  const concurrentApply = t.mock.method(pg.Pool.prototype, "query", async function (sql, ...args) {
+    if (!injectedApply && sql.startsWith("UPDATE ") && sql.includes("SET config_json")) {
+      injectedApply = true;
+      await first.recordConfigHistoryApply(completedId, { proxy: { ok: true } });
+    }
+    return beforeHistoryUpdate.call(this, sql, ...args);
+  });
+  await second.writePersistedConfigText(JSON.stringify({ value: "history-with-concurrent-apply" }), secondConfig);
+  concurrentApply.mock.restore();
+  assert.deepEqual((await second.readConfigHistory()).find(entry => entry.id === completedId).apply, { proxy: { ok: true } });
+
+  const offlineCache = t.mock.method(pg.Pool.prototype, "query", async () => { throw new Error("database unavailable"); });
+  const rename = fs.rename;
+  const cacheFailure = t.mock.method(fs, "rename", async (source, destination) => {
+    if (destination === secondConfig.persistence.configStore.filePath) throw new Error("local cache unavailable");
+    return rename(source, destination);
+  });
+  await second.writePersistedConfigText(JSON.stringify({ value: "pending-with-failed-cache" }), secondConfig);
+  offlineCache.mock.restore();
+  cacheFailure.mock.restore();
+  assert.equal(second.getPersistenceSummary(secondConfig).lastCacheError.message, "local cache unavailable");
+  assert.equal(JSON.parse(await fs.readFile(secondConfig.persistence.configStore.filePath, "utf8")).value, "history-with-concurrent-apply");
+  resumed.setPersistenceConfig(secondConfig);
+  assert.equal(JSON.parse(await resumed.readPersistedConfigText()).value, "pending-with-failed-cache");
+  assert.equal((await resumed.syncPersistenceState(secondConfig)).pendingDatabaseSync, false);
+  assert.equal(JSON.parse(await resumed.readLatestPersistedConfigText()).value, "pending-with-failed-cache");
 });

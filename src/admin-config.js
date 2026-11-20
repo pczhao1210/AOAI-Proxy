@@ -119,3 +119,42 @@ export function restoreConfigSecrets(candidateConfig, currentConfig) {
   );
   return restored;
 }
+
+export function restoreHistorySecrets(snapshot, currentConfig) {
+  const restored = cloneConfig(snapshot);
+  const missing = [];
+  const preserve = (value, currentValue, field) => {
+    if (value === REDACTED_SECRET_VALUE && currentValue === undefined) missing.push(field);
+    return currentValue ?? "";
+  };
+  for (const secretPath of DIRECT_SECRET_PATHS) {
+    writePath(restored, secretPath, preserve(readPath(restored, secretPath), readPath(currentConfig, secretPath), secretPath.join(".")));
+  }
+  for (const key of restored.apiKeys || []) {
+    const current = (currentConfig.apiKeys || []).find(item => item.id === key.id);
+    key.key = preserve(key.key, current?.key, `apiKeys[${key.id}].key`);
+  }
+  for (const upstream of restored.upstreams || []) {
+    const current = (currentConfig.upstreams || []).find(item => item.name === upstream.name);
+    if (upstream.auth || current?.auth?.apiKey) {
+      upstream.auth ||= {};
+      upstream.auth.apiKey = preserve(upstream.auth.apiKey, current?.auth?.apiKey, `upstreams[${upstream.name}].auth.apiKey`);
+    }
+    const names = new Map();
+    for (const name of [...Object.keys(upstream.headersTemplate || {}), ...Object.keys(current?.headersTemplate || {})]) {
+      if (!names.has(name.toLowerCase())) names.set(name.toLowerCase(), name);
+    }
+    for (const name of names.values()) {
+      if (!SENSITIVE_HEADER_NAME.test(name)) continue;
+      const currentName = Object.keys(current?.headersTemplate || {}).find(key => key.toLowerCase() === name.toLowerCase());
+      upstream.headersTemplate ||= {};
+      upstream.headersTemplate[name] = preserve(upstream.headersTemplate[name], current?.headersTemplate?.[currentName], `upstreams[${upstream.name}].headersTemplate.${name}`);
+    }
+  }
+  if (missing.length) {
+    throw Object.assign(new Error(`Historical credentials are not stored. Reconfigure these fields before restoring: ${missing.join(", ")}`), {
+      code: "CONFIG_HISTORY_SECRET_UNAVAILABLE", status: 409
+    });
+  }
+  return restored;
+}

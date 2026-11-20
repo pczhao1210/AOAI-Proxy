@@ -9,6 +9,7 @@ const DEFAULT_STARTUP_PROBE_DELAY_MS = 1000;
 const DEFAULT_STARTUP_PROBE_MAX_ATTEMPTS = 20;
 
 let startupProbeTimer = null;
+let reloadGeneration = 0;
 
 let caddyStatus = {
   enabled: false,
@@ -41,6 +42,7 @@ function getCaddyBin() {
 }
 
 function clearStartupProbe() {
+  reloadGeneration++;
   if (startupProbeTimer) {
     clearTimeout(startupProbeTimer);
     startupProbeTimer = null;
@@ -115,6 +117,7 @@ ${hostPort} {
 // Write Caddyfile to disk
 export function writeCaddyfile(config) {
   clearStartupProbe();
+  clearStartupProbe();
   const content = renderCaddyfile(config);
   if (!content) {
     setStatus({ enabled: false, state: "disabled", message: "disabled", lastError: null });
@@ -138,7 +141,7 @@ function isAdminUnavailable(message) {
 
 function executeReload(targetPath) {
   return new Promise((resolve) => {
-    execFile(getCaddyBin(), ["reload", "--config", targetPath, "--adapter", "caddyfile"], (error, stdout, stderr) => {
+    execFile(getCaddyBin(), ["reload", "--config", targetPath, "--adapter", "caddyfile"], { timeout: 10000 }, (error, stdout, stderr) => {
       if (error) {
         const message = String(stderr || error.message || "reload failed");
         resolve({
@@ -160,6 +163,7 @@ function executeReload(targetPath) {
 // Reload Caddy if enabled and Caddyfile exists
 export async function reloadCaddy(config, options = {}) {
   clearStartupProbe();
+  const generation = reloadGeneration;
   const content = renderCaddyfile(config);
   if (!content) {
     setStatus({ enabled: false, state: "disabled", message: "disabled", lastError: null });
@@ -167,6 +171,7 @@ export async function reloadCaddy(config, options = {}) {
   }
   const targetPath = getCaddyfilePath();
   const result = await executeReload(targetPath);
+  if (generation !== reloadGeneration) return { reloaded: false, reason: "superseded" };
   const now = new Date().toISOString();
   if (!result.reloaded) {
     const transientState = options.transientState || "restart-needed";
@@ -218,8 +223,10 @@ export function scheduleCaddyStartupProbe(config, options = {}) {
       transientState: attempts < maxAttempts ? "starting" : "restart-needed",
       clearTransientError: true
     });
+    if (result.reason === "superseded") return;
     if (result.reloaded || !result.transient || attempts >= maxAttempts) {
       startupProbeTimer = null;
+      options.onComplete?.(result);
       return;
     }
     setStatus({

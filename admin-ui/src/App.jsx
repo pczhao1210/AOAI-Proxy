@@ -14,6 +14,8 @@ import {
   reloadConfig,
   resetModelStats,
   restartService,
+  retryConfigurationApplication,
+  rollbackConfiguration,
   saveConfig,
   sendProxyRequest,
   syncRuntime,
@@ -75,6 +77,7 @@ const OpsTab = lazy(() => import("./components/OpsTab.jsx"));
 const RoutingTab = lazy(() => import("./components/RoutingTab.jsx"));
 const RuntimeTab = lazy(() => import("./components/RuntimeTab.jsx"));
 const WorkspaceTab = lazy(() => import("./components/WorkspaceTab.jsx"));
+const ConfigHistoryModal = lazy(() => import("./components/ConfigHistoryModal.jsx"));
 let bundledPricingLibraryPromise = null;
 
 function loadBundledPricingLibrary() {
@@ -139,6 +142,9 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [configConflict, setConfigConflict] = useState(null);
+  const [showConfigHistory, setShowConfigHistory] = useState(false);
+  const [lastApplication, setLastApplication] = useState(null);
+  const [applyingStage, setApplyingStage] = useState("");
   const [activeTab, setActiveTab] = useState("workspace");
   const [advancedJson, setAdvancedJson] = useState("{}");
   const [pricingCatalogText, setPricingCatalogText] = useState("{}");
@@ -173,6 +179,7 @@ export default function App() {
   const [templateRouteOverride, setTemplateRouteOverride] = useState("");
   const [templateImportPricing, setTemplateImportPricing] = useState(true);
   const loadRequestRef = useRef(0);
+  const conflictRequestRef = useRef(0);
   const logsRequestRef = useRef(0);
   const harnessEligibilityRequestRef = useRef(0);
   const harnessEligibilityContextRef = useRef(null);
@@ -202,6 +209,7 @@ export default function App() {
   const runtimeStore = runtime?.runtimeStore || {};
   const distributionCapabilities = runtime?.distribution?.capabilities || {};
   const configCleanupRequired = runtime?.configuration?.cleanupRequired === true;
+  const application = lastApplication || runtime?.configuration?.application || {};
   const logLevelKey = logFilters.level.join(",");
   const caddyPreview = useMemo(
     () => buildCaddyPreview(config?.server?.caddy || {}, config?.server?.port),
@@ -362,7 +370,7 @@ export default function App() {
     setJsonError("");
     setDatabaseTestResult(null);
     setLogAnalyticsInitializationResult(null);
-    setConfigConflict(null);
+    closeConfigConflict();
   }
 
   async function loadSecondaryData(requestId, options = {}) {
@@ -429,20 +437,20 @@ export default function App() {
     }
   }
 
-  async function loadAll(mode = "load", { discardPendingDatabaseSync = false } = {}) {
+  async function loadAll(mode = "load", { discardPendingDatabaseSync = false, expectedRevision } = {}) {
     setLoading(true);
     setError("");
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
     try {
-      const configJson = mode === "reload"
-        ? await reloadConfig({ discardPendingDatabaseSync }).then((result) => result.config)
-        : await fetchConfig();
+      const result = mode === "reload"
+        ? await reloadConfig({ discardPendingDatabaseSync, expectedRevision })
+        : { config: await fetchConfig() };
       if (requestId !== loadRequestRef.current) {
         return;
       }
-      applyLoadedConfig(configJson);
-      setMessage(mode === "reload" ? t("messages.reloaded", "Configuration reloaded from persistent store.") : t("messages.loaded", "Configuration loaded."));
+      applyLoadedConfig(result.config);
+      reportApplication(result.apply, mode === "reload" ? t("messages.reloaded", "Configuration reloaded from persistent store.") : t("messages.loaded", "Configuration loaded."));
       void loadSecondaryData(requestId, { notifyOnError: mode === "reload" });
     } catch (loadError) {
       if (requestId !== loadRequestRef.current) {
@@ -640,33 +648,82 @@ export default function App() {
 
   async function persistConfig(nextConfig, successMessage) {
     const result = await saveConfig(nextConfig);
+    acceptPersistedResult(result, successMessage);
+  }
+
+  function acceptPersistedResult(result, successMessage) {
     const saved = result.config;
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
     applyLoadedConfig(saved);
     void loadSecondaryData(requestId, { notifyOnError: true });
+    reportApplication(result.apply, successMessage);
+  }
+
+  function reportApplication(apply, successMessage) {
+    setLastApplication(apply || null);
     const warnings = [];
-    if (result.apply?.caddy?.ok === false) {
+    if (apply?.proxy?.ok === false) {
+      warnings.push(t("messages.savedButProxyFailed", "Configuration was saved, but proxy settings could not be fully applied: {error}", { error: apply.proxy.error }));
+    }
+    if (apply?.caddy?.ok === false) {
       warnings.push(t("messages.savedButCaddyFailed", "Configuration was saved, but Caddy could not apply it: {error}", {
-        error: result.apply.caddy.error || "Caddy reload failed"
+        error: apply.caddy.error || "Caddy reload failed"
       }));
     }
-    if (result.apply?.persistence?.pendingDatabaseSync) {
+    if (apply?.persistence?.pendingDatabaseSync) {
       warnings.push(t("messages.savedPendingDatabase", "Configuration was saved locally; database synchronization is pending."));
     }
-    if (warnings.length) {
-      setError(warnings.join(" "));
-    } else {
-      setMessage(successMessage);
+    for (const failure of [apply?.persistence?.cacheError, apply?.persistence?.historyError]) {
+      if (failure) warnings.push(t("messages.savedButCopyFailed", "Configuration was saved, but a cache/history copy failed: {error}", { error: failure.message }));
+    }
+    setError(warnings.join(" "));
+    setMessage(warnings.length ? "" : successMessage);
+  }
+
+  function closeConfigConflict() {
+    conflictRequestRef.current++;
+    setConfigConflict(null);
+  }
+
+  async function retryApplication(stage) {
+    setApplyingStage(stage);
+    try {
+      const result = await retryConfigurationApplication(stage);
+      reportApplication(result.apply, t("config.apply.retried", "Configuration application retried."));
+      await loadCaddyStatusAction();
+    } catch (failure) {
+      await reportConfigSaveError(failure, t("messages.saveFailed", "Save failed."));
+    } finally {
+      setApplyingStage("");
+    }
+  }
+
+  async function restoreHistoricalConfig(id) {
+    if (!confirmDiscardChanges()) return;
+    setSaving(true);
+    try {
+      const result = await rollbackConfiguration(id);
+      acceptPersistedResult(result, t("config.history.restored", "Historical configuration restored as a new revision."));
+      setShowConfigHistory(false);
+    } catch (failure) {
+      if (failure.payload?.code !== "CONFIG_REVISION_CONFLICT") throw failure;
+      setShowConfigHistory(false);
+      await reportConfigSaveError(failure, t("messages.saveFailed", "Save failed."));
+    } finally {
+      setSaving(false);
     }
   }
 
   async function showConfigConflict() {
+    const requestId = ++conflictRequestRef.current;
     setConfigConflict({ loading: true, latest: null, error: "" });
     try {
       const latest = await fetchLatestConfig();
-      setConfigConflict({ loading: false, latest, error: "" });
+      if (requestId !== conflictRequestRef.current) return;
+      setConfigConflict({ loading: false, latest: latest.config, activeRevision: latest.activeRevision, error: "" });
     } catch (loadError) {
+      if (requestId !== conflictRequestRef.current) return;
       setConfigConflict({ loading: false, latest: null, error: loadError.message || t("messages.loadFailed", "Load failed.") });
     }
   }
@@ -808,10 +865,10 @@ export default function App() {
     }
   }
 
-  async function handleReload(mode = "load", { discardPendingDatabaseSync = false } = {}) {
+  async function handleReload(mode = "load", { discardPendingDatabaseSync = false, expectedRevision } = {}) {
     if (discardPendingDatabaseSync && !window.confirm(t("config.conflict.discardPending", "Reloading may discard locally saved configuration awaiting database synchronization, as well as your draft. Continue?"))) return;
     if (!confirmDiscardChanges()) return;
-    await loadAll(mode, { discardPendingDatabaseSync });
+    await loadAll(mode, { discardPendingDatabaseSync, expectedRevision });
   }
 
   function addApiKey() {
@@ -1387,6 +1444,7 @@ export default function App() {
           </label>
           <button type="button" className="ghost" onClick={() => handleReload()}>{t("hero.reload", "Reload")}</button>
           <button type="button" className="ghost" onClick={() => handleReload("reload")}>{t("hero.reloadFromStore", "Reload From Store")}</button>
+          <button type="button" className="ghost" onClick={() => setShowConfigHistory(true)}>{t("config.history.title", "Configuration history")}</button>
         </div>
       </header>
 
@@ -1403,6 +1461,20 @@ export default function App() {
           {" "}<button type="button" className="ghost" onClick={showConfigConflict}>{t("config.conflict.compare", "Compare latest configuration")}</button>
         </aside>
       ) : null}
+
+      {["proxy", "caddy"].filter(stage => application[stage]?.ok === false).map(stage => (
+        <aside className="inline-error" role="status" key={stage}>
+          {t("config.apply.failed", "{stage} settings are not fully applied.", { stage })}
+          {" "}<button type="button" className="ghost" disabled={Boolean(applyingStage) || saving || loading} onClick={() => retryApplication(stage)}>
+            {t(`config.apply.retry.${stage}`, `Retry ${stage}`)}
+          </button>
+        </aside>
+      ))}
+
+      {showConfigHistory ? <Suspense fallback={<p>{t("common.loadingAdmin", "Loading...")}</p>}>
+        <ConfigHistoryModal isOpen config={config} saving={saving} t={t}
+          onClose={() => setShowConfigHistory(false)} onRestore={restoreHistoricalConfig} />
+      </Suspense> : null}
 
       <Modal 
         title={t("config.save.title", "Confirm Configuration Save")} 
@@ -1438,18 +1510,19 @@ export default function App() {
       <Modal
         title={t("config.conflict.title", "Configuration changed")}
         isOpen={Boolean(configConflict)}
-        onClose={() => setConfigConflict(null)}
-        onConfirm={() => handleReload("reload", { discardPendingDatabaseSync: true })}
+        onClose={closeConfigConflict}
+        onConfirm={() => handleReload("reload", { discardPendingDatabaseSync: true, expectedRevision: configConflict.activeRevision })}
         confirmLabel={t("config.conflict.reload", "Reload from store")}
         cancelLabel={t("common.cancel", "Cancel")}
         closeLabel={t("common.close", "Close")}
+        disabled={loading || configConflict?.loading || !configConflict?.latest || !configConflict?.activeRevision}
       >
         <p>{t("config.conflict.description", "Another administrator changed the configuration. Your draft is unchanged. Review the differences below or reload from the store and discard your draft.")}</p>
         {configConflict?.loading ? <p>{t("config.conflict.loading", "Loading the latest configuration...")}</p> : null}
         {configConflict?.error ? <div role="alert" className="inline-error">{configConflict.error}</div> : null}
         {configConflict?.latest ? (
           <pre className="muted" style={{ whiteSpace: "pre-wrap", maxHeight: "300px", overflowY: "auto" }}>
-            {buildConfigDiffPreview(computeConfigDiff(configConflict.latest, config || {}), t)}
+            {buildConfigDiffPreview(computeConfigDiff(configConflict.latest, config || {}), t, Infinity)}
           </pre>
         ) : null}
       </Modal>
@@ -1690,6 +1763,7 @@ export default function App() {
           totals={stats?.totals}
           snapshotFilters={stats?.filters}
           statsUpdatedAt={statsUpdatedAt}
+          statsSnapshot={stats?.snapshot}
           persistenceRuntime={persistenceRuntime}
           loggingRuntime={loggingRuntime}
           runtimeStore={runtimeStore}

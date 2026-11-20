@@ -938,7 +938,9 @@ export async function createTestContext({
   proxyArgs = ["src/server.js"],
   startupTimeoutMs = DEFAULT_TIMEOUT_MS,
   tempPrefix = "aoai-proxy-route-test-",
-  upstreamHandler = null
+  upstreamHandler = null,
+  configureConfig = null,
+  proxyEnv = {}
 } = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), tempPrefix));
   let upstream;
@@ -955,13 +957,16 @@ export async function createTestContext({
     await once(upstream.server, "listening");
 
     const config = buildTestConfig({ proxyPort, upstreamPort, configPath });
+    await configureConfig?.(config, { tempDir, configPath, proxyBaseUrl });
     await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
     const output = { stdout: [], stderr: [] };
-    childProcess = spawn(process.execPath, proxyArgs, {
+    async function launchProxy() {
+      childProcess = spawn(process.execPath, proxyArgs, {
       cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.."),
       env: {
         ...process.env,
+        ...proxyEnv,
         CONFIG_PATH: configPath,
         LOG_LEVEL: logLevel,
         AOAI_PROXY_VERSION: "nextgen-202608100000",
@@ -977,8 +982,10 @@ export async function createTestContext({
       output.stderr.push(String(chunk));
     });
 
-    await waitForServerReady(proxyBaseUrl, startupTimeoutMs, childProcess, output);
-    setup = { configPath, proxyBaseUrl, output };
+      await waitForServerReady(proxyBaseUrl, startupTimeoutMs, childProcess, output);
+    }
+    await launchProxy();
+    setup = { configPath, proxyBaseUrl, output, launchProxy };
   } catch (error) {
     await stopChildProcess(childProcess).catch(() => {});
     await closeMockUpstream(upstream).catch(() => {});
@@ -1035,6 +1042,7 @@ export async function createTestContext({
   }
 
   const ctx = {
+    get pid() { return childProcess.pid; },
     baseUrl: proxyBaseUrl,
     output,
     configPath,
@@ -1094,6 +1102,16 @@ export async function createTestContext({
     },
     async stopProxy() {
       await stopChildProcess(childProcess);
+    },
+    async restartProxy({ force = false } = {}) {
+      if (force && !hasChildProcessExited(childProcess)) {
+        const exited = once(childProcess, "exit");
+        childProcess.kill("SIGKILL");
+        await exited;
+      } else {
+        await stopChildProcess(childProcess);
+      }
+      await setup.launchProxy();
     },
     getUpstreamRequest(predicate = null) {
       if (!predicate) {

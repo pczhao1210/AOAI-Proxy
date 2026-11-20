@@ -7,6 +7,7 @@ async function readJson(response) {
     try {
       json = JSON.parse(text);
     } catch {
+      if (response.ok) throw new Error("The server returned invalid JSON.");
       json = {};
     }
   }
@@ -58,7 +59,29 @@ export async function fetchConfig() {
 }
 
 export async function fetchLatestConfig() {
-  return readJson(await adminFetch("/config/latest"));
+  const response = await adminFetch("/config/latest");
+  return { config: await readJson(response), activeRevision: response.headers.get("x-aoai-active-config-revision") || "" };
+}
+
+export async function fetchConfigHistory(id) {
+  return readJson(await adminFetch(`/config/history${id ? `/${encodeURIComponent(id)}` : ""}`));
+}
+
+export async function rollbackConfiguration(id) {
+  const response = await adminFetch(`/config/history/${encodeURIComponent(id)}/rollback`, {
+    method: "POST", headers: configRevision ? { "If-Match": configRevision } : {}
+  });
+  const result = await readJson(response);
+  configRevision = response.headers.get("etag") || configRevision;
+  return result;
+}
+
+export async function retryConfigurationApplication(stage) {
+  return readJson(await adminFetch("/config/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(configRevision ? { "If-Match": configRevision } : {}) },
+    body: JSON.stringify({ stage })
+  }));
 }
 
 export async function fetchApiKeySecret(id) {
@@ -78,20 +101,22 @@ export async function saveConfig(config) {
     },
     body: JSON.stringify(config)
   });
-  if (response.ok) configRevision = response.headers.get("etag") || configRevision;
-  return readJson(response);
+  const result = await readJson(response);
+  configRevision = response.headers.get("etag") || configRevision;
+  return result;
 }
 
-export async function reloadConfig({ discardPendingDatabaseSync = false } = {}) {
+export async function reloadConfig({ discardPendingDatabaseSync = false, expectedRevision = configRevision } = {}) {
   const response = await adminFetch("/reload", {
     method: "POST",
     ...(discardPendingDatabaseSync ? {
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(expectedRevision ? { "If-Match": expectedRevision } : {}) },
       body: JSON.stringify({ discardPendingDatabaseSync: true })
     } : {})
   });
-  if (response.ok) configRevision = response.headers.get("etag") || "";
-  return readJson(response);
+  const result = await readJson(response);
+  configRevision = response.headers.get("etag") || "";
+  return result;
 }
 
 export async function fetchRuntime() {

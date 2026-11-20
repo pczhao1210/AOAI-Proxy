@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { writeFileAtomic } from "./atomic-file.js";
 import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
 import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
@@ -50,9 +51,13 @@ let flushRunning = false;
 let lastEnsureKey = "";
 let cleanupAfterTs = 0;
 let localBufferOperation = Promise.resolve();
+let pendingLocalAppend = null;
 let databaseOperation = Promise.resolve();
 let modelEventClockFloor = 0;
+let modelStatsGeneration = 0;
 let localBufferCursor = { path: "", identity: "", offset: 0 };
+let boundLocalBufferPath = "";
+let runtimeConfigGeneration = 0;
 
 function serializeDatabaseOperation(operation) {
   const next = databaseOperation.catch(() => undefined).then(operation);
@@ -68,6 +73,7 @@ const runtimeStoreState = {
   flushFailures: 0,
   rollupFailures: 0,
   droppedEvents: 0,
+  corruptedEvents: 0,
   lastSuccessTs: "",
   lastRollupTs: "",
   lastRolledEventId: 0,
@@ -185,6 +191,9 @@ async function ensureLocalBufferDirectory(settings) {
 }
 
 function normalizeBufferedEvent(entry = {}) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error("Runtime buffer record must be an object");
+  }
   return buildEventRow(String(entry.eventType || entry.event_type || "warning").trim() || "warning", {
     eventUid: entry.eventUid ?? entry.event_uid,
     signalName: entry.signalName ?? entry.signal_name,
@@ -223,6 +232,14 @@ function getLocalBufferOffsetPath(settings) {
   return `${settings.localBufferPath}.offset`;
 }
 
+function checkpointDigest(identity, offset) {
+  return createHash("sha256").update(JSON.stringify([identity, offset])).digest("hex");
+}
+
+function parseBufferedEvent(line) {
+  return normalizeBufferedEvent(JSON.parse(line));
+}
+
 async function readLocalBufferEventsUnsafe(settings) {
   try {
     const bytes = await fs.readFile(settings.localBufferPath);
@@ -238,14 +255,7 @@ async function readLocalBufferEventsUnsafe(settings) {
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
-      .map((line) => {
-        try {
-          return normalizeBufferedEvent(JSON.parse(line));
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+      .map(parseBufferedEvent);
   } catch (error) {
     if (error?.code === "ENOENT") {
       return [];
@@ -267,10 +277,8 @@ async function writeLocalBufferEventsUnsafe(settings, events) {
     return;
   }
   await ensureLocalBufferDirectory(settings);
-  const tempPath = `${settings.localBufferPath}.tmp`;
   const payload = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
-  await fs.writeFile(tempPath, payload, "utf8");
-  await fs.rename(tempPath, settings.localBufferPath);
+  await writeFileAtomic(settings.localBufferPath, payload);
   localBufferCursor = { path: settings.localBufferPath, identity: await getLocalBufferIdentity(settings), offset: 0 };
 }
 
@@ -292,6 +300,7 @@ async function appendLocalBufferEvents(settings, events) {
     return { persistedEventCount: runtimeStoreState.persistedEventCount, dropped: 0 };
   }
   return queueLocalBufferOperation(async () => {
+    if (pendingLocalAppend?.events === events) pendingLocalAppend = null;
     const newEvents = events.map(normalizeBufferedEvent);
     const existingCount = runtimeStoreState.localBufferPath === settings.localBufferPath
       ? runtimeStoreState.persistedEventCount
@@ -309,7 +318,7 @@ async function appendLocalBufferEvents(settings, events) {
       updateLocalBufferState(settings, nextEvents);
     } else {
       await ensureLocalBufferDirectory(settings);
-      await fs.appendFile(settings.localBufferPath, serializeLocalBufferEvents(newEvents), "utf8");
+      await fs.appendFile(settings.localBufferPath, serializeLocalBufferEvents(newEvents), { encoding: "utf8", mode: 0o600, flush: true });
       const identity = await getLocalBufferIdentity(settings);
       if (localBufferCursor.path !== settings.localBufferPath || localBufferCursor.identity !== identity) {
         localBufferCursor = { path: settings.localBufferPath, identity, offset: 0 };
@@ -335,25 +344,30 @@ async function peekLocalBufferBatch(settings, limit) {
     const items = [];
     let position = offset;
     let endOffset = offset;
-    let pending = Buffer.alloc(0);
+    let fragments = [];
+    let fragmentBytes = 0;
     try {
       while (items.length < limit) {
         const chunk = Buffer.allocUnsafe(65536);
         const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
         if (!bytesRead) break;
         position += bytesRead;
-        pending = Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
-        let newline;
-        while (items.length < limit && (newline = pending.indexOf(10)) !== -1) {
-          const line = pending.subarray(0, newline).toString("utf8").trim();
-          endOffset += newline + 1;
-          pending = pending.subarray(newline + 1);
-          if (!line) continue;
-          try {
-            items.push(normalizeBufferedEvent(JSON.parse(line)));
-          } catch {
-            // Invalid lines were already excluded when the buffer was loaded.
+        let start = 0;
+        while (start < bytesRead && items.length < limit) {
+          const newline = chunk.subarray(0, bytesRead).indexOf(10, start);
+          if (newline === -1) {
+            fragments.push(chunk.subarray(start, bytesRead));
+            fragmentBytes += bytesRead - start;
+            break;
           }
+          const tail = chunk.subarray(start, newline);
+          const line = (fragments.length ? Buffer.concat([...fragments, tail], fragmentBytes + tail.length) : tail).toString("utf8").trim();
+          endOffset += fragmentBytes + tail.length + 1;
+          fragments = [];
+          fragmentBytes = 0;
+          start = newline + 1;
+          if (!line) continue;
+          items.push(parseBufferedEvent(line));
         }
       }
     } finally {
@@ -371,9 +385,9 @@ async function ackLocalBufferBatch(settings, batch) {
     const identity = await getLocalBufferIdentity(settings);
     if (identity === batch.identity && localBufferCursor.identity === identity && localBufferCursor.offset === batch.offset) {
       const offsetPath = getLocalBufferOffsetPath(settings);
-      const tempPath = `${offsetPath}.tmp`;
-      await fs.writeFile(tempPath, JSON.stringify({ identity, offset: batch.endOffset }), "utf8");
-      await fs.rename(tempPath, offsetPath);
+      await writeFileAtomic(offsetPath, JSON.stringify({
+        identity, offset: batch.endOffset, digest: checkpointDigest(identity, batch.endOffset)
+      }));
       localBufferCursor.offset = batch.endOffset;
       const persistedEventCount = Math.max(0, runtimeStoreState.persistedEventCount - batch.items.length);
       updateRuntimeStoreState({ persistedEventCount, spilloverActive: persistedEventCount > 0 });
@@ -411,14 +425,18 @@ async function ackLocalBufferBatch(settings, batch) {
 async function refreshLocalBufferState(settings) {
   return queueLocalBufferOperation(async () => {
     const identity = await getLocalBufferIdentity(settings);
+    const bytes = identity ? await fs.readFile(settings.localBufferPath) : Buffer.alloc(0);
     let offset = 0;
     if (identity) {
       try {
         const checkpoint = JSON.parse(await fs.readFile(getLocalBufferOffsetPath(settings), "utf8"));
-        const stat = await fs.stat(settings.localBufferPath);
-        if (checkpoint.identity === identity && Number.isSafeInteger(checkpoint.offset)
-          && checkpoint.offset >= 0 && checkpoint.offset <= stat.size) {
+        if (checkpoint?.identity === identity && Number.isSafeInteger(checkpoint.offset)
+          && checkpoint.offset >= 0 && checkpoint.offset <= bytes.length
+          && (checkpoint.offset === 0 || bytes[checkpoint.offset - 1] === 10)
+          && checkpoint.digest === checkpointDigest(identity, checkpoint.offset)) {
           offset = checkpoint.offset;
+        } else if (!checkpoint || checkpoint.identity === identity || typeof checkpoint.identity !== "string") {
+          throw new SyntaxError("Invalid runtime buffer checkpoint");
         }
       } catch (error) {
         if (error instanceof SyntaxError) {
@@ -434,22 +452,31 @@ async function refreshLocalBufferState(settings) {
       }
     }
     localBufferCursor = { path: settings.localBufferPath, identity, offset };
-    let needsRewrite = false;
-    if (identity) {
-      const bytes = await fs.readFile(settings.localBufferPath);
-      const text = bytes.subarray(offset).toString("utf8");
-      needsRewrite = text.length > 0 && !text.endsWith("\n");
-      for (const line of text.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-          if (!event.eventUid && !event.event_uid) needsRewrite = true;
-        } catch {
-          // Invalid lines are excluded by the existing buffer reader.
-        }
+    const text = bytes.subarray(offset).toString("utf8");
+    let needsRewrite = text.length > 0 && !text.endsWith("\n");
+    const existingEvents = [];
+    const malformed = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        const normalized = normalizeBufferedEvent(event);
+        if (!event.eventUid && !event.event_uid) needsRewrite = true;
+        existingEvents.push(normalized);
+      } catch {
+        malformed.push(line);
       }
     }
-    const existingEvents = await readLocalBufferEventsUnsafe(settings);
+    if (malformed.length) {
+      await fs.appendFile(`${settings.localBufferPath}.corrupt`, `${malformed.join("\n")}\n`, { encoding: "utf8", mode: 0o600, flush: true });
+      updateRuntimeStoreState({ corruptedEvents: runtimeStoreState.corruptedEvents + malformed.length });
+      appendStructuredLog("error", {
+        source: "runtime-store", event: "runtime_store.local_buffer_corrupt",
+        target: `${settings.localBufferPath}.corrupt`, corruptedEvents: malformed.length,
+        failureReason: "Malformed records were quarantined; their usage could not be recovered"
+      });
+      needsRewrite = true;
+    }
     // Legacy records need stable identities before an ambiguous database write.
     if (needsRewrite) await writeLocalBufferEventsUnsafe(settings, existingEvents);
     updateLocalBufferState(settings, existingEvents);
@@ -462,6 +489,36 @@ function getRuntimeStorePool(settings) {
     throw new Error("Runtime store requires PostgreSQL connection when database mode is enabled");
   }
   return getSharedPostgresPool(settings.poolOptions);
+}
+
+async function withRuntimeReadSnapshot(settings, read) {
+  await serializeDatabaseOperation(() => ensureRuntimeTables(settings));
+  const pool = getSharedPostgresPool({
+    ...settings.poolOptions, max: 2, min: 0, connectionTimeoutMillis: 3000
+  }, "runtime-reader");
+  const client = await pool.connect();
+  let failure;
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    await client.query("SET LOCAL statement_timeout = '5s'");
+    await client.query("SET LOCAL idle_in_transaction_session_timeout = '10s'");
+    const result = await read(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    failure = error;
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      appendStructuredLog("warn", {
+        source: "runtime-store", event: "runtime_store.snapshot_rollback_failed",
+        failureReason: rollbackError.message
+      });
+    }
+    throw error;
+  } finally {
+    client.release(failure);
+  }
 }
 
 function describeRuntimeTarget(settings) {
@@ -669,7 +726,13 @@ function enqueueMemoryFallback(settings, event) {
 }
 
 function persistRuntimeEventLocally(settings, event) {
-  void appendLocalBufferEvents(settings, [event])
+  if (pendingLocalAppend?.path === settings.localBufferPath && pendingLocalAppend.limit === settings.maxPersistedEvents) {
+    pendingLocalAppend.events.push(event);
+    return;
+  }
+  const events = [event];
+  pendingLocalAppend = { path: settings.localBufferPath, limit: settings.maxPersistedEvents, events };
+  void appendLocalBufferEvents(settings, events)
     .then(({ dropped }) => {
       if (dropped > 0) {
         updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + dropped });
@@ -683,7 +746,7 @@ function persistRuntimeEventLocally(settings, event) {
         failureReason: error?.message || "Failed to append runtime event to local buffer",
         target: settings.localBufferPath
       });
-      enqueueMemoryFallback(settings, event);
+      for (const buffered of events) enqueueMemoryFallback(settings, buffered);
     });
 }
 
@@ -1136,6 +1199,7 @@ export function flushRuntimeEvents() {
 }
 
 export async function drainRuntimeEvents() {
+  await databaseOperation;
   let flushed = 0;
   while (true) {
     await localBufferOperation;
@@ -1179,6 +1243,7 @@ export async function resetRuntimeModelStats(config) {
         `, [META_MODELS_RESET_AT, modelsResetAt]);
       }
       memoryReset.commit();
+      modelStatsGeneration++;
       return { modelsResetAt };
     } catch (error) {
       memoryReset?.rollback();
@@ -1288,9 +1353,26 @@ async function flushRuntimeEventsInternal() {
   }
 }
 
-export function setRuntimeStoreConfig(config) {
+export function validateRuntimeStoreTransition(config) {
+  if (boundLocalBufferPath && resolveRuntimeStoreSettings(config).localBufferPath !== boundLocalBufferPath) {
+    throw Object.assign(new Error("The runtime buffer path cannot change while running. Drain or migrate the old buffer while stopped, then restart with the new path."), {
+      code: "RUNTIME_STORE_RESTART_REQUIRED", status: 409
+    });
+  }
+}
+
+export function setRuntimeStoreConfig(config, { refreshLocalBuffer = true } = {}) {
+  if (config) validateRuntimeStoreTransition(config);
   runtimeStoreConfig = config || null;
+  const generation = ++runtimeConfigGeneration;
+  if (!config) {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
+    boundLocalBufferPath = "";
+    return;
+  }
   const settings = resolveRuntimeStoreSettings(runtimeStoreConfig);
+  if (settings.enabled) boundLocalBufferPath = settings.localBufferPath;
   updateRuntimeStoreState({
     enabled: settings.enabled,
     configured: settings.configured,
@@ -1308,9 +1390,12 @@ export function setRuntimeStoreConfig(config) {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
-  void refreshLocalBufferState(settings)
+  const refresh = refreshLocalBuffer || localBufferCursor.path !== settings.localBufferPath
+    ? serializeDatabaseOperation(() => generation === runtimeConfigGeneration ? refreshLocalBufferState(settings) : undefined)
+    : Promise.resolve();
+  void refresh
     .then(() => {
-      if (settings.configured && (runtimeEventQueue.length > 0 || runtimeStoreState.persistedEventCount > 0)) {
+      if (generation === runtimeConfigGeneration && settings.configured && (runtimeEventQueue.length > 0 || runtimeStoreState.persistedEventCount > 0)) {
         scheduleFlush(settings);
       }
     })
@@ -1343,6 +1428,7 @@ export function getRuntimeStoreInfo(config = runtimeStoreConfig) {
     maxPersistedEvents: settings.maxPersistedEvents,
     queueLength: runtimeEventQueue.length,
     persistedEventCount: runtimeStoreState.persistedEventCount,
+    corruptedEvents: runtimeStoreState.corruptedEvents,
     droppedEvents: runtimeStoreState.droppedEvents,
     flushFailures: runtimeStoreState.flushFailures,
     rollupFailures: runtimeStoreState.rollupFailures,
@@ -1585,8 +1671,7 @@ function getDateTruncExpression(grain, columnName = "occurred_at") {
   return `date_trunc('${normalized}', ${columnName} AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`;
 }
 
-async function queryTotals(settings) {
-  const pool = getRuntimeStorePool(settings);
+async function queryTotals(settings, pool = getRuntimeStorePool(settings)) {
   const { schemaName, rollupsTableName } = getQualifiedTableNames(settings);
   const result = await pool.query(`
     SELECT
@@ -1613,8 +1698,7 @@ async function queryTotals(settings) {
   return result.rows[0] || null;
 }
 
-async function queryFilteredTotals(settings, filters) {
-  const pool = getRuntimeStorePool(settings);
+async function queryFilteredTotals(settings, filters, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filterParts = buildEventFilterParts(filters);
   const whereSql = filterParts.clauses.length ? `WHERE ${filterParts.clauses.join(" AND ")}` : "";
@@ -1643,8 +1727,7 @@ async function queryFilteredTotals(settings, filters) {
   return result.rows[0] || null;
 }
 
-async function queryPerModel(settings) {
-  const pool = getRuntimeStorePool(settings);
+async function queryPerModel(settings, pool = getRuntimeStorePool(settings)) {
   const { schemaName, rollupsTableName } = getQualifiedTableNames(settings);
   const result = await pool.query(`
     SELECT
@@ -1673,8 +1756,7 @@ async function queryPerModel(settings) {
   return result.rows;
 }
 
-async function queryFilteredPerModel(settings, filters) {
-  const pool = getRuntimeStorePool(settings);
+async function queryFilteredPerModel(settings, filters, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filterParts = buildEventFilterParts(filters);
   const whereClauses = [...filterParts.clauses, "model_id <> ''"];
@@ -1706,8 +1788,7 @@ async function queryFilteredPerModel(settings, filters) {
   return result.rows;
 }
 
-async function queryPerActualModel(settings) {
-  const pool = getRuntimeStorePool(settings);
+async function queryPerActualModel(settings, pool = getRuntimeStorePool(settings)) {
   const { schemaName, rollupsTableName } = getQualifiedTableNames(settings);
   const result = await pool.query(`
     SELECT
@@ -1737,8 +1818,7 @@ async function queryPerActualModel(settings) {
   return result.rows;
 }
 
-async function queryFilteredPerActualModel(settings, filters) {
-  const pool = getRuntimeStorePool(settings);
+async function queryFilteredPerActualModel(settings, filters, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filterParts = buildEventFilterParts(filters);
   const whereClauses = [...filterParts.clauses, "model_id <> ''", "actual_model_id <> ''"];
@@ -1771,8 +1851,7 @@ async function queryFilteredPerActualModel(settings, filters) {
   return result.rows;
 }
 
-async function queryPerKey(settings) {
-  const pool = getRuntimeStorePool(settings);
+async function queryPerKey(settings, pool = getRuntimeStorePool(settings)) {
   const { schemaName, rollupsTableName } = getQualifiedTableNames(settings);
   const result = await pool.query(`
     SELECT
@@ -1801,8 +1880,7 @@ async function queryPerKey(settings) {
   return result.rows;
 }
 
-async function queryBillingTiers(settings, filters, filtered) {
-  const pool = getRuntimeStorePool(settings);
+async function queryBillingTiers(settings, filters, filtered, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName, rollupsTableName } = getQualifiedTableNames(settings);
   const filter = filtered ? buildEventFilterParts(filters) : { clauses: [], values: [] };
   const result = await pool.query(`
@@ -1824,8 +1902,7 @@ async function queryBillingTiers(settings, filters, filtered) {
   })).filter(row => row.identity);
 }
 
-async function queryFilteredPerKey(settings, filters) {
-  const pool = getRuntimeStorePool(settings);
+async function queryFilteredPerKey(settings, filters, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filterParts = buildEventFilterParts(filters);
   const whereClauses = [...filterParts.clauses, "key_id <> ''"];
@@ -1857,8 +1934,7 @@ async function queryFilteredPerKey(settings, filters) {
   return result.rows;
 }
 
-async function queryRollupSeries(settings, grain, limit) {
-  const pool = getRuntimeStorePool(settings);
+async function queryRollupSeries(settings, grain, limit, pool = getRuntimeStorePool(settings)) {
   const { schemaName, rollupsTableName } = getQualifiedTableNames(settings);
   const result = await pool.query(`
     SELECT
@@ -1888,8 +1964,7 @@ async function queryRollupSeries(settings, grain, limit) {
   }));
 }
 
-async function queryFilteredRollupSeries(settings, filters, grain, limit) {
-  const pool = getRuntimeStorePool(settings);
+async function queryFilteredRollupSeries(settings, filters, grain, limit, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filterParts = buildEventFilterParts(filters);
   const whereSql = filterParts.clauses.length ? `WHERE ${filterParts.clauses.join(" AND ")}` : "";
@@ -1924,8 +1999,7 @@ async function queryFilteredRollupSeries(settings, filters, grain, limit) {
   }));
 }
 
-async function queryTopSignalScopes(settings, scopeType, countColumn, limit = 8) {
-  const pool = getRuntimeStorePool(settings);
+async function queryTopSignalScopes(settings, scopeType, countColumn, limit = 8, pool = getRuntimeStorePool(settings)) {
   const { schemaName, rollupsTableName } = getQualifiedTableNames(settings);
   const result = await pool.query(`
     SELECT
@@ -1946,8 +2020,7 @@ async function queryTopSignalScopes(settings, scopeType, countColumn, limit = 8)
   }));
 }
 
-async function queryFilteredTopSignalScopes(settings, filters, eventType, valueColumn, limit = 8) {
-  const pool = getRuntimeStorePool(settings);
+async function queryFilteredTopSignalScopes(settings, filters, eventType, valueColumn, limit = 8, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filterParts = buildEventFilterParts(filters, 2);
   const whereClauses = [`event_type = $1`, `${valueColumn} <> ''`, ...filterParts.clauses];
@@ -1969,8 +2042,7 @@ async function queryFilteredTopSignalScopes(settings, filters, eventType, valueC
   }));
 }
 
-async function queryRecentSignals(settings, eventType, limit = 12) {
-  const pool = getRuntimeStorePool(settings);
+async function queryRecentSignals(settings, eventType, limit = 12, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const result = await pool.query(`
     SELECT
@@ -2005,8 +2077,7 @@ async function queryRecentSignals(settings, eventType, limit = 12) {
   }));
 }
 
-async function queryFilteredRecentSignals(settings, filters, eventType, limit = 12) {
-  const pool = getRuntimeStorePool(settings);
+async function queryFilteredRecentSignals(settings, filters, eventType, limit = 12, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filterParts = buildEventFilterParts(filters, 2);
   const whereClauses = [`event_type = $1`, ...filterParts.clauses];
@@ -2043,8 +2114,7 @@ async function queryFilteredRecentSignals(settings, filters, eventType, limit = 
   }));
 }
 
-async function queryMediaAggregates(settings, filters, modelsResetAt) {
-  const pool = getRuntimeStorePool(settings);
+async function queryMediaAggregates(settings, filters, modelsResetAt, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filter = buildEventFilterParts(filters);
   const resetCondition = modelsResetAt
@@ -2088,7 +2158,44 @@ async function queryMediaAggregates(settings, filters, modelsResetAt) {
 }
 
 export function getRuntimeStatsSnapshot(config, fallbackStats = null, options = {}) {
+  if (options.readOnly) return readRuntimeStatsSnapshot(config, fallbackStats, options);
   return serializeDatabaseOperation(() => getRuntimeStatsSnapshotInternal(config, fallbackStats, options));
+}
+
+async function readRuntimeStatsSnapshot(config, fallbackStats, options) {
+  const settings = resolveRuntimeStoreSettings(config);
+  const generation = modelStatsGeneration;
+  if (!settings.configured) return {
+    ...fallbackStats,
+    snapshot: { source: "memory", capturedAt: toIsoString(), partial: settings.enabled }
+  };
+  try {
+    const result = await withRuntimeReadSnapshot(settings, async client => {
+      const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
+      const metadata = await client.query(`SELECT transaction_timestamp() AS captured_at, MAX(event_id) AS last_event_id FROM ${schemaName}.${eventsTableName}`);
+      const rolledEventId = Number(await getMetaValue(settings, META_LAST_ROLLED_EVENT_ID, client)) || 0;
+      const pendingEvents = runtimeEventQueue.length + runtimeStoreState.persistedEventCount;
+      const snapshot = {
+        source: "database",
+        capturedAt: toIsoString(metadata.rows[0].captured_at),
+        pendingEvents,
+        lastRolledEventId: rolledEventId,
+        partial: pendingEvents > 0 || runtimeStoreState.flushing || Number(metadata.rows[0].last_event_id) > rolledEventId
+      };
+      return { ...await getRuntimeStatsSnapshotInternal(config, fallbackStats, { ...options, client }), snapshot };
+    });
+    if (generation !== modelStatsGeneration) {
+      throw Object.assign(new Error("Model statistics changed during this snapshot; refresh again."), { code: "RUNTIME_STATS_SNAPSHOT_STALE" });
+    }
+    return result;
+  } catch (error) {
+    appendStructuredLog("warn", {
+      source: "runtime-store", event: "runtime_store.stats_query_failed",
+      failureReason: error.message
+    });
+    if (error.code === "RUNTIME_STATS_SNAPSHOT_STALE" || generation !== modelStatsGeneration) throw error;
+    return { ...fallbackStats, snapshot: { source: "memory", capturedAt: toIsoString(), partial: true, error: snapshotError(error) } };
+  }
 }
 
 async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
@@ -2098,16 +2205,40 @@ async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
   }
 
   try {
-    await flushRuntimeEventsInternal();
-    await ensureRuntimeTables(settings);
-    await rollupRuntimeEvents(settings);
-    await cleanupRuntimeData(settings);
+    if (!options.readOnly) {
+      await flushRuntimeEventsInternal();
+      await ensureRuntimeTables(settings);
+      await rollupRuntimeEvents(settings);
+      await cleanupRuntimeData(settings);
+    }
 
     const filters = normalizeStatsFilters(options);
-    const modelsResetAt = await getMetaValue(settings, META_MODELS_RESET_AT);
+    const client = options.client;
+    const modelsResetAt = await getMetaValue(settings, META_MODELS_RESET_AT, client);
     const modelFilters = { ...filters, modelsResetAt };
     const useFilteredQueryPath = !!filters.keyId || !!filters.since;
 
+    const queries = [
+      () => useFilteredQueryPath ? queryFilteredTotals(settings, filters, client) : queryTotals(settings, client),
+      () => useFilteredQueryPath ? queryFilteredPerModel(settings, modelFilters, client) : queryPerModel(settings, client),
+      () => useFilteredQueryPath ? queryFilteredPerActualModel(settings, modelFilters, client) : queryPerActualModel(settings, client),
+      () => useFilteredQueryPath ? queryFilteredPerKey(settings, filters, client) : queryPerKey(settings, client),
+      () => useFilteredQueryPath ? queryFilteredRollupSeries(settings, filters, "hourly", 24, client) : queryRollupSeries(settings, "hourly", 24, client),
+      () => useFilteredQueryPath ? queryFilteredRollupSeries(settings, filters, "daily", 30, client) : queryRollupSeries(settings, "daily", 30, client),
+      () => useFilteredQueryPath ? queryFilteredRollupSeries(settings, filters, "weekly", 12, client) : queryRollupSeries(settings, "weekly", 12, client),
+      () => useFilteredQueryPath ? queryFilteredTopSignalScopes(settings, filters, "blocked", "blocked_reason", 10, client) : queryTopSignalScopes(settings, "blocked_reason", "blocked_count", 10, client),
+      () => useFilteredQueryPath ? queryFilteredTopSignalScopes(settings, filters, "warning", "signal_name", 10, client) : queryTopSignalScopes(settings, "warning_event", "warning_count", 10, client),
+      () => useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "blocked", 12, client) : queryRecentSignals(settings, "blocked", 12, client),
+      () => useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "warning", 12, client) : queryRecentSignals(settings, "warning", 12, client),
+      () => queryMediaAggregates(settings, filters, modelsResetAt, client),
+      () => queryBillingTiers(settings, modelFilters, useFilteredQueryPath, client)
+    ];
+    const rows = [];
+    if (client) {
+      for (const query of queries) rows.push(await query());
+    } else {
+      rows.push(...await Promise.all(queries.map(query => query())));
+    }
     const [
       totalsRow,
       perModelRows,
@@ -2122,21 +2253,7 @@ async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
       recentWarnings,
       mediaRows,
       billingTierRows
-    ] = await Promise.all([
-      useFilteredQueryPath ? queryFilteredTotals(settings, filters) : queryTotals(settings),
-      useFilteredQueryPath ? queryFilteredPerModel(settings, modelFilters) : queryPerModel(settings),
-      useFilteredQueryPath ? queryFilteredPerActualModel(settings, modelFilters) : queryPerActualModel(settings),
-      useFilteredQueryPath ? queryFilteredPerKey(settings, filters) : queryPerKey(settings),
-      useFilteredQueryPath ? queryFilteredRollupSeries(settings, filters, "hourly", 24) : queryRollupSeries(settings, "hourly", 24),
-      useFilteredQueryPath ? queryFilteredRollupSeries(settings, filters, "daily", 30) : queryRollupSeries(settings, "daily", 30),
-      useFilteredQueryPath ? queryFilteredRollupSeries(settings, filters, "weekly", 12) : queryRollupSeries(settings, "weekly", 12),
-      useFilteredQueryPath ? queryFilteredTopSignalScopes(settings, filters, "blocked", "blocked_reason", 10) : queryTopSignalScopes(settings, "blocked_reason", "blocked_count", 10),
-      useFilteredQueryPath ? queryFilteredTopSignalScopes(settings, filters, "warning", "signal_name", 10) : queryTopSignalScopes(settings, "warning_event", "warning_count", 10),
-      useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "blocked", 12) : queryRecentSignals(settings, "blocked", 12),
-      useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "warning", 12) : queryRecentSignals(settings, "warning", 12),
-      queryMediaAggregates(settings, filters, modelsResetAt),
-      queryBillingTiers(settings, modelFilters, useFilteredQueryPath)
-    ]);
+    ] = rows;
 
     const snapshot = {
       startedAt: totalsRow?.started_at ? new Date(totalsRow.started_at).toISOString() : (fallbackStats?.startedAt || toIsoString()),
@@ -2206,6 +2323,7 @@ async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
 
     return snapshot;
   } catch (error) {
+    if (options.readOnly) throw error;
     appendStructuredLog("warn", {
       source: "runtime-store",
       event: "runtime_store.stats_query_failed",
@@ -2226,6 +2344,21 @@ export function hydrateGovernanceRuntime(config, keyId, rateWindowStartedAt, bud
 
 export function hydrateGovernanceRuntimes(config, keyWindows) {
   return serializeDatabaseOperation(() => hydrateGovernanceRuntimesInternal(config, keyWindows));
+}
+
+export async function readGovernanceRuntimes(config, keyWindows) {
+  const settings = resolveRuntimeStoreSettings(config);
+  if (!settings.enabled || keyWindows.length === 0) return new Map();
+  try {
+    if (!settings.configured) throw new Error("Runtime governance storage is not configured");
+    return await withRuntimeReadSnapshot(settings, client => queryGovernanceRuntimes(settings, keyWindows, client));
+  } catch (error) {
+    appendStructuredLog("warn", {
+      source: "runtime-store", event: "runtime_store.governance_snapshot_failed",
+      failureReason: error.message
+    });
+    throw error;
+  }
 }
 
 async function hydrateGovernanceRuntimesInternal(config, keyWindows) {
@@ -2264,7 +2397,19 @@ async function hydrateGovernanceRuntimesInternal(config, keyWindows) {
     }
     for (const target of targets) target.onSnapshot?.();
 
-    const pool = getRuntimeStorePool(settings);
+    return await queryGovernanceRuntimes(settings, targets);
+  } catch (error) {
+    appendStructuredLog("warn", {
+      source: "runtime-store",
+      event: "runtime_store.governance_hydrate_failed",
+      keyIds: targets.map((item) => item.keyId),
+      failureReason: error?.message || "Runtime governance hydrate failed"
+    });
+    throw error;
+  }
+}
+
+async function queryGovernanceRuntimes(settings, targets, pool = getRuntimeStorePool(settings)) {
     const { schemaName, eventsTableName, rollupsTableName } = getQualifiedTableNames(settings);
     const result = await pool.query(`
       WITH targets AS (
@@ -2373,13 +2518,4 @@ async function hydrateGovernanceRuntimesInternal(config, keyWindows) {
       throw new Error("Runtime governance hydration returned an incomplete snapshot");
     }
     return persisted;
-  } catch (error) {
-    appendStructuredLog("warn", {
-      source: "runtime-store",
-      event: "runtime_store.governance_hydrate_failed",
-      keyIds: targets.map((item) => item.keyId),
-      failureReason: error?.message || "Runtime governance hydrate failed"
-    });
-    throw error;
-  }
 }

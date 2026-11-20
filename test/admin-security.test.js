@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { REDACTED_SECRET_VALUE } from "../src/admin-config.js";
 import { createTestContext } from "./lib/harness.js";
 
@@ -108,13 +109,118 @@ test("Caddy apply failure does not report a persisted config save as failed", as
       headers: { "x-aoai-admin-csrf": "1" },
       json: config
     });
+
     assert.equal(saved.status, 200, saved.text);
     assert.equal(saved.json?.ok, true);
     assert.equal(saved.json?.apply?.caddy?.ok, false);
     assert.equal((await context.readConfigFile()).server.caddy.enabled, true);
+    const beforeRetry = await context.readConfigFile();
+    const retried = await context.adminRequest("/admin/api/config/apply", {
+      method: "POST", headers: { "x-aoai-admin-csrf": "1", "if-match": saved.headers.get("etag") }, json: { stage: "caddy" }
+    });
+    assert.equal(retried.status, 200);
+    assert.equal(retried.json.apply.caddy.ok, false);
+    assert.equal(retried.json.apply.proxy.appliedAt, saved.json.apply.proxy.appliedAt);
+    assert.equal(retried.headers.get("etag"), saved.headers.get("etag"));
+    assert.deepEqual(await context.readConfigFile(), beforeRetry);
+    const reloaded = await context.adminRequest("/admin/api/reload", { method: "POST", headers: { "x-aoai-admin-csrf": "1" } });
+    assert.equal(reloaded.json.apply.caddy.ok, false);
   } finally {
     await context?.cleanup();
     await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("configuration mutations serialize Caddy application with matching response revisions", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-apply-order-"));
+  const binary = path.join(dir, "caddy");
+  const trace = path.join(dir, "trace");
+  await fs.writeFile(binary, `#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(process.env.CADDY_TEST_TRACE, "start\\n");
+setTimeout(() => fs.appendFileSync(process.env.CADDY_TEST_TRACE, "end\\n"), 250);
+`, { mode: 0o700 });
+  let context;
+  try {
+    context = await createTestContext({ proxyEnv: { CADDY_BIN: binary, CADDYFILE_PATH: path.join(dir, "Caddyfile"), CADDY_TEST_TRACE: trace } });
+    const loaded = await context.adminRequest("/admin/api/config");
+    loaded.json.server.caddy = { ...loaded.json.server.caddy, enabled: true, domain: "proxy.example.test", email: "ops@example.test" };
+    const save = (config, etag) => context.adminRequest("/admin/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1", "if-match": etag }, json: config
+    });
+    const first = save(loaded.json, loaded.headers.get("etag"));
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      try {
+        if ((await fs.readFile(trace, "utf8")).includes("start")) break;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      await delay(10);
+    }
+    assert.equal(await fs.readFile(trace, "utf8"), "start\n");
+    const intermediate = await context.adminRequest("/admin/api/config");
+    intermediate.json.server.gracefulShutdownMs += 1000;
+    const second = save(intermediate.json, intermediate.headers.get("etag"));
+    const results = await Promise.all([first, second]);
+    for (const result of results) {
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.json.apply.caddy.ok, true);
+      assert.equal(result.json.apply.proxy.revision, result.headers.get("etag").slice(1, -1));
+      assert.equal(result.json.apply.caddy.revision, result.json.apply.proxy.revision);
+    }
+    assert.equal(await fs.readFile(trace, "utf8"), "start\nend\nstart\nend\n");
+    assert.notEqual(results[0].headers.get("etag"), results[1].headers.get("etag"));
+    assert.equal((await context.readConfigFile()).server.gracefulShutdownMs, intermediate.json.server.gracefulShutdownMs);
+  } finally {
+    await context?.cleanup();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("history rollback preserves current secrets and rejects a stale revision", async () => {
+  const context = await createTestContext();
+  try {
+    const loaded = await context.adminRequest("/admin/api/config");
+    const config = loaded.json;
+    const save = (etag) => context.adminRequest("/admin/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1", "if-match": etag }, json: config
+    });
+    config.server.gracefulShutdownMs += 1000;
+    config.apiKeys[0].key = "history-first-private-key";
+    const first = await save(loaded.headers.get("etag"));
+    assert.equal(first.status, 200, first.text);
+    const firstEntry = (await context.adminRequest("/admin/api/config/history")).json.items[0];
+    config.server.gracefulShutdownMs += 1000;
+    config.apiKeys[0].key = "history-current-private-key";
+    const second = await save(first.headers.get("etag"));
+    assert.equal(second.status, 200, second.text);
+    const detail = await context.adminRequest(`/admin/api/config/history/${firstEntry.id}`);
+    assert.doesNotMatch(detail.text, /history-first-private-key|history-current-private-key/);
+    const rollbackPath = `/admin/api/config/history/${firstEntry.id}/rollback`;
+    const restored = await context.adminRequest(rollbackPath, {
+      method: "POST", headers: { "x-aoai-admin-csrf": "1", "if-match": second.headers.get("etag") }
+    });
+    assert.equal(restored.status, 200, restored.text);
+    const persisted = await context.readConfigFile();
+    assert.equal(persisted.server.gracefulShutdownMs, first.json.config.server.gracefulShutdownMs);
+    assert.equal(persisted.apiKeys[0].key, "history-current-private-key");
+    const history = (await context.adminRequest("/admin/api/config/history")).json.items;
+    assert.equal(history[0].action, "rollback");
+    assert.equal(history[0].restoredFrom, firstEntry.id);
+    assert.notEqual(history[0].id, firstEntry.id);
+    assert.equal(history[0].apply.proxy.ok, true);
+    const stale = await context.adminRequest(rollbackPath, {
+      method: "POST", headers: { "x-aoai-admin-csrf": "1", "if-match": second.headers.get("etag") }
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await context.adminRequest("/admin/api/config/history")).json.items.length, history.length);
+    const missingRevision = await context.adminRequest("/admin/api/reload", {
+      method: "POST", headers: { "x-aoai-admin-csrf": "1" }, json: { discardPendingDatabaseSync: true }
+    });
+    assert.equal(missingRevision.status, 428);
+  } finally {
+    await context.cleanup();
   }
 });
 

@@ -149,6 +149,7 @@ export default function RuntimeTab({
   totals = {},
   snapshotFilters,
   statsUpdatedAt,
+  statsSnapshot,
   persistenceRuntime,
   loggingRuntime,
   runtimeStore,
@@ -289,6 +290,13 @@ export default function RuntimeTab({
           </span>
         ) : null}
       >
+        {statsSnapshot ? <p role="status" className={statsSnapshot.partial ? "inline-error" : "muted"}>
+          {statsSnapshot.source === "database"
+            ? t("runtime.snapshot.database", "Read-only database snapshot at {time}; background writes may not be included.", { time: formatDateTime(statsSnapshot.capturedAt) })
+            : t("runtime.snapshot.memory", "Current-process cumulative counters; persisted history and filters are not included.")}
+          {statsSnapshot.partial ? ` ${t("runtime.snapshot.partial", "Partial snapshot: pending events or unavailable storage. Use Sync Now to request a flush.")}` : ""}
+          {statsSnapshot.error?.message ? ` ${statsSnapshot.error.message}` : ""}
+        </p> : null}
         <div className="runtime-filter-toolbar">
           <label className="field runtime-filter-field">
             <span className="field-label">{t("runtime.filterKey", "Key")}</span>
@@ -552,15 +560,16 @@ export default function RuntimeTab({
                 const perKey = perKeyStats[entry.keyId] || {};
                 const budgetWindow = runtimeEntry.budgetWindow || {};
                 const signalBadges = getBudgetSignalBadges(runtimeEntry, t);
-                const budgetText = formatBudgetCost(budgetWindow, entry.budget, t);
+                const known = runtimeEntry.known !== false;
+                const budgetText = known ? formatBudgetCost(budgetWindow, entry.budget, t) : t("runtime.snapshot.unknown", "Not loaded");
                 return (
                   <tr key={entry.keyId}>
                     <td>{entry.displayName || entry.keyId}</td>
                     <td>{entry.owner || "-"}</td>
-                    <td>{formatRuntimeNumber(perKey.requests ?? runtimeEntry.totalRequests ?? 0)}</td>
-                    <td>{formatRuntimeNumber(perKey.errors ?? runtimeEntry.totalErrors ?? 0)}</td>
+                    <td>{formatRuntimeNumber(perKey.requests ?? (known ? runtimeEntry.totalRequests ?? 0 : undefined))}</td>
+                    <td>{formatRuntimeNumber(perKey.errors ?? (known ? runtimeEntry.totalErrors ?? 0 : undefined))}</td>
                     <TokenCells stats={perKey} t={t} />
-                    <td>{formatEstimatedCost({ ...perKey, estimatedCostAmount: perKey.estimatedCostAmount ?? budgetWindow.spentAmount ?? 0, textUnknownCostRequests: perKey.textUnknownCostRequests ?? budgetWindow.textUnknownCostRequests ?? 0 }, t)}</td>
+                    <td>{known || perKey.estimatedCostAmount != null ? formatEstimatedCost({ ...perKey, estimatedCostAmount: perKey.estimatedCostAmount ?? budgetWindow.spentAmount, textUnknownCostRequests: perKey.textUnknownCostRequests ?? budgetWindow.textUnknownCostRequests }, t) : "—"}</td>
                     <td>{runtimeEntry.currentConcurrent || 0}</td>
                     <td>{`rpm ${entry.rateLimit?.rpm || "-"} / tpm ${entry.rateLimit?.tpm || "-"} / con ${entry.rateLimit?.concurrency || "-"}`}</td>
                     <td>{budgetText}</td>
@@ -576,7 +585,7 @@ export default function RuntimeTab({
                     <td>
                       <div className="runtime-cell-stack">
                         <span>{runtimeEntry.lastBlockedReason ? getBlockedReasonLabel(runtimeEntry.lastBlockedReason, t) : "-"}</span>
-                        <span className="runtime-cell-note">{runtimeEntry.totalBlockedRequests || 0}</span>
+                        <span className="runtime-cell-note">{known ? runtimeEntry.totalBlockedRequests || 0 : "—"}</span>
                       </div>
                     </td>
                     <td>{runtimeEntry.lastSeenAt ? formatDateTime(runtimeEntry.lastSeenAt) : "-"}</td>

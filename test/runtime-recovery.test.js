@@ -68,6 +68,14 @@ async function setup(t, store, query) {
   return config;
 }
 
+async function waitForPersistedCount(store, config, count) {
+  const deadline = Date.now() + 5000;
+  while (store.getRuntimeStoreInfo(config).persistedEventCount !== count && Date.now() < deadline) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(store.getRuntimeStoreInfo(config).persistedEventCount, count);
+}
+
 for (const failure of ["checkpoint", "commit-ack", "insert-ack"]) {
   test(`runtime ledger is idempotent after ${failure} failure`, async t => {
     const store = await import(`../src/runtime-store.js?recovery=${failure}`);
@@ -193,7 +201,7 @@ for (const failCompaction of [false, true]) {
     assert.equal((await store.flushRuntimeEvents()).flushed, 2);
     const rename = fs.rename;
     const mock = failCompaction ? t.mock.method(fs, "rename", async (source, destination) => {
-      if (source === `${spool}.tmp`) throw new Error("compaction failure");
+      if (destination === spool) throw new Error("compaction failure");
       return rename(source, destination);
     }) : null;
     assert.equal((await store.flushRuntimeEvents()).flushed, 2);
@@ -213,6 +221,95 @@ for (const failCompaction of [false, true]) {
     assert.equal(new Set(db.events.map(event => event.event_uid)).size, 6);
   });
 }
+
+for (const corruption of ["middle-of-record", "later-record", "null-checkpoint"]) {
+  test(`spool replays safely after ${corruption} corruption`, async t => {
+    let store = await import(`../src/runtime-store.js?corrupt=${corruption}-1`);
+    const db = mockLedger();
+    const config = await setup(t, { setRuntimeStoreConfig: value => store.setRuntimeStoreConfig(value) }, db.query);
+    await store.drainRuntimeEvents();
+    config.observability.runtimeStore.batchSize = 2;
+    const spool = config.observability.runtimeStore.localBufferPath;
+    const rows = Array.from({ length: 6 }, (_, index) => ({
+      eventUid: randomUUID(), eventType: "usage", requestId: `corrupt-${index}`, totalTokens: 3
+    }));
+    await fs.writeFile(spool, `${rows.map(row => JSON.stringify(row)).join("\n")}\n`);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    store.setRuntimeStoreConfig(config);
+    await waitForPersistedCount(store, config, 6);
+    assert.equal((await store.flushRuntimeEvents()).flushed, 2);
+    const checkpoint = JSON.parse(await fs.readFile(`${spool}.offset`, "utf8"));
+    if (corruption === "middle-of-record") checkpoint.offset += 1;
+    if (corruption === "later-record") checkpoint.offset += Buffer.byteLength(JSON.stringify(rows[2])) + 1;
+    await fs.writeFile(`${spool}.offset`, JSON.stringify(corruption === "null-checkpoint" ? null : checkpoint));
+    store.setRuntimeStoreConfig(null);
+    store = await import(`../src/runtime-store.js?corrupt=${corruption}-2`);
+    store.setRuntimeStoreConfig(config);
+    const drained = await store.drainRuntimeEvents();
+    assert.equal(drained.pendingPersistedEvents, 0);
+    assert.equal(db.events.length, 6);
+    assert.equal(db.events.reduce((sum, event) => sum + event.total_tokens, 0), 18);
+  });
+}
+
+test("spool quarantines malformed records and retains complete neighboring records", async t => {
+  const store = await import("../src/runtime-store.js?malformed-records=1");
+  const db = mockLedger();
+  const config = await setup(t, store, db.query);
+  await store.drainRuntimeEvents();
+  const spool = config.observability.runtimeStore.localBufferPath;
+  const rows = [0, 1].map(index => ({ eventUid: randomUUID(), eventType: "request", requestId: `valid-${index}` }));
+  await fs.writeFile(spool, `${JSON.stringify(rows[0])}\nnot-json\n${JSON.stringify(rows[1])}\n{"partial":`);
+  store.setRuntimeStoreConfig(config);
+  await store.drainRuntimeEvents();
+  assert.deepEqual(db.events.map(event => event.request_id), ["valid-0", "valid-1"]);
+  assert.match(await fs.readFile(`${spool}.corrupt`, "utf8"), /not-json/);
+  assert.match(await fs.readFile(`${spool}.corrupt`, "utf8"), /"partial":/);
+  assert.equal(store.getRuntimeStoreInfo(config).corruptedEvents, 2);
+});
+
+test("spool overflow during an in-flight batch retains newer events and deduplicates replay", { timeout: 10000 }, async t => {
+  const store = await import("../src/runtime-store.js?overflow-in-flight=1");
+  const db = mockLedger();
+  let releaseInsert;
+  const held = new Promise(resolve => { releaseInsert = resolve; });
+  let insertStarted;
+  const started = new Promise(resolve => { insertStarted = resolve; });
+  let holdInsert = true;
+  const config = await setup(t, store, async (sql, values) => {
+    if (holdInsert && sql.startsWith("INSERT") && sql.includes('"runtime_events"')) {
+      holdInsert = false;
+      insertStarted();
+      await held;
+    }
+    return db.query(sql, values);
+  });
+  t.after(() => releaseInsert());
+  await store.drainRuntimeEvents();
+  Object.assign(config.observability.runtimeStore, { batchSize: 2, maxPersistedEvents: 100 });
+  const spool = config.observability.runtimeStore.localBufferPath;
+  const rows = Array.from({ length: 100 }, (_, index) => ({
+    eventUid: randomUUID(), eventType: "request", requestId: `overflow-${index}`
+  }));
+  await fs.writeFile(spool, `${rows.map(row => JSON.stringify(row)).join("\n")}\n`);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  store.setRuntimeStoreConfig(config);
+  await waitForPersistedCount(store, config, 100);
+  const flushing = store.flushRuntimeEvents();
+  await started;
+  for (let index = 100; index < 103; index += 1) store.recordRuntimeRequest(config, { requestId: `overflow-${index}` });
+  const deadline = Date.now() + 2000;
+  while (store.getRuntimeStoreInfo(config).droppedEvents < 3 && Date.now() < deadline) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(store.getRuntimeStoreInfo(config).droppedEvents, 3);
+  releaseInsert();
+  await flushing;
+  await store.drainRuntimeEvents();
+  assert.deepEqual(db.events.map(event => event.request_id), Array.from({ length: 103 }, (_, index) => index)
+    .filter(index => index !== 2).map(index => `overflow-${index}`));
+  assert.equal(store.getRuntimeStoreInfo(config).persistedEventCount, 0);
+});
 
 test("governance snapshots hydrate configured keys with one database query", async t => {
   let hydrationQueries = 0;

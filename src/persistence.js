@@ -1,10 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { appendStructuredLog } from "./logs.js";
 import { buildPostgresPoolOptions, getSharedPostgresPool, probePostgresConnection, quoteIdentifier } from "./postgres.js";
 import { parsePersistenceMode } from "./persistence-mode.js";
+import { writeFileAtomic as writeLocalConfigText } from "./atomic-file.js";
+import { appendHistory, createHistoryEntry, includeCurrentHistory, parseConfigHistory } from "./config-history.js";
 
 const DEFAULT_PERSISTENCE_MODE = "file";
 const DEFAULT_LOCAL_CONFIG_PATH = "./config/config.json";
@@ -18,6 +20,7 @@ let databaseRecoveryTimer = null;
 let databaseRecoveryRunning = false;
 let databaseBaseline = null;
 let persistenceOperation = Promise.resolve();
+const tableInitializations = new WeakMap();
 
 function serializePersistenceOperation(operation) {
   const next = persistenceOperation.catch(() => undefined).then(operation);
@@ -31,6 +34,9 @@ const persistenceState = {
   databaseAccessState: "disabled",
   pendingDatabaseSync: false,
   lastDatabaseError: null,
+  lastCacheError: null,
+  historyError: null,
+  historyEntryId: null,
   nextDatabaseRecoveryAttemptAt: null
 };
 
@@ -167,30 +173,8 @@ function getLocalReadCandidates(settings) {
   return [...new Set([settings.configPath, settings.compatibilityPath].filter(Boolean))];
 }
 
-async function ensureLocalDirectory(filePath) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-}
-
 async function readLocalConfigText(filePath) {
   return fs.readFile(filePath, "utf8");
-}
-
-async function writeLocalConfigText(filePath, text) {
-  await ensureLocalDirectory(filePath);
-  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  let fileHandle = null;
-  try {
-    fileHandle = await fs.open(tempPath, "w", 0o600);
-    await fileHandle.writeFile(text, "utf8");
-    await fileHandle.sync();
-    await fileHandle.close();
-    fileHandle = null;
-    await fs.rename(tempPath, filePath);
-  } catch (error) {
-    await fileHandle?.close().catch(() => {});
-    await fs.unlink(tempPath).catch(() => {});
-    throw error;
-  }
 }
 
 async function tryReadLocalConfigText(filePath) {
@@ -224,12 +208,42 @@ async function readPrimaryLocalConfigText(settings) {
 }
 
 async function writeLocalCacheText(settings, text) {
-  const targets = new Set([settings.configPath]);
-  if (settings.compatibilityExportEnabled) {
-    targets.add(settings.compatibilityPath);
+  await writeLocalConfigText(settings.configPath, text);
+  if (settings.compatibilityExportEnabled && settings.compatibilityPath !== settings.configPath) {
+    try {
+      await writeLocalConfigText(settings.compatibilityPath, text);
+    } catch (error) {
+      reportCacheError(settings, error);
+    }
   }
-  for (const targetPath of targets) {
-    await writeLocalConfigText(targetPath, text);
+}
+
+function reportCacheError(settings, error) {
+  updatePersistenceState({ lastCacheError: snapshotError(error) });
+  emitPersistenceEvent("warn", "persistence.cache_write_failed", {
+    target: settings.configPath, failureReason: error.message
+  });
+}
+
+function historyPath(settings) {
+  return `${settings.configPath}.history.json`;
+}
+
+async function readLocalHistory(settings) {
+  const text = await tryReadLocalConfigText(historyPath(settings));
+  return text === null ? [] : parseConfigHistory(JSON.parse(text));
+}
+
+async function writeLocalHistory(settings, history) {
+  await writeLocalConfigText(historyPath(settings), JSON.stringify(history, null, 2));
+}
+
+async function mirrorDatabaseConfig(settings, text, history) {
+  try {
+    await writeLocalCacheText(settings, text);
+    await writeLocalHistory(settings, history);
+  } catch (error) {
+    reportCacheError(settings, error);
   }
 }
 
@@ -262,23 +276,29 @@ async function readDatabasePendingSyncMarker(settings) {
   try {
     const marker = JSON.parse(await fs.readFile(getDatabasePendingSyncMarkerPath(settings), "utf8"));
     const baseline = marker?.baseline;
-    if (baseline?.target === databaseTargetId(settings) && baseline.known === true
-      && (baseline.version === null || (Number.isSafeInteger(baseline.version) && baseline.version > 0))) {
-      return baseline;
-    }
+    const validBaseline = baseline?.target === databaseTargetId(settings) && baseline.known === true
+      && (baseline.version === null || (Number.isSafeInteger(baseline.version) && baseline.version > 0));
+    return {
+      baseline: validBaseline ? baseline : { target: databaseTargetId(settings), known: false },
+      text: typeof marker?.text === "string" ? marker.text : null,
+      history: marker?.history == null ? null : parseConfigHistory(marker.history)
+    };
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     if (!(error instanceof SyntaxError)) throw error;
   }
-  return { target: databaseTargetId(settings), known: false };
+  emitPersistenceEvent("warn", "persistence.pending_marker_invalid", { target: getDatabasePendingSyncMarkerPath(settings) });
+  return { baseline: { target: databaseTargetId(settings), known: false }, text: null, history: null };
 }
 
-async function writeDatabasePendingSyncMarker(settings, baseline) {
+async function writeDatabasePendingSyncMarker(settings, baseline, text, history) {
   const markerPath = getDatabasePendingSyncMarkerPath(settings);
   await writeLocalConfigText(markerPath, JSON.stringify({
     updatedAt: new Date().toISOString(),
     target: describeDatabaseTarget(settings),
-    baseline
+    baseline,
+    text,
+    history
   }, null, 2));
 }
 
@@ -308,15 +328,28 @@ async function ensureDatabaseTable(settings) {
   const pool = getDatabasePool(settings);
   const schemaName = quoteIdentifier(settings.database.schemaName, "persistence.configStore.database.schema");
   const tableName = quoteIdentifier(settings.database.tableName, "persistence.configStore.database.tableName");
-  await pool.query(`CREATE SCHEMA IF NOT EXISTS ${schemaName}`);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ${schemaName}.${tableName} (
-      config_key TEXT PRIMARY KEY,
-      config_json JSONB NOT NULL,
-      version INTEGER NOT NULL DEFAULT 1,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
+  let initialized = tableInitializations.get(pool);
+  if (!initialized) tableInitializations.set(pool, initialized = new Map());
+  const key = `${schemaName}.${tableName}`;
+  if (!initialized.has(key)) {
+    initialized.set(key, (async () => {
+      await pool.query(`CREATE SCHEMA IF NOT EXISTS ${schemaName}`);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS ${key} (
+          config_key TEXT PRIMARY KEY,
+          config_json JSONB NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          history_json JSONB NOT NULL DEFAULT '[]'::jsonb
+        )
+      `);
+      await pool.query(`ALTER TABLE ${key} ADD COLUMN IF NOT EXISTS history_json JSONB NOT NULL DEFAULT '[]'::jsonb`);
+    })().catch(error => {
+      initialized.delete(key);
+      throw error;
+    }));
+  }
+  await initialized.get(key);
 }
 
 function markDatabaseReady(settings, reason) {
@@ -371,11 +404,12 @@ async function readDatabaseConfigRecord(settings) {
   const schemaName = quoteIdentifier(settings.database.schemaName, "persistence.configStore.database.schema");
   const tableName = quoteIdentifier(settings.database.tableName, "persistence.configStore.database.tableName");
   const result = await pool.query(
-    `SELECT config_json, version FROM ${schemaName}.${tableName} WHERE config_key = $1 LIMIT 1`,
+    `SELECT config_json, version, history_json FROM ${schemaName}.${tableName} WHERE config_key = $1 LIMIT 1`,
     [settings.database.configKey]
   );
   return {
     text: result.rows.length ? JSON.stringify(result.rows[0].config_json, null, 2) : null,
+    history: parseConfigHistory(result.rows[0]?.history_json || []),
     baseline: { target: databaseTargetId(settings), known: true, version: result.rows[0]?.version ?? null }
   };
 }
@@ -386,28 +420,42 @@ async function readDatabaseConfigText(settings, { trackBaseline = true } = {}) {
   return record.text;
 }
 
-async function writeDatabaseConfigText(settings, text, baseline) {
+async function writeDatabaseConfigText(settings, text, baseline, { entry = createHistoryEntry(text), history } = {}) {
   if (!baseline?.known || baseline.target !== databaseTargetId(settings)) {
     throw Object.assign(new Error("The database configuration revision is unknown; automatic synchronization is unsafe."), {
       code: "CONFIG_REVISION_UNKNOWN",
       status: 409
     });
   }
-  await ensureDatabaseTable(settings);
+  const previous = await readDatabaseConfigRecord(settings);
+  if (previous.baseline.version !== baseline.version) {
+    throw Object.assign(new Error("Configuration changed in the database. Reload the latest version before saving."), {
+      code: "CONFIG_REVISION_CONFLICT", status: 409
+    });
+  }
   const pool = getDatabasePool(settings);
   const schemaName = quoteIdentifier(settings.database.schemaName, "persistence.configStore.database.schema");
   const tableName = quoteIdentifier(settings.database.tableName, "persistence.configStore.database.tableName");
   const parsed = JSON.parse(text);
+  const nextHistory = history || appendHistory(includeCurrentHistory(previous.history, previous.text), entry);
   const result = baseline.version === null
     ? await pool.query(
-      `INSERT INTO ${schemaName}.${tableName} (config_key, config_json, version, updated_at)
-       VALUES ($1, $2::jsonb, 1, NOW()) ON CONFLICT (config_key) DO NOTHING RETURNING version`,
-      [settings.database.configKey, JSON.stringify(parsed)]
+      `INSERT INTO ${schemaName}.${tableName} (config_key, config_json, version, updated_at, history_json)
+       VALUES ($1, $2::jsonb, 1, NOW(), $3::jsonb) ON CONFLICT (config_key) DO NOTHING RETURNING version, history_json`,
+      [settings.database.configKey, JSON.stringify(parsed), JSON.stringify(nextHistory)]
     )
     : await pool.query(
-      `UPDATE ${schemaName}.${tableName} SET config_json = $2::jsonb, version = version + 1, updated_at = NOW()
-       WHERE config_key = $1 AND version = $3 RETURNING version`,
-      [settings.database.configKey, JSON.stringify(parsed), baseline.version]
+      `UPDATE ${schemaName}.${tableName} AS saved SET config_json = $2::jsonb, version = version + 1, updated_at = NOW(),
+       history_json = (
+         SELECT jsonb_agg(jsonb_set(candidate.item, '{apply}', COALESCE(
+           NULLIF((SELECT stored.value->'apply' FROM jsonb_array_elements(saved.history_json) AS stored(value)
+             WHERE stored.value->>'id' = candidate.item->>'id' LIMIT 1), 'null'::jsonb),
+           candidate.item->'apply', 'null'::jsonb
+         )) ORDER BY candidate.position)
+         FROM jsonb_array_elements($4::jsonb) WITH ORDINALITY AS candidate(item, position)
+       )
+       WHERE config_key = $1 AND version = $3 RETURNING version, history_json`,
+      [settings.database.configKey, JSON.stringify(parsed), baseline.version, JSON.stringify(nextHistory)]
     );
   if (!result.rows.length) {
     throw Object.assign(new Error("Configuration changed in the database. Reload the latest version before saving."), {
@@ -415,7 +463,10 @@ async function writeDatabaseConfigText(settings, text, baseline) {
       status: 409
     });
   }
+  const committedHistory = parseConfigHistory(result.rows[0].history_json);
   databaseBaseline = { target: databaseTargetId(settings), known: true, version: result.rows[0].version };
+  updatePersistenceState({ historyEntryId: committedHistory.at(-1)?.id || null });
+  return committedHistory;
 }
 
 function recoverDatabaseAccess() {
@@ -440,17 +491,20 @@ async function recoverDatabaseAccessInternal() {
     }
 
     if (persistenceState.pendingDatabaseSync) {
-      const localText = await readLocalCacheText(settings);
+      const pending = await readDatabasePendingSyncMarker(settings);
+      const localText = pending?.text ?? await readLocalCacheText(settings);
       if (localText != null) {
-        const baseline = await readDatabasePendingSyncMarker(settings);
+        let history;
         try {
-          await writeDatabaseConfigText(settings, localText, baseline);
+          history = await writeDatabaseConfigText(settings, localText, pending?.baseline, { history: pending?.history || undefined });
         } catch (error) {
           if (error?.code !== "CONFIG_REVISION_CONFLICT") throw error;
           const current = await readDatabaseConfigRecord(settings);
           if (current.text == null || !isDeepStrictEqual(JSON.parse(current.text), JSON.parse(localText))) throw error;
           databaseBaseline = current.baseline;
+          history = current.history;
         }
+        await mirrorDatabaseConfig(settings, localText, history);
         await clearDatabasePendingSyncMarker(settings);
         markDatabaseReady(settings, "synced");
         return;
@@ -494,21 +548,24 @@ export function setPersistenceConfig(config) {
   applyConfiguredMode(resolvePersistenceSettings(runtimeConfig));
 }
 
-export function readPersistedConfigText() {
-  return serializePersistenceOperation(readPersistedConfigTextInternal);
+export function readPersistedConfigText(options = {}) {
+  return serializePersistenceOperation(() => readPersistedConfigTextInternal(options));
 }
 
-async function readPersistedConfigTextInternal() {
+async function readPersistedConfigTextInternal({ validate, discardPending = false } = {}) {
   const settings = await resolveBootstrapSettings();
   applyConfiguredMode(settings);
 
   if (settings.configStoreMode === "database") {
     const pendingDatabaseSync = await hasDatabasePendingSyncMarker(settings);
-    if (pendingDatabaseSync) {
+    if (pendingDatabaseSync && !discardPending) {
       updatePersistenceState({ pendingDatabaseSync: true });
-      databaseBaseline = await readDatabasePendingSyncMarker(settings);
-      const localText = await readLocalCacheText(settings);
+      const pending = await readDatabasePendingSyncMarker(settings);
+      const localText = pending?.text ?? await readLocalCacheText(settings);
       if (localText != null) {
+        validate?.(localText);
+        databaseBaseline = pending.baseline;
+        updatePersistenceState({ historyEntryId: pending.history?.at(-1)?.id || null });
         markDatabaseDegraded(settings, null, { pendingDatabaseSync: true });
         emitPersistenceEvent("warn", "startup.persistence_database_sync_pending", {
           target: describeDatabaseTarget(settings),
@@ -524,28 +581,15 @@ async function readPersistedConfigTextInternal() {
       updatePersistenceState({ pendingDatabaseSync: false });
     }
 
-    let databaseReadCompleted = false;
+    let record;
     try {
-      const databaseText = await readDatabaseConfigText(settings);
-      databaseReadCompleted = true;
-      markDatabaseReady(settings, "read");
-      if (databaseText != null) {
-        await writeLocalCacheText(settings, databaseText);
-        await clearDatabasePendingSyncMarker(settings);
-        return databaseText;
-      }
-      if (settings.database.readFallbackMode === "lastKnownGood") {
-        const localText = await readLocalCacheText(settings);
-        if (localText != null) {
-          return localText;
-        }
-      }
-      return readLocalConfigText(settings.configPath);
+      record = await readDatabaseConfigRecord(settings);
     } catch (error) {
-      if (settings.database.readFallbackMode === "lastKnownGood") {
+      if (!discardPending && settings.database.readFallbackMode === "lastKnownGood") {
         const localText = await readLocalCacheText(settings);
         if (localText != null) {
-          if (databaseReadCompleted || databaseBaseline?.target !== databaseTargetId(settings)) {
+          validate?.(localText);
+          if (databaseBaseline?.target !== databaseTargetId(settings)) {
             databaseBaseline = { target: databaseTargetId(settings), known: false };
           }
           markDatabaseDegraded(settings, error, { pendingDatabaseSync: false });
@@ -562,47 +606,71 @@ async function readPersistedConfigTextInternal() {
       }
       throw error;
     }
+    if (discardPending && record.text == null) {
+      throw new Error("Cannot discard pending configuration: no configuration exists in the database.");
+    }
+    const text = record.text ?? await readPrimaryLocalConfigText(settings);
+    validate?.(text);
+    if (record.text != null) {
+      await writeLocalCacheText(settings, text);
+      await writeLocalHistory(settings, record.history);
+      await clearDatabasePendingSyncMarker(settings);
+    }
+    databaseBaseline = record.baseline;
+    updatePersistenceState({ historyEntryId: record.history.at(-1)?.id || null });
+    markDatabaseReady(settings, discardPending ? "discard_pending" : "read");
+    return text;
   }
 
-  return readPrimaryLocalConfigText(settings);
+  const text = await readPrimaryLocalConfigText(settings);
+  validate?.(text);
+  return text;
 }
 
 export async function readLatestPersistedConfigText() {
   const settings = await resolveBootstrapSettings();
   if (settings.configStoreMode === "database") {
-    const text = await readDatabaseConfigText(settings);
+    const text = await readDatabaseConfigText(settings, { trackBaseline: false });
     if (text != null) return text;
   }
   return readLocalConfigText(settings.configPath);
 }
 
 export function discardPendingDatabaseSync() {
-  return serializePersistenceOperation(async () => {
-    const settings = await resolveBootstrapSettings();
-    if (settings.configStoreMode !== "database" || !(await hasDatabasePendingSyncMarker(settings))) return;
-    const text = await readDatabaseConfigText(settings, { trackBaseline: false });
-    if (text == null) throw new Error("Cannot discard pending configuration: no configuration exists in the database.");
-    await writeLocalCacheText(settings, text);
-    await clearDatabasePendingSyncMarker(settings);
-    markDatabaseReady(settings, "discard_pending");
-  });
+  return readPersistedConfigText({ discardPending: true });
 }
 
-export function writePersistedConfigText(text, nextConfig = null) {
-  return serializePersistenceOperation(() => writePersistedConfigTextInternal(text, nextConfig));
+export function writePersistedConfigText(text, nextConfig = null, metadata = {}) {
+  return serializePersistenceOperation(() => writePersistedConfigTextInternal(text, nextConfig, metadata));
 }
 
-async function writePersistedConfigTextInternal(text, nextConfig) {
+async function writePersistedConfigTextInternal(text, nextConfig, metadata) {
   const parsedConfig = nextConfig || safeParseJson(text) || runtimeConfig;
   const settings = resolvePersistenceSettings(parsedConfig);
+  const entry = createHistoryEntry(text, metadata);
+  updatePersistenceState({ lastCacheError: null, historyError: null, historyEntryId: null });
   applyConfiguredMode(settings);
 
   if (settings.configStoreMode === "database") {
-    const pending = await hasDatabasePendingSyncMarker(settings);
-    if (pending) {
-      await writeLocalCacheText(settings, text);
-      markDatabaseDegraded(settings, persistenceState.lastDatabaseError, { pendingDatabaseSync: true });
+    const pending = await readDatabasePendingSyncMarker(settings);
+    const defer = async (baseline, error) => {
+      const history = appendHistory(includeCurrentHistory(
+        pending?.history || await readLocalHistory(settings), pending?.text ?? await readLocalCacheText(settings)
+      ), entry);
+      await writeDatabasePendingSyncMarker(settings, baseline, text, history);
+      await mirrorDatabaseConfig(settings, text, history);
+      updatePersistenceState({ historyEntryId: entry.id });
+      markDatabaseDegraded(settings, error, { pendingDatabaseSync: true });
+      emitPersistenceEvent("warn", "persistence.database_write_deferred", {
+        target: describeDatabaseTarget(settings),
+        configPath: settings.configPath,
+        message: "Configuration is durably pending locally; PostgreSQL synchronization requires the original revision.",
+        error: persistenceState.lastDatabaseError
+      });
       scheduleDatabaseRecovery(settings);
+    };
+    if (pending) {
+      await defer(pending.baseline, persistenceState.lastDatabaseError);
       return;
     }
     if (databaseBaseline?.target !== databaseTargetId(settings)) {
@@ -612,32 +680,63 @@ async function writePersistedConfigTextInternal(text, nextConfig) {
         databaseBaseline = { target: databaseTargetId(settings), known: false };
       }
     }
+    let history;
     try {
-      await writeDatabaseConfigText(settings, text, databaseBaseline);
-      await writeLocalCacheText(settings, text);
-      await clearDatabasePendingSyncMarker(settings);
-      markDatabaseReady(settings, "write");
+      history = await writeDatabaseConfigText(settings, text, databaseBaseline, { entry });
     } catch (error) {
       if (error?.code === "CONFIG_REVISION_CONFLICT") throw error;
       const baseline = databaseBaseline || { target: databaseTargetId(settings), known: false };
-      await writeDatabasePendingSyncMarker(settings, baseline);
-      await writeLocalCacheText(settings, text);
-      markDatabaseDegraded(settings, error, { pendingDatabaseSync: true });
-      emitPersistenceEvent("warn", "persistence.database_write_deferred", {
-        target: describeDatabaseTarget(settings),
-        configPath: settings.configPath,
-        message: "Database config write failed. Local config was updated and remains the last known good copy.",
-        activeMode: persistenceState.activeMode,
-        pendingDatabaseSync: persistenceState.pendingDatabaseSync,
-        error: persistenceState.lastDatabaseError
-      });
-      scheduleDatabaseRecovery(settings);
+      await defer(baseline, error);
+      return;
     }
+    await mirrorDatabaseConfig(settings, text, history);
+    markDatabaseReady(settings, "write");
     return;
   }
 
+  const previous = includeCurrentHistory(await readLocalHistory(settings), await readLocalCacheText(settings));
+  await writeLocalHistory(settings, previous);
   await writeLocalCacheText(settings, text);
+  try {
+    await writeLocalHistory(settings, appendHistory(previous, entry));
+    updatePersistenceState({ historyEntryId: entry.id });
+  } catch (error) {
+    updatePersistenceState({ historyError: snapshotError(error) });
+    emitPersistenceEvent("warn", "persistence.history_write_failed", { target: historyPath(settings), failureReason: error.message });
+  }
   updatePersistenceState({ activeMode: "file" });
+}
+
+export async function readConfigHistory() {
+  const settings = await resolveBootstrapSettings();
+  if (settings.configStoreMode === "database") {
+    const pending = await readDatabasePendingSyncMarker(settings);
+    if (pending?.history) return pending.history;
+    if (!pending) return (await readDatabaseConfigRecord(settings)).history;
+  }
+  return readLocalHistory(settings);
+}
+
+export function recordConfigHistoryApply(id, apply) {
+  return serializePersistenceOperation(async () => {
+    if (!id) return;
+    const settings = await resolveBootstrapSettings();
+    const pending = settings.configStoreMode === "database" ? await readDatabasePendingSyncMarker(settings) : null;
+    if (settings.configStoreMode === "database" && !pending) {
+      const schema = quoteIdentifier(settings.database.schemaName, "schema");
+      const table = quoteIdentifier(settings.database.tableName, "table");
+      await getDatabasePool(settings).query(`
+        UPDATE ${schema}.${table} SET history_json = (
+          SELECT jsonb_agg(CASE WHEN item->>'id' = $2 THEN jsonb_set(item, '{apply}', $3::jsonb) ELSE item END ORDER BY position)
+          FROM jsonb_array_elements(history_json) WITH ORDINALITY AS entries(item, position)
+        ) WHERE config_key = $1 AND history_json @> $4::jsonb
+      `, [settings.database.configKey, id, JSON.stringify(apply), JSON.stringify([{ id }])]);
+      return;
+    }
+    const history = (pending?.history || await readLocalHistory(settings)).map(entry => entry.id === id ? { ...entry, apply } : entry);
+    if (pending?.text) await writeDatabasePendingSyncMarker(settings, pending.baseline, pending.text, history);
+    await writeLocalHistory(settings, history);
+  });
 }
 
 export function getPersistenceSummary(config = runtimeConfig) {
@@ -653,6 +752,9 @@ export function getPersistenceSummary(config = runtimeConfig) {
     databaseRecoveryIntervalMs: DEFAULT_DATABASE_RECOVERY_INTERVAL_MS,
     nextDatabaseRecoveryAttemptAt: persistenceState.nextDatabaseRecoveryAttemptAt,
     lastDatabaseError: persistenceState.lastDatabaseError,
+    lastCacheError: persistenceState.lastCacheError,
+    historyError: persistenceState.historyError,
+    historyEntryId: persistenceState.historyEntryId,
     configPath: settings.configPath,
     compatibilityPath: settings.compatibilityPath,
     databaseProvider: settings.database.provider,

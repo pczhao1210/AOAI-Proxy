@@ -287,7 +287,26 @@ In `database+azureFile` mode, the app still reads configuration from PostgreSQL 
 
 Database configuration saves use a PostgreSQL version check across instances sharing the same database row. Each instance must use its own local config-cache path and pending-sync marker, including when Azure Files is mounted. A stale save returns `409 CONFIG_REVISION_CONFLICT`. When the database is unavailable, saves remain in the local cache and synchronization uses the last known database revision; if it changed or is unknown, the local copy remains pending and is not automatically written over the database. The admin page can compare changed paths and, after confirmation, discard the pending local copy and reload from the database. Back up the local copy first if it must be retained. File-mode revisions are process-local; they do not coordinate multiple writers or manual file edits. Switching persistence targets is not an atomic transaction across stores.
 
-The runtime-event spool uses an adjacent `.offset` checkpoint and periodically compacts acknowledged records. Keep each instance's spool path and checkpoint private to that instance; sharing a path between processes is unsupported.
+Offline saves first atomically replace a pending record containing the configuration, original database revision, and redacted history, then update the local cache. The pending record is authoritative after restart even if the cache write failed. Comparing the latest configuration never advances the active instance's save baseline. A failed reload validation keeps the active configuration and baseline unchanged.
+
+The runtime-event spool uses an adjacent `.offset` checkpoint and periodically compacts acknowledged records. Invalid or older checkpoints without a digest trigger safe replay using event-identity deduplication. Malformed records are retained in an adjacent `.corrupt` file and reported through `corruptedEvents`; their usage is **not** considered recovered. Keep each instance's spool path and checkpoint private to that instance; sharing a path between processes is unsupported. Once runtime storage is activated, changing its effective spool path through save/reload is rejected with `RUNTIME_STORE_RESTART_REQUIRED`. Drain it first, or stop the process and migrate the pending file before restarting with the new path. A moved file can invalidate its identity checkpoint and will be safely replayed. Atomic file replacement/fsync is not a cross-file transaction or a guarantee against whole-machine power loss.
+
+### Configuration History and Application
+
+The admin page retains the latest **12 redacted configuration versions**, including an initial baseline when available. Database mode stores them in the configuration row's `history_json` column alongside CAS-protected saves; file mode uses an adjacent `.history.json` sidecar. History is bounded operational recovery, not an immutable audit log or a credential backup. Redaction covers the established secret fields and credential headers, not secrets embedded in arbitrary extension strings.
+
+Use **Configuration history** to select a version, inspect changed paths, and restore it as a new revision. Rollback requires `If-Match`, preserves current credentials (matched by key ID/upstream name, never array position) and current persistence settings, and rejects missing credentials or expired versions. It still runs normal configuration/Catalog validation; restart-only changes cannot be activated by rollback.
+
+Save, reload, rollback, and application retry are serialized per instance. Their responses distinguish persistence from `apply.proxy` and `apply.caddy`; a saved configuration can have a failed application stage. The UI reports failures, pending database sync, and failed cache/history copies. Retry only the failed stage without saving again or discarding a draft. Caddy reload commands have a 10-second timeout. Application outcomes describe this instance, not cluster-wide deployment acceptance.
+
+Admin endpoints (under the configured admin path):
+
+- `GET /api/config/history` and `GET /api/config/history/:id`: metadata list and redacted snapshot.
+- `POST /api/config/history/:id/rollback`: restore with the current `If-Match`.
+- `POST /api/config/apply`, body `{"stage":"proxy"}` or `{"stage":"caddy"}`: retry with the current `If-Match`.
+- Discarding pending database configuration on `/api/reload` requires the active revision returned by `X-AOAI-Active-Config-Revision` when comparing `/api/config/latest`.
+
+These mutations retain the existing administrator authentication and CSRF requirements.
 
 ## Admin Page
 
@@ -302,6 +321,7 @@ The admin page now exposes:
 - Caddy response header timeout
 - Caddy keepalive timeout
 - Runtime persistence summary so you can see which config mode and data directory mode are active
+- Read-only statistics snapshots with capture time and partial/fallback status. At most two dedicated reader connections keep slow dashboards off the event-writer/admission queue; cold dashboard reads never mark live budgets hydrated. Request admission still performs strict recovery. Background writes/rollups can lag; **Sync Now** requests a flush. Unavailable storage shows current-process cumulative counters without pretending that filters or persisted history were loaded.
 - Recent logs with level filters (`warn`, `error`, optional `info`), keyword search, request-id filtering, and copy-summary actions
 
 The log panel uses a compact always-visible toolbar plus collapsible advanced filters instead of a sticky filter bar.

@@ -49,7 +49,7 @@ test("cache-write dimensions preserve zero, unknowns and known subtotals across 
   assert.deepEqual(getStats(), original);
 });
 
-test("cache-write formatting distinguishes measured zero from absent, invalid and historical coverage", () => {
+test("cache-write formatting treats unreported, invalid and historical coverage as zero usage", () => {
   const empty = summarizeCacheWrite();
   const zero = summarizeCacheWrite({ requests: 1, observedRequests: 1, pricedRequests: 1, observedTokens: 0, knownCostAmount: 0 });
   const historical = summarizeCacheWrite({ ...zero, unreportedRequests: null });
@@ -59,7 +59,7 @@ test("cache-write formatting distinguishes measured zero from absent, invalid an
   assert.equal(formatCacheWriteCost(zero), "0.0000 USD");
   assert.equal(historical.tokens, null);
   assert.equal(historical.estimatedCostAmount, null);
-  assert.equal(formatCacheWriteTokens(historical), "0 + Unknown");
+  assert.equal(formatCacheWriteTokens(historical), "0");
   assert.equal(formatCacheWriteCost(historical), "—");
   const partial = summarizeCacheWrite({ requests: 1, observedRequests: 1, partialCostRequests: 1, observedTokens: 3, knownCostAmount: 0 });
   assert.equal(formatCacheWriteTokens(partial), "3");
@@ -69,7 +69,7 @@ test("cache-write formatting distinguishes measured zero from absent, invalid an
     assert.equal(entry.tokens, null);
     assert.equal(entry.usageStatus, "unknown");
     assert.equal(entry.raw, undefined);
-    assert.equal(formatCacheWriteTokens(entry), "Unknown");
+    assert.equal(formatCacheWriteTokens(entry), "0");
     assert.equal(formatCacheWriteCost(entry), "—");
   }
 });
@@ -176,7 +176,7 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
     for (const row of trends) {
       assert.equal(row.lastElementChild.textContent, "—");
       assert.equal(row.children[6].textContent, "7");
-      assert.equal(row.children[7].textContent, "20 + Unknown");
+      assert.equal(row.children[7].textContent, "20");
       assert.equal(row.children[8].textContent, "0.01 K");
       assert.equal(row.children[9].textContent, "7.0%");
     }
@@ -190,13 +190,13 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
       }
     }
     const keyCells = view.container.querySelector("#runtime-keys tbody tr").children;
-    assert.equal(keyCells[6].textContent, "20 + Unknown");
+    assert.equal(keyCells[6].textContent, "20");
     assert.equal(keyCells[7].textContent, "0.01 K");
     assert.equal(keyCells[8].textContent, "7.0%");
     assert.equal(keyCells[9].textContent, "—");
     assert.equal(keyCells[12].textContent, "— / 10.00 USD");
     const modelCells = view.container.querySelector("#runtime-models tbody tr").children;
-    assert.equal(modelCells[5].textContent, "20 + Unknown");
+    assert.equal(modelCells[5].textContent, "20");
     assert.equal(modelCells[6].textContent, "0.01 K");
     assert.equal(modelCells[7].textContent, "7.0%");
     assert.equal(modelCells[8].textContent, "—");
@@ -208,7 +208,7 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
     assert.equal(unreportedCells[7].textContent, "—");
     testing.fireEvent.click(view.getByRole("button", { name: "Expand model-router" }));
     const actualCells = view.container.querySelector(".model-breakdown tbody tr").children;
-    assert.equal(actualCells[5].textContent, "20 + Unknown");
+    assert.equal(actualCells[5].textContent, "20");
     assert.equal(actualCells[6].textContent, "0.01 K");
     assert.equal(actualCells[7].textContent, "7.0%");
     assert.equal(actualCells[8].textContent, "—");

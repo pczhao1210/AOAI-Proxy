@@ -1,0 +1,16 @@
+{
+  "samples": 40,
+  "concurrency": 8,
+  "streamFrames": 1024,
+  "frameTextBytes": 1024,
+  "bufferedEvents": 1000,
+  "coldQuerySamples": 12,
+  "limits": {
+    "firstTokenP99Ms": 1000,
+    "eventLoopP99Ms": 100,
+    "coldStatsP95Ms": 1000,
+    "spoolWriteAmplification": 2.5,
+    "spoolDrainMs": 10000
+  },
+  "notes": "Offline regression ceilings, not a capacity SLO. Node 24, disposable loopback PostgreSQL, eight concurrent 1 MiB SSE responses, 1000 buffered events. Shared-host load can affect latency; retain the measured report."
+}

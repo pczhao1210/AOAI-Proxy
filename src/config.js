@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { configurationRevision } from "./config-history.js";
 import { getLogRuntimeInfo } from "./logs.js";
 import {
   compileModelCatalog,
@@ -7,10 +7,11 @@ import {
   withModelCatalogUpdateLock
 } from "./model-catalog.js";
 import { getConfiguredModelBindingIssues } from "./model-validation.js";
-import { discardPendingDatabaseSync, readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
+import { readConfigHistory, readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
+import { restoreHistorySecrets } from "./admin-config.js";
 import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from "./pricing-library.js";
 import { compilePricingPolicy } from "./token-pricing.js";
-import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
+import { getRuntimeStoreInfo, setRuntimeStoreConfig, validateRuntimeStoreTransition } from "./runtime-store.js";
 import { isSupportedPersistenceMode } from "./persistence-mode.js";
 import { DEFAULT_MEDIA_HTTP } from "./proxy/media-body.js";
 import { DEFAULT_REALTIME } from "./proxy/realtime-policy.js";
@@ -2075,16 +2076,23 @@ export function getConfigPath() {
   return getPersistenceSummary(currentConfig).configPath;
 }
 
-async function loadConfig() {
-  const rawText = await readPersistedConfigText();
-  const raw = JSON.parse(rawText);
-  // Legacy upgrades can replace explicit invalid values before normalization.
-  validateRawBooleanFlags(raw);
-  const optimized = optimizeV2Config(raw);
-  const normalizedPersistedConfig = normalizeConfig(optimized.config, { applyEnvironment: false });
-  const { config: cfg, modelCatalogSnapshot } = validateConfig(
-    applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalizedPersistedConfig)))
-  );
+async function loadConfig({ discardPending = false } = {}) {
+  let prepared;
+  await readPersistedConfigText({
+    discardPending,
+    validate(rawText) {
+      const raw = JSON.parse(rawText);
+      validateRawBooleanFlags(raw);
+      const optimized = optimizeV2Config(raw);
+      const normalizedPersistedConfig = normalizeConfig(optimized.config, { applyEnvironment: false });
+      const validated = validateConfig(
+        applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalizedPersistedConfig)))
+      );
+      validateRuntimeStoreTransition(validated.config);
+      prepared = { raw, optimized, normalizedPersistedConfig, ...validated };
+    }
+  });
+  const { raw, optimized, normalizedPersistedConfig, config: cfg, modelCatalogSnapshot } = prepared;
   if (optimized.upgraded) {
     await writePersistedConfigText(JSON.stringify(normalizedPersistedConfig, null, 2), cfg);
   }
@@ -2117,7 +2125,7 @@ export function getPersistedConfigRevision() {
   if (!persistedConfig) {
     throw new Error("Configuration not loaded yet");
   }
-  return createHash("sha256").update(JSON.stringify(persistedConfig)).digest("hex");
+  return configurationRevision(persistedConfig);
 }
 
 export function prepareConfigPreview(nextConfig) {
@@ -2131,8 +2139,11 @@ export function prepareConfigPreview(nextConfig) {
   return applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)));
 }
 
-export async function saveConfig(nextConfig, { expectedRevision } = {}) {
-  return withModelCatalogUpdateLock(async () => {
+export function saveConfig(nextConfig, options = {}) {
+  return withModelCatalogUpdateLock(() => saveConfigInternal(nextConfig, options));
+}
+
+async function saveConfigInternal(nextConfig, { expectedRevision, actor, action, restoredFrom } = {}) {
     if (expectedRevision && expectedRevision !== getPersistedConfigRevision()) {
       throw Object.assign(new Error("Configuration changed since it was loaded. Reload the latest version before saving."), {
         code: "CONFIG_REVISION_CONFLICT",
@@ -2149,7 +2160,8 @@ export async function saveConfig(nextConfig, { expectedRevision } = {}) {
     const { config: validated, modelCatalogSnapshot } = validateConfig(
       applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)))
     );
-    await writePersistedConfigText(JSON.stringify(normalized, null, 2), validated);
+    validateRuntimeStoreTransition(validated);
+    await writePersistedConfigText(JSON.stringify(normalized, null, 2), validated, { actor, action, restoredFrom });
     persistedConfig = normalized;
     configDeprecations = collectConfigDeprecations(nextConfig);
     configCleanupRequired = false;
@@ -2157,15 +2169,33 @@ export async function saveConfig(nextConfig, { expectedRevision } = {}) {
     currentDistributionProfile = resolveDistributionProfile(validated);
     installModelCatalogSnapshot(modelCatalogSnapshot);
     setPersistenceConfig(validated);
-    setRuntimeStoreConfig(validated);
+    setRuntimeStoreConfig(validated, { refreshLocalBuffer: false });
     return validated;
+}
+
+export function rollbackConfig(historyId, options = {}) {
+  return withModelCatalogUpdateLock(async () => {
+    const entry = (await readConfigHistory()).find(item => item.id === historyId);
+    if (!entry) {
+      throw Object.assign(new Error("Configuration history entry was not found or has expired."), {
+        status: 404, code: "CONFIG_HISTORY_NOT_FOUND"
+      });
+    }
+    const restored = restoreHistorySecrets(entry.config, persistedConfig);
+    restored.persistence = cloneConfig(persistedConfig.persistence);
+    return saveConfigInternal(restored, { ...options, action: "rollback", restoredFrom: historyId });
   });
 }
 
-export async function reloadConfig({ discardPendingDatabaseSync: discardPending = false } = {}) {
+export async function reloadConfig({ discardPendingDatabaseSync: discardPending = false, expectedRevision } = {}) {
   return withModelCatalogUpdateLock(async () => {
-    if (discardPending) await discardPendingDatabaseSync();
-    return loadConfig();
+    if (discardPending && (!expectedRevision || expectedRevision !== getPersistedConfigRevision())) {
+      throw Object.assign(new Error("Reload the current configuration before discarding pending changes."), {
+        status: expectedRevision ? 409 : 428,
+        code: expectedRevision ? "CONFIG_REVISION_CONFLICT" : "CONFIG_REVISION_REQUIRED"
+      });
+    }
+    return loadConfig({ discardPending });
   });
 }
 

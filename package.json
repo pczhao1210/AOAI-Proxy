@@ -22,6 +22,7 @@
     "test:real": "node test/run-all-real-routes.js",
     "test:real:matrix": "node test/run-real-protocol-matrix.js",
     "test:latency": "node test/analyze-first-token-latency.js",
+    "test:perf:offline": "node test/benchmark-runtime.js --check",
     "test:real:chat": "node test/routes/real-chat-completion.js",
     "test:real:response": "node test/routes/real-response.js",
     "test:real:openai-image": "node test/routes/real-openai-image.js",

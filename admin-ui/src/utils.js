@@ -37,9 +37,8 @@ export function formatTokenCountK(value) {
 export function formatCacheWriteTokens(cacheWrite, t = (_key, fallback) => fallback) {
   if (!cacheWrite || cacheWrite.requests === 0) return t("runtime.notReported", "Not reported");
   if (Number.isInteger(cacheWrite.tokens) && cacheWrite.tokens >= 0) return formatRuntimeNumber(cacheWrite.tokens);
-  const unknown = t("runtime.usageUnknown", "Unknown");
-  return cacheWrite.observedRequests > 0 && Number.isInteger(cacheWrite.observedTokens)
-    ? `${formatRuntimeNumber(cacheWrite.observedTokens)} + ${unknown}` : unknown;
+  // Unreported cache-write usage is displayed as zero; only observed tokens are counted.
+  return formatRuntimeNumber(Number.isInteger(cacheWrite.observedTokens) && cacheWrite.observedTokens >= 0 ? cacheWrite.observedTokens : 0);
 }
 
 export function formatCacheWriteCost(cacheWrite, t = (_key, fallback) => fallback) {
@@ -774,15 +773,15 @@ function formatDiffPath(path, kind) {
   return `${marker} ${path}`;
 }
 
-export function buildConfigDiffPreview(diff, t) {
+export function buildConfigDiffPreview(diff, t, limit = 4) {
   const diffCount = summarizeConfigDiff(diff);
   if (!diffCount) {
     return `${t("config.diff.previewTitle", "Diff Preview")}: ${t("config.diff.none", "No changes")}`;
   }
   const lines = [t("config.diff.previewTitle", "Diff Preview")];
-  (diff?.added || []).slice(0, 4).forEach((path) => lines.push(formatDiffPath(path, "added")));
-  (diff?.changed || []).slice(0, 4).forEach((path) => lines.push(formatDiffPath(path, "changed")));
-  (diff?.removed || []).slice(0, 4).forEach((path) => lines.push(formatDiffPath(path, "removed")));
+  (diff?.added || []).slice(0, limit).forEach((path) => lines.push(formatDiffPath(path, "added")));
+  (diff?.changed || []).slice(0, limit).forEach((path) => lines.push(formatDiffPath(path, "changed")));
+  (diff?.removed || []).slice(0, limit).forEach((path) => lines.push(formatDiffPath(path, "removed")));
   return lines.join("\n");
 }
 

@@ -15,6 +15,7 @@ node --test test/governance-pricing.test.js
 node --test test/admin-security.test.js test/upstream-redirect.test.js
 node --test test/sse-lifecycle.test.js test/request-cleanup.test.js
 node --test test/runtime-recovery.test.js
+node --test test/config-history.test.js test/persistence-concurrency.test.js
 node --test test/token-pricing.test.js test/context-pricing-integration.test.js test/context-pricing-routes.test.js test/text-cost-observability.test.js
 node --test test/model-statistics.test.js test/runtime-store.test.js test/model-stats-routes.test.js test/admin-runtime-stats.test.js
 node --test test/request-policy.test.js
@@ -85,7 +86,8 @@ reject malformed thinking shim defaults while preserving the previous files and 
 Optional local integration gates (never point these at production):
 
 ```bash
-RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger node --test test/runtime-store.test.js test/runtime-recovery.test.js test/persistence-concurrency.test.js
+RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger node --test test/runtime-store.test.js test/runtime-recovery.test.js test/runtime-isolation.test.js test/persistence-concurrency.test.js
+RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger npm run test:perf:offline
 REALTIME_CADDY_TEST_IMAGE=LOCAL_IMAGE_WITH_CADDY node --test --test-name-pattern='generated Caddy' test/realtime.test.js
 ```
 
@@ -98,6 +100,44 @@ disabled, starts a disposable container, and verifies HTTP audio bytes, large WS
 closure through the actual reverse proxy. It does not exercise public TLS, production networking,
 slow-consumer saturation through Caddy or real audio. Direct WS slow-consumer/shutdown checks remain
 in the ordinary realtime suite. Neither optional gate uses the running service's config.
+
+The isolation gate holds a real read-only snapshot open while verifying independent writer flushes,
+model-reset fencing, and cold-key budget rejection. Its process-recovery case revokes login and
+terminates connections for a newly created test-only PostgreSQL role, sends mock upstream JSON/SSE
+traffic (including a strict Chat -> Messages conversion failure), then hard-restarts and gracefully
+restarts its own proxy. It reconciles usage event identities, tokens, cost, and error counts.
+This gate needs role/schema creation and backend-termination privileges **only in the disposable
+database**; do not grant those privileges to a production proxy account.
+
+Configuration regressions cover stale comparison/reload baselines, an authoritative pending record
+after a cache failure, bounded redacted file/database history, secret identity matching and rotation,
+rollback CAS, serialized application stages, and retry without overwriting an unsaved UI draft.
+Concurrent saves also preserve application outcomes recorded by another instance for retained history entries.
+Spool tests cover corrupted checkpoints, malformed-record quarantine, compaction failures and
+overflow while an earlier batch is in flight. Runtime buffer path changes are restart-only.
+
+### Offline runtime performance baseline
+
+`test:perf:offline` enforces [runtime-performance-baseline.json](runtime-performance-baseline.json)
+and prints a JSON report. It uses only a mock upstream, disposable proxy, and loopback PostgreSQL;
+it consumes 40 complete 1 MiB SSE streams at concurrency eight, measures the proxy process's
+post-warmup event-loop delay, writes/drains 1000 buffered events, and reads statistics/governance
+with fresh client pools. "Cold" means new client connections, **not** an evicted database disk cache.
+The benchmark requires Linux/POSIX signals for the test-only event-loop probe.
+
+A representative Node 24.22.1 run on the shared Linux test host measured:
+
+| Metric | Measured | Regression ceiling |
+| --- | ---: | ---: |
+| First content token P95 / P99 | 150.35 / 152.66 ms | P99 1000 ms |
+| Proxy event-loop delay P99 | 88.01 ms | 100 ms |
+| Cold statistics + governance P95 | 65.40 ms | 1000 ms |
+| Spool write amplification (including compaction) | 1.40x | 2.50x |
+| Drain 1000 events | 1378.51 ms | 10000 ms |
+
+This is a reproducible coarse regression gate, not a production throughput/SLO claim or a
+before/after speedup estimate. Retain each JSON result and account for shared-host load.
+It does not establish real-provider latency, provider billing, or deployment acceptance.
 
 Whole-request pricing tests cover exact interval boundaries, cache-inclusive
 input, Messages cache-write TTLs, explicit zero versus missing rates, local

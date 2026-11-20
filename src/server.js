@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { Transform } from "node:stream";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { getConfig, getPersistedConfig, getPersistedConfigRevision, prepareConfigPreview, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo, isDistributionFeatureEnabled } from "./config.js";
+import { getConfig, getPersistedConfig, getPersistedConfigRevision, prepareConfigPreview, reloadConfig, rollbackConfig, saveConfig, getConfigPath, getConfigRuntimeInfo, isDistributionFeatureEnabled } from "./config.js";
 import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { proxyMediaRequest } from "./proxy/media.js";
@@ -16,7 +16,9 @@ import multipart from "@fastify/multipart";
 import { getMediaHttpLimits } from "./proxy/media-body.js";
 import { getStats } from "./stats.js";
 import { drainRuntimeEvents, flushRuntimeEvents, getRuntimeStatsSnapshot, resetRuntimeModelStats } from "./runtime-store.js";
-import { getDatabaseConnectionDefaults, readLatestPersistedConfigText, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
+import { getDatabaseConnectionDefaults, readConfigHistory, readLatestPersistedConfigText, recordConfigHistoryApply, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
+import { CONFIG_HISTORY_LIMIT } from "./config-history.js";
+import { applyConfigurationStages } from "./config-application.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, recordSuppressedAuthRejection, setLogConfig } from "./logs.js";
@@ -46,6 +48,8 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30000;
 
 let shutdownPromise = null;
 let logAnalyticsInitializationPromise = null;
+let configMutation = Promise.resolve();
+let configApplication = {};
 
 const app = fastify({
   logger: {
@@ -381,6 +385,87 @@ async function primeAuth(config) {
   } catch (error) {
     emitStartupError("auth_warm_failed", error, { scope: config.auth.scope });
   }
+}
+
+function expectedConfigRevision(req, required = false) {
+  const ifMatch = req.headers["if-match"];
+  if (required && !ifMatch) {
+    throw Object.assign(new Error("If-Match is required for this configuration operation."), { status: 428, code: "CONFIG_REVISION_REQUIRED" });
+  }
+  if (ifMatch !== undefined && (typeof ifMatch !== "string" || !/^(?:[a-f0-9]{64}|"[a-f0-9]{64}")$/.test(ifMatch))) {
+    throw Object.assign(new Error("If-Match must contain a configuration ETag."), { status: 400, code: "CONFIG_REVISION_INVALID" });
+  }
+  return ifMatch?.replace(/^"|"$/g, "") || "";
+}
+
+function mutateConfiguration(req, reply, operation) {
+  const next = configMutation.catch(() => {}).then(async () => {
+    try {
+      return await operation();
+    } catch (error) {
+      logAdminApiError("admin.config_mutation_failed", error, { route: req.url });
+      return reply.code(error.status || 400).send({
+        error: error.message || "Configuration operation failed",
+        code: error.code || (req.method === "PUT" ? "CONFIG_SAVE_FAILED" : "CONFIG_OPERATION_FAILED"),
+        message: error.message
+      });
+    }
+  });
+  configMutation = next.catch(() => {});
+  return next;
+}
+
+function configActor() {
+  const auth = getConfig().server?.adminAuth;
+  return auth?.enabled ? auth.username : "admin";
+}
+
+async function applySavedConfiguration(config, reply, { stages = ["proxy", "caddy"], historyId = null } = {}) {
+  const revision = getPersistedConfigRevision();
+  const applied = await applyConfigurationStages(config, revision, {
+    proxy(saved) {
+      applyLogConfig(saved);
+      configureUpstreamHttp(saved);
+      attachAuth(saved);
+      void primeAuth(saved);
+      return { scope: "hot-reloadable" };
+    },
+    async caddy(saved) {
+      try {
+        writeCaddyfile(saved);
+        const result = await reloadCaddy(saved);
+        if (!result.reloaded && result.reason !== "disabled") throw new Error(result.error || result.reason || "Caddy reload failed");
+        return { status: result.reason === "disabled" ? "disabled" : "applied" };
+      } catch (error) {
+        setCaddyStatus({
+          enabled: saved.server?.caddy?.enabled === true, state: "error",
+          message: error.message, lastError: error.message
+        });
+        throw error;
+      }
+    }
+  }, stages);
+  configApplication = { ...configApplication, ...applied };
+  const persistence = getConfigRuntimeInfo().persistence;
+  const apply = {
+    ...configApplication,
+    persistence: {
+      pendingDatabaseSync: persistence.pendingDatabaseSync,
+      error: persistence.lastDatabaseError,
+      cacheError: persistence.lastCacheError,
+      historyError: persistence.historyError
+    }
+  };
+  if (historyId) {
+    try {
+      await recordConfigHistoryApply(historyId, configApplication);
+    } catch (error) {
+      apply.persistence.historyError = { message: error.message };
+      logAdminApiError("admin.config_history_apply_failed", error, { historyId });
+    }
+  }
+  reply.header("ETag", `"${revision}"`);
+  return { ok: true, config: redactConfigSecrets(config), apply };
 }
 
 function emitStartupLog(stage, fields = {}) {
@@ -733,6 +818,7 @@ app.get("/admin/api/config/latest", async (_req, reply) => {
   try {
     const stored = JSON.parse(await readLatestPersistedConfigText());
     reply.header("Cache-Control", "no-store");
+    reply.header("X-AOAI-Active-Config-Revision", `"${getPersistedConfigRevision()}"`);
     return redactConfigSecrets(prepareConfigPreview(stored));
   } catch (error) {
     logAdminApiError("admin.config_latest_failed", error, { route: "/admin/api/config/latest", status: 503 });
@@ -767,73 +853,68 @@ app.post("/admin/api/keys/reveal", async (req, reply) => {
   return reply.send({ ok: true, id: apiKey.id, key: apiKey.key });
 });
 
-app.put("/admin/api/config", async (req, reply) => {
-  const nextConfig = restoreConfigSecrets(req.body, getPersistedConfig());
-  const ifMatch = req.headers["if-match"];
-  if (getConfig().server.requireConfigRevision && !ifMatch) {
-    return reply.code(428).send({ code: "CONFIG_REVISION_REQUIRED", error: "If-Match is required when saving configuration." });
+app.put("/admin/api/config", (req, reply) => mutateConfiguration(req, reply, async () => {
+  const expectedRevision = expectedConfigRevision(req, getConfig().server.requireConfigRevision);
+  const saved = await saveConfig(restoreConfigSecrets(req.body, getPersistedConfig()), { expectedRevision, actor: configActor() });
+  const historyId = getConfigRuntimeInfo().persistence.historyEntryId;
+  app.log.info({ source: "admin", event: "admin.config_saved" }, "admin config saved");
+  return applySavedConfiguration(saved, reply, { historyId });
+}));
+
+app.post("/admin/api/reload", (req, reply) => mutateConfiguration(req, reply, async () => {
+  const discardPending = req.body?.discardPendingDatabaseSync;
+  if (discardPending !== undefined && typeof discardPending !== "boolean") {
+    throw Object.assign(new Error("discardPendingDatabaseSync must be a boolean"), { status: 400 });
   }
-  if (ifMatch !== undefined && (typeof ifMatch !== "string" || !/^(?:[a-f0-9]{64}|"[a-f0-9]{64}")$/.test(ifMatch))) {
-    return reply.code(400).send({ code: "CONFIG_REVISION_INVALID", error: "If-Match must contain a configuration ETag." });
+  const config = await reloadConfig({
+    discardPendingDatabaseSync: discardPending === true,
+    expectedRevision: expectedConfigRevision(req, discardPending === true)
+  });
+  app.log.info({ source: "admin", event: "admin.config_reloaded" }, "admin config reloaded");
+  return applySavedConfiguration(config, reply);
+}));
+
+app.post("/admin/api/config/apply", (req, reply) => mutateConfiguration(req, reply, async () => {
+  const revision = expectedConfigRevision(req, true);
+  if (revision !== getPersistedConfigRevision()) {
+    throw Object.assign(new Error("Configuration changed before application retry."), { status: 409, code: "CONFIG_REVISION_CONFLICT" });
   }
-  const expectedRevision = typeof ifMatch === "string" ? ifMatch.replace(/^"|"$/g, "") : "";
+  if (!["proxy", "caddy"].includes(req.body?.stage)) {
+    throw Object.assign(new Error("stage must be proxy or caddy"), { status: 400 });
+  }
+  return applySavedConfiguration(getConfig(), reply, {
+    stages: [req.body.stage], historyId: getConfigRuntimeInfo().persistence.historyEntryId
+  });
+}));
+
+app.get("/admin/api/config/history", async (_req, reply) => {
+  reply.header("Cache-Control", "no-store");
   try {
-    const saved = await saveConfig(nextConfig, { expectedRevision });
-    applyLogConfig(saved);
-    configureUpstreamHttp(saved);
-    attachAuth(saved);
-    void primeAuth(saved);
-    let caddyApply = { ok: true };
-    try {
-      writeCaddyfile(saved);
-      const result = await reloadCaddy(saved);
-      if (!result.reloaded && result.reason !== "disabled") {
-        caddyApply = { ok: false, error: result.error || result.reason || "Caddy reload failed" };
-      }
-    } catch (error) {
-      caddyApply = { ok: false, error: error?.message || "Caddy configuration could not be applied" };
-      setCaddyStatus({
-        enabled: saved.server?.caddy?.enabled === true,
-        state: "error",
-        message: caddyApply.error,
-        lastError: caddyApply.error
-      });
-    }
-    app.log.info({ source: "admin", event: "admin.config_saved" }, "admin config saved");
-    reply.header("ETag", `"${getPersistedConfigRevision()}"`);
-    const persistence = getConfigRuntimeInfo().persistence;
-    reply.send({
-      ok: true,
-      config: redactConfigSecrets(saved),
-      apply: { caddy: caddyApply, persistence: { pendingDatabaseSync: persistence.pendingDatabaseSync, error: persistence.lastDatabaseError } }
-    });
+    const items = (await readConfigHistory()).map(({ config, ...entry }) => entry).reverse();
+    return { items, limit: CONFIG_HISTORY_LIMIT };
   } catch (error) {
-    logAdminApiError("admin.config_save_failed", error, { route: "/admin/api/config" });
-    reply.code(error.status || 400).send({
-      error: error.message || "Configuration save failed",
-      code: error.code || "CONFIG_SAVE_FAILED",
-      message: error.message
-    });
+    logAdminApiError("admin.config_history_failed", error);
+    return reply.code(503).send({ error: error.message });
   }
 });
 
-app.post("/admin/api/reload", async (req, reply) => {
+app.get("/admin/api/config/history/:id", async (req, reply) => {
+  reply.header("Cache-Control", "no-store");
   try {
-    const config = await reloadConfig({ discardPendingDatabaseSync: req.body?.discardPendingDatabaseSync === true });
-    applyLogConfig(config);
-    configureUpstreamHttp(config);
-    attachAuth(config);
-    void primeAuth(config);
-    writeCaddyfile(config);
-    await reloadCaddy(config);
-    app.log.info({ source: "admin", event: "admin.config_reloaded" }, "admin config reloaded");
-    reply.header("ETag", `"${getPersistedConfigRevision()}"`);
-    reply.send({ ok: true, config: redactConfigSecrets(config) });
+    const entry = (await readConfigHistory()).find(item => item.id === req.params.id);
+    if (!entry) return reply.code(404).send({ error: "Configuration history entry was not found or has expired." });
+    return { entry };
   } catch (error) {
-    logAdminApiError("admin.config_reload_failed", error, { route: "/admin/api/reload" });
-    reply.code(400).send({ error: error.message });
+    logAdminApiError("admin.config_history_failed", error);
+    return reply.code(503).send({ error: error.message });
   }
 });
+
+app.post("/admin/api/config/history/:id/rollback", (req, reply) => mutateConfiguration(req, reply, async () => {
+  const expectedRevision = expectedConfigRevision(req, true);
+  const restored = await rollbackConfig(req.params.id, { expectedRevision, actor: configActor() });
+  return applySavedConfiguration(restored, reply, { historyId: getConfigRuntimeInfo().persistence.historyEntryId });
+}));
 
 app.post("/admin/api/verify-aad", async (req, reply) => {
   const config = getConfig();
@@ -850,7 +931,9 @@ app.post("/admin/api/verify-aad", async (req, reply) => {
 });
 
 app.get("/admin/api/runtime", async () => {
-  return { ok: true, runtime: getConfigRuntimeInfo() };
+  const runtime = getConfigRuntimeInfo();
+  runtime.configuration.application = configApplication;
+  return { ok: true, runtime };
 });
 
 app.post("/admin/api/runtime/sync", async (req, reply) => {
@@ -1027,17 +1110,28 @@ app.post("/admin/api/pricing-library/sync", async (req, reply) => {
   }
 });
 
-app.get("/admin/api/stats", async (req) => {
+app.get("/admin/api/stats", async (req, reply) => {
   const config = getConfig();
   const query = req.query || {};
-  await flushRuntimeEvents();
-  return {
-    ...(await getRuntimeStatsSnapshot(config, getStats(), {
-      keyId: typeof query.keyId === "string" ? query.keyId : "",
-      timeRange: typeof query.timeRange === "string" ? query.timeRange : "all"
-    })),
-    governance: await getGovernanceSnapshot(config)
-  };
+  const resetAt = getStats().modelsResetAt;
+  try {
+    const [stats, governance] = await Promise.all([
+      getRuntimeStatsSnapshot(config, getStats(), {
+        readOnly: true,
+        keyId: typeof query.keyId === "string" ? query.keyId : "",
+        timeRange: typeof query.timeRange === "string" ? query.timeRange : "all"
+      }),
+      getGovernanceSnapshot(config, { readOnly: true })
+    ]);
+    if (getStats().modelsResetAt !== resetAt) {
+      throw Object.assign(new Error("Model statistics changed during this snapshot; refresh again."), { code: "RUNTIME_STATS_SNAPSHOT_STALE" });
+    }
+    reply.header("Cache-Control", "no-store");
+    return { ...stats, governance };
+  } catch (error) {
+    logAdminApiError("admin.stats_snapshot_failed", error, { route: "/admin/api/stats" });
+    return reply.code(error.code === "RUNTIME_STATS_SNAPSHOT_STALE" ? 409 : 503).send({ ok: false, code: error.code, error: error.message });
+  }
 });
 
 app.post("/admin/api/stats/models/reset", async (_req, reply) => {
@@ -1068,8 +1162,11 @@ app.get("/admin/api/caddy/status", async () => {
 });
 
 app.post("/admin/api/restart", async (req, reply) => {
-  const restartingContainer = fs.existsSync("/.dockerenv");
-  const restartTargetPid = resolveRestartTargetPid(restartingContainer, process.pid);
+  const restartingContainer = fs.existsSync("/.dockerenv") || fs.existsSync("/run/.containerenv");
+  const restartTargetPid = resolveRestartTargetPid(restartingContainer, process.pid, {
+    supervisorPid: process.env.AOAI_PROXY_SUPERVISOR_PID,
+    parentPid: process.ppid
+  });
   if (restartTargetPid === null) {
     return reply.code(501).send({ ok: false, error: "RESTART_UNSUPPORTED", message: "Restart this service using its process manager." });
   }
@@ -1148,9 +1245,21 @@ async function start() {
   attachAuth(config);
   await primeAuth(config);
   const caddyfileWrite = writeCaddyfile(config);
+  const revision = getPersistedConfigRevision();
   const caddyReload = config.server?.caddy?.enabled
-    ? scheduleCaddyStartupProbe(config)
+    ? scheduleCaddyStartupProbe(config, {
+      onComplete(result) {
+        if (getPersistedConfigRevision() !== revision || configApplication.caddy?.status !== "pending") return;
+        configApplication.caddy = { ok: result.reloaded, revision, status: result.reloaded ? "applied" : "failed",
+          ...(result.reloaded ? { appliedAt: new Date().toISOString() } : { error: result.error }) };
+      }
+    })
     : await reloadCaddy(config);
+  configApplication = {
+    proxy: { ok: true, revision, scope: "hot-reloadable", appliedAt: new Date().toISOString() },
+    caddy: { ok: caddyReload.scheduled ? null : caddyReload.reason === "disabled" || caddyReload.reloaded === true,
+      revision, status: caddyReload.scheduled ? "pending" : caddyReload.reason || "applied" }
+  };
   const { host, port } = config.server;
   emitStartupLog("config_loaded", {
     host,

@@ -1,7 +1,7 @@
 import { appendStructuredLog } from "./logs.js";
 import { resolveModelDescriptor } from "./model-catalog.js";
 import { findPricingDefinitionForModel } from "./pricing-library.js";
-import { hydrateGovernanceRuntime, hydrateGovernanceRuntimes, recordRuntimeBlocked, recordRuntimeWarning } from "./runtime-store.js";
+import { hydrateGovernanceRuntime, hydrateGovernanceRuntimes, readGovernanceRuntimes, recordRuntimeBlocked, recordRuntimeWarning } from "./runtime-store.js";
 import { getUsageTotals } from "./usage.js";
 import { compileDefinitionPricing, resolveConfiguredPricing } from "./pricing-policy.js";
 import { calculateTokenCost } from "./token-pricing.js";
@@ -104,9 +104,8 @@ function buildBudgetWindow(settings, now) {
   };
 }
 
-function ensureKeyRuntime(keyId) {
-  if (!governanceState.perKey.has(keyId)) {
-    governanceState.perKey.set(keyId, {
+function createKeyRuntime(keyId) {
+  return {
       keyId,
       displayName: keyId,
       owner: "",
@@ -122,8 +121,11 @@ function ensureKeyRuntime(keyId) {
       hydrationRetryAt: 0,
       rateWindow: buildRateWindow(Date.now()),
       budgetWindow: buildBudgetWindow({ windowType: "monthly" }, Date.now())
-    });
-  }
+  };
+}
+
+function ensureKeyRuntime(keyId) {
+  if (!governanceState.perKey.has(keyId)) governanceState.perKey.set(keyId, createKeyRuntime(keyId));
   return governanceState.perKey.get(keyId);
 }
 
@@ -767,17 +769,24 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
   return usageCost;
 }
 
-export async function getGovernanceSnapshot(config) {
+export async function getGovernanceSnapshot(config, { readOnly = false } = {}) {
   const now = Date.now();
   const configuredKeys = Array.isArray(config?.apiKeys) ? config.apiKeys : [];
   const keyIds = new Set();
   const keys = [];
   const hydrationEntries = [];
+  // Duplicate key IDs share one clone so a read-only dashboard never falls back to strict hydration.
+  const readOnlyRuntimes = new Map();
 
   for (const apiKey of configuredKeys) {
     const keyId = String(apiKey?.id || apiKey?.displayName || "anonymous");
     keyIds.add(keyId);
-    const runtime = ensureKeyRuntime(keyId);
+    let runtime = readOnly ? readOnlyRuntimes.get(keyId) : ensureKeyRuntime(keyId);
+    if (!runtime) {
+      const current = governanceState.perKey.get(keyId) || createKeyRuntime(keyId);
+      runtime = { ...current, rateWindow: { ...current.rateWindow }, budgetWindow: { ...current.budgetWindow }, hydrationPromise: null };
+      readOnlyRuntimes.set(keyId, runtime);
+    }
     const consumer = { keyId, displayName: apiKey?.displayName || keyId, apiKey };
     const rateLimit = getRateLimitSettings(config, apiKey);
     const budget = getBudgetSettings(config, apiKey);
@@ -802,7 +811,8 @@ export async function getGovernanceSnapshot(config) {
         entry.snapshot = { ...entry.runtime, rateWindow: { ...entry.runtime.rateWindow }, budgetWindow: { ...entry.runtime.budgetWindow } };
       }
     }));
-    const persistedPromise = hydrateGovernanceRuntimes(config, targets);
+    if (readOnly) for (const target of targets) target.onSnapshot();
+    const persistedPromise = readOnly ? readGovernanceRuntimes(config, targets) : hydrateGovernanceRuntimes(config, targets);
     for (const entry of pending) {
       let hydrationPromise;
       hydrationPromise = persistedPromise.then((persistedByKey) => {
@@ -845,6 +855,7 @@ export async function getGovernanceSnapshot(config) {
       rateLimit,
       budget,
       runtime: {
+        known: Boolean(runtime.hydratedAt),
         currentConcurrent: runtime.currentConcurrent,
         totalRequests: runtime.totalRequests,
         totalErrors: runtime.totalErrors,
@@ -869,6 +880,7 @@ export async function getGovernanceSnapshot(config) {
       rateLimit: { windowSeconds: 60, rpm: 0, tpm: 0, concurrency: 0 },
       budget: { enabled: false, limitAmount: 0, currency: config?.access?.budgets?.defaultCurrency || "USD", windowType: "monthly", softLimitRatio: 0.8, hardLimitAction: "block" },
       runtime: {
+        known: Boolean(runtime.hydratedAt),
         currentConcurrent: runtime.currentConcurrent,
         totalRequests: runtime.totalRequests,
         totalErrors: runtime.totalErrors,
@@ -885,6 +897,7 @@ export async function getGovernanceSnapshot(config) {
   keys.sort((a, b) => a.keyId.localeCompare(b.keyId));
   return {
     generatedAt: new Date(now).toISOString(),
+    readOnly,
     keys
   };
 }

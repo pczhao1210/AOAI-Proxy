@@ -354,8 +354,11 @@ code {
   padding-top: 0.7rem;
 }
 
-.inline input[type="checkbox"] {
+.inline input[type="checkbox"],
+.inline input[type="radio"] {
+  flex: none;
   width: auto;
+  margin: 0;
 }
 
 .summary-grid,
@@ -798,6 +801,19 @@ code {
   padding: 0.85rem 0;
   width: 100%;
   overflow-wrap: anywhere;
+}
+
+.harness-candidate > .inline {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  color: var(--ink);
+  font-weight: 600;
+  text-align: left;
+}
+
+.harness-candidate > .inline input[type="radio"] {
+  margin-top: 0.2rem;
 }
 
 .harness-reasons {
@@ -1798,10 +1814,13 @@ th {
 }
 
 .modal-header h2 {
+  min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .modal-close {
+  flex: none;
   min-width: 44px;
   min-height: 44px;
   padding: 0;
@@ -1956,10 +1975,13 @@ th {
   }
 
   .panel-head,
-  .modal-header,
   .modal-footer {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .modal-header {
+    align-items: flex-start;
   }
 
   .left-nav {
