@@ -35,6 +35,45 @@ test("configuration ETags reject stale drafts without exposing configuration sec
     assert.equal(staleSave.status, 409, staleSave.text);
     assert.equal(staleSave.json?.code, "CONFIG_REVISION_CONFLICT");
     assert.equal((await context.readConfigFile()).server.gracefulShutdownMs, firstDraft.server.gracefulShutdownMs);
+    const latest = await context.adminRequest("/admin/api/config/latest");
+    assert.equal(latest.status, 200, latest.text);
+    assert.equal(latest.json.server.gracefulShutdownMs, firstDraft.server.gracefulShutdownMs);
+    assert.doesNotMatch(latest.text, /test-upstream-key|test-client-key|"password":"admin"/);
+    assert.equal((await context.adminRequest("/admin/api/config")).headers.get("etag"), updatedEtag);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("strict configuration revisions reject missing or malformed If-Match", async () => {
+  const context = await createTestContext();
+  try {
+    const loaded = await context.adminRequest("/admin/api/config");
+    loaded.json.server.requireConfigRevision = true;
+    const saved = await context.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1", "if-match": loaded.headers.get("etag") },
+      json: loaded.json
+    });
+    assert.equal(saved.status, 200, saved.text);
+    for (const [header, status, code] of [
+      [undefined, 428, "CONFIG_REVISION_REQUIRED"],
+      ["*", 400, "CONFIG_REVISION_INVALID"]
+    ]) {
+      const response = await context.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1", ...(header ? { "if-match": header } : {}) },
+        json: saved.json.config
+      });
+      assert.equal(response.status, status, response.text);
+      assert.equal(response.json.code, code);
+    }
+    const valid = await context.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1", "if-match": saved.headers.get("etag") },
+      json: saved.json.config
+    });
+    assert.equal(valid.status, 200, valid.text);
   } finally {
     await context.cleanup();
   }

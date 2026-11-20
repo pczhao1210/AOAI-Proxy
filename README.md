@@ -285,6 +285,10 @@ In `database` mode, the app reads configuration from PostgreSQL first and keeps 
 
 In `database+azureFile` mode, the app still reads configuration from PostgreSQL first, but it also expects `/app/data` to be mounted from Azure Files so Caddy state and other filesystem artifacts survive container replacement.
 
+Database configuration saves use a PostgreSQL version check across instances sharing the same database row. Each instance must use its own local config-cache path and pending-sync marker, including when Azure Files is mounted. A stale save returns `409 CONFIG_REVISION_CONFLICT`. When the database is unavailable, saves remain in the local cache and synchronization uses the last known database revision; if it changed or is unknown, the local copy remains pending and is not automatically written over the database. The admin page can compare changed paths and, after confirmation, discard the pending local copy and reload from the database. Back up the local copy first if it must be retained. File-mode revisions are process-local; they do not coordinate multiple writers or manual file edits. Switching persistence targets is not an atomic transaction across stores.
+
+The runtime-event spool uses an adjacent `.offset` checkpoint and periodically compacts acknowledged records. Keep each instance's spool path and checkpoint private to that instance; sharing a path between processes is unsupported.
+
 ## Admin Page
 
 Open `/admin` to manage config.

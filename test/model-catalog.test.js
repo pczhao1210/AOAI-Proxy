@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   compileModelCatalog,
+  compileModelCatalogPreview,
   createModelCatalogSyncTransaction,
   getDefaultProtocolProfile,
   getDescriptorProtocolProfile,
@@ -1625,6 +1626,22 @@ test("Model Catalog capability omissions and future labels do not become native 
     assert.equal(request.tools[0].name, "lookup");
     assert.equal(request.parallel_tool_calls, true);
   }
+});
+
+test("preview catalog reuses unchanged compilation and invalidates on catalog or binding changes", () => {
+  const draft = structuredClone(config);
+  const cards = structuredClone(definitions);
+  const first = compileModelCatalogPreview(draft, cards);
+  draft.server = { port: 4321 };
+  assert.equal(compileModelCatalogPreview(draft, cards), first);
+  draft.models[0].targetModel = "other-deployment";
+  const changedModel = compileModelCatalogPreview(draft, cards);
+  assert.notEqual(changedModel, first);
+  assert.equal(resolveModelDescriptor("public-gpt", changedModel).targetModel, "other-deployment");
+  cards[0].capabilities = ["reasoning"];
+  const changedCard = compileModelCatalogPreview(draft, cards);
+  assert.notEqual(changedCard, changedModel);
+  assert.deepEqual(resolveModelDescriptor("public-gpt", changedCard).capabilities, ["reasoning"]);
 });
 
 test("invalid proxy adapters cannot activate a catalog or masquerade as native interfaces", () => {

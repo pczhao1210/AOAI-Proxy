@@ -85,13 +85,13 @@ reject malformed thinking shim defaults while preserving the previous files and 
 Optional local integration gates (never point these at production):
 
 ```bash
-RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger node --test test/runtime-store.test.js test/runtime-recovery.test.js
+RUNTIME_MEDIA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:PORT/media_ledger node --test test/runtime-store.test.js test/runtime-recovery.test.js test/persistence-concurrency.test.js
 REALTIME_CADDY_TEST_IMAGE=LOCAL_IMAGE_WITH_CADDY node --test --test-name-pattern='generated Caddy' test/realtime.test.js
 ```
 
 The database gate requires an explicitly supplied disposable loopback PostgreSQL connection, creates
 and drops its own schema, and verifies known/unknown event persistence, rollups, connection-pool
-recreation, governance restoration and key/time-filtered media statistics. The default unit suite
+recreation, governance restoration, concurrent config writes and offline recovery, and key/time-filtered media statistics. The default unit suite
 does not register this gate without the variable. The Caddy gate requires Linux Docker host networking
 and a local image with `caddy`; it feeds the generated config through stdin with the admin endpoint
 disabled, starts a disposable container, and verifies HTTP audio bytes, large WS messages and idle

@@ -16,12 +16,12 @@ import multipart from "@fastify/multipart";
 import { getMediaHttpLimits } from "./proxy/media-body.js";
 import { getStats } from "./stats.js";
 import { drainRuntimeEvents, flushRuntimeEvents, getRuntimeStatsSnapshot, resetRuntimeModelStats } from "./runtime-store.js";
-import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
+import { getDatabaseConnectionDefaults, readLatestPersistedConfigText, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
 import { appendStructuredLog, createPinoCaptureStream, flushLogAnalyticsSink, queryLogs, recordSuppressedAuthRejection, setLogConfig } from "./logs.js";
 import { getConfiguredModelBindingIssues, getHarnessClientEligibility, getHarnessCatalogState, validateConfiguredModels } from "./model-validation.js";
-import { compileModelCatalog, createModelCatalogSyncTransaction, getModelCapabilityView, resolveModelDescriptor, withModelCatalogUpdateLock } from "./model-catalog.js";
+import { compileModelCatalogPreview, createModelCatalogSyncTransaction, getModelCapabilityView, resolveModelDescriptor, withModelCatalogUpdateLock } from "./model-catalog.js";
 import { getCodexModelMetadata } from "./codex-models.js";
 import { resolveApiConsumer, filterModelsForConsumer, getGovernanceSnapshot } from "./governance.js";
 import { getPricingLibraryStatus, listPricingDefinitions, syncPricingDefinitionsFromGitHub } from "./pricing-library.js";
@@ -31,6 +31,7 @@ import { closeSharedPostgresPools } from "./postgres.js";
 import { redactConfigSecrets, restoreConfigSecrets } from "./admin-config.js";
 import { initializeLogAnalytics } from "./log-analytics-admin.js";
 import { getBuildInfo } from "./build-info.js";
+import { resolveRestartTargetPid } from "./restart.js";
 
 const { LogController } = fastify;
 
@@ -728,6 +729,17 @@ app.get("/admin/api/config", async (_req, reply) => {
   return redactConfigSecrets(config);
 });
 
+app.get("/admin/api/config/latest", async (_req, reply) => {
+  try {
+    const stored = JSON.parse(await readLatestPersistedConfigText());
+    reply.header("Cache-Control", "no-store");
+    return redactConfigSecrets(prepareConfigPreview(stored));
+  } catch (error) {
+    logAdminApiError("admin.config_latest_failed", error, { route: "/admin/api/config/latest", status: 503 });
+    return reply.code(503).send({ error: error.message || "Latest configuration is unavailable" });
+  }
+});
+
 app.post("/admin/api/keys/reveal", async (req, reply) => {
   reply.header("Cache-Control", "no-store, private");
   reply.header("Pragma", "no-cache");
@@ -757,9 +769,14 @@ app.post("/admin/api/keys/reveal", async (req, reply) => {
 
 app.put("/admin/api/config", async (req, reply) => {
   const nextConfig = restoreConfigSecrets(req.body, getPersistedConfig());
-  const expectedRevision = typeof req.headers["if-match"] === "string"
-    ? req.headers["if-match"].replace(/^"|"$/g, "")
-    : "";
+  const ifMatch = req.headers["if-match"];
+  if (getConfig().server.requireConfigRevision && !ifMatch) {
+    return reply.code(428).send({ code: "CONFIG_REVISION_REQUIRED", error: "If-Match is required when saving configuration." });
+  }
+  if (ifMatch !== undefined && (typeof ifMatch !== "string" || !/^(?:[a-f0-9]{64}|"[a-f0-9]{64}")$/.test(ifMatch))) {
+    return reply.code(400).send({ code: "CONFIG_REVISION_INVALID", error: "If-Match must contain a configuration ETag." });
+  }
+  const expectedRevision = typeof ifMatch === "string" ? ifMatch.replace(/^"|"$/g, "") : "";
   try {
     const saved = await saveConfig(nextConfig, { expectedRevision });
     applyLogConfig(saved);
@@ -784,7 +801,12 @@ app.put("/admin/api/config", async (req, reply) => {
     }
     app.log.info({ source: "admin", event: "admin.config_saved" }, "admin config saved");
     reply.header("ETag", `"${getPersistedConfigRevision()}"`);
-    reply.send({ ok: true, config: redactConfigSecrets(saved), apply: { caddy: caddyApply } });
+    const persistence = getConfigRuntimeInfo().persistence;
+    reply.send({
+      ok: true,
+      config: redactConfigSecrets(saved),
+      apply: { caddy: caddyApply, persistence: { pendingDatabaseSync: persistence.pendingDatabaseSync, error: persistence.lastDatabaseError } }
+    });
   } catch (error) {
     logAdminApiError("admin.config_save_failed", error, { route: "/admin/api/config" });
     reply.code(error.status || 400).send({
@@ -797,7 +819,7 @@ app.put("/admin/api/config", async (req, reply) => {
 
 app.post("/admin/api/reload", async (req, reply) => {
   try {
-    const config = await reloadConfig();
+    const config = await reloadConfig({ discardPendingDatabaseSync: req.body?.discardPendingDatabaseSync === true });
     applyLogConfig(config);
     configureUpstreamHttp(config);
     attachAuth(config);
@@ -954,7 +976,7 @@ app.post("/admin/api/harness/eligibility", async (req, reply) => {
         ? restoreConfigSecrets(body.config, getPersistedConfig())
         : getPersistedConfig();
       const config = prepareConfigPreview(sourceConfig);
-      const snapshot = compileModelCatalog(config);
+      const snapshot = compileModelCatalogPreview(config);
       return {
         ok: true,
         ...getHarnessCatalogState(config, snapshot),
@@ -1047,7 +1069,8 @@ app.get("/admin/api/caddy/status", async () => {
 
 app.post("/admin/api/restart", async (req, reply) => {
   const restartingContainer = fs.existsSync("/.dockerenv");
-  if (!restartingContainer && process.pid !== 1) {
+  const restartTargetPid = resolveRestartTargetPid(restartingContainer, process.pid);
+  if (restartTargetPid === null) {
     return reply.code(501).send({ ok: false, error: "RESTART_UNSUPPORTED", message: "Restart this service using its process manager." });
   }
   setCaddyStatus({ state: "restart-requested", message: "restart requested", lastError: null });
@@ -1055,7 +1078,7 @@ app.post("/admin/api/restart", async (req, reply) => {
   reply.send({ ok: true });
   setTimeout(() => {
     try {
-      process.kill(restartingContainer ? 1 : process.pid, "SIGTERM");
+      process.kill(restartTargetPid, "SIGTERM");
     } catch {
       process.exit(0);
     }

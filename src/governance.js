@@ -1,7 +1,7 @@
 import { appendStructuredLog } from "./logs.js";
 import { resolveModelDescriptor } from "./model-catalog.js";
 import { findPricingDefinitionForModel } from "./pricing-library.js";
-import { hydrateGovernanceRuntime, recordRuntimeBlocked, recordRuntimeWarning } from "./runtime-store.js";
+import { hydrateGovernanceRuntime, hydrateGovernanceRuntimes, recordRuntimeBlocked, recordRuntimeWarning } from "./runtime-store.js";
 import { getUsageTotals } from "./usage.js";
 import { compileDefinitionPricing, resolveConfiguredPricing } from "./pricing-policy.js";
 import { calculateTokenCost } from "./token-pricing.js";
@@ -127,19 +127,21 @@ function ensureKeyRuntime(keyId) {
   return governanceState.perKey.get(keyId);
 }
 
-async function hydrateRuntimeStateIfNeeded(config, consumer, runtime, rateLimitSettings, budgetSettings, now) {
+async function hydrateRuntimeStateIfNeeded(config, consumer, runtime, rateLimitSettings, budgetSettings, now, preloaded) {
   if (!consumer?.keyId || runtime.hydratedAt) return true;
   if (runtime.hydrationRetryAt > now) return false;
   if (!runtime.hydrationPromise) {
     runtime.hydrationPromise = (async () => {
       const rateWindowStart = toIsoString(getRateWindowStart(rateLimitSettings.windowSeconds, now));
       const budgetWindowStart = toIsoString(getBudgetWindowStart(budgetSettings.windowType, now));
-      let snapshot;
-      const persisted = await hydrateGovernanceRuntime(config, consumer.keyId, rateWindowStart, budgetWindowStart, {
-        onSnapshot() {
-          snapshot = { ...runtime, rateWindow: { ...runtime.rateWindow }, budgetWindow: { ...runtime.budgetWindow } };
-        }
-      });
+      let snapshot = preloaded?.snapshot;
+      const persisted = preloaded
+        ? preloaded.persisted
+        : await hydrateGovernanceRuntime(config, consumer.keyId, rateWindowStart, budgetWindowStart, {
+          onSnapshot() {
+            snapshot = { ...runtime, rateWindow: { ...runtime.rateWindow }, budgetWindow: { ...runtime.budgetWindow } };
+          }
+        });
       // Storage serializes and drains writes before the snapshot callback. Any
       // settlement during the subsequent read is not in that DB snapshot yet.
       const merge = (stored, current, before = current, normalize = toNonNegativeInteger) => (
@@ -770,6 +772,7 @@ export async function getGovernanceSnapshot(config) {
   const configuredKeys = Array.isArray(config?.apiKeys) ? config.apiKeys : [];
   const keyIds = new Set();
   const keys = [];
+  const hydrationEntries = [];
 
   for (const apiKey of configuredKeys) {
     const keyId = String(apiKey?.id || apiKey?.displayName || "anonymous");
@@ -780,7 +783,59 @@ export async function getGovernanceSnapshot(config) {
     const budget = getBudgetSettings(config, apiKey);
     resetRateWindowIfNeeded(runtime, rateLimit, now);
     resetBudgetWindowIfNeeded(runtime, budget, now);
-    await hydrateRuntimeStateIfNeeded(config, consumer, runtime, rateLimit, budget, now);
+    hydrationEntries.push({ consumer, runtime, rateLimit, budget });
+  }
+
+  const pendingHydrations = new Map();
+  for (const entry of hydrationEntries) {
+    const { consumer, runtime } = entry;
+    if (!consumer.keyId || runtime.hydratedAt || runtime.hydrationRetryAt > now || runtime.hydrationPromise) continue;
+    if (!pendingHydrations.has(consumer.keyId)) pendingHydrations.set(consumer.keyId, { ...entry, snapshot: null });
+  }
+  const pending = [...pendingHydrations.values()];
+  if (pending.length) {
+    const targets = pending.map((entry) => ({
+      keyId: entry.consumer.keyId,
+      rateWindowStartedAt: toIsoString(getRateWindowStart(entry.rateLimit.windowSeconds, now)),
+      budgetWindowStartedAt: toIsoString(getBudgetWindowStart(entry.budget.windowType, now)),
+      onSnapshot() {
+        entry.snapshot = { ...entry.runtime, rateWindow: { ...entry.runtime.rateWindow }, budgetWindow: { ...entry.runtime.budgetWindow } };
+      }
+    }));
+    const persistedPromise = hydrateGovernanceRuntimes(config, targets);
+    for (const entry of pending) {
+      let hydrationPromise;
+      hydrationPromise = persistedPromise.then((persistedByKey) => {
+        entry.runtime.hydrationPromise = null;
+        return hydrateRuntimeStateIfNeeded(
+          config,
+          entry.consumer,
+          entry.runtime,
+          entry.rateLimit,
+          entry.budget,
+          now,
+          { persisted: persistedByKey.get(entry.consumer.keyId), snapshot: entry.snapshot }
+        );
+      }).catch(() => {
+        entry.runtime.hydrationRetryAt = now + 1000;
+        return false;
+      }).finally(() => {
+        if (entry.runtime.hydrationPromise === hydrationPromise) entry.runtime.hydrationPromise = null;
+      });
+      entry.runtime.hydrationPromise = hydrationPromise;
+    }
+  }
+  await Promise.all(hydrationEntries.map((entry) => hydrateRuntimeStateIfNeeded(
+    config,
+    entry.consumer,
+    entry.runtime,
+    entry.rateLimit,
+    entry.budget,
+    now
+  )));
+
+  for (const { consumer, runtime, rateLimit, budget } of hydrationEntries) {
+    const { keyId, apiKey } = consumer;
     keys.push({
       keyId,
       displayName: consumer.displayName,

@@ -43,6 +43,7 @@ const DEFAULT_PROTOCOL_PROFILES = Object.freeze({
 let installedSnapshot = null;
 let catalogGeneration = 0;
 let catalogUpdateQueue = Promise.resolve();
+let previewCache = null;
 
 export function withModelCatalogUpdateLock(operation) {
   if (typeof operation !== "function") {
@@ -275,6 +276,21 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
     modelsByAlias,
     descriptors: Object.freeze(descriptors)
   });
+}
+
+export function compileModelCatalogPreview(config, definitions = listPricingDefinitions()) {
+  const signature = crypto.createHash("sha256").update(JSON.stringify([
+    catalogGeneration,
+    config?.models,
+    config?.upstreams,
+    config?.access?.pricingCatalog,
+    definitions,
+    listArchivedPricingDefinitions()
+  ])).digest("hex");
+  if (previewCache?.signature === signature) return previewCache.snapshot;
+  const snapshot = compileModelCatalog(config, definitions);
+  previewCache = { signature, snapshot };
+  return snapshot;
 }
 
 export function installModelCatalogSnapshot(snapshot) {

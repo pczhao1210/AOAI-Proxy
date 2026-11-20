@@ -5,6 +5,7 @@ import {
   fetchConfig,
   fetchDatabaseConfig,
   fetchHarnessEligibility,
+  fetchLatestConfig,
   fetchLogs,
   fetchPricingLibrary,
   fetchRuntime,
@@ -137,6 +138,7 @@ export default function App() {
   const [caddyStatus, setCaddyStatus] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [configConflict, setConfigConflict] = useState(null);
   const [activeTab, setActiveTab] = useState("workspace");
   const [advancedJson, setAdvancedJson] = useState("{}");
   const [pricingCatalogText, setPricingCatalogText] = useState("{}");
@@ -360,6 +362,7 @@ export default function App() {
     setJsonError("");
     setDatabaseTestResult(null);
     setLogAnalyticsInitializationResult(null);
+    setConfigConflict(null);
   }
 
   async function loadSecondaryData(requestId, options = {}) {
@@ -426,14 +429,14 @@ export default function App() {
     }
   }
 
-  async function loadAll(mode = "load") {
+  async function loadAll(mode = "load", { discardPendingDatabaseSync = false } = {}) {
     setLoading(true);
     setError("");
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
     try {
       const configJson = mode === "reload"
-        ? await reloadConfig().then((result) => result.config)
+        ? await reloadConfig({ discardPendingDatabaseSync }).then((result) => result.config)
         : await fetchConfig();
       if (requestId !== loadRequestRef.current) {
         return;
@@ -642,13 +645,39 @@ export default function App() {
     loadRequestRef.current = requestId;
     applyLoadedConfig(saved);
     void loadSecondaryData(requestId, { notifyOnError: true });
+    const warnings = [];
     if (result.apply?.caddy?.ok === false) {
-      setError(t("messages.savedButCaddyFailed", "Configuration was saved, but Caddy could not apply it: {error}", {
+      warnings.push(t("messages.savedButCaddyFailed", "Configuration was saved, but Caddy could not apply it: {error}", {
         error: result.apply.caddy.error || "Caddy reload failed"
       }));
+    }
+    if (result.apply?.persistence?.pendingDatabaseSync) {
+      warnings.push(t("messages.savedPendingDatabase", "Configuration was saved locally; database synchronization is pending."));
+    }
+    if (warnings.length) {
+      setError(warnings.join(" "));
     } else {
       setMessage(successMessage);
     }
+  }
+
+  async function showConfigConflict() {
+    setConfigConflict({ loading: true, latest: null, error: "" });
+    try {
+      const latest = await fetchLatestConfig();
+      setConfigConflict({ loading: false, latest, error: "" });
+    } catch (loadError) {
+      setConfigConflict({ loading: false, latest: null, error: loadError.message || t("messages.loadFailed", "Load failed.") });
+    }
+  }
+
+  async function reportConfigSaveError(saveError, fallback, attemptedConfig = config) {
+    if (saveError.payload?.code !== "CONFIG_REVISION_CONFLICT") {
+      setError(saveError.message || fallback);
+      return;
+    }
+    if (attemptedConfig !== config) setConfig(attemptedConfig);
+    await showConfigConflict();
   }
 
   async function handleReloadDatabaseDefaults() {
@@ -759,7 +788,7 @@ export default function App() {
     try {
       await persistConfig(config, t("messages.saved", "Configuration saved. React admin now covers configuration, governance, and baseline operations."));
     } catch (saveError) {
-      setError(saveError.message || t("messages.saveFailed", "Save failed."));
+      await reportConfigSaveError(saveError, t("messages.saveFailed", "Save failed."));
     } finally {
       setSaving(false);
     }
@@ -779,9 +808,10 @@ export default function App() {
     }
   }
 
-  async function handleReload(mode = "load") {
+  async function handleReload(mode = "load", { discardPendingDatabaseSync = false } = {}) {
+    if (discardPendingDatabaseSync && !window.confirm(t("config.conflict.discardPending", "Reloading may discard locally saved configuration awaiting database synchronization, as well as your draft. Continue?"))) return;
     if (!confirmDiscardChanges()) return;
-    await loadAll(mode);
+    await loadAll(mode, { discardPendingDatabaseSync });
   }
 
   function addApiKey() {
@@ -1078,7 +1108,7 @@ export default function App() {
     try {
       await persistConfig(nextConfig, t("compress.apply.ok", "Compression preset applied to configuration and saved."));
     } catch (saveError) {
-      setError(saveError.message || t("compress.apply.invalid", "Failed to apply compression preset."));
+      await reportConfigSaveError(saveError, t("compress.apply.invalid", "Failed to apply compression preset."), nextConfig);
     } finally {
       setSaving(false);
     }
@@ -1367,6 +1397,13 @@ export default function App() {
         <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : configCleanupRequired ? t("config.flagCleanupPending", "Configuration cleanup pending") : t("summary.synced", "Synced")} />
       </section>
 
+      {persistenceRuntime.pendingDatabaseSync ? (
+        <aside className="inline-error" role="status">
+          {t("config.conflict.pending", "Local configuration is awaiting database synchronization. A conflict requires review; it will not overwrite the database.")}
+          {" "}<button type="button" className="ghost" onClick={showConfigConflict}>{t("config.conflict.compare", "Compare latest configuration")}</button>
+        </aside>
+      ) : null}
+
       <Modal 
         title={t("config.save.title", "Confirm Configuration Save")} 
         isOpen={showSaveModal} 
@@ -1396,6 +1433,25 @@ export default function App() {
         ) : (
           configCleanupRequired ? null : <p className="muted">{t("config.diff.none", "No local diff")}</p>
         )}
+      </Modal>
+
+      <Modal
+        title={t("config.conflict.title", "Configuration changed")}
+        isOpen={Boolean(configConflict)}
+        onClose={() => setConfigConflict(null)}
+        onConfirm={() => handleReload("reload", { discardPendingDatabaseSync: true })}
+        confirmLabel={t("config.conflict.reload", "Reload from store")}
+        cancelLabel={t("common.cancel", "Cancel")}
+        closeLabel={t("common.close", "Close")}
+      >
+        <p>{t("config.conflict.description", "Another administrator changed the configuration. Your draft is unchanged. Review the differences below or reload from the store and discard your draft.")}</p>
+        {configConflict?.loading ? <p>{t("config.conflict.loading", "Loading the latest configuration...")}</p> : null}
+        {configConflict?.error ? <div role="alert" className="inline-error">{configConflict.error}</div> : null}
+        {configConflict?.latest ? (
+          <pre className="muted" style={{ whiteSpace: "pre-wrap", maxHeight: "300px", overflowY: "auto" }}>
+            {buildConfigDiffPreview(computeConfigDiff(configConflict.latest, config || {}), t)}
+          </pre>
+        ) : null}
       </Modal>
 
       <Modal

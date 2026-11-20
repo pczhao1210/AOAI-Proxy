@@ -19,6 +19,7 @@ const DEFAULT_MAX_PERSISTED_EVENTS = 50000;
 const DEFAULT_DETAIL_RETENTION_DAYS = 30;
 const DEFAULT_ROLLUP_RETENTION_DAYS = 365;
 const DEFAULT_ROLLUP_BATCH_SIZE = 5000;
+const LOCAL_BUFFER_COMPACT_BYTES = 1024 * 1024;
 const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const GLOBAL_SCOPE_KEY = "__all__";
 const GLOBAL_SCOPE_SUBKEY = "";
@@ -51,6 +52,7 @@ let cleanupAfterTs = 0;
 let localBufferOperation = Promise.resolve();
 let databaseOperation = Promise.resolve();
 let modelEventClockFloor = 0;
+let localBufferCursor = { path: "", identity: "", offset: 0 };
 
 function serializeDatabaseOperation(operation) {
   const next = databaseOperation.catch(() => undefined).then(operation);
@@ -207,9 +209,28 @@ function normalizeBufferedEvent(entry = {}) {
   });
 }
 
+async function getLocalBufferIdentity(settings) {
+  try {
+    const stat = await fs.stat(settings.localBufferPath, { bigint: true });
+    return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  }
+}
+
+function getLocalBufferOffsetPath(settings) {
+  return `${settings.localBufferPath}.offset`;
+}
+
 async function readLocalBufferEventsUnsafe(settings) {
   try {
-    const text = await fs.readFile(settings.localBufferPath, "utf8");
+    const bytes = await fs.readFile(settings.localBufferPath);
+    const identity = await getLocalBufferIdentity(settings);
+    const offset = localBufferCursor.path === settings.localBufferPath && localBufferCursor.identity === identity
+      ? localBufferCursor.offset
+      : 0;
+    const text = bytes.subarray(offset).toString("utf8");
     if (!text.trim()) {
       return [];
     }
@@ -242,6 +263,7 @@ async function writeLocalBufferEventsUnsafe(settings, events) {
         throw error;
       }
     }
+    localBufferCursor = { path: settings.localBufferPath, identity: "", offset: 0 };
     return;
   }
   await ensureLocalBufferDirectory(settings);
@@ -249,6 +271,7 @@ async function writeLocalBufferEventsUnsafe(settings, events) {
   const payload = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
   await fs.writeFile(tempPath, payload, "utf8");
   await fs.rename(tempPath, settings.localBufferPath);
+  localBufferCursor = { path: settings.localBufferPath, identity: await getLocalBufferIdentity(settings), offset: 0 };
 }
 
 function serializeLocalBufferEvents(events) {
@@ -287,6 +310,10 @@ async function appendLocalBufferEvents(settings, events) {
     } else {
       await ensureLocalBufferDirectory(settings);
       await fs.appendFile(settings.localBufferPath, serializeLocalBufferEvents(newEvents), "utf8");
+      const identity = await getLocalBufferIdentity(settings);
+      if (localBufferCursor.path !== settings.localBufferPath || localBufferCursor.identity !== identity) {
+        localBufferCursor = { path: settings.localBufferPath, identity, offset: 0 };
+      }
       updateRuntimeStoreState({
         localBufferPath: settings.localBufferPath,
         maxPersistedEvents: settings.maxPersistedEvents,
@@ -300,23 +327,81 @@ async function appendLocalBufferEvents(settings, events) {
 
 async function peekLocalBufferBatch(settings, limit) {
   return queueLocalBufferOperation(async () => {
-    const existingEvents = await readLocalBufferEventsUnsafe(settings);
-    // Persist generated identities for legacy records BEFORE any database write,
-    // so a lost acknowledgement or restart cannot assign them new identities.
-    await writeLocalBufferEventsUnsafe(settings, existingEvents);
-    updateLocalBufferState(settings, existingEvents);
-    return existingEvents.slice(0, limit);
+    const identity = await getLocalBufferIdentity(settings);
+    const offset = localBufferCursor.path === settings.localBufferPath && localBufferCursor.identity === identity
+      ? localBufferCursor.offset
+      : 0;
+    const handle = await fs.open(settings.localBufferPath, "r");
+    const items = [];
+    let position = offset;
+    let endOffset = offset;
+    let pending = Buffer.alloc(0);
+    try {
+      while (items.length < limit) {
+        const chunk = Buffer.allocUnsafe(65536);
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+        if (!bytesRead) break;
+        position += bytesRead;
+        pending = Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
+        let newline;
+        while (items.length < limit && (newline = pending.indexOf(10)) !== -1) {
+          const line = pending.subarray(0, newline).toString("utf8").trim();
+          endOffset += newline + 1;
+          pending = pending.subarray(newline + 1);
+          if (!line) continue;
+          try {
+            items.push(normalizeBufferedEvent(JSON.parse(line)));
+          } catch {
+            // Invalid lines were already excluded when the buffer was loaded.
+          }
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+    return { items, identity, offset, endOffset };
   });
 }
 
-async function ackLocalBufferBatch(settings, batchItems) {
-  if (!batchItems.length) {
+async function ackLocalBufferBatch(settings, batch) {
+  if (!batch.items.length) {
     return { persistedEventCount: runtimeStoreState.persistedEventCount };
   }
   return queueLocalBufferOperation(async () => {
+    const identity = await getLocalBufferIdentity(settings);
+    if (identity === batch.identity && localBufferCursor.identity === identity && localBufferCursor.offset === batch.offset) {
+      const offsetPath = getLocalBufferOffsetPath(settings);
+      const tempPath = `${offsetPath}.tmp`;
+      await fs.writeFile(tempPath, JSON.stringify({ identity, offset: batch.endOffset }), "utf8");
+      await fs.rename(tempPath, offsetPath);
+      localBufferCursor.offset = batch.endOffset;
+      const persistedEventCount = Math.max(0, runtimeStoreState.persistedEventCount - batch.items.length);
+      updateRuntimeStoreState({ persistedEventCount, spilloverActive: persistedEventCount > 0 });
+      try {
+        if (!persistedEventCount) {
+          await writeLocalBufferEventsUnsafe(settings, []);
+          await fs.unlink(offsetPath).catch((error) => {
+            if (error?.code !== "ENOENT") throw error;
+          });
+        } else if (batch.endOffset >= LOCAL_BUFFER_COMPACT_BYTES) {
+          const stat = await fs.stat(settings.localBufferPath);
+          if (batch.endOffset * 2 >= stat.size) {
+            await writeLocalBufferEventsUnsafe(settings, await readLocalBufferEventsUnsafe(settings));
+          }
+        }
+      } catch (error) {
+        appendStructuredLog("warn", {
+          source: "runtime-store",
+          event: "runtime_store.local_buffer_cleanup_failed",
+          target: settings.localBufferPath,
+          failureReason: error?.message || "Failed to compact the runtime buffer"
+        });
+      }
+      return { persistedEventCount };
+    }
     const existingEvents = await readLocalBufferEventsUnsafe(settings);
-    const acknowledged = new Set(batchItems.map(event => event.eventUid));
-    const nextEvents = existingEvents.filter(event => !acknowledged.has(event.eventUid));
+    const acknowledged = new Set(batch.items.map((event) => event.eventUid));
+    const nextEvents = existingEvents.filter((event) => !acknowledged.has(event.eventUid));
     await writeLocalBufferEventsUnsafe(settings, nextEvents);
     updateLocalBufferState(settings, nextEvents);
     return { persistedEventCount: nextEvents.length };
@@ -325,7 +410,48 @@ async function ackLocalBufferBatch(settings, batchItems) {
 
 async function refreshLocalBufferState(settings) {
   return queueLocalBufferOperation(async () => {
+    const identity = await getLocalBufferIdentity(settings);
+    let offset = 0;
+    if (identity) {
+      try {
+        const checkpoint = JSON.parse(await fs.readFile(getLocalBufferOffsetPath(settings), "utf8"));
+        const stat = await fs.stat(settings.localBufferPath);
+        if (checkpoint.identity === identity && Number.isSafeInteger(checkpoint.offset)
+          && checkpoint.offset >= 0 && checkpoint.offset <= stat.size) {
+          offset = checkpoint.offset;
+        }
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          appendStructuredLog("warn", {
+            source: "runtime-store",
+            event: "runtime_store.local_buffer_checkpoint_invalid",
+            target: getLocalBufferOffsetPath(settings),
+            failureReason: "Invalid checkpoint; replaying buffered events"
+          });
+        } else if (error?.code !== "ENOENT") {
+          throw error;
+        }
+      }
+    }
+    localBufferCursor = { path: settings.localBufferPath, identity, offset };
+    let needsRewrite = false;
+    if (identity) {
+      const bytes = await fs.readFile(settings.localBufferPath);
+      const text = bytes.subarray(offset).toString("utf8");
+      needsRewrite = text.length > 0 && !text.endsWith("\n");
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          if (!event.eventUid && !event.event_uid) needsRewrite = true;
+        } catch {
+          // Invalid lines are excluded by the existing buffer reader.
+        }
+      }
+    }
     const existingEvents = await readLocalBufferEventsUnsafe(settings);
+    // Legacy records need stable identities before an ambiguous database write.
+    if (needsRewrite) await writeLocalBufferEventsUnsafe(settings, existingEvents);
     updateLocalBufferState(settings, existingEvents);
     return existingEvents.length;
   });
@@ -1012,6 +1138,7 @@ export function flushRuntimeEvents() {
 export async function drainRuntimeEvents() {
   let flushed = 0;
   while (true) {
+    await localBufferOperation;
     const state = getRuntimeStoreInfo();
     if (state.queueLength === 0 && state.persistedEventCount === 0) break;
     const result = await flushRuntimeEvents();
@@ -1087,12 +1214,14 @@ async function flushRuntimeEventsInternal() {
   }
 
   let batchItems = [];
+  let localBatch = null;
   let batchSource = "memory";
   let retry = false;
   try {
     if (runtimeStoreState.persistedEventCount > 0) {
       batchSource = "local";
-      batchItems = await peekLocalBufferBatch(settings, settings.batchSize);
+      localBatch = await peekLocalBufferBatch(settings, settings.batchSize);
+      batchItems = localBatch.items;
     } else {
       batchItems = runtimeEventQueue.splice(0, settings.batchSize);
       updateRuntimeStoreState({});
@@ -1104,7 +1233,7 @@ async function flushRuntimeEventsInternal() {
     await rollupRuntimeEvents(settings);
     await cleanupRuntimeData(settings);
     if (batchSource === "local") {
-      await ackLocalBufferBatch(settings, batchItems);
+      await ackLocalBufferBatch(settings, localBatch);
     }
     updateRuntimeStoreState({
       lastSuccessTs: toIsoString(),
@@ -2087,12 +2216,29 @@ async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
 }
 
 export function hydrateGovernanceRuntime(config, keyId, rateWindowStartedAt, budgetWindowStartedAt, options = {}) {
-  return serializeDatabaseOperation(() => hydrateGovernanceRuntimeInternal(config, keyId, rateWindowStartedAt, budgetWindowStartedAt, options));
+  return hydrateGovernanceRuntimes(config, [{
+    keyId,
+    rateWindowStartedAt,
+    budgetWindowStartedAt,
+    onSnapshot: options.onSnapshot
+  }]).then((persisted) => persisted.get(keyId) || null);
 }
 
-async function hydrateGovernanceRuntimeInternal(config, keyId, rateWindowStartedAt, budgetWindowStartedAt, { onSnapshot } = {}) {
+export function hydrateGovernanceRuntimes(config, keyWindows) {
+  return serializeDatabaseOperation(() => hydrateGovernanceRuntimesInternal(config, keyWindows));
+}
+
+async function hydrateGovernanceRuntimesInternal(config, keyWindows) {
+  const persistedByKey = new Map();
+  if (!Array.isArray(keyWindows) || keyWindows.length === 0) return persistedByKey;
   const settings = resolveRuntimeStoreSettings(config);
-  if (!settings.enabled || !keyId) return null;
+  if (!settings.enabled) return persistedByKey;
+  const targetsByKey = new Map();
+  for (const item of keyWindows) {
+    if (item?.keyId && !targetsByKey.has(item.keyId)) targetsByKey.set(item.keyId, item);
+  }
+  const targets = [...targetsByKey.values()];
+  if (targets.length === 0) return persistedByKey;
 
   try {
     if (!settings.configured) throw new Error("Runtime governance storage is not configured");
@@ -2116,88 +2262,122 @@ async function hydrateGovernanceRuntimeInternal(config, keyId, rateWindowStarted
     if (runtimeEventQueue.length || runtimeStoreState.persistedEventCount) {
       throw new Error("Runtime event backlog changed during hydration");
     }
-    onSnapshot?.();
+    for (const target of targets) target.onSnapshot?.();
+
     const pool = getRuntimeStorePool(settings);
     const { schemaName, eventsTableName, rollupsTableName } = getQualifiedTableNames(settings);
     const result = await pool.query(`
-      WITH latest_block AS (
-        SELECT occurred_at, blocked_reason
-        FROM ${schemaName}.${eventsTableName}
-        WHERE key_id = $1 AND event_type = 'blocked'
-        ORDER BY occurred_at DESC
-        LIMIT 1
+      WITH targets AS (
+        SELECT key_id, rate_window_started_at, budget_window_started_at
+        FROM unnest($1::text[], $2::timestamptz[], $3::timestamptz[])
+          AS requested(key_id, rate_window_started_at, budget_window_started_at)
+      ),
+      latest_block AS (
+        SELECT DISTINCT ON (events.key_id)
+          events.key_id, events.occurred_at, events.blocked_reason
+        FROM ${schemaName}.${eventsTableName} AS events
+        JOIN targets ON targets.key_id = events.key_id
+        WHERE events.event_type = 'blocked'
+        ORDER BY events.key_id, events.occurred_at DESC
       ),
       rate_window AS (
         SELECT
-          COUNT(*) FILTER (WHERE event_type = 'request') AS rate_requests,
-          COALESCE(SUM(prompt_tokens) FILTER (WHERE event_type = 'usage'), 0) AS rate_prompt_tokens,
-          COALESCE(SUM(completion_tokens) FILTER (WHERE event_type = 'usage'), 0) AS rate_completion_tokens,
-          COALESCE(SUM(total_tokens) FILTER (WHERE event_type = 'usage'), 0) AS rate_total_tokens,
-          COALESCE(SUM(cached_tokens) FILTER (WHERE event_type = 'usage'), 0) AS rate_cached_tokens,
-          COUNT(*) FILTER (WHERE event_type = 'blocked') AS rate_blocked_requests
-        FROM ${schemaName}.${eventsTableName}
-        WHERE key_id = $1 AND occurred_at >= $2::timestamptz
+          events.key_id,
+          COUNT(*) FILTER (WHERE events.event_type = 'request') AS rate_requests,
+          COALESCE(SUM(events.prompt_tokens) FILTER (WHERE events.event_type = 'usage'), 0) AS rate_prompt_tokens,
+          COALESCE(SUM(events.completion_tokens) FILTER (WHERE events.event_type = 'usage'), 0) AS rate_completion_tokens,
+          COALESCE(SUM(events.total_tokens) FILTER (WHERE events.event_type = 'usage'), 0) AS rate_total_tokens,
+          COALESCE(SUM(events.cached_tokens) FILTER (WHERE events.event_type = 'usage'), 0) AS rate_cached_tokens,
+          COUNT(*) FILTER (WHERE events.event_type = 'blocked') AS rate_blocked_requests
+        FROM ${schemaName}.${eventsTableName} AS events
+        JOIN targets ON targets.key_id = events.key_id
+          AND events.occurred_at >= targets.rate_window_started_at
+        GROUP BY events.key_id
       ),
       key_totals AS (
         SELECT
-          MAX(last_occurred_at) AS last_seen_at,
-          COALESCE(SUM(requests), 0) AS total_requests,
-          COALESCE(SUM(errors), 0) AS total_errors,
-          COALESCE(SUM(blocked_count), 0) AS total_blocked_requests
-        FROM ${schemaName}.${rollupsTableName}
-        WHERE grain = 'daily' AND scope_type = 'key' AND scope_key = $1
+          rollups.scope_key AS key_id,
+          MAX(rollups.last_occurred_at) AS last_seen_at,
+          COALESCE(SUM(rollups.requests), 0) AS total_requests,
+          COALESCE(SUM(rollups.errors), 0) AS total_errors,
+          COALESCE(SUM(rollups.blocked_count), 0) AS total_blocked_requests
+        FROM ${schemaName}.${rollupsTableName} AS rollups
+        JOIN targets ON targets.key_id = rollups.scope_key
+        WHERE rollups.grain = 'daily' AND rollups.scope_type = 'key'
+        GROUP BY rollups.scope_key
       ),
       budget_window AS (
         SELECT
-          COALESCE(SUM(prompt_tokens), 0) AS budget_prompt_tokens,
-          COALESCE(SUM(completion_tokens), 0) AS budget_completion_tokens,
-          COALESCE(SUM(total_tokens), 0) AS budget_total_tokens,
-          COALESCE(SUM(cached_tokens), 0) AS budget_cached_tokens,
-          COALESCE(SUM(text_unknown_cost_requests), 0) AS budget_text_unknown_cost_requests,
-          COALESCE(SUM(estimated_cost_amount), 0) AS budget_spent_amount,
-          COALESCE(SUM(blocked_count), 0) AS budget_blocked_requests
-        FROM ${schemaName}.${rollupsTableName}
-        WHERE grain = 'daily' AND scope_type = 'key' AND scope_key = $1 AND bucket_start >= $3::timestamptz
+          rollups.scope_key AS key_id,
+          COALESCE(SUM(rollups.prompt_tokens), 0) AS budget_prompt_tokens,
+          COALESCE(SUM(rollups.completion_tokens), 0) AS budget_completion_tokens,
+          COALESCE(SUM(rollups.total_tokens), 0) AS budget_total_tokens,
+          COALESCE(SUM(rollups.cached_tokens), 0) AS budget_cached_tokens,
+          COALESCE(SUM(rollups.text_unknown_cost_requests), 0) AS budget_text_unknown_cost_requests,
+          COALESCE(SUM(rollups.estimated_cost_amount), 0) AS budget_spent_amount,
+          COALESCE(SUM(rollups.blocked_count), 0) AS budget_blocked_requests
+        FROM ${schemaName}.${rollupsTableName} AS rollups
+        JOIN targets ON targets.key_id = rollups.scope_key
+          AND rollups.bucket_start >= targets.budget_window_started_at
+        WHERE rollups.grain = 'daily' AND rollups.scope_type = 'key'
+        GROUP BY rollups.scope_key
       ),
       budget_requests AS (
         SELECT
-          COUNT(*) FILTER (WHERE event_type = 'usage') AS budget_requests,
-          COUNT(*) FILTER (WHERE event_type = 'usage' AND payload->>'source' = 'media'
-            AND payload->'media'->>'costStatus' IS DISTINCT FROM 'priced') AS budget_media_unknown_cost_requests
-        FROM ${schemaName}.${eventsTableName}
-        WHERE key_id = $1 AND occurred_at >= $3::timestamptz
+          events.key_id,
+          COUNT(*) FILTER (WHERE events.event_type = 'usage') AS budget_requests,
+          COUNT(*) FILTER (WHERE events.event_type = 'usage' AND events.payload->>'source' = 'media'
+            AND events.payload->'media'->>'costStatus' IS DISTINCT FROM 'priced') AS budget_media_unknown_cost_requests
+        FROM ${schemaName}.${eventsTableName} AS events
+        JOIN targets ON targets.key_id = events.key_id
+          AND events.occurred_at >= targets.budget_window_started_at
+        GROUP BY events.key_id
       )
       SELECT
+        targets.key_id,
         key_totals.last_seen_at,
-        key_totals.total_requests,
-        key_totals.total_errors,
-        key_totals.total_blocked_requests,
-        (SELECT occurred_at FROM latest_block) AS last_blocked_at,
-        (SELECT blocked_reason FROM latest_block) AS last_blocked_reason,
-        rate_window.rate_requests,
-        rate_window.rate_prompt_tokens,
-        rate_window.rate_completion_tokens,
-        rate_window.rate_total_tokens,
-        rate_window.rate_cached_tokens,
-        rate_window.rate_blocked_requests,
-        budget_requests.budget_requests,
-        budget_requests.budget_media_unknown_cost_requests,
-        budget_window.budget_text_unknown_cost_requests,
-        budget_window.budget_prompt_tokens,
-        budget_window.budget_completion_tokens,
-        budget_window.budget_total_tokens,
-        budget_window.budget_cached_tokens,
-        budget_window.budget_spent_amount,
-        budget_window.budget_blocked_requests
-      FROM key_totals, rate_window, budget_window, budget_requests
-    `, [keyId, rateWindowStartedAt, budgetWindowStartedAt]);
+        COALESCE(key_totals.total_requests, 0) AS total_requests,
+        COALESCE(key_totals.total_errors, 0) AS total_errors,
+        COALESCE(key_totals.total_blocked_requests, 0) AS total_blocked_requests,
+        latest_block.occurred_at AS last_blocked_at,
+        latest_block.blocked_reason AS last_blocked_reason,
+        COALESCE(rate_window.rate_requests, 0) AS rate_requests,
+        COALESCE(rate_window.rate_prompt_tokens, 0) AS rate_prompt_tokens,
+        COALESCE(rate_window.rate_completion_tokens, 0) AS rate_completion_tokens,
+        COALESCE(rate_window.rate_total_tokens, 0) AS rate_total_tokens,
+        COALESCE(rate_window.rate_cached_tokens, 0) AS rate_cached_tokens,
+        COALESCE(rate_window.rate_blocked_requests, 0) AS rate_blocked_requests,
+        COALESCE(budget_requests.budget_requests, 0) AS budget_requests,
+        COALESCE(budget_requests.budget_media_unknown_cost_requests, 0) AS budget_media_unknown_cost_requests,
+        COALESCE(budget_window.budget_text_unknown_cost_requests, 0) AS budget_text_unknown_cost_requests,
+        COALESCE(budget_window.budget_prompt_tokens, 0) AS budget_prompt_tokens,
+        COALESCE(budget_window.budget_completion_tokens, 0) AS budget_completion_tokens,
+        COALESCE(budget_window.budget_total_tokens, 0) AS budget_total_tokens,
+        COALESCE(budget_window.budget_cached_tokens, 0) AS budget_cached_tokens,
+        COALESCE(budget_window.budget_spent_amount, 0) AS budget_spent_amount,
+        COALESCE(budget_window.budget_blocked_requests, 0) AS budget_blocked_requests
+      FROM targets
+      LEFT JOIN key_totals USING (key_id)
+      LEFT JOIN latest_block USING (key_id)
+      LEFT JOIN rate_window USING (key_id)
+      LEFT JOIN budget_window USING (key_id)
+      LEFT JOIN budget_requests USING (key_id)
+    `, [
+      targets.map((item) => item.keyId),
+      targets.map((item) => item.rateWindowStartedAt),
+      targets.map((item) => item.budgetWindowStartedAt)
+    ]);
 
-    return result.rows[0] || null;
+    const persisted = new Map(result.rows.map((row) => [row.key_id, row]));
+    if (targets.some((target) => !persisted.has(target.keyId))) {
+      throw new Error("Runtime governance hydration returned an incomplete snapshot");
+    }
+    return persisted;
   } catch (error) {
     appendStructuredLog("warn", {
       source: "runtime-store",
       event: "runtime_store.governance_hydrate_failed",
-      keyId,
+      keyIds: targets.map((item) => item.keyId),
       failureReason: error?.message || "Runtime governance hydrate failed"
     });
     throw error;

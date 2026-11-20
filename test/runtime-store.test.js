@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import pg from "pg";
-import { getRuntimeStoreInfo, recordRuntimeError, recordRuntimeRequest, recordRuntimeUsage, recordRuntimeMediaUsage, setRuntimeStoreConfig, flushRuntimeEvents, hydrateGovernanceRuntime, getRuntimeStatsSnapshot, resetRuntimeModelStats } from "../src/runtime-store.js";
+import { getRuntimeStoreInfo, recordRuntimeError, recordRuntimeRequest, recordRuntimeUsage, recordRuntimeMediaUsage, setRuntimeStoreConfig, flushRuntimeEvents, hydrateGovernanceRuntime, hydrateGovernanceRuntimes, getRuntimeStatsSnapshot, resetRuntimeModelStats } from "../src/runtime-store.js";
 import { closeSharedPostgresPools, quoteIdentifier } from "../src/postgres.js";
 import { createMediaUsageTracker } from "../src/proxy/media-usage.js";
 import { settleMediaUsage } from "../src/proxy/media-accounting.js";
@@ -280,6 +280,12 @@ test("media and text ledgers restore known subtotals and durable completeness fr
     assert.equal(Number(restored.budget_media_unknown_cost_requests), 1);
     assert.equal(Number(restored.budget_text_unknown_cost_requests), 2);
     assert.ok(Math.abs(Number(restored.budget_spent_amount) - 0.856) < 1e-12);
+    const batchedRestore = await hydrateGovernanceRuntimes(config, [
+      { keyId: consumer.keyId, rateWindowStartedAt: start, budgetWindowStartedAt: start },
+      { keyId: "empty-ledger-key", rateWindowStartedAt: start, budgetWindowStartedAt: start }
+    ]);
+    assert.equal(Number(batchedRestore.get(consumer.keyId).budget_requests), 7);
+    assert.equal(Number(batchedRestore.get("empty-ledger-key").budget_requests), 0);
     const again = await hydrateGovernanceRuntime(config, consumer.keyId, start, start);
     assert.equal(Number(again.budget_spent_amount), Number(restored.budget_spent_amount));
     assert.equal(Number(again.budget_text_unknown_cost_requests), 2);

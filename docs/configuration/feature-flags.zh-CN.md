@@ -32,7 +32,15 @@ JSON 中的所有有效布尔开关及被迁移的旧布尔别名只接受 `true
 | `admin.security.csrfProtection` | `true` | 要求管理端写请求携带 CSRF header。 | JSON；热 |
 | `admin.features.enableLegacyJsonEditor` | `true` | 显示 Advanced JSON Editor；不影响专用表单。 | Workspace；热 |
 | `server.trustProxy` | `false` | 信任受控反向代理提供的转发 IP header。只有 Node 无法被客户端直接访问时才应开启。 | Workspace；热；可被环境变量覆盖 |
+| `server.requireConfigRevision` | `false` | 要求配置保存提供 `If-Match` 修订号；缺失时返回 428。管理 UI 自动发送，旧 API 客户端需要先读取配置及 ETag。 | Workspace；热 |
 | `server.caddy.enabled` | `false` | 生成并 reload Caddyfile。若容器启动时没有运行 Caddy，首次启用仍需重启容器。 | Ops；参数热，启停可能需重启 |
+
+数据库模式下，同一 PostgreSQL 配置记录使用版本比较写入，跨实例的陈旧保存返回 409。
+每个实例必须使用独立的本地配置缓存路径及待同步标记，即使使用共享 Azure Files 也如此。
+数据库不可用时配置可先保存到本地；恢复时仅在数据库版本未变化时自动同步。版本冲突或
+无法确定原版本时保留本地副本并显示待同步状态，不自动覆盖数据库。管理页可对比变更路径，
+并在确认后丢弃待同步的本地副本、从数据库重载；需要保留时请先备份本地配置。
+文件模式的 ETag 仅协调同一进程内的保存，不保护多进程或手工文件编辑；切换存储目标不提供跨存储事务。
 
 ### 代理、超时与请求策略
 

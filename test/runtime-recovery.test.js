@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -138,6 +139,127 @@ test("shutdown drain flushes every in-memory batch", async t => {
   assert.equal(db.events.filter(event => event.event_type === "request").length, 5);
 });
 
+test("spool acknowledges batches without rewriting and resumes after restart", async t => {
+  let store = await import("../src/runtime-store.js?offset-recovery=1");
+  const db = mockLedger();
+  const config = await setup(t, { setRuntimeStoreConfig: value => store.setRuntimeStoreConfig(value) }, db.query);
+  config.observability.runtimeStore.batchSize = 2;
+  const databaseUrl = process.env.RUNTIME_DB_CONNECTION_STRING;
+  delete process.env.RUNTIME_DB_CONNECTION_STRING;
+  for (let index = 0; index < 7; index += 1) {
+    store.recordRuntimeRequest(config, { requestId: `offset-${index}`, keyId: "offset-key" });
+  }
+  const deadline = Date.now() + 2000;
+  while (store.getRuntimeStoreInfo(config).persistedEventCount !== 7 && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(store.getRuntimeStoreInfo(config).persistedEventCount, 7);
+  const before = await fs.stat(config.observability.runtimeStore.localBufferPath);
+  process.env.RUNTIME_DB_CONNECTION_STRING = databaseUrl;
+  const first = await store.flushRuntimeEvents();
+  assert.equal(first.flushed, 2);
+  assert.equal((await fs.stat(config.observability.runtimeStore.localBufferPath)).ino, before.ino);
+  assert.equal(store.getRuntimeStoreInfo(config).persistedEventCount, 5);
+
+  store.setRuntimeStoreConfig(null);
+  store = await import("../src/runtime-store.js?offset-recovery=2");
+  store.setRuntimeStoreConfig(config);
+  const drained = await store.drainRuntimeEvents();
+  assert.equal(drained.pendingPersistedEvents, 0);
+  assert.equal(db.events.length, 7);
+  assert.equal(new Set(db.events.map(event => event.request_id)).size, 7);
+});
+
+for (const failCompaction of [false, true]) {
+  test(`spool resumes after ${failCompaction ? "failed" : "successful"} compaction`, async t => {
+    let store = await import(`../src/runtime-store.js?compact-recovery=${failCompaction}-1`);
+    const db = mockLedger();
+    const config = await setup(t, { setRuntimeStoreConfig: value => store.setRuntimeStoreConfig(value) }, db.query);
+    await store.drainRuntimeEvents();
+    config.observability.runtimeStore.batchSize = 2;
+    const spool = config.observability.runtimeStore.localBufferPath;
+    const rows = Array.from({ length: 6 }, (_, index) => ({
+      eventUid: randomUUID(), eventType: "request", requestId: `${index}-${"x".repeat(300000)}`
+    }));
+    await fs.writeFile(spool, `${rows.map(row => JSON.stringify(row)).join("\n")}\n`);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    store.setRuntimeStoreConfig(config);
+    const deadline = Date.now() + 2000;
+    while (store.getRuntimeStoreInfo(config).persistedEventCount !== 6 && Date.now() < deadline) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(store.getRuntimeStoreInfo(config).persistedEventCount, 6);
+    const before = await fs.stat(spool);
+    assert.equal((await store.flushRuntimeEvents()).flushed, 2);
+    const rename = fs.rename;
+    const mock = failCompaction ? t.mock.method(fs, "rename", async (source, destination) => {
+      if (source === `${spool}.tmp`) throw new Error("compaction failure");
+      return rename(source, destination);
+    }) : null;
+    assert.equal((await store.flushRuntimeEvents()).flushed, 2);
+    mock?.mock.restore();
+    assert.equal(store.getRuntimeStoreInfo(config).persistedEventCount, 2);
+    const after = await fs.stat(spool);
+    if (failCompaction) assert.equal(after.ino, before.ino);
+    else assert.ok(after.size < before.size / 2);
+
+    store.setRuntimeStoreConfig(null);
+    t.mock.timers.reset();
+    store = await import(`../src/runtime-store.js?compact-recovery=${failCompaction}-2`);
+    store.setRuntimeStoreConfig(config);
+    const drained = await store.drainRuntimeEvents();
+    assert.equal(drained.pendingPersistedEvents, 0);
+    assert.equal(db.events.length, 6);
+    assert.equal(new Set(db.events.map(event => event.event_uid)).size, 6);
+  });
+}
+
+test("governance snapshots hydrate configured keys with one database query", async t => {
+  let hydrationQueries = 0;
+  const config = await setup(t, runtimeStore, async (sql, values = []) => {
+    if (sql.includes("FROM unnest($1::text[]")) {
+      hydrationQueries += 1;
+      return {
+        rows: values[0].map((key_id, index) => ({
+          key_id,
+          total_requests: index + 3,
+          total_errors: 1,
+          total_blocked_requests: 0,
+          rate_requests: index + 2,
+          rate_prompt_tokens: 0,
+          rate_completion_tokens: 0,
+          rate_total_tokens: 0,
+          rate_cached_tokens: 0,
+          rate_blocked_requests: 0,
+          budget_requests: index + 2,
+          budget_media_unknown_cost_requests: 0,
+          budget_text_unknown_cost_requests: 0,
+          budget_prompt_tokens: 0,
+          budget_completion_tokens: 0,
+          budget_total_tokens: 0,
+          budget_cached_tokens: 0,
+          budget_spent_amount: 0,
+          budget_blocked_requests: 0
+        }))
+      };
+    }
+    return { rows: [] };
+  });
+  config.apiKeys = [{ id: "batch-key-a" }, { id: "batch-key-b" }, { id: "batch-key-c" }];
+
+  const [snapshot, concurrentSnapshot] = await Promise.all([
+    getGovernanceSnapshot(config),
+    getGovernanceSnapshot(config)
+  ]);
+  assert.equal(hydrationQueries, 1);
+  assert.deepEqual(snapshot.keys.map(key => [key.keyId, key.runtime.totalRequests, key.runtime.rateWindow.requests]), [
+    ["batch-key-a", 3, 2],
+    ["batch-key-b", 4, 3],
+    ["batch-key-c", 5, 4]
+  ]);
+  assert.deepEqual(concurrentSnapshot.keys, snapshot.keys);
+});
+
 test("failed budget hydration retries after recovery without resetting in-flight usage", async t => {
   let unavailable = true;
   let hydrationQueries = 0;
@@ -145,12 +267,12 @@ test("failed budget hydration retries after recovery without resetting in-flight
   let queryStarted;
   const started = new Promise(r => { queryStarted = r; });
   const config = await setup(t, runtimeStore, async sql => {
-    if (sql.includes("WITH latest_block")) {
+    if (sql.includes("FROM unnest($1::text[]")) {
       hydrationQueries++;
       if (unavailable) throw new Error("Database temporarily unavailable");
       queryStarted();
       await new Promise(r => { releaseQuery = r; });
-      return { rows: [{ budget_spent_amount: 2, budget_requests: 2 }] };
+      return { rows: [{ key_id: "recovery-budget", budget_spent_amount: 2, budget_requests: 2 }] };
     }
     return { rows: [] };
   });
@@ -181,7 +303,7 @@ test("failed budget hydration retries after recovery without resetting in-flight
 
 test("unmetered keys remain available during hydration failure with local concurrency enforced", async t => {
   const config = await setup(t, runtimeStore, async sql => {
-    if (sql.includes("WITH latest_block")) throw new Error("Database temporarily unavailable");
+    if (sql.includes("FROM unnest($1::text[]")) throw new Error("Database temporarily unavailable");
     return { rows: [] };
   });
   const key = { id: "unlimited-recovery", rateLimit: { concurrency: 1 } };
@@ -203,10 +325,10 @@ test("hydration crossing a budget window preserves the new window and its settle
   let queryStarted;
   const started = new Promise(r => { queryStarted = r; });
   const config = await setup(t, runtimeStore, async sql => {
-    if (sql.includes("WITH latest_block")) {
+    if (sql.includes("FROM unnest($1::text[]")) {
       queryStarted();
       await new Promise(r => { releaseQuery = r; });
-      return { rows: [{ budget_spent_amount: 2, budget_requests: 2, rate_total_tokens: 2000000 }] };
+      return { rows: [{ key_id: "window-budget", budget_spent_amount: 2, budget_requests: 2, rate_total_tokens: 2000000 }] };
     }
     return { rows: [] };
   });

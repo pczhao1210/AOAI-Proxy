@@ -639,6 +639,42 @@ test("App tier repair stays in the draft until reviewed save and preserves share
   await testing.waitFor(() => assert.ok(testing.within(view.container.querySelector(".status-strip")).getByText("Synced")));
 });
 
+test("configuration conflict compares latest settings without replacing the draft or revision", async context => {
+  const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
+  const original = { server: { host: "old-host" }, models: [], upstreams: [], access: {} };
+  const latest = { ...original, server: { host: "remote-host" } };
+  const revisions = [];
+  context.mock.method(window, "confirm", () => true);
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    const requestPath = new URL(url, "http://localhost").pathname;
+    if (requestPath.endsWith("/config/latest")) return Response.json(latest);
+    if (requestPath.endsWith("/config")) {
+      if (options.method === "PUT") {
+        revisions.push(options.headers["If-Match"]);
+        return Response.json({ code: "CONFIG_REVISION_CONFLICT", error: "stale" }, { status: 409 });
+      }
+      return Response.json(original, { headers: { etag: '"original-revision"' } });
+    }
+    if (requestPath.endsWith("/pricing-library")) return Response.json({ items: [] });
+    if (requestPath.endsWith("/stats")) return Response.json({});
+    if (requestPath.endsWith("/runtime")) return Response.json({ runtime: {} });
+    if (requestPath.endsWith("/caddy/status")) return Response.json({ status: {} });
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  await testing.waitFor(() => assert.ok(view.getByLabelText("Server Host")));
+  testing.fireEvent.change(view.getByLabelText("Server Host"), { target: { value: "draft-host" } });
+  testing.fireEvent.click(view.getByRole("button", { name: "Review & Save" }));
+  testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true }));
+  await testing.waitFor(() => assert.match(view.getByRole("dialog").textContent, /server\.host/));
+  assert.equal(view.getByLabelText("Server Host").value, "draft-host");
+  testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+  testing.fireEvent.click(view.getByRole("button", { name: "Review & Save" }));
+  testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true }));
+  await testing.waitFor(() => assert.equal(revisions.length, 2));
+  assert.deepEqual(revisions, ['"original-revision"', '"original-revision"']);
+});
+
 test("App allows reviewed canonical cleanup without editing unrelated settings", async context => {
   const { default: App } = await vite.ssrLoadModule("/admin-ui/src/App.jsx");
   const canonical = { models: [], upstreams: [], persistence: { compatibilityExport: { enabled: false } } };

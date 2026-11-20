@@ -7,7 +7,7 @@ import {
   withModelCatalogUpdateLock
 } from "./model-catalog.js";
 import { getConfiguredModelBindingIssues } from "./model-validation.js";
-import { readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
+import { discardPendingDatabaseSync, readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
 import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from "./pricing-library.js";
 import { compilePricingPolicy } from "./token-pricing.js";
 import { getRuntimeStoreInfo, setRuntimeStoreConfig } from "./runtime-store.js";
@@ -52,6 +52,7 @@ const DEFAULTS = {
     port: 3000,
     trustProxy: false,
     gracefulShutdownMs: 30000,
+    requireConfigRevision: false,
     adminPath: "/admin",
     adminAuth: {
       enabled: false,
@@ -2161,8 +2162,11 @@ export async function saveConfig(nextConfig, { expectedRevision } = {}) {
   });
 }
 
-export async function reloadConfig() {
-  return loadConfig();
+export async function reloadConfig({ discardPendingDatabaseSync: discardPending = false } = {}) {
+  return withModelCatalogUpdateLock(async () => {
+    if (discardPending) await discardPendingDatabaseSync();
+    return loadConfig();
+  });
 }
 
 export function getConfigRuntimeInfo() {

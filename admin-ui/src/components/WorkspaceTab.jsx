@@ -150,6 +150,7 @@ export default function WorkspaceTab({
             </div>
             <div className="checkbox-row">
               <label><input type="checkbox" checked={getValueByPath(config, "server.trustProxy") === true} onChange={(event) => updateField("server.trustProxy", event.target.checked)} /> {t("field.trustProxy", "Trust Proxy Headers")}</label>
+              <label><input type="checkbox" checked={getValueByPath(config, "server.requireConfigRevision") === true} onChange={(event) => updateField("server.requireConfigRevision", event.target.checked)} /> {t("field.requireConfigRevision", "Require configuration revision on save")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "admin.auth.enabled") === true} onChange={(event) => updateField("admin.auth.enabled", event.target.checked)} /> {t("field.enableAdminAuth", "Enable Admin Basic Auth")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "access.defaults.requireApiKey") !== false} onChange={(event) => updateField("access.defaults.requireApiKey", event.target.checked)} /> {t("field.requireApiKey", "Require API Key")}</label>
               <label><input type="checkbox" checked={getValueByPath(config, "access.budgets.enabled") === true} disabled={!budgetsAvailable} onChange={(event) => updateField("access.budgets.enabled", event.target.checked)} /> {t("field.enableBudget", "Enable Budgets")}</label>

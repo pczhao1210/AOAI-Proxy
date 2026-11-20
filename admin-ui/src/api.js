@@ -52,8 +52,13 @@ function adminFetch(path, options = {}) {
 
 export async function fetchConfig() {
   const response = await fetch(adminApiUrl("/config"));
+  const config = await readJson(response);
   configRevision = response.headers.get("etag") || "";
-  return readJson(response);
+  return config;
+}
+
+export async function fetchLatestConfig() {
+  return readJson(await adminFetch("/config/latest"));
 }
 
 export async function fetchApiKeySecret(id) {
@@ -77,8 +82,14 @@ export async function saveConfig(config) {
   return readJson(response);
 }
 
-export async function reloadConfig() {
-  const response = await adminFetch("/reload", { method: "POST" });
+export async function reloadConfig({ discardPendingDatabaseSync = false } = {}) {
+  const response = await adminFetch("/reload", {
+    method: "POST",
+    ...(discardPendingDatabaseSync ? {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ discardPendingDatabaseSync: true })
+    } : {})
+  });
   if (response.ok) configRevision = response.headers.get("etag") || "";
   return readJson(response);
 }
