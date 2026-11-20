@@ -88,6 +88,25 @@ test("Harness blank, duplicate and missing identities cannot acquire eligibility
   assert.equal(view.getByRole("dialog").querySelector(".modal-footer button:last-child").disabled, true);
 });
 
+test("Harness add dialog lists addable models first and selects from the whole card", async () => {
+  const blocked = { ...model, id: "blocked" };
+  const view = await renderAdminComponent("/admin-ui/src/components/HarnessTab.jsx", {
+    ...props, config: { models: [blocked, model] }, onNavigate() {},
+    eligibility: { items: [item("blocked", false, [{ code: "ROUTE_UNAVAILABLE" }]), item("native")] }
+  });
+  fireEvent.click(view.getAllByRole("button", { name: "Add Model", exact: true })[1]);
+  const dialog = view.getByRole("dialog");
+  const cards = [...dialog.querySelectorAll(".harness-candidate")];
+  assert.deepEqual(cards.map(card => card.querySelector("input").disabled), [false, true]);
+  assert.equal(cards[0].querySelector("button"), null);
+  assert.ok(cards[1].querySelector("button"));
+  fireEvent.click(cards[1]);
+  assert.equal(view.getByRole("radio", { name: "blocked (blocked)" }).checked, false);
+  fireEvent.click(cards[0]);
+  assert.equal(view.getByRole("radio", { name: "native (native)" }).checked, true);
+  assert.equal(dialog.querySelector(".modal-footer button:last-child").disabled, false);
+});
+
 test("Harness lists all blocking reasons, unknown codes, filters and repair targets", async () => {
   const navigations = [];
   const reasons = [

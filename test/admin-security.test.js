@@ -59,7 +59,9 @@ test("strict configuration revisions reject missing or malformed If-Match", asyn
     assert.equal(saved.status, 200, saved.text);
     for (const [header, status, code] of [
       [undefined, 428, "CONFIG_REVISION_REQUIRED"],
-      ["*", 400, "CONFIG_REVISION_INVALID"]
+      ["*", 400, "CONFIG_REVISION_INVALID"],
+      [`"${"a".repeat(64)}-gzip`, 400, "CONFIG_REVISION_INVALID"],
+      [`"${"a".repeat(64)}-identity"`, 400, "CONFIG_REVISION_INVALID"]
     ]) {
       const response = await context.adminRequest("/admin/api/config", {
         method: "PUT",
@@ -69,9 +71,27 @@ test("strict configuration revisions reject missing or malformed If-Match", asyn
       assert.equal(response.status, status, response.text);
       assert.equal(response.json.code, code);
     }
+    let etag = saved.headers.get("etag");
+    // Caddy `encode` appends the content coding and nginx gzip weakens the tag before the browser sees it.
+    for (const rewrite of [tag => `${tag.slice(0, -1)}-zstd"`, tag => `${tag.slice(0, -1)}-gzip"`, tag => `W/${tag}`]) {
+      const proxied = await context.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1", "if-match": rewrite(etag) },
+        json: saved.json.config
+      });
+      assert.equal(proxied.status, 200, proxied.text);
+      etag = proxied.headers.get("etag");
+    }
+    const stale = await context.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1", "if-match": `"${"a".repeat(64)}-zstd"` },
+      json: saved.json.config
+    });
+    assert.equal(stale.status, 409, stale.text);
+    assert.equal(stale.json.code, "CONFIG_REVISION_CONFLICT");
     const valid = await context.adminRequest("/admin/api/config", {
       method: "PUT",
-      headers: { "x-aoai-admin-csrf": "1", "if-match": saved.headers.get("etag") },
+      headers: { "x-aoai-admin-csrf": "1", "if-match": etag },
       json: saved.json.config
     });
     assert.equal(valid.status, 200, valid.text);

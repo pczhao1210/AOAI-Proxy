@@ -66,8 +66,9 @@ export default function HarnessTab({
     setActionError("");
   }
 
-  function renderEligibility(row, client) {
+  function renderEligibility(row, client, { repairOnlyWhenBlocked = false } = {}) {
     const info = row.item?.clients?.[client.id];
+    const showRepair = onNavigate && !(repairOnlyWhenBlocked && info?.eligible);
     return (
       <div className="harness-stack">
         <span className={`badge ${info ? info.eligible ? "level-info" : "level-error" : ""}`}>
@@ -86,7 +87,7 @@ export default function HarnessTab({
             ))}
           </ul>
         ) : null}
-        {onNavigate ? (
+        {showRepair ? (
           <div className="toolbar-cluster">
             <button type="button" className="ghost" onClick={() => onNavigate({ type: "model", id: row.model.id })}>{t("harness.editModel", "Edit model")}</button>
             {info?.reasons?.some(reason => reason.code.startsWith("UPSTREAM_")) ? (
@@ -102,6 +103,7 @@ export default function HarnessTab({
   }
 
   const modalClient = CLIENTS.find(client => client.id === activeClient);
+  const candidateRank = row => available(row, activeClient) ? 0 : row.model.clientCompatibility?.[activeClient] === true ? 1 : 2;
   const visibleRows = rows.filter(row => {
     const matchesSearch = [row.model.id, row.model.displayName, row.model.upstream]
       .some(value => String(value || "").toLowerCase().includes(search.trim().toLowerCase()));
@@ -110,7 +112,7 @@ export default function HarnessTab({
       || (filter === "available" && available(row, activeClient))
       || (filter === "selected" && selected)
       || (filter === "ineligible" && row.item?.clients?.[activeClient]?.eligible === false));
-  });
+  }).sort((left, right) => candidateRank(left) - candidateRank(right));
 
   return (
     <div className="stack-lg">
@@ -208,7 +210,7 @@ export default function HarnessTab({
         confirmLabel={t("harness.addModel", "Add Model")} cancelLabel={t("common.cancel", "Cancel")}
         closeLabel={t("common.close", "Close")} disabled={!selectedRow}
       >
-        <div className="form-grid">
+        <div className="form-grid compact">
           <Field label={t("harness.search", "Search name, ID or upstream")}><input type="search" value={search} onChange={event => setSearch(event.target.value)} /></Field>
           <Field label={t("harness.filter", "Model status")}>
             <select value={filter} onChange={event => setFilter(event.target.value)}>
@@ -220,19 +222,27 @@ export default function HarnessTab({
           </Field>
         </div>
         {!fresh ? <p role="status">{t("harness.unknown", "Eligibility not confirmed")}</p> : null}
-        <div className="harness-stack">
-          {modalClient && visibleRows.map(row => (
-            <div key={`${row.model.id}-${row.index}`} className="harness-candidate">
-              <label className="inline">
-                <input type="radio" name="harness-model" checked={selectedModelId === row.model.id && row.unique}
-                  disabled={!available(row, activeClient)} onChange={() => setSelectedModelId(row.model.id)} />
-                {row.model.displayName || row.model.id || t("harness.unnamedModel", "Unnamed model")} ({row.model.id || "-"})
-              </label>
-              <p className="entity-meta">{row.model.upstream || "-"}</p>
-              {row.model.clientCompatibility?.[activeClient] === true ? <span className="badge">{t("harness.selected", "Already selected")}</span> : null}
-              {renderEligibility(row, modalClient)}
-            </div>
-          ))}
+        <div className="harness-candidate-grid">
+          {modalClient && visibleRows.map(row => {
+            const canAdd = available(row, activeClient);
+            const checked = canAdd && selectedModelId === row.model.id && row.unique;
+            return (
+              <div
+                key={`${row.model.id}-${row.index}`}
+                className={`harness-candidate${checked ? " is-selected" : ""}${canAdd ? "" : " is-unavailable"}`}
+                onClick={canAdd ? () => setSelectedModelId(row.model.id) : undefined}
+              >
+                <label className="harness-candidate-option">
+                  <input type="radio" name="harness-model" checked={checked}
+                    disabled={!canAdd} onChange={() => setSelectedModelId(row.model.id)} />
+                  <span>{row.model.displayName || row.model.id || t("harness.unnamedModel", "Unnamed model")} ({row.model.id || "-"})</span>
+                </label>
+                <p className="entity-meta">{row.model.upstream || "-"}</p>
+                {row.model.clientCompatibility?.[activeClient] === true ? <span className="badge">{t("harness.selected", "Already selected")}</span> : null}
+                {renderEligibility(row, modalClient, { repairOnlyWhenBlocked: true })}
+              </div>
+            );
+          })}
         </div>
         {!visibleRows.length ? <p className="empty-state">{models.length ? t("harness.noMatches", "No models match these filters.") : t("harness.noModels", "Configure a model in Upstream / Model first.")}</p> : null}
       </Modal>

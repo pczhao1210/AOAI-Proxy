@@ -770,6 +770,16 @@ code {
   gap: 1rem;
 }
 
+.entity-head > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.entity-head > button {
+  flex: none;
+  white-space: nowrap;
+}
+
 .entity-summary {
   padding: 1rem 1rem 0.8rem;
 }
@@ -796,24 +806,63 @@ code {
   min-width: 0;
 }
 
-.harness-candidate {
-  border-bottom: 1px solid var(--line);
-  padding: 0.85rem 0;
-  width: 100%;
-  overflow-wrap: anywhere;
+.harness-candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
 }
 
-.harness-candidate > .inline {
+.harness-candidate {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.harness-candidate:hover:not(.is-unavailable) {
+  border-color: var(--line-strong);
+}
+
+.harness-candidate.is-selected {
+  border-color: var(--accent);
+  background: rgba(90, 209, 255, 0.08);
+}
+
+.harness-candidate.is-unavailable {
+  cursor: default;
+}
+
+.harness-candidate .entity-meta {
+  margin-top: 0;
+}
+
+.harness-candidate-option {
   display: flex;
   align-items: flex-start;
+  gap: 0.6rem;
   width: 100%;
   color: var(--ink);
   font-weight: 600;
-  text-align: left;
+  cursor: inherit;
 }
 
-.harness-candidate > .inline input[type="radio"] {
-  margin-top: 0.2rem;
+.harness-candidate.is-unavailable .harness-candidate-option {
+  color: var(--muted);
+}
+
+.harness-candidate-option input[type="radio"] {
+  flex: none;
+  width: auto;
+  margin: 0.2rem 0 0;
 }
 
 .harness-reasons {
@@ -891,6 +940,10 @@ code {
   flex-direction: column;
   gap: 1rem;
   padding-top: 1rem;
+}
+
+.entity-body > .badge {
+  align-self: flex-start;
 }
 
 .entity-card-collapsible .entity-body {

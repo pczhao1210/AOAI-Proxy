@@ -387,15 +387,21 @@ async function primeAuth(config) {
   }
 }
 
+// Compressing reverse proxies rewrite the ETag they forward: Caddy's `encode` appends
+// "-<coding>" and nginx gzip weakens it with "W/". Neither changes the configuration revision.
+const CONFIG_REVISION_PATTERN = /^(?:W\/)?("?)([a-f0-9]{64})(?:-(?:gzip|zstd|br|deflate))?\1$/;
+
 function expectedConfigRevision(req, required = false) {
   const ifMatch = req.headers["if-match"];
   if (required && !ifMatch) {
     throw Object.assign(new Error("If-Match is required for this configuration operation."), { status: 428, code: "CONFIG_REVISION_REQUIRED" });
   }
-  if (ifMatch !== undefined && (typeof ifMatch !== "string" || !/^(?:[a-f0-9]{64}|"[a-f0-9]{64}")$/.test(ifMatch))) {
+  if (ifMatch === undefined) return "";
+  const match = typeof ifMatch === "string" ? CONFIG_REVISION_PATTERN.exec(ifMatch.trim()) : null;
+  if (!match) {
     throw Object.assign(new Error("If-Match must contain a configuration ETag."), { status: 400, code: "CONFIG_REVISION_INVALID" });
   }
-  return ifMatch?.replace(/^"|"$/g, "") || "";
+  return match[2];
 }
 
 function mutateConfiguration(req, reply, operation) {
