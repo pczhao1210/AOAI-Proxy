@@ -251,6 +251,10 @@ async function writeLocalBufferEventsUnsafe(settings, events) {
   await fs.rename(tempPath, settings.localBufferPath);
 }
 
+function serializeLocalBufferEvents(events) {
+  return `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+}
+
 function updateLocalBufferState(settings, events) {
   updateRuntimeStoreState({
     localBufferPath: settings.localBufferPath,
@@ -265,16 +269,32 @@ async function appendLocalBufferEvents(settings, events) {
     return { persistedEventCount: runtimeStoreState.persistedEventCount, dropped: 0 };
   }
   return queueLocalBufferOperation(async () => {
-    const existingEvents = await readLocalBufferEventsUnsafe(settings);
-    const nextEvents = existingEvents.concat(events.map(normalizeBufferedEvent));
+    const newEvents = events.map(normalizeBufferedEvent);
+    const existingCount = runtimeStoreState.localBufferPath === settings.localBufferPath
+      ? runtimeStoreState.persistedEventCount
+      : 0;
+    const nextCount = existingCount + newEvents.length;
+    let persistedEventCount = nextCount;
     let dropped = 0;
-    if (nextEvents.length > settings.maxPersistedEvents) {
-      dropped = nextEvents.length - settings.maxPersistedEvents;
-      nextEvents.splice(0, dropped);
+    if (nextCount > settings.maxPersistedEvents) {
+      const existingEvents = await readLocalBufferEventsUnsafe(settings);
+      const nextEvents = existingEvents.concat(newEvents);
+      dropped = Math.max(0, nextEvents.length - settings.maxPersistedEvents);
+      if (dropped) nextEvents.splice(0, dropped);
+      await writeLocalBufferEventsUnsafe(settings, nextEvents);
+      persistedEventCount = nextEvents.length;
+      updateLocalBufferState(settings, nextEvents);
+    } else {
+      await ensureLocalBufferDirectory(settings);
+      await fs.appendFile(settings.localBufferPath, serializeLocalBufferEvents(newEvents), "utf8");
+      updateRuntimeStoreState({
+        localBufferPath: settings.localBufferPath,
+        maxPersistedEvents: settings.maxPersistedEvents,
+        persistedEventCount,
+        spilloverActive: persistedEventCount > 0
+      });
     }
-    await writeLocalBufferEventsUnsafe(settings, nextEvents);
-    updateLocalBufferState(settings, nextEvents);
-    return { persistedEventCount: nextEvents.length, dropped };
+    return { persistedEventCount, dropped };
   });
 }
 
@@ -987,6 +1007,23 @@ async function rollupRuntimeEvents(settings) {
 
 export function flushRuntimeEvents() {
   return serializeDatabaseOperation(flushRuntimeEventsInternal);
+}
+
+export async function drainRuntimeEvents() {
+  let flushed = 0;
+  while (true) {
+    const state = getRuntimeStoreInfo();
+    if (state.queueLength === 0 && state.persistedEventCount === 0) break;
+    const result = await flushRuntimeEvents();
+    flushed += result.flushed || 0;
+    if (result.error || result.skipped || result.flushed === 0) break;
+  }
+  const state = getRuntimeStoreInfo();
+  return {
+    flushed,
+    pendingMemoryEvents: state.queueLength,
+    pendingPersistedEvents: state.persistedEventCount
+  };
 }
 
 export async function resetRuntimeModelStats(config) {

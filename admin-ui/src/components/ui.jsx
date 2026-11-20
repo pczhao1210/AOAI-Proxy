@@ -1,4 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { formatList, parseList } from "../utils.js";
 
 const FOCUSABLE_SELECTOR = "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
 
@@ -66,6 +67,41 @@ export function Field({ label, children, hint }) {
       {children}
       {hint ? <small className="field-hint">{hint}</small> : null}
     </label>
+  );
+}
+
+export function ListInput({ value, onChange, ...props }) {
+  const formattedValue = formatList(value);
+  const inputRef = useRef(null);
+  const initialValue = useRef(formattedValue);
+  const lastSyncedValue = useRef(value);
+  const isFocused = useRef(false);
+
+  useEffect(() => {
+    if (value !== lastSyncedValue.current) {
+      if (!isFocused.current && inputRef.current) inputRef.current.value = formattedValue;
+      lastSyncedValue.current = value;
+    }
+  }, [value, formattedValue]);
+
+  return (
+    <input
+      {...props}
+      ref={inputRef}
+      defaultValue={initialValue.current}
+      onFocus={() => { isFocused.current = true; }}
+      onChange={(event) => {
+        const nextText = event.target.value;
+        const nextValue = parseList(nextText);
+        lastSyncedValue.current = nextValue;
+        onChange(nextValue);
+      }}
+      onBlur={() => {
+        isFocused.current = false;
+        if (inputRef.current) inputRef.current.value = formatList(value);
+        lastSyncedValue.current = value;
+      }}
+    />
   );
 }
 

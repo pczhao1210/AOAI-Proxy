@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { Transform } from "node:stream";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { getConfig, getPersistedConfig, prepareConfigPreview, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo, isDistributionFeatureEnabled } from "./config.js";
+import { getConfig, getPersistedConfig, getPersistedConfigRevision, prepareConfigPreview, reloadConfig, saveConfig, getConfigPath, getConfigRuntimeInfo, isDistributionFeatureEnabled } from "./config.js";
 import { initAuth, verifyUpstreamAuth } from "./auth.js";
 import { proxyRequest } from "./proxy.js";
 import { proxyMediaRequest } from "./proxy/media.js";
@@ -15,7 +15,7 @@ import { registerWebRtcRoutes } from "./proxy/webrtc.js";
 import multipart from "@fastify/multipart";
 import { getMediaHttpLimits } from "./proxy/media-body.js";
 import { getStats } from "./stats.js";
-import { flushRuntimeEvents, getRuntimeStatsSnapshot, resetRuntimeModelStats } from "./runtime-store.js";
+import { drainRuntimeEvents, flushRuntimeEvents, getRuntimeStatsSnapshot, resetRuntimeModelStats } from "./runtime-store.js";
 import { getDatabaseConnectionDefaults, syncPersistenceState, testDatabaseConnection } from "./persistence.js";
 import { writeCaddyfile, reloadCaddy, scheduleCaddyStartupProbe, getCaddyStatus, setCaddyStatus } from "./caddy.js";
 import { configureUpstreamHttp } from "./http.js";
@@ -426,7 +426,11 @@ function resolveShutdownTimeoutMs() {
 
 async function drainRuntimeState() {
   try {
-    await flushRuntimeEvents();
+    const result = await drainRuntimeEvents();
+    if (result.pendingMemoryEvents > 0) {
+      app.log.error({ source: "runtime-store", event: "runtime_store.shutdown_drain_incomplete", ...result },
+        "runtime events remain in memory after shutdown drain");
+    }
   } finally {
     await closeSharedPostgresPools();
   }
@@ -717,8 +721,10 @@ await app.register(async mediaApp => {
 
 await registerWebRtcRoutes(app, { getConfig, extractApiKey, callRegistry: realtimeCalls, limitRequestBodyStream });
 
-app.get("/admin/api/config", async () => {
+app.get("/admin/api/config", async (_req, reply) => {
   const config = getConfig();
+  reply.header("ETag", `"${getPersistedConfigRevision()}"`);
+  reply.header("Cache-Control", "no-store");
   return redactConfigSecrets(config);
 });
 
@@ -751,19 +757,41 @@ app.post("/admin/api/keys/reveal", async (req, reply) => {
 
 app.put("/admin/api/config", async (req, reply) => {
   const nextConfig = restoreConfigSecrets(req.body, getPersistedConfig());
+  const expectedRevision = typeof req.headers["if-match"] === "string"
+    ? req.headers["if-match"].replace(/^"|"$/g, "")
+    : "";
   try {
-    const saved = await saveConfig(nextConfig);
+    const saved = await saveConfig(nextConfig, { expectedRevision });
     applyLogConfig(saved);
     configureUpstreamHttp(saved);
     attachAuth(saved);
     void primeAuth(saved);
-    writeCaddyfile(saved);
-    await reloadCaddy(saved);
+    let caddyApply = { ok: true };
+    try {
+      writeCaddyfile(saved);
+      const result = await reloadCaddy(saved);
+      if (!result.reloaded && result.reason !== "disabled") {
+        caddyApply = { ok: false, error: result.error || result.reason || "Caddy reload failed" };
+      }
+    } catch (error) {
+      caddyApply = { ok: false, error: error?.message || "Caddy configuration could not be applied" };
+      setCaddyStatus({
+        enabled: saved.server?.caddy?.enabled === true,
+        state: "error",
+        message: caddyApply.error,
+        lastError: caddyApply.error
+      });
+    }
     app.log.info({ source: "admin", event: "admin.config_saved" }, "admin config saved");
-    reply.send({ ok: true, config: redactConfigSecrets(saved) });
+    reply.header("ETag", `"${getPersistedConfigRevision()}"`);
+    reply.send({ ok: true, config: redactConfigSecrets(saved), apply: { caddy: caddyApply } });
   } catch (error) {
     logAdminApiError("admin.config_save_failed", error, { route: "/admin/api/config" });
-    reply.code(400).send({ error: error.message });
+    reply.code(error.status || 400).send({
+      error: error.message || "Configuration save failed",
+      code: error.code || "CONFIG_SAVE_FAILED",
+      message: error.message
+    });
   }
 });
 
@@ -777,6 +805,7 @@ app.post("/admin/api/reload", async (req, reply) => {
     writeCaddyfile(config);
     await reloadCaddy(config);
     app.log.info({ source: "admin", event: "admin.config_reloaded" }, "admin config reloaded");
+    reply.header("ETag", `"${getPersistedConfigRevision()}"`);
     reply.send({ ok: true, config: redactConfigSecrets(config) });
   } catch (error) {
     logAdminApiError("admin.config_reload_failed", error, { route: "/admin/api/reload" });
@@ -1017,12 +1046,16 @@ app.get("/admin/api/caddy/status", async () => {
 });
 
 app.post("/admin/api/restart", async (req, reply) => {
+  const restartingContainer = fs.existsSync("/.dockerenv");
+  if (!restartingContainer && process.pid !== 1) {
+    return reply.code(501).send({ ok: false, error: "RESTART_UNSUPPORTED", message: "Restart this service using its process manager." });
+  }
   setCaddyStatus({ state: "restart-requested", message: "restart requested", lastError: null });
   app.log.warn({ source: "admin", event: "admin.restart_requested" }, "admin restart requested");
   reply.send({ ok: true });
   setTimeout(() => {
     try {
-      process.kill(1, "SIGTERM");
+      process.kill(restartingContainer ? 1 : process.pid, "SIGTERM");
     } catch {
       process.exit(0);
     }

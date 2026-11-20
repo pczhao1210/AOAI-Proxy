@@ -12,8 +12,8 @@ import { buildMediaMultipart, readMediaMultipart } from "./media-body.js";
 import { createRawSseParser } from "./stream.js";
 import { getAzureSpeechOperation, prepareAzureSpeechRequest, mapAzureTranscriptionResult } from "./azure-speech.js";
 import { createMediaUsageTracker } from "./media-usage.js";
-import { recordRequest } from "../stats.js";
-import { recordRuntimeRequest } from "../runtime-store.js";
+import { recordError, recordRequest } from "../stats.js";
+import { recordRuntimeError, recordRuntimeRequest } from "../runtime-store.js";
 import { resolveMediaPricing, settleMediaUsage } from "./media-accounting.js";
 import { prepareResponsesSpeechRequest } from "./responses-media.js";
 
@@ -40,6 +40,9 @@ export async function proxyMediaRequest({ config, routeKey, req, reply, nativeSp
   let usageTracker = createMediaUsageTracker();
   let backendRouteKey = "";
   let completed = false;
+  let finalStatus = null;
+  let failureCode = "";
+  let failureReason = "";
   const abort = () => {
     if (!reply.raw.writableFinished) controller.abort(mediaError(499, "CLIENT_DISCONNECTED", "Client disconnected"));
   };
@@ -115,6 +118,7 @@ export async function proxyMediaRequest({ config, routeKey, req, reply, nativeSp
     if (req.raw.aborted || reply.raw.destroyed) abort();
     idleTimer = setTimeout(() => controller.abort(mediaError(504, "UPSTREAM_FIRST_BYTE_TIMEOUT", "Media response did not start")), positiveInteger(policy.firstByteTimeoutMs, 90000));
     const response = await fetch(plan.targetUrl, { method: "POST", headers, body: upstreamBody, redirect: "manual", signal: controller.signal });
+    finalStatus = response.status;
     if (!response.body) throw mediaError(502, "UPSTREAM_EMPTY_BODY", "Media response body is unavailable");
     const responseHeaders = { "cache-control": "no-store" };
     for (const [name, value] of response.headers) {
@@ -191,10 +195,17 @@ export async function proxyMediaRequest({ config, routeKey, req, reply, nativeSp
       } catch {}
     }
     completed = response.ok && !providerErrorSeen;
+    if (!completed) {
+      failureCode = providerErrorSeen ? "UPSTREAM_PROVIDER_STREAM_ERROR" : "UPSTREAM_HTTP_ERROR";
+      failureReason = providerErrorSeen ? "Media upstream returned a provider error" : `Media upstream returned HTTP ${response.status}`;
+    }
     req.log.info({ ...requestContext, source: "proxy", event: response.ok && !providerErrorSeen ? "proxy.media_completed" : "proxy.media_failed", routeKey: clientRouteKey, backendRouteKey, modelId: model.id,
       status: response.status, responseBytes: bytes, ...usageTracker.snapshot() }, response.ok && !providerErrorSeen ? "media request completed" : "media upstream request failed");
   } catch (error) {
     const failure = controller.signal.reason instanceof Error ? controller.signal.reason : error;
+    finalStatus = failure.status || 502;
+    failureCode = failure.code || "MEDIA_REQUEST_FAILED";
+    failureReason = failure.status ? failure.message : "Media upstream request failed";
     controller.abort(failure);
     if (!reply.raw.headersSent && !reply.raw.destroyed) {
       if (req.isMultipart?.()) reply.header("connection", "close");
@@ -212,6 +223,20 @@ export async function proxyMediaRequest({ config, routeKey, req, reply, nativeSp
     req.raw.removeListener("aborted", abort);
     reply.raw.removeListener("close", abort);
     try {
+      if (lease && !completed) {
+        recordError(model.id, consumer);
+        recordRuntimeError(config, {
+          ...requestContext,
+          keyId: consumer?.keyId,
+          modelId: model.id,
+          routeKey: clientRouteKey,
+          backendRouteKey,
+          status: finalStatus,
+          errorCode: failureCode || "MEDIA_REQUEST_FAILED",
+          failureReason: failureReason || "Media request did not complete",
+          source: "proxy"
+        });
+      }
       if (lease) settleMediaUsage({ config, consumer, model, usage: usageTracker.snapshot(), completed, requestContext, routeKey: clientRouteKey, backendRouteKey });
     } finally {
       lease?.release();

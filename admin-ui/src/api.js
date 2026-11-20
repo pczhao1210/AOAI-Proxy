@@ -1,3 +1,5 @@
+let configRevision = "";
+
 async function readJson(response) {
   const text = await response.text();
   let json = {};
@@ -49,7 +51,9 @@ function adminFetch(path, options = {}) {
 }
 
 export async function fetchConfig() {
-  return readJson(await fetch(adminApiUrl("/config")));
+  const response = await fetch(adminApiUrl("/config"));
+  configRevision = response.headers.get("etag") || "";
+  return readJson(response);
 }
 
 export async function fetchApiKeySecret(id) {
@@ -61,15 +65,22 @@ export async function fetchApiKeySecret(id) {
 }
 
 export async function saveConfig(config) {
-  return readJson(await adminFetch("/config", {
+  const response = await adminFetch("/config", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(configRevision ? { "If-Match": configRevision } : {})
+    },
     body: JSON.stringify(config)
-  }));
+  });
+  if (response.ok) configRevision = response.headers.get("etag") || configRevision;
+  return readJson(response);
 }
 
 export async function reloadConfig() {
-  return readJson(await adminFetch("/reload", { method: "POST" }));
+  const response = await adminFetch("/reload", { method: "POST" });
+  if (response.ok) configRevision = response.headers.get("etag") || "";
+  return readJson(response);
 }
 
 export async function fetchRuntime() {

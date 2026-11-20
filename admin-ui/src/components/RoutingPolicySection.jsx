@@ -1,5 +1,5 @@
-import { AccordionSection, Field } from "./ui.jsx";
-import { getValueByPath, parseList, formatList } from "../utils.js";
+import { AccordionSection, Field, ListInput } from "./ui.jsx";
+import { getValueByPath, formatList } from "../utils.js";
 
 function asNumber(value) {
   return Number(value || 0);
@@ -10,16 +10,16 @@ export default function RoutingPolicySection({ config, updateField, t }) {
     <AccordionSection id="workspace-routing" title={t("workspace.routing.title", "Routing Domain")} desc={t("workspace.routing.desc", "Manage enablement, allowed fields, and image polling behavior.") } group="workspace-sections">
       <div className="form-grid">
         <Field label={t("field.routeChatAllowedFields", "Chat Allowed Fields")}>
-          <input value={formatList(getValueByPath(config, "routing.routeProfiles.chatCompletions.allowedRequestFields"))} onChange={(event) => updateField("routing.routeProfiles.chatCompletions.allowedRequestFields", parseList(event.target.value))} />
+          <ListInput value={getValueByPath(config, "routing.routeProfiles.chatCompletions.allowedRequestFields")} onChange={(value) => updateField("routing.routeProfiles.chatCompletions.allowedRequestFields", value)} />
         </Field>
         <Field label={t("field.routeResponsesAllowedFields", "Responses Allowed Fields")}>
-          <input value={formatList(getValueByPath(config, "routing.routeProfiles.responses.allowedRequestFields"))} onChange={(event) => updateField("routing.routeProfiles.responses.allowedRequestFields", parseList(event.target.value))} />
+          <ListInput value={getValueByPath(config, "routing.routeProfiles.responses.allowedRequestFields")} onChange={(value) => updateField("routing.routeProfiles.responses.allowedRequestFields", value)} />
         </Field>
         <Field label={t("field.routeMessagesAllowedFields", "Messages Allowed Fields")}>
-          <input value={formatList(getValueByPath(config, "routing.routeProfiles.messages.allowedRequestFields"))} onChange={(event) => updateField("routing.routeProfiles.messages.allowedRequestFields", parseList(event.target.value))} />
+          <ListInput value={getValueByPath(config, "routing.routeProfiles.messages.allowedRequestFields")} onChange={(value) => updateField("routing.routeProfiles.messages.allowedRequestFields", value)} />
         </Field>
         <Field label={t("field.anthropicBetaAllowlist", "Anthropic Beta Allowlist")}>
-          <input value={formatList(getValueByPath(config, "compatibility.anthropic.betaAllowlist"))} onChange={(event) => updateField("compatibility.anthropic.betaAllowlist", parseList(event.target.value))} />
+          <ListInput value={getValueByPath(config, "compatibility.anthropic.betaAllowlist")} onChange={(value) => updateField("compatibility.anthropic.betaAllowlist", value)} />
         </Field>
         <Field label={t("field.anthropicUnknownBetaPolicy", "Unknown Anthropic Beta Policy")}>
           <select value={getValueByPath(config, "compatibility.anthropic.unknownBetaPolicy") || "allow-direct-anthropic"} onChange={(event) => updateField("compatibility.anthropic.unknownBetaPolicy", event.target.value)}>
@@ -29,7 +29,7 @@ export default function RoutingPolicySection({ config, updateField, t }) {
           </select>
         </Field>
         <Field label={t("field.routeImagesAllowedFields", "Image Allowed Fields")}>
-          <input value={formatList(getValueByPath(config, "routing.routeProfiles.imageGenerations.allowedRequestFields"))} onChange={(event) => updateField("routing.routeProfiles.imageGenerations.allowedRequestFields", parseList(event.target.value))} />
+          <ListInput value={getValueByPath(config, "routing.routeProfiles.imageGenerations.allowedRequestFields")} onChange={(value) => updateField("routing.routeProfiles.imageGenerations.allowedRequestFields", value)} />
         </Field>
         <Field label={t("field.routeImagesPollInterval", "Image Poll Interval ms")}>
           <input type="number" value={getValueByPath(config, "routing.routeProfiles.imageGenerations.polling.intervalMs") || 0} onChange={(event) => updateField("routing.routeProfiles.imageGenerations.polling.intervalMs", asNumber(event.target.value))} />

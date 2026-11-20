@@ -126,6 +126,7 @@ test("runtime events spill locally when database configuration is unavailable", 
         router: { source: "catalog:model-router", policyDigest: "sha256:router", tier: null }
       }
     });
+
     assert.equal(events[7].payload.textCost.estimatedCostAmount, null);
     assert.equal(events[7].payload.textCost.knownCostAmount, 0);
     assert.equal(events[7].payload.textCost.costStatus, "unknown");
@@ -139,6 +140,47 @@ test("runtime events spill locally when database configuration is unavailable", 
     assert.equal(persisted.includes("private-cache-write"), false);
     assert.ok(events.every((event) => event.payload.conversationId === "conversation-1"));
     assert.ok(events.every((event) => event.payload.sessionId === "session-1"));
+  } finally {
+    setRuntimeStoreConfig(null);
+    await fs.rm(tempDir, { recursive: true, force: true });
+    if (previousConnectionString === undefined) delete process.env.CONFIG_DB_CONNECTION_STRING;
+    else process.env.CONFIG_DB_CONNECTION_STRING = previousConnectionString;
+    if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previousDatabaseUrl;
+  }
+});
+
+test("runtime spill appends events without rewriting the existing backlog", async context => {
+  const tempDir = path.resolve(`.runtime-append-test-${process.pid}-${Date.now()}`);
+  await fs.mkdir(tempDir);
+  const localBufferPath = path.join(tempDir, "pending.ndjson");
+  const previousConnectionString = process.env.CONFIG_DB_CONNECTION_STRING;
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  delete process.env.CONFIG_DB_CONNECTION_STRING;
+  delete process.env.DATABASE_URL;
+  let appendCalls = 0;
+  let appendedBytes = 0;
+  const appendFile = fs.appendFile.bind(fs);
+  context.mock.method(fs, "appendFile", async (filePath, data, ...args) => {
+    if (filePath === localBufferPath) {
+      appendCalls += 1;
+      appendedBytes += Buffer.byteLength(data);
+    }
+    return appendFile(filePath, data, ...args);
+  });
+  const config = {
+    persistence: { configStore: { mode: "database", filePath: path.join(tempDir, "config.json"), database: {} } },
+    observability: { runtimeStore: { enabled: true, localBufferPath, maxPersistedEvents: 1000 } }
+  };
+  try {
+    setRuntimeStoreConfig(config);
+    for (let index = 0; index < 100; index += 1) {
+      recordRuntimeRequest(config, { requestId: `append-${index}`, modelId: "model" });
+    }
+    await waitFor(() => getRuntimeStoreInfo(config).persistedEventCount === 100);
+    const { size } = await fs.stat(localBufferPath);
+    assert.ok(appendCalls > 0);
+    assert.ok(appendedBytes <= size * 2, `append wrote ${appendedBytes} bytes for a ${size}-byte spool`);
   } finally {
     setRuntimeStoreConfig(null);
     await fs.rm(tempDir, { recursive: true, force: true });

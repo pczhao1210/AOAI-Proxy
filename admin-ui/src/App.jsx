@@ -636,12 +636,19 @@ export default function App() {
   }
 
   async function persistConfig(nextConfig, successMessage) {
-    const saved = await saveConfig(nextConfig).then((result) => result.config);
+    const result = await saveConfig(nextConfig);
+    const saved = result.config;
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
     applyLoadedConfig(saved);
     void loadSecondaryData(requestId, { notifyOnError: true });
-    setMessage(successMessage);
+    if (result.apply?.caddy?.ok === false) {
+      setError(t("messages.savedButCaddyFailed", "Configuration was saved, but Caddy could not apply it: {error}", {
+        error: result.apply.caddy.error || "Caddy reload failed"
+      }));
+    } else {
+      setMessage(successMessage);
+    }
   }
 
   async function handleReloadDatabaseDefaults() {

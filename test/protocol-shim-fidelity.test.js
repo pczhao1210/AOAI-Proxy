@@ -381,6 +381,10 @@ test("Chat content_filter is not representable for Messages clients and stays a 
     assert.equal(result.status, 502, result.text);
     assert.equal(result.json?.error?.code, "UnsupportedProtocolShimResponse");
     assert.equal(result.json?.error?.param, "choices[0].finish_reason");
+    const stats = await ctx.adminRequest("/admin/api/stats");
+    assert.equal(stats.json?.totals?.totalTokens, 5);
+    assert.equal(stats.json?.perModel?.["fidelity-chat"]?.totalTokens, 5);
+    assert.equal(stats.json?.totals?.errors, 1);
   });
 });
 

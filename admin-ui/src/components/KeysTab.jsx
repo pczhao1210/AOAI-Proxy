@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { EntityCard, Field, Section, StatCard } from "./ui.jsx";
-import { formatList, parseList } from "../utils.js";
+import { EntityCard, Field, ListInput, Section, StatCard } from "./ui.jsx";
 
 export default function KeysTab({ config, updateConfig, addApiKey, onCopyApiKey, t }) {
   const [search, setSearch] = useState("");
@@ -96,7 +95,7 @@ export default function KeysTab({ config, updateConfig, addApiKey, onCopyApiKey,
                     </button>
                   </div>
                 </Field>
-                <Field label={t("field.allowedModels", "Allowed Models")}><input value={formatList(item.allowedModels)} onChange={(event) => updateConfig((next) => { next.apiKeys[index].allowedModels = parseList(event.target.value); })} /></Field>
+                <Field label={t("field.allowedModels", "Allowed Models")}><ListInput value={item.allowedModels} onChange={(value) => updateConfig((next) => { next.apiKeys[index].allowedModels = value; })} /></Field>
                 <Field label={t("field.rateLimitRpm", "Rate Limit RPM")}><input type="number" value={item.rateLimit?.rpm || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.rpm = Number(event.target.value || 0); })} /></Field>
                 <Field label={t("field.rateLimitTpm", "Rate Limit TPM")}><input type="number" value={item.rateLimit?.tpm || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.tpm = Number(event.target.value || 0); })} /></Field>
                 <Field label={t("field.concurrency", "Concurrency")}><input type="number" value={item.rateLimit?.concurrency || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.concurrency = Number(event.target.value || 0); })} /></Field>
@@ -104,7 +103,7 @@ export default function KeysTab({ config, updateConfig, addApiKey, onCopyApiKey,
                 <Field label={t("field.budgetLimit", "Budget Limit")}><input type="number" step="0.01" value={item.budget?.limitAmount || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].budget = next.apiKeys[index].budget || {}; next.apiKeys[index].budget.limitAmount = Number(event.target.value || 0); })} /></Field>
                 <Field label={t("field.budgetWindow", "Budget Window")}><select value={item.budget?.windowType || "monthly"} onChange={(event) => updateConfig((next) => { next.apiKeys[index].budget = next.apiKeys[index].budget || {}; next.apiKeys[index].budget.windowType = event.target.value; })}><option value="daily">{t("option.daily", "daily")}</option><option value="weekly">{t("option.weekly", "weekly")}</option><option value="monthly">{t("option.monthly", "monthly")}</option></select></Field>
               </div>
-              <Field label={t("field.tags", "Tags")}><input value={formatList(item.tags)} onChange={(event) => updateConfig((next) => { next.apiKeys[index].tags = parseList(event.target.value); })} /></Field>
+              <Field label={t("field.tags", "Tags")}><ListInput value={item.tags} onChange={(value) => updateConfig((next) => { next.apiKeys[index].tags = value; })} /></Field>
               <Field label={t("field.notes", "Notes")}><textarea rows={3} value={item.notes || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].notes = event.target.value; })} /></Field>
             </EntityCard>
           );

@@ -1,12 +1,11 @@
 import { useState } from "react";
-import { EntityCard, Field, Section } from "./ui.jsx";
+import { EntityCard, Field, ListInput, Section } from "./ui.jsx";
 import {
   applyPricingTemplateToModel,
   findPricingTemplateByHint,
   findPricingTemplateForModel,
   formatList,
   getSuggestedModelRouteValues,
-  parseList,
   supportsPricingTemplate,
   syncUpstreamCapabilities,
   upsertPricingCatalogEntry
@@ -317,8 +316,8 @@ export default function RoutingTab({
                     <Field
                       label={t("routing.capabilities.fallback", "Legacy configuration capabilities")}
                       hint={t("routing.capabilities.legacy", "Source: Model configuration (legacy fallback).")}
-                    ><input value={formatList(item.capabilities)} onChange={(event) => updateConfig((next) => {
-                      next.models[index].capabilities = parseList(event.target.value);
+                    ><ListInput value={item.capabilities} onChange={(value) => updateConfig((next) => {
+                      next.models[index].capabilities = value;
                       syncUpstreamCapabilities(next, next.models[index].upstream);
                     })} /></Field>
                   ) : null}
@@ -328,7 +327,7 @@ export default function RoutingTab({
                       hint={t("routing.capabilities.mismatch", "These stored labels differ from the effective Catalog facts. They are retained, not used as a Catalog override.")}
                     ><input value={formatList(capabilityModel.configuredCapabilities)} readOnly /></Field>
                   ) : null}
-                  <Field label={t("field.accessTags", "Access Tags")}><input value={formatList(item.accessTags)} onChange={(event) => updateConfig((next) => { next.models[index].accessTags = parseList(event.target.value); })} /></Field>
+                  <Field label={t("field.accessTags", "Access Tags")}><ListInput value={item.accessTags} onChange={(value) => updateConfig((next) => { next.models[index].accessTags = value; })} /></Field>
                 </EntityCard>
               );
             })}

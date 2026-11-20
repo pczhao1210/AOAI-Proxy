@@ -492,6 +492,34 @@ test("media usage observation preserves JSON wire bytes and explicit zero withou
     return true;
   } });
 });
+
+test("forwarded media HTTP failures increment model and global error statistics", async () => {
+  await withTestContext(async ctx => {
+    const config = await ctx.readConfigFile();
+    config.media = { http: { enabled: true } };
+    config.upstreams[0].routes["audio/transcriptions"] = "/v1/audio/transcriptions";
+    config.upstreams[0].routes["audio/translations"] = "/v1/audio/translations";
+    config.models.push({ id: "failed-transcribe", targetModel: "whisper-1", pricingRef: "whisper-1", upstream: config.upstreams[0].name });
+    const saved = await ctx.adminRequest("/admin/api/config", {
+      method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config
+    });
+    assert.equal(saved.status, 200, saved.text);
+    const before = (await ctx.adminRequest("/admin/api/stats")).json;
+    const form = new FormData();
+    form.append("file", new Blob(["audio"]), "clip.wav");
+    form.append("model", "failed-transcribe");
+    const result = await ctx.publicRequest("/v1/audio/transcriptions", { method: "POST", body: form });
+    assert.equal(result.status, 503, result.text);
+    const after = (await ctx.adminRequest("/admin/api/stats")).json;
+    assert.equal(after.totals.errors, before.totals.errors + 1);
+    assert.equal(after.perModel["failed-transcribe"].errors, 1);
+  }, { upstreamHandler: ({ req, res }) => {
+    if (req.url !== "/v1/audio/transcriptions") return false;
+    res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "provider unavailable" } }));
+    return true;
+  } });
+});
+
 test("oversized native media SSE events fail the request without terminating the proxy", { timeout: 15000 }, async () => {
   let oversized = true;
   await withTestContext(async ctx => {

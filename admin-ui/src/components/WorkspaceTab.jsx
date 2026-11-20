@@ -1,8 +1,8 @@
-import { AccordionSection, Field, Section } from "./ui.jsx";
+import { AccordionSection, Field, ListInput, Section } from "./ui.jsx";
 import LogContentModeField from "./LogContentModeField.jsx";
 import MediaPolicySection from "./MediaPolicySection.jsx";
 import RoutingPolicySection from "./RoutingPolicySection.jsx";
-import { getValueByPath, parseList, formatList } from "../utils.js";
+import { getValueByPath } from "../utils.js";
 
 function asNumber(value) {
   return Number(value || 0);
@@ -108,7 +108,7 @@ export default function WorkspaceTab({
                 <input value={getValueByPath(config, "admin.basePath") || ""} onChange={(event) => updateField("admin.basePath", event.target.value)} />
               </Field>
               <Field label={t("field.keyHeaderNames", "Key Header Names")} hint={t("field.keyHeaderNamesHint", "Comma-separated and matched in order.")}>
-                <input value={formatList(getValueByPath(config, "access.defaults.keyHeaderNames"))} onChange={(event) => updateField("access.defaults.keyHeaderNames", parseList(event.target.value))} />
+                <ListInput value={getValueByPath(config, "access.defaults.keyHeaderNames")} onChange={(value) => updateField("access.defaults.keyHeaderNames", value)} />
               </Field>
               <Field label={t("field.connectMs", "Connect ms")}>
                 <input type="number" value={getValueByPath(config, "proxy.timeouts.connectMs") || 0} onChange={(event) => updateField("proxy.timeouts.connectMs", asNumber(event.target.value))} />
@@ -300,7 +300,7 @@ export default function WorkspaceTab({
                 </select>
               </Field>
               <Field label={t("field.logSinks", "Log Sinks")}>
-                <input value={formatList(getValueByPath(config, "observability.logs.sinks"))} onChange={(event) => updateField("observability.logs.sinks", parseList(event.target.value))} />
+                <ListInput value={getValueByPath(config, "observability.logs.sinks")} onChange={(value) => updateField("observability.logs.sinks", value)} />
               </Field>
               <Field label={t("field.logBufferSize", "Log Buffer Size")}>
                 <input type="number" value={getValueByPath(config, "observability.logs.bufferSize") || 0} onChange={(event) => updateField("observability.logs.bufferSize", asNumber(event.target.value))} />

@@ -2085,6 +2085,8 @@ export async function proxyRequest({
       shimResponseIssue
       && (shimResponseIssue.requiredRejection === true || shimPolicy.rejectLossyResponses !== false)
     ) {
+      noteResolvedUpstreamModel(payload?.model || deployment);
+      if (payload?.usage) recordProxyUsage(payload.usage, payload?.model || deployment);
       recordProxyError({
         status: 502,
         errorCode: "UNSUPPORTED_PROTOCOL_SHIM_RESPONSE",

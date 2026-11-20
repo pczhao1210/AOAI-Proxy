@@ -50,15 +50,36 @@ test("routing lists preserve case and order and update only their exact configur
   for (const [label, path] of listFields) {
     const input = view.fields.getByLabelText(label, { exact: true });
     assert.equal(input.value, "Model, stream");
+    fireEvent.focus(input);
     fireEvent.change(input, { target: { value: " First, , second, First " } });
     assert.deepEqual(view.changes.at(-1), [path, ["First", "second", "First"]]);
-    assert.equal(input.value, "First, second, First");
+    assert.equal(input.value, " First, , second, First ");
     fireEvent.change(input, { target: { value: " , " } });
     assert.deepEqual(view.changes.at(-1), [path, []]);
-    assert.equal(input.value, "");
+    assert.equal(input.value, " , ");
   }
   assert.equal(view.changes.length, listFields.length * 2);
   assert.deepEqual(config, original);
+});
+
+test("routing lists preserve per-character edits and reset when configuration is externally replaced", () => {
+  const config = { compatibility: { anthropic: { betaAllowlist: ["Model", "stream"] } } };
+  const view = renderWorkspace(config, "workspace-routing");
+  const input = view.fields.getByLabelText("Anthropic Beta Allowlist", { exact: true });
+  fireEvent.focus(input);
+  for (const character of ",new") {
+    fireEvent.change(input, { target: { value: `${input.value}${character}` } });
+  }
+  assert.equal(input.value, "Model, stream,new");
+  assert.deepEqual(view.changes.at(-1), ["compatibility.anthropic.betaAllowlist", ["Model", "stream", "new"]]);
+
+  fireEvent.focus(input);
+  fireEvent.change(input, { target: { value: " Model, stream, new " } });
+  assert.equal(input.value, " Model, stream, new ");
+  fireEvent.blur(input);
+  assert.equal(input.value, "Model, stream, new");
+  view.updateConfig({ compatibility: { anthropic: { betaAllowlist: ["Restored", "value"] } } });
+  assert.equal(input.value, "Restored, value");
 });
 
 test("unknown beta policy preserves its default, options and unrelated allowlist", () => {

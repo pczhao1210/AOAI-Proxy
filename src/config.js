@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { getLogRuntimeInfo } from "./logs.js";
 import {
   compileModelCatalog,
@@ -2111,6 +2112,13 @@ export function getPersistedConfig() {
   return cloneConfig(persistedConfig);
 }
 
+export function getPersistedConfigRevision() {
+  if (!persistedConfig) {
+    throw new Error("Configuration not loaded yet");
+  }
+  return createHash("sha256").update(JSON.stringify(persistedConfig)).digest("hex");
+}
+
 export function prepareConfigPreview(nextConfig) {
   const normalized = preserveDistributionManagedFields(
     preserveEnvironmentManagedFields(
@@ -2122,8 +2130,14 @@ export function prepareConfigPreview(nextConfig) {
   return applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)));
 }
 
-export async function saveConfig(nextConfig) {
+export async function saveConfig(nextConfig, { expectedRevision } = {}) {
   return withModelCatalogUpdateLock(async () => {
+    if (expectedRevision && expectedRevision !== getPersistedConfigRevision()) {
+      throw Object.assign(new Error("Configuration changed since it was loaded. Reload the latest version before saving."), {
+        code: "CONFIG_REVISION_CONFLICT",
+        status: 409
+      });
+    }
     const normalized = preserveDistributionManagedFields(
       preserveEnvironmentManagedFields(
         normalizeConfig(nextConfig, { applyEnvironment: false }),

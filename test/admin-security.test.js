@@ -1,9 +1,83 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { REDACTED_SECRET_VALUE } from "../src/admin-config.js";
 import { createTestContext } from "./lib/harness.js";
+
+test("configuration ETags reject stale drafts without exposing configuration secrets", async () => {
+  const context = await createTestContext();
+  try {
+    const loaded = await context.adminRequest("/admin/api/config");
+    const originalEtag = loaded.headers.get("etag");
+    assert.match(originalEtag || "", /^"[a-f0-9]{64}"$/);
+    assert.doesNotMatch(originalEtag || "", /test-upstream-key|test-client-key|admin/);
+
+    const firstDraft = structuredClone(loaded.json);
+    firstDraft.server.gracefulShutdownMs += 1000;
+    const firstSave = await context.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1", "if-match": originalEtag },
+      json: firstDraft
+    });
+    assert.equal(firstSave.status, 200, firstSave.text);
+    const updatedEtag = firstSave.headers.get("etag");
+    assert.notEqual(updatedEtag, originalEtag);
+
+    const staleDraft = structuredClone(loaded.json);
+    staleDraft.server.gracefulShutdownMs += 2000;
+    const staleSave = await context.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1", "if-match": originalEtag },
+      json: staleDraft
+    });
+    assert.equal(staleSave.status, 409, staleSave.text);
+    assert.equal(staleSave.json?.code, "CONFIG_REVISION_CONFLICT");
+    assert.equal((await context.readConfigFile()).server.gracefulShutdownMs, firstDraft.server.gracefulShutdownMs);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("Caddy apply failure does not report a persisted config save as failed", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-caddy-save-test-"));
+  const previousCaddyfilePath = process.env.CADDYFILE_PATH;
+  const previousCaddyBin = process.env.CADDY_BIN;
+  process.env.CADDYFILE_PATH = path.join(tempDir, "Caddyfile");
+  process.env.CADDY_BIN = path.join(tempDir, "missing-caddy");
+  let context;
+  try {
+    context = await createTestContext();
+  } finally {
+    if (previousCaddyfilePath === undefined) delete process.env.CADDYFILE_PATH;
+    else process.env.CADDYFILE_PATH = previousCaddyfilePath;
+    if (previousCaddyBin === undefined) delete process.env.CADDY_BIN;
+    else process.env.CADDY_BIN = previousCaddyBin;
+    if (!context) await fs.rm(tempDir, { recursive: true, force: true });
+  }
+  try {
+    const config = await context.readConfigFile();
+    config.server.caddy = {
+      ...config.server.caddy,
+      enabled: true,
+      domain: "proxy.example.test",
+      email: "ops@example.test"
+    };
+    const saved = await context.adminRequest("/admin/api/config", {
+      method: "PUT",
+      headers: { "x-aoai-admin-csrf": "1" },
+      json: config
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(saved.json?.ok, true);
+    assert.equal(saved.json?.apply?.caddy?.ok, false);
+    assert.equal((await context.readConfigFile()).server.caddy.enabled, true);
+  } finally {
+    await context?.cleanup();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
 
 test("admin APIs redact secrets and preserve them on config save", async () => {
   const previousConnectionString = process.env.CONFIG_DB_CONNECTION_STRING;

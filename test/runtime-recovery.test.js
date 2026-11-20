@@ -123,6 +123,21 @@ test("failed runtime flushes retry automatically without another incoming reques
   assert.equal(db.events.length, 1);
 });
 
+test("shutdown drain flushes every in-memory batch", async t => {
+  const store = await import("../src/runtime-store.js?shutdown-drain=1");
+  const db = mockLedger();
+  const config = await setup(t, store, db.query);
+  for (let index = 0; index < 5; index += 1) {
+    store.recordRuntimeRequest(config, { requestId: `shutdown-${index}`, modelId: "model" });
+  }
+  config.observability.runtimeStore.batchSize = 2;
+  const result = await store.drainRuntimeEvents();
+  assert.equal(result.flushed, 5);
+  assert.equal(result.pendingMemoryEvents, 0);
+  assert.equal(result.pendingPersistedEvents, 0);
+  assert.equal(db.events.filter(event => event.event_type === "request").length, 5);
+});
+
 test("failed budget hydration retries after recovery without resetting in-flight usage", async t => {
   let unavailable = true;
   let hydrationQueries = 0;
