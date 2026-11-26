@@ -1150,7 +1150,7 @@ Harness 协议转换：上游没有原生 `messages` / `responses` 路由、最�
 2. 显式标记为 Codex 兼容；
 3. 公共 Responses 路由已启用；
 4. 最终解析为原生 Responses（推荐），或管理员已在 Harness 中显式选择协议转换；
-5. 不是图片生成或编辑模型。
+5. 是文本生成模型：Catalog 接口含 chat/completions、responses 或 messages，且输出含文本；文生图、文生视频、TTS、ASR/转写、Realtime、Embedding 等模型不可选择（Claude Code 同样适用）。
 
 Codex 模型元数据可包括：
 

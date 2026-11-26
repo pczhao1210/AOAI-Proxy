@@ -14,7 +14,7 @@ const REASONS = {
   UPSTREAM_NOT_FOUND: "The upstream binding is missing.",
   UPSTREAM_DISABLED: "The upstream is disabled.",
   PUBLIC_ROUTE_DISABLED: "The public client route is disabled.",
-  UNSUPPORTED_MODEL_CAPABILITY: "Codex catalogs cannot include image generation or editing models.",
+  NON_TEXT_MODEL: "Not a text-generation model (image, video, speech, transcription, realtime or embedding models cannot be used by Claude Code or Codex).",
   NON_NATIVE_PROTOCOL: "The final upstream route uses a different protocol, and neither a native route nor protocol conversion is selected.",
   ROUTE_UNAVAILABLE: "No usable native route could be resolved.",
   CONVERSION_BLOCKED_BY_POLICY: "Lossy shim requests are rejected (compatibility.protocolShim.rejectLossyRequests), so protocol conversion cannot be used."

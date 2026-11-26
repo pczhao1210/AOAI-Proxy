@@ -382,7 +382,9 @@ export const routeTests = [
       assert.equal(nativeClaude?.clients?.claudeCode?.eligible, true);
       assert.equal(nativeCodex?.clients?.codex?.eligible, true);
       assert.equal(imageModel?.clients?.codex?.eligible, false);
-      assert.ok(imageModel.clients.codex.reasons.some((reason) => reason.code === "UNSUPPORTED_MODEL_CAPABILITY"));
+      assert.ok(imageModel.clients.codex.reasons.some((reason) => reason.code === "NON_TEXT_MODEL"));
+      assert.equal(imageModel?.clients?.claudeCode?.eligible, false);
+      assert.ok(imageModel.clients.claudeCode.reasons.some((reason) => reason.code === "NON_TEXT_MODEL"));
 
       const codexModel = config.models.find((model) => model.id === "gpt-5.6-luna");
       ensure(codexModel, "Expected native Responses model");

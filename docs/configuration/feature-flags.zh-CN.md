@@ -292,8 +292,8 @@ Key/时间筛选与同步按钮。「Log Analytics 上传」只表示 Azure 日�
 | `compatibility.anthropic.normalizeManualThinkingToolChoice` | `true` | 修正 manual thinking 与强制工具选择的不兼容组合。 | Workspace；热 |
 | `compatibility.anthropic.sanitizeCacheControl` | `true` | 清理目标 Messages 实现不支持的 `cache_control` 位置或属性。 | Workspace；热 |
 | `compatibility.anthropic.validateThinkingByModel` | `true` | 按模型元数据校验 Claude thinking type 与 effort。 | Workspace；热 |
-| `models[*].clientCompatibility.claudeCode` | `false` | 将模型纳入 Claude Code 专用目录；模型必须启用、上游可用、公共 Messages 开启，且最终路由为原生 Messages（推荐）或已选择协议转换。不是访问控制。 | Harness；热 |
-| `models[*].clientCompatibility.codex` | `false` | 将模型纳入 Codex 专用目录；模型必须启用、上游可用、公共 Responses 开启，最终路由为原生 Responses（推荐）或已选择协议转换，且不是图片生成/编辑模型。不是访问控制。 | Harness；热 |
+| `models[*].clientCompatibility.claudeCode` | `false` | 将模型纳入 Claude Code 专用目录；模型必须启用、上游可用、公共 Messages 开启，且最终路由为原生 Messages（推荐）或已选择协议转换，并且是文本生成模型（图片、语音、转写、Realtime 等模型不可选择）。不是访问控制。 | Harness；热 |
+| `models[*].clientCompatibility.codex` | `false` | 将模型纳入 Codex 专用目录；模型必须启用、上游可用、公共 Responses 开启，最终路由为原生 Responses（推荐）或已选择协议转换，且是文本生成模型（文生图/文生视频、TTS、ASR/转写、Realtime、Embedding 等一律不可选择，覆盖原生路由与协议转换）。不是访问控制。 | Harness；热 |
 | `models[*].clientNativeRoute.claudeCode` | 未设置 | Harness 原生路由覆盖：仅当模型同时是 Claude Code 成员时，`messages` 请求强制使用原生 Messages 路由，优先于 `models[].routes`，并跳过 Catalog 对该路由的接口检查；上游仍需配置 `messages` 路由。移出 Harness 后失效。 | Harness；热 |
 | `models[*].clientNativeRoute.codex` | 未设置 | 同上，作用于 Codex 与 `responses`（含 `responses/compact`）；上游仍需配置 `responses` 路由。 | Harness；热 |
 | `models[*].clientConversion.claudeCode` | 未设置 | Harness 协议转换确认：仅当模型同时是 Claude Code 成员、且最终路由为其他文本协议（如 Chat）时，允许该模型通过资格检查；不改变路由解析，被 `clientNativeRoute.claudeCode` 压过；`compatibility.protocolShim.rejectLossyRequests` 开启时不可用。移出 Harness 后失效。 | Harness；热 |

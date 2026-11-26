@@ -185,6 +185,12 @@ const CLIENT_COMPATIBILITY_PROTOCOLS = {
 const NATIVE_ROUTE_REPAIRABLE_REASONS = new Set(["NON_NATIVE_PROTOCOL", "ROUTE_UNAVAILABLE"]);
 const CONVERSION_REPAIRABLE_REASONS = new Set(["NON_NATIVE_PROTOCOL"]);
 const CONVERSION_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
+// Harness clients are text-generation agents; models that only serve media, speech, realtime or vector workloads cannot back them.
+const TEXT_GENERATION_INTERFACES = new Set(["chat/completions", "responses", "messages"]);
+const NON_TEXT_CAPABILITIES = [
+  "image-generation", "image-editing", "text-to-image", "text-to-video", "video-generation",
+  "text-to-speech", "speech-to-text", "speech-to-speech", "transcription", "realtime"
+];
 
 // The conversion flag is an administrator acknowledgement that a Harness member may use the
 // shim-converted route. It is inert unless the model is a member, and the native override wins.
@@ -208,6 +214,22 @@ function normalizeCapabilities(model, descriptor) {
 
 function buildEligibilityReason(code, message) {
   return { code, message };
+}
+
+// Returns why the Catalog entry is not a text-generation model, or null when it is (or is unknown).
+function getNonTextModelDetail(model, descriptor) {
+  if (!descriptor?.catalogMatched) return null;
+  const interfaces = normalizeStringArray(descriptor.interfaces);
+  if (interfaces.length > 0 && !interfaces.some((name) => TEXT_GENERATION_INTERFACES.has(name))) {
+    return `its interfaces (${interfaces.join(", ")}) include no chat/completions, responses or messages protocol`;
+  }
+  const outputs = normalizeStringArray(descriptor.definition?.outputModalities).map((value) => value.toLowerCase());
+  if (outputs.length > 0 && !outputs.includes("text")) {
+    return `it does not produce text output (${outputs.join(", ")})`;
+  }
+  const capabilities = normalizeCapabilities(model, descriptor);
+  const label = NON_TEXT_CAPABILITIES.find((capability) => capabilities.has(capability));
+  return label ? `it is declared as ${label}` : null;
 }
 
 export function getHarnessClientEligibility(config, model, clientName, snapshot, context = {}) {
@@ -249,17 +271,15 @@ export function getHarnessClientEligibility(config, model, clientName, snapshot,
       `model "${model?.id}" is marked for ${protocol.label} but public route ${protocol.routeKey} is disabled`
     ));
   }
-  if (
-    clientName === "codex"
-    && ["image-generation", "image-editing"].some((capability) => normalizeCapabilities(model, descriptor).has(capability))
-  ) {
+  const nonTextDetail = getNonTextModelDetail(model, descriptor);
+  if (nonTextDetail) {
     reasons.push(buildEligibilityReason(
-      "UNSUPPORTED_MODEL_CAPABILITY",
-      `model "${model?.id}" is marked for Codex but image generation and editing models are not supported`
+      "NON_TEXT_MODEL",
+      `model "${model?.id}" is marked for ${protocol.label} but is not a text-generation model: ${nonTextDetail}`
     ));
   }
 
-  if (descriptor?.catalogMatched && upstream && !isDisabledStatus(upstream.status) && isPublicRouteEnabled(config, protocol.routeKey)) {
+  if (!nonTextDetail && descriptor?.catalogMatched && upstream && !isDisabledStatus(upstream.status) && isPublicRouteEnabled(config, protocol.routeKey)) {
     try {
       const target = buildValidationTarget(model, upstream, protocol.routeKey, descriptor);
       if (target.backendRouteKey !== protocol.routeKey) {

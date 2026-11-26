@@ -2384,6 +2384,66 @@ test("Harness native route override for Claude Code applies only to the messages
   assert.equal(overridden.nativeRoute.active, true);
 });
 
+test("Harness never offers image, video, speech, transcription, realtime or embedding models, even with an override or conversion", () => {
+  const upstream = {
+    name: "all", provider: "azure-openai", baseUrl: "https://example.openai.azure.com/", status: "active",
+    routes: {
+      "chat/completions": "/openai/v1/chat/completions", responses: "/openai/v1/responses", messages: "/anthropic/v1/messages"
+    }
+  };
+  const definition = (id, interfaces, outputModalities, capabilities) => ({
+    id, displayName: id, provider: "test", family: "test", interfaces, defaultInterface: interfaces[0],
+    inputModalities: ["text"], outputModalities, capabilities
+  });
+  const definitions = [
+    ...listPricingDefinitions(),
+    definition("video-gen", ["videos/generations"], ["video"], ["text-to-video"]),
+    definition("embedder", ["embeddings"], ["vector"], ["function-calling"]),
+    definition("chat-tts", ["chat/completions"], ["text", "audio"], ["text-to-speech"]),
+    definition("chat-no-text", ["chat/completions"], ["audio"], ["function-calling"])
+  ];
+  const media = {
+    "gpt-image-2": "images/generations", "mai-voice-2": "audio/speech", "whisper-1": "audio/transcriptions",
+    "gpt-realtime-2": "realtime", "video-gen": "videos/generations", embedder: "embeddings",
+    "chat-tts": "chat/completions", "chat-no-text": "chat/completions"
+  };
+  const flags = { clientCompatibility: { codex: true, claudeCode: true } };
+  const draft = {
+    compatibility: { protocolShim: { rejectLossyRequests: false } },
+    upstreams: [upstream],
+    models: [
+      ...Object.keys(media).map(id => ({ id, upstream: "all", targetModel: id, pricingRef: id, routes: {}, ...flags })),
+      ...Object.keys(media).map(id => ({
+        id: `${id}:flagged`, upstream: "all", targetModel: id, pricingRef: id, routes: {}, ...flags,
+        clientNativeRoute: { codex: true, claudeCode: true }, clientConversion: { codex: true, claudeCode: true }
+      })),
+      { id: "text-model", upstream: "all", targetModel: "DeepSeek-V4.1-Flash", pricingRef: "DeepSeek-V4.1-Flash", routes: {}, clientCompatibility: { codex: true } },
+      { id: "audio-chat", upstream: "all", targetModel: "gpt-4o-audio-preview", pricingRef: "gpt-4o-audio-preview", routes: {}, clientCompatibility: { codex: true } }
+    ]
+  };
+  const snapshot = compileModelCatalog(draft, definitions);
+  const byId = new Map(getHarnessModelEligibility(draft, snapshot).map(item => [item.modelId, item.clients]));
+
+  for (const id of Object.keys(media)) {
+    for (const client of ["codex", "claudeCode"]) {
+      for (const [key, repairable] of [[id, false], [`${id}:flagged`, true]]) {
+        const state = byId.get(key)[client];
+        assert.equal(state.eligible, false, `${key} ${client}`);
+        assert.deepEqual(state.reasons.map(reason => reason.code), ["NON_TEXT_MODEL"], `${key} ${client}`);
+        assert.equal(state.nativeRoute.active, repairable, `${key} ${client}`);
+        assert.equal(state.nativeRoute.candidate, repairable ? undefined : null, `${key} ${client}`);
+        assert.deepEqual(state.conversion, { active: false, candidate: null }, `${key} ${client}`);
+      }
+    }
+  }
+  assert.match(byId.get("gpt-image-2").codex.reasons[0].message, /no chat\/completions, responses or messages protocol/);
+  assert.match(byId.get("chat-no-text").codex.reasons[0].message, /does not produce text output/);
+  assert.match(byId.get("chat-tts").codex.reasons[0].message, /declared as text-to-speech/);
+  assert.equal(byId.get("text-model").codex.eligible, false, "A text model is judged by its route, not rejected as non-text");
+  assert.deepEqual(byId.get("text-model").codex.reasons.map(reason => reason.code), ["NON_NATIVE_PROTOCOL"]);
+  assert.equal(byId.get("audio-chat").codex.reasons.some(reason => reason.code === "NON_TEXT_MODEL"), false, "A chat model that also emits text stays selectable");
+});
+
 test("Harness conversion is an explicit, membership-scoped state that native routing outranks", () => {
   const upstream = (name, routes) => ({
     name, provider: "azure-openai", baseUrl: "https://example.openai.azure.com/", status: "active", routes
