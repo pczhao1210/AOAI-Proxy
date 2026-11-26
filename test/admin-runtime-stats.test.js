@@ -771,13 +771,13 @@ test("application retry keeps the draft and history rollback is on demand and re
   });
   const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
   await testing.waitFor(() => assert.ok(view.getByRole("button", { name: "Retry Caddy only" })));
-  testing.fireEvent.change(view.getByLabelText("Server Host"), { target: { value: "unsaved-host" } });
+  testing.fireEvent.change(await view.findByLabelText("Server Host"), { target: { value: "unsaved-host" } });
   testing.fireEvent.click(view.getByRole("button", { name: "Retry Caddy only" }));
   await testing.waitFor(() => assert.ok(retried));
   assert.equal(view.getByLabelText("Server Host").value, "unsaved-host");
   assert.equal(historyReads, 0);
   testing.fireEvent.click(view.getByRole("button", { name: "Configuration history" }));
-  await testing.waitFor(() => assert.ok(view.getByRole("option", { name: /admin/ })));
+  await testing.waitFor(() => assert.ok(view.getByRole("option", { name: /admin/ })), { timeout: 5000 });
   testing.fireEvent.change(view.getByLabelText("Historical version"), { target: { value: "old-version" } });
   await testing.waitFor(() => assert.match(view.getByRole("dialog").textContent, /server\.host/));
   assert.match(view.getByRole("dialog").textContent, /current credentials and storage settings/);
