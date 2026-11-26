@@ -247,7 +247,11 @@ control order and editable policy fields when routes are disabled. Real-browser 
 the review/save HTTP workflow remain separate browser checks.
 
 Harness form contracts use the same component helper for stale/failed eligibility, identity-based
-selection, complete blocking reasons, connection snippets, clipboard failures and Codex override editing.
+multi-selection with batched diffs, the All/Selectable/Not selectable filter, native route override
+enable/clear, complete blocking reasons, connection snippets, clipboard failures and Codex override editing.
+`model-catalog.test.js` freezes the Harness native route override resolution per direction, and the
+`harness-native-route-override` route contract covers save validation, discovery, native upstream URL and
+restoration after removal.
 The full App contracts in `admin-runtime-stats.test.js` cover cancellation, late replies, retry and
 failed-save draft retention. `codex-models.test.js` freezes shared serialization and metadata provenance;
 the `codex-models` route compares admin preview objects with public discovery. These checks do not call

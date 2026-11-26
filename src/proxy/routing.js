@@ -18,6 +18,7 @@ const DEFAULT_MAI_CHAT_ROUTE = "/mai/v1/chat/completions";
 const AZURE_OPENAI_HOST_SUFFIX = ".openai.azure.com";
 const AZURE_FOUNDRY_HOST_SUFFIX = ".services.ai.azure.com";
 const TEXT_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
+export const HARNESS_CLIENT_ROUTE_KEYS = Object.freeze({ claudeCode: "messages", codex: "responses" });
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -315,6 +316,16 @@ export function buildResponsesCompactUrl(upstream, responsesUrl, deployment, mod
   return parsedResponsesUrl.toString();
 }
 
+// A Harness member with the native-route rule resolves its client route straight to the upstream's
+// native route, ahead of models[].routes and the Model Catalog interface list. Without membership
+// the persisted flag is inert, so removal restores the configured routing.
+export function hasHarnessNativeRoute(model, routeKey) {
+  const clientName = Object.keys(HARNESS_CLIENT_ROUTE_KEYS).find((name) => HARNESS_CLIENT_ROUTE_KEYS[name] === routeKey);
+  return Boolean(clientName)
+    && model?.clientCompatibility?.[clientName] === true
+    && model?.clientNativeRoute?.[clientName] === true;
+}
+
 export function resolveModelRoute(model, incomingRouteKey) {
   const routes = model?.routes;
   if (!routes || typeof routes !== "object") return null;
@@ -370,12 +381,16 @@ export function resolveRoutePlan({
   descriptor = null
 }) {
   const deployment = normalizeString(model?.targetModel) || normalizeString(model?.id);
-  const resolvedOverride = override === undefined
-    ? resolveModelRoute(model, routeKey)
-    : override;
+  const harnessNativeRoute = override === undefined && hasHarnessNativeRoute(model, routeKey);
+  const resolvedOverride = harnessNativeRoute
+    ? { type: "routeKey", value: routeKey }
+    : override === undefined
+      ? resolveModelRoute(model, routeKey)
+      : override;
   const allowedRouteTargets = new Set(getDescriptorRouteTargets(descriptor));
   if (
-    resolvedOverride
+    !harnessNativeRoute
+    && resolvedOverride
     && (
       resolvedOverride.type !== "routeKey"
       || !allowedRouteTargets.has(normalizeLower(resolvedOverride.value))
@@ -391,7 +406,8 @@ export function resolveRoutePlan({
     descriptor
   );
   if (
-    descriptor?.catalogMatched
+    !harnessNativeRoute
+    && descriptor?.catalogMatched
     && !allowedRouteTargets.has(normalizeLower(effectiveRouteKey))
   ) {
     throw new Error(`Model Catalog does not allow route target ${effectiveRouteKey}`);
@@ -406,7 +422,8 @@ export function resolveRoutePlan({
     descriptor?.knownRouteInterfaces || descriptor?.interfaces || []
   );
   if (
-    descriptor?.catalogMatched
+    !harnessNativeRoute
+    && descriptor?.catalogMatched
     && !descriptor.interfaces.includes(backendRouteKey)
   ) {
     throw new Error(

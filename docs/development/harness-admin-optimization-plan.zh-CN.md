@@ -11,7 +11,7 @@
 
 ### 必须保留的约束
 
-1. Claude Code 必须原生 Messages，Codex 必须原生 Responses；使用最终上游 URL 对应的协议判断，不能通过放宽资格或自动改路由解决问题。
+1. Claude Code 必须原生 Messages，Codex 必须原生 Responses；使用最终上游 URL 对应的协议判断，不能通过放宽资格或自动改路由解决问题（第 8 节的 Harness 原生路由覆盖是经管理员显式选择、只在成员期间生效的例外，不改写 `models[].routes`）。
 2. 保持目录发布开关、成员选择和请求兼容策略相互独立。关闭目录保留成员；关闭后仍不能保存不符合资格的已选模型。
 3. 配置预览不持久化、不调用真实上游。结构资格、目录发布和实际连通性是不同事实。
 4. 保持客户端权限过滤、管理员认证、CSRF、自定义管理路径和密钥脱敏/恢复机制。
@@ -254,4 +254,12 @@ git diff --check
 
 两项跳过检查为需要可丢弃 PostgreSQL 的 checkpoint/replay 与 media/text ledger 门禁。真实 CLI、真实提供商、可选数据库/Caddy 和部署验收未运行，不能由本次 Mock 与浏览器检查替代。
 
-X1 真实路径自检、批量添加及更广泛 CLI 高级能力仍不在本次交付范围内。
+X1 真实路径自检及更广泛 CLI 高级能力仍不在本次交付范围内。
+
+## 8. 后续迭代：多选、状态筛选与原生路由覆盖
+
+- “选择模型”窗口改为多选：成员直接显示为勾选，不再有“已选择”提示；筛选为“全部模型 / 可选择 / 不可选择”，默认“可选择”。确认时一次性应用新增与移除，仍走统一审阅保存流程。
+- 问题：Model Catalog 未声明原生 `responses` / `messages` 的模型（如 DeepSeek V4.1 Flash 接入 Codex）无法选入，且路由编辑器只允许 Catalog 允许的目标，管理员无法自行修复。
+- 方案：选择此类模型（仅因 `NON_NATIVE_PROTOCOL` / `ROUTE_UNAVAILABLE` 被阻断，且模拟后资格通过）时写入 `models[].clientNativeRoute.<client>=true`；取消勾选、移除或标记缺失时该标记不再生效，界面同时删除它。标记生效时，对应公共路由（Claude Code → `messages`，Codex → `responses`）优先于 `models[].routes` 并跳过 Catalog 对该路由的接口检查；最终 URL 仍来自 `upstreams[].routes`，由最终 URL 决定协议。上游缺少对应路由时仍为 `ROUTE_UNAVAILABLE`，页面提示先编辑上游。
+- 边界：不改写 `models[].routes`、`upstreams[].routes` 和 Model Catalog；不放宽禁用、上游不可用、公共路由关闭、图片模型等检查；覆盖对该模型的该公共路由整体生效，而非仅限某个客户端。显式传入的路由覆盖（如 web search 提升）不受影响。
+- 验证：`admin-harness-form.test.js`（多选差异、筛选、标记写入/清除）、`model-catalog.test.js`（两个方向的路由解析与资格预览）、`config-feature-flags.test.js`（类型校验）和路由契约 `harness-native-route-override`（保存校验、发现、原生上游 URL、移除后恢复）。未验证真实 DeepSeek / Foundry `/responses` 行为与真实 Codex CLI。

@@ -19,11 +19,17 @@ const REASONS = {
   ROUTE_UNAVAILABLE: "No usable native route could be resolved."
 };
 
-function setClientSelection(next, modelId, clientName, selected) {
+function setClientSelection(next, modelId, clientName, selected, nativeRoute = false) {
   const matches = (next.models || []).filter(model => model?.id === modelId);
   if (!modelId || matches.length !== 1) throw new Error("Harness selection requires a unique model ID");
   const model = matches[0];
   model.clientCompatibility = { ...(model.clientCompatibility || {}), [clientName]: selected };
+  // The native-route rule belongs to the membership: removing a model restores its configured routes.
+  const nativeRoutes = { ...(model.clientNativeRoute || {}) };
+  if (selected && nativeRoute) nativeRoutes[clientName] = true;
+  else delete nativeRoutes[clientName];
+  if (Object.keys(nativeRoutes).length) model.clientNativeRoute = nativeRoutes;
+  else delete model.clientNativeRoute;
 }
 
 export default function HarnessTab({
@@ -31,9 +37,9 @@ export default function HarnessTab({
   onRetry, onNavigate, updateConfig, t
 }) {
   const [activeClient, setActiveClient] = useState("");
-  const [selectedModelId, setSelectedModelId] = useState("");
+  const [pendingIds, setPendingIds] = useState(() => new Set());
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter] = useState("selectable");
   const [actionError, setActionError] = useState("");
   const models = Array.isArray(config?.models) ? config.models : [];
   const items = Array.isArray(eligibility?.items) ? eligibility.items : [];
@@ -48,38 +54,97 @@ export default function HarnessTab({
       && counts.get(model.id) === 1;
     return { model, index, unique, item: fresh && unique ? eligibilityById.get(model.id) || null : null };
   });
-  const available = (row, clientName) => row.unique && row.item?.clients?.[clientName]?.eligible === true
-    && row.model.clientCompatibility?.[clientName] !== true;
-  const selectedRow = rows.find(row => row.model.id === selectedModelId && available(row, activeClient));
+  const isMember = (row, clientName) => row.model.clientCompatibility?.[clientName] === true;
+  const nativeCandidate = (row, clientName) => row.item?.clients?.[clientName]?.nativeRoute?.candidate;
+  const viaNativeRoute = (row, clientName) => row.unique && row.item?.clients?.[clientName]?.eligible !== true
+    && nativeCandidate(row, clientName)?.eligible === true;
+  const selectable = (row, clientName) => row.unique
+    && (row.item?.clients?.[clientName]?.eligible === true || viaNativeRoute(row, clientName));
+  const isChecked = row => row.unique ? pendingIds.has(row.model.id) : isMember(row, activeClient);
+  const canToggle = row => row.unique && (isChecked(row) || selectable(row, activeClient));
+  const additions = rows.filter(row => row.unique && pendingIds.has(row.model.id) && !isMember(row, activeClient));
+  const removals = rows.filter(row => row.unique && !pendingIds.has(row.model.id) && isMember(row, activeClient));
+  const changed = additions.length + removals.length > 0;
+
+  function openModal(clientName) {
+    setPendingIds(new Set(rows.filter(row => row.unique && isMember(row, clientName)).map(row => row.model.id)));
+    setActiveClient(clientName);
+    setSearch("");
+    setFilter("selectable");
+  }
 
   function closeModal() {
     setActiveClient("");
-    setSelectedModelId("");
+    setPendingIds(new Set());
   }
 
-  function changeSelection(row, clientName, selected) {
-    if (!row?.unique || (selected && !available(row, clientName))) {
+  function togglePending(row) {
+    if (!canToggle(row)) return;
+    setPendingIds(previous => {
+      const next = new Set(previous);
+      if (next.has(row.model.id)) next.delete(row.model.id);
+      else next.add(row.model.id);
+      return next;
+    });
+  }
+
+  function applyPendingSelection() {
+    if (!fresh || !changed || !additions.every(row => selectable(row, activeClient))) {
       setActionError(t("harness.selectionChanged", "The selection is no longer valid. Refresh eligibility or fix the model ID."));
       return;
     }
-    updateConfig(next => setClientSelection(next, row.model.id, clientName, selected));
+    updateConfig(next => {
+      for (const row of removals) setClientSelection(next, row.model.id, activeClient, false);
+      for (const row of additions) setClientSelection(next, row.model.id, activeClient, true, viaNativeRoute(row, activeClient));
+    });
+    setActionError("");
+    closeModal();
+  }
+
+  function changeSelection(row, clientName, selected, nativeRoute = false) {
+    if (!row?.unique || (selected && !selectable(row, clientName))) {
+      setActionError(t("harness.selectionChanged", "The selection is no longer valid. Refresh eligibility or fix the model ID."));
+      return;
+    }
+    updateConfig(next => setClientSelection(next, row.model.id, clientName, selected, nativeRoute));
     setActionError("");
   }
 
   function renderEligibility(row, client, { repairOnlyWhenBlocked = false } = {}) {
     const info = row.item?.clients?.[client.id];
-    const showRepair = onNavigate && !(repairOnlyWhenBlocked && info?.eligible);
+    const candidate = nativeCandidate(row, client.id);
+    const member = isMember(row, client.id);
+    const viaNative = !member && viaNativeRoute(row, client.id);
+    const canEnable = member && viaNativeRoute(row, client.id);
+    const nativePath = (candidate?.routePath || info?.nativeRoute?.routePath) || "-";
+    const withRoute = text => text.replaceAll("{route}", client.routeKey).replaceAll("{path}", nativePath);
+    const reasons = viaNative ? [] : [
+      ...(info?.reasons || []),
+      ...(candidate?.reasons || []).filter(reason => !(info?.reasons || []).some(known => known.code === reason.code))
+    ];
+    const showRepair = onNavigate && !(repairOnlyWhenBlocked && (info?.eligible || viaNative));
     return (
       <div className="harness-stack">
-        <span className={`badge ${info ? info.eligible ? "level-info" : "level-error" : ""}`}>
+        <span className={`badge ${info ? info.eligible || viaNative ? "level-info" : "level-error" : ""}`}>
           {!row.unique ? t("harness.invalidId", "A unique, non-empty model ID is required.")
             : !info ? t("harness.unknown", "Eligibility not confirmed")
               : info.eligible ? t("harness.eligible", "Configuration matches native routing")
-                : t("harness.ineligible", "Not eligible")}
+                : viaNative ? t("harness.nativeRoute.eligible", "Selectable with native route override")
+                  : t("harness.ineligible", "Not eligible")}
         </span>
-        {info?.reasons?.length > 0 ? (
+        {info?.nativeRoute?.active ? (
+          <p className="entity-meta">
+            {withRoute(t("harness.nativeRoute.active", "Native route override: {route} requests use {path}, ahead of the configured routes. Removing the model restores them."))}
+          </p>
+        ) : null}
+        {viaNative ? (
+          <p className="entity-meta">
+            {withRoute(t("harness.nativeRoute.notice", "The Model Catalog does not declare native {route} for this model. Selecting it enables a native route override: {route} requests use {path}, ahead of the configured routes. Removing the model restores them."))}
+          </p>
+        ) : null}
+        {reasons.length > 0 ? (
           <ul className="harness-reasons">
-            {info.reasons.map((reason, index) => (
+            {reasons.map((reason, index) => (
               <li key={`${reason.code}-${index}`}>
                 {REASONS[reason.code] ? t(`harness.reason.${reason.code}`, REASONS[reason.code]) : reason.message || t("harness.unknown", "Eligibility not confirmed")}
                 <small className="entity-meta">{reason.code}</small>
@@ -87,10 +152,23 @@ export default function HarnessTab({
             ))}
           </ul>
         ) : null}
+        {canEnable ? (
+          <p className="entity-meta">
+            {withRoute(t("harness.nativeRoute.enableHint", "Enable the native route override: {route} requests use {path}, ahead of the configured routes."))}
+          </p>
+        ) : null}
+        {candidate && !candidate.eligible && candidate.reasons?.some(reason => reason.code === "ROUTE_UNAVAILABLE") ? (
+          <p className="entity-meta">
+            {withRoute(t("harness.nativeRoute.needsUpstreamRoute", "Add a native {route} route to the upstream; the model can then be selected with a native route override."))}
+          </p>
+        ) : null}
+        {canEnable && !repairOnlyWhenBlocked ? (
+          <button type="button" onClick={() => changeSelection(row, client.id, true, true)}>{t("harness.nativeRoute.enable", "Enable native route override")}</button>
+        ) : null}
         {showRepair ? (
           <div className="toolbar-cluster">
             <button type="button" className="ghost" onClick={() => onNavigate({ type: "model", id: row.model.id })}>{t("harness.editModel", "Edit model")}</button>
-            {info?.reasons?.some(reason => reason.code.startsWith("UPSTREAM_")) ? (
+            {[...(info?.reasons || []), ...(candidate?.reasons || [])].some(reason => reason.code.startsWith("UPSTREAM_") || reason.code === "ROUTE_UNAVAILABLE") ? (
               <button type="button" className="ghost" onClick={() => onNavigate({ type: "upstream", id: row.model.upstream })}>{t("harness.editUpstream", "Edit upstream")}</button>
             ) : null}
             {info?.reasons?.some(reason => reason.code === "PUBLIC_ROUTE_DISABLED") ? (
@@ -103,15 +181,13 @@ export default function HarnessTab({
   }
 
   const modalClient = CLIENTS.find(client => client.id === activeClient);
-  const candidateRank = row => available(row, activeClient) ? 0 : row.model.clientCompatibility?.[activeClient] === true ? 1 : 2;
+  const candidateRank = row => selectable(row, activeClient) ? 0 : 1;
   const visibleRows = rows.filter(row => {
     const matchesSearch = [row.model.id, row.model.displayName, row.model.upstream]
       .some(value => String(value || "").toLowerCase().includes(search.trim().toLowerCase()));
-    const selected = row.model.clientCompatibility?.[activeClient] === true;
     return matchesSearch && (filter === "all"
-      || (filter === "available" && available(row, activeClient))
-      || (filter === "selected" && selected)
-      || (filter === "ineligible" && row.item?.clients?.[activeClient]?.eligible === false));
+      || (filter === "selectable" && selectable(row, activeClient))
+      || (filter === "unselectable" && !selectable(row, activeClient)));
   }).sort((left, right) => candidateRank(left) - candidateRank(right));
 
   return (
@@ -149,12 +225,7 @@ export default function HarnessTab({
                   }} />
                   {t("harness.catalogEnabled", "Publish catalog")}
                 </label>
-                <button type="button" disabled={!fresh} onClick={() => {
-                  setActiveClient(client.id);
-                  setSelectedModelId("");
-                  setSearch("");
-                  setFilter("all");
-                }}>{t("harness.addModel", "Add Model")}</button>
+                <button type="button" disabled={!fresh} onClick={() => openModal(client.id)}>{t("harness.selectModels", "Select models")}</button>
               </div>
             )}
           >
@@ -197,48 +268,40 @@ export default function HarnessTab({
         );
       })}
       <Modal
-        title={t("harness.addModal.title", "Add model to {client}").replace("{client}", modalClient?.name || "")}
+        title={t("harness.selectModal.title", "Select models for {client}").replace("{client}", modalClient?.name || "")}
         isOpen={Boolean(activeClient)} onClose={closeModal}
-        onConfirm={() => {
-          if (!selectedRow) {
-            setActionError(t("harness.selectionChanged", "The selection is no longer valid. Refresh eligibility or fix the model ID."));
-            return;
-          }
-          changeSelection(selectedRow, activeClient, true);
-          closeModal();
-        }}
-        confirmLabel={t("harness.addModel", "Add Model")} cancelLabel={t("common.cancel", "Cancel")}
-        closeLabel={t("common.close", "Close")} disabled={!selectedRow}
+        onConfirm={applyPendingSelection}
+        confirmLabel={t("harness.confirmSelection", "Confirm")} cancelLabel={t("common.cancel", "Cancel")}
+        closeLabel={t("common.close", "Close")} disabled={!fresh || !changed}
       >
         <div className="form-grid compact">
           <Field label={t("harness.search", "Search name, ID or upstream")}><input type="search" value={search} onChange={event => setSearch(event.target.value)} /></Field>
           <Field label={t("harness.filter", "Model status")}>
             <select value={filter} onChange={event => setFilter(event.target.value)}>
               <option value="all">{t("harness.all", "All models")}</option>
-              <option value="available">{t("harness.available", "Available to add")}</option>
-              <option value="selected">{t("harness.selected", "Already selected")}</option>
-              <option value="ineligible">{t("harness.ineligible", "Not eligible")}</option>
+              <option value="selectable">{t("harness.selectable", "Selectable")}</option>
+              <option value="unselectable">{t("harness.unselectable", "Not selectable")}</option>
             </select>
           </Field>
         </div>
         {!fresh ? <p role="status">{t("harness.unknown", "Eligibility not confirmed")}</p> : null}
         <div className="harness-candidate-grid">
           {modalClient && visibleRows.map(row => {
-            const canAdd = available(row, activeClient);
-            const checked = canAdd && selectedModelId === row.model.id && row.unique;
+            const checked = isChecked(row);
+            const enabled = canToggle(row);
             return (
               <div
                 key={`${row.model.id}-${row.index}`}
-                className={`harness-candidate${checked ? " is-selected" : ""}${canAdd ? "" : " is-unavailable"}`}
-                onClick={canAdd ? () => setSelectedModelId(row.model.id) : undefined}
+                className={`harness-candidate${checked ? " is-selected" : ""}${enabled ? "" : " is-unavailable"}`}
+                onClick={event => {
+                  if (!event.target.closest("label, input, button")) togglePending(row);
+                }}
               >
                 <label className="harness-candidate-option">
-                  <input type="radio" name="harness-model" checked={checked}
-                    disabled={!canAdd} onChange={() => setSelectedModelId(row.model.id)} />
+                  <input type="checkbox" checked={checked} disabled={!enabled} onChange={() => togglePending(row)} />
                   <span>{row.model.displayName || row.model.id || t("harness.unnamedModel", "Unnamed model")} ({row.model.id || "-"})</span>
                 </label>
                 <p className="entity-meta">{row.model.upstream || "-"}</p>
-                {row.model.clientCompatibility?.[activeClient] === true ? <span className="badge">{t("harness.selected", "Already selected")}</span> : null}
                 {renderEligibility(row, modalClient, { repairOnlyWhenBlocked: true })}
               </div>
             );

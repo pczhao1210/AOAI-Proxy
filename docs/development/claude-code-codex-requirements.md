@@ -197,7 +197,7 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 要求：
 
 - `base_url` 应包含 `/v1`，Codex 会在其后请求 `/responses`。
-- `<responses-model-id>` 必须设置 `clientCompatibility.codex=true` 并原生路由到 `responses`。
+- `<responses-model-id>` 必须设置 `clientCompatibility.codex=true` 并原生路由到 `responses`。Model Catalog 未声明原生 Responses 的模型（如 DeepSeek V4.1 Flash）需先在其上游配置 `responses` 路由，再在管理端 Harness 的 Codex 区域选择该模型；选择时会写入 `clientNativeRoute.codex=true`，使 `responses` 请求在成员期间原生路由，移出后恢复 `models[].routes`。
 - 建议显式设置 `model`；代理 `/models` 已能返回 Codex 专用模型目录，不再需要额外 `model_catalog_json` 来规避解析告警。
 - Codex 目录优先发布模型配置中的 `codex.contextWindow` 或 `contextWindow`，否则使用 Model Catalog 中经来源验证的完整 `contextWindow`；仅当总窗口未知时才使用 `maxInputTokens`，所有目录限制均缺失时继续使用旧版 `128000` 回退。
 - 保持 `supports_websockets = false`。代理已提供原生 `/v1/responses/compact`，但 Codex `0.153.2` 的自定义 provider 没有独立 compact 能力开关；不要通过伪装 provider 名称或地址来强制启用未经真实 CLI 验证的远端 compact。

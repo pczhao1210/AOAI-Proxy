@@ -10,7 +10,7 @@ import {
   installModelCatalogSnapshot,
   resolveModelDescriptor
 } from "../src/model-catalog.js";
-import { getConfiguredModelBindingIssues, validateConfiguredModels } from "../src/model-validation.js";
+import { getConfiguredModelBindingIssues, getHarnessClientEligibility, getHarnessModelEligibility, validateConfiguredModels } from "../src/model-validation.js";
 import { recordGovernanceUsage } from "../src/governance.js";
 import { listArchivedPricingDefinitions, listPricingDefinitions } from "../src/pricing-library.js";
 import { prepareImageGenerationRequest } from "../src/proxy/image-adapter.js";
@@ -2293,4 +2293,93 @@ test("governance respects explicit non-token pricing while retaining legacy toke
   );
   assert.equal(legacyToken.configured, true);
   assert.equal(legacyToken.amount, 3);
+});
+test("Harness native route override is scoped to membership and restores configured routes on removal", () => {
+  const upstream = {
+    name: "foundry", provider: "azure-openai", baseUrl: "https://example.openai.azure.com/", status: "active",
+    routes: { "chat/completions": "/openai/v1/chat/completions", responses: "/openai/v1/responses" }
+  };
+  const bare = { ...upstream, name: "bare", routes: { "chat/completions": "/openai/v1/chat/completions" } };
+  const model = (id, up, extra = {}) => ({
+    id, upstream: up, targetModel: "FW-DeepSeek-V4.1-Flash", pricingRef: "DeepSeek-V4.1-Flash", routes: {}, ...extra
+  });
+  const draft = {
+    upstreams: [upstream, bare],
+    models: [
+      model("plain", "foundry"),
+      model("selected", "foundry", { clientCompatibility: { codex: true } }),
+      model("overridden", "foundry", {
+        clientCompatibility: { codex: true }, clientNativeRoute: { codex: true }, routes: { "*": "chat/completions" }
+      }),
+      model("removed", "foundry", { clientCompatibility: { codex: false }, clientNativeRoute: { codex: true } }),
+      model("no-route", "bare")
+    ]
+  };
+  const snapshot = compileModelCatalog(draft);
+  const resolve = (id, routeKey = "responses") => {
+    const entry = draft.models.find(candidate => candidate.id === id);
+    return resolveRoutePlan({
+      routeKey, model: entry, upstream: draft.upstreams.find(candidate => candidate.name === entry.upstream),
+      descriptor: snapshot.modelsByPublicId.get(id)
+    });
+  };
+  assert.equal(snapshot.modelsByPublicId.get("plain").interfaces.includes("responses"), false);
+
+  for (const id of ["plain", "selected", "removed"]) {
+    assert.equal(resolve(id).backendRouteKey, "chat/completions", id);
+  }
+  const plan = resolve("overridden");
+  assert.equal(plan.backendRouteKey, "responses");
+  assert.equal(plan.targetUrl, "https://example.openai.azure.com/openai/v1/responses");
+  assert.equal(resolve("overridden", "chat/completions").backendRouteKey, "chat/completions");
+
+  const byId = new Map(getHarnessModelEligibility(draft, snapshot).map(item => [item.modelId, item.clients]));
+  const codex = id => byId.get(id).codex;
+  assert.deepEqual(codex("plain").reasons.map(reason => reason.code), ["NON_NATIVE_PROTOCOL"]);
+  assert.equal(codex("plain").nativeRoute.active, false);
+  assert.equal(codex("plain").nativeRoute.candidate.eligible, true);
+  assert.equal(codex("plain").nativeRoute.candidate.routePath, "/openai/v1/responses");
+  assert.equal(codex("selected").eligible, false);
+  assert.equal(codex("selected").nativeRoute.candidate.eligible, true);
+  assert.equal(codex("overridden").eligible, true);
+  assert.deepEqual(codex("overridden").nativeRoute, { active: true, routePath: "/openai/v1/responses" });
+  assert.equal(codex("removed").eligible, false);
+  assert.equal(codex("removed").nativeRoute.active, false);
+  assert.equal(codex("no-route").nativeRoute.candidate.eligible, false);
+  assert.deepEqual(codex("no-route").nativeRoute.candidate.reasons.map(reason => reason.code), ["ROUTE_UNAVAILABLE"]);
+  assert.equal(codex("overridden").nativeRoute.candidate, undefined);
+  assert.equal(getHarnessClientEligibility(draft, draft.models[2], "codex", snapshot).eligible, true);
+  assert.equal(getHarnessClientEligibility(draft, draft.models[1], "codex", snapshot).eligible, false);
+});
+
+test("Harness native route override for Claude Code applies only to the messages route", () => {
+  const upstream = {
+    name: "foundry", provider: "azure-openai", baseUrl: "https://example.openai.azure.com/", status: "active",
+    routes: { "chat/completions": "/openai/v1/chat/completions", messages: "/anthropic/v1/messages" }
+  };
+  const model = (id, extra = {}) => ({
+    id, upstream: "foundry", targetModel: "FW-DeepSeek-V4.1-Flash", pricingRef: "DeepSeek-V4.1-Flash", routes: {}, ...extra
+  });
+  const draft = {
+    upstreams: [upstream],
+    models: [
+      model("plain", { clientCompatibility: { claudeCode: true } }),
+      model("overridden", {
+        clientCompatibility: { claudeCode: true, codex: false }, clientNativeRoute: { claudeCode: true, codex: true }
+      })
+    ]
+  };
+  const snapshot = compileModelCatalog(draft);
+  const resolve = (entry, routeKey) => resolveRoutePlan({
+    routeKey, model: entry, upstream, descriptor: snapshot.modelsByPublicId.get(entry.id)
+  });
+  assert.equal(resolve(draft.models[0], "messages").backendRouteKey, "chat/completions");
+  assert.equal(resolve(draft.models[1], "messages").backendRouteKey, "messages");
+  assert.equal(resolve(draft.models[1], "chat/completions").backendRouteKey, "chat/completions");
+  assert.equal(resolve(draft.models[1], "responses").backendRouteKey, "chat/completions");
+  const [plain, overridden] = getHarnessModelEligibility(draft, snapshot).map(item => item.clients.claudeCode);
+  assert.equal(plain.eligible, false);
+  assert.equal(plain.nativeRoute.candidate.eligible, true);
+  assert.equal(overridden.eligible, true);
+  assert.equal(overridden.nativeRoute.active, true);
 });

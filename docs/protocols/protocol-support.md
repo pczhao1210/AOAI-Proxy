@@ -1132,6 +1132,8 @@ Anthropic 目录使用 Anthropic 客户端可理解的模型对象形状。普�
 
 管理端 Harness 页使用后端对当前未保存配置的路由解析结果生成候选列表。目录成员必须始终是当前可路由模型的子集；已选模型若因模型、上游或公共 route 被禁用而失效，配置保存会被拒绝。
 
+Harness 原生路由覆盖：Model Catalog 没有为模型声明原生 `messages` / `responses`（例如只声明 `chat/completions` 的 DeepSeek V4.1 Flash）时，选择该模型会写入 `models[].clientNativeRoute.claudeCode` / `.codex = true`。该标记只在模型同时是对应客户端的 Harness 成员时生效：Claude Code 覆盖 `messages`，Codex 覆盖 `responses`，两者都优先于 `models[].routes`，并跳过针对该路由的 Catalog 接口/路由目标检查；最终上游 URL 仍必须来自 `upstreams[].routes` 中的同名路由，协议仍由最终 URL 决定。`messages/count_tokens` 与 `responses/compact` 随各自协议一起覆盖。模型被移出 Harness 后标记不再生效（界面同时删除它），`models[].routes` 与 Catalog 路由规则恢复。该覆盖按公共路由和模型生效，并非只对 Codex / Claude Code 客户端生效；它不修改 `models[].routes`、`upstreams[].routes` 或 Model Catalog，也不放宽模型禁用、上游不可用、公共路由关闭或图片模型等其他资格检查。
+
 ### 18.4 Codex 模型目录
 
 以下信号进入 Codex 协商：

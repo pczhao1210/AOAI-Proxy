@@ -955,7 +955,7 @@ test("App Harness cancels obsolete eligibility requests and fences late response
     aborted: requests.map(request => request.signal.aborted),
     text: view.container.querySelector(".tab-content")?.textContent?.slice(0,650)
   })));
-  assert.ok(view.getAllByRole("button", { name: "Add Model", exact: true }).every(button => button.disabled));
+  assert.ok(view.getAllByRole("button", { name: "Select models", exact: true }).every(button => button.disabled));
   testing.fireEvent.click(view.getByRole("button", { name: "Refresh eligibility" }));
   await testing.waitFor(() => assert.equal(requests.length, 4));
   await testing.act(async () => requests[3].resolve(Response.json(result(true))));

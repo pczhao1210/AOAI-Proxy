@@ -859,7 +859,7 @@ code {
   color: var(--muted);
 }
 
-.harness-candidate-option input[type="radio"] {
+.harness-candidate-option input[type="checkbox"] {
   flex: none;
   width: auto;
   margin: 0.2rem 0 0;

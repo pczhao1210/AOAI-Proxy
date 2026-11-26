@@ -7,7 +7,9 @@ import {
   isBlackForestLabsProviderPath
 } from "./proxy/image-adapter.js";
 import {
+  HARNESS_CLIENT_ROUTE_KEYS,
   findUpstream,
+  hasHarnessNativeRoute,
   isPublicRouteEnabled,
   resolveRoutePlan
 } from "./proxy/routing.js";
@@ -177,9 +179,10 @@ function getCatalogRouteBindingIssues(model, descriptor, snapshot) {
 }
 
 const CLIENT_COMPATIBILITY_PROTOCOLS = {
-  claudeCode: { label: "Claude Code", routeKey: "messages" },
-  codex: { label: "Codex", routeKey: "responses" }
+  claudeCode: { label: "Claude Code", routeKey: HARNESS_CLIENT_ROUTE_KEYS.claudeCode },
+  codex: { label: "Codex", routeKey: HARNESS_CLIENT_ROUTE_KEYS.codex }
 };
+const NATIVE_ROUTE_REPAIRABLE_REASONS = new Set(["NON_NATIVE_PROTOCOL", "ROUTE_UNAVAILABLE"]);
 
 function normalizeCapabilities(model, descriptor) {
   const capabilities = Array.isArray(descriptor?.capabilities) && descriptor.capabilities.length > 0
@@ -264,6 +267,50 @@ export function getHarnessClientEligibility(config, model, clientName, snapshot,
   };
 }
 
+function resolveNativeRoutePath(config, model, clientName, snapshot) {
+  const { routeKey } = CLIENT_COMPATIBILITY_PROTOCOLS[clientName];
+  const upstream = findUpstream(config, model?.upstream);
+  const descriptor = resolveModelDescriptor(model, snapshot);
+  if (!upstream || !descriptor) return null;
+  try {
+    const target = buildValidationTarget(model, upstream, routeKey, descriptor);
+    return target.backendRouteKey === routeKey ? new URL(target.targetUrl).pathname : null;
+  } catch {
+    return null;
+  }
+}
+
+function getHarnessClientNativeRouteState(config, model, clientName, snapshot, eligibility) {
+  if (hasHarnessNativeRoute(model, eligibility.routeKey)) {
+    return { active: true, routePath: resolveNativeRoutePath(config, model, clientName, snapshot) };
+  }
+  if (!eligibility.reasons.length || !eligibility.reasons.every((reason) => NATIVE_ROUTE_REPAIRABLE_REASONS.has(reason.code))) {
+    return { active: false, candidate: null };
+  }
+  const trial = {
+    ...model,
+    clientCompatibility: { ...model?.clientCompatibility, [clientName]: true },
+    clientNativeRoute: { ...model?.clientNativeRoute, [clientName]: true }
+  };
+  const result = getHarnessClientEligibility(config, trial, clientName, snapshot);
+  return {
+    active: false,
+    candidate: {
+      eligible: result.eligible,
+      reasons: result.reasons,
+      routePath: result.eligible ? resolveNativeRoutePath(config, trial, clientName, snapshot) : null
+    }
+  };
+}
+
+function getHarnessClientPreview(config, model, clientName, snapshot) {
+  const eligibility = getHarnessClientEligibility(config, model, clientName, snapshot);
+  return {
+    ...eligibility,
+    nativeRoute: getHarnessClientNativeRouteState(config, model, clientName, snapshot, eligibility)
+  };
+}
+
 export function getHarnessModelEligibility(config, snapshot) {
   return (Array.isArray(config?.models) ? config.models : []).map((model) => ({
     modelId: normalizeString(model?.id),
@@ -273,8 +320,8 @@ export function getHarnessModelEligibility(config, snapshot) {
       codex: model?.clientCompatibility?.codex === true
     },
     clients: {
-      claudeCode: getHarnessClientEligibility(config, model, "claudeCode", snapshot),
-      codex: getHarnessClientEligibility(config, model, "codex", snapshot)
+      claudeCode: getHarnessClientPreview(config, model, "claudeCode", snapshot),
+      codex: getHarnessClientPreview(config, model, "codex", snapshot)
     }
   }));
 }

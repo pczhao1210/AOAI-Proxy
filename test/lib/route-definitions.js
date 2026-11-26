@@ -607,6 +607,74 @@ export const routeTests = [
     }
   },
   {
+    id: "harness-native-route-override",
+    description: "Harness membership enables a native route override that disappears when the model is removed",
+    async run(ctx) {
+      const config = await ctx.readConfigFile();
+      const chatOnly = config.models.find((model) => model.id === "chat-only");
+      ensure(chatOnly, "Expected chat-only model");
+      const save = (payload) => ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: payload
+      });
+      const previewCodex = async (payload) => {
+        const preview = await ctx.adminRequest("/admin/api/harness/eligibility", {
+          method: "POST", headers: { "x-aoai-admin-csrf": "1" }, json: { config: payload }
+        });
+        assert.equal(preview.status, 200, preview.text);
+        return preview.json.items.find((item) => item.modelId === "chat-only");
+      };
+
+      chatOnly.clientCompatibility = { codex: true };
+      const withoutOverride = await save(config);
+      assert.equal(withoutOverride.status, 400, withoutOverride.text);
+      assert.match(withoutOverride.json?.error || "", /marked for Codex.*native responses is required/);
+      const candidate = (await previewCodex(config)).clients.codex.nativeRoute;
+      assert.equal(candidate.active, false);
+      assert.equal(candidate.candidate.eligible, true);
+      assert.equal(candidate.candidate.routePath, "/openai/v1/responses");
+
+      chatOnly.clientNativeRoute = { codex: true };
+      const preview = await previewCodex(config);
+      assert.equal(preview.clients.codex.eligible, true);
+      assert.deepEqual(preview.clients.codex.nativeRoute, { active: true, routePath: "/openai/v1/responses" });
+      const withOverride = await save(config);
+      assert.equal(withOverride.status, 200, withOverride.text);
+      const persisted = (await ctx.readConfigFile()).models.find((model) => model.id === "chat-only");
+      assert.deepEqual(persisted.clientNativeRoute, { codex: true });
+      assert.deepEqual(persisted.routes, { "*": "chat/completions" });
+
+      const catalog = await ctx.publicRequest("/v1/models", { headers: { "user-agent": "codex_cli_rs/0.147.0" } });
+      assert.equal(catalog.status, 200, catalog.text);
+      assert.ok(catalog.json.models.some((model) => model.slug === "chat-only"));
+
+      ctx.clearUpstreamRequests();
+      const native = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: { model: "chat-only", input: "hello" }
+      });
+      assert.equal(native.status, 200, native.text);
+      const nativeUpstream = ctx.upstreamRequests.at(-1);
+      assert.match(nativeUpstream.url, /\/openai\/v1\/responses(?:\?|$)/);
+      assert.equal(nativeUpstream.body?.model, "chat-only-deployment");
+      assert.equal(native.json?.model, "chat-only");
+
+      chatOnly.clientCompatibility = { codex: false };
+      const removed = await save(config);
+      assert.equal(removed.status, 200, removed.text);
+      const afterRemoval = await ctx.publicRequest("/v1/models", { headers: { "user-agent": "codex_cli_rs/0.147.0" } });
+      assert.equal(afterRemoval.json.models.some((model) => model.slug === "chat-only"), false);
+      ctx.clearUpstreamRequests();
+      const restored = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: { model: "chat-only", input: "hello" }
+      });
+      assert.equal(restored.status, 200, restored.text);
+      assert.match(ctx.upstreamRequests.at(-1).url, /\/openai\/v1\/chat\/completions(?:\?|$)/);
+    }
+  },
+  {
     id: "gpt-5.6-route-migration",
     description: "legacy GPT-5.6 wildcard routes migrate without blocking explicit v3 overrides",
     async run(ctx) {

@@ -294,8 +294,12 @@ Key/时间筛选与同步按钮。「Log Analytics 上传」只表示 Azure 日�
 | `compatibility.anthropic.validateThinkingByModel` | `true` | 按模型元数据校验 Claude thinking type 与 effort。 | Workspace；热 |
 | `models[*].clientCompatibility.claudeCode` | `false` | 将模型纳入 Claude Code 专用目录；模型必须启用、上游可用、公共 Messages 开启且最终原生路由到 Messages。不是访问控制。 | Harness；热 |
 | `models[*].clientCompatibility.codex` | `false` | 将模型纳入 Codex 专用目录；模型必须启用、上游可用、公共 Responses 开启、最终原生路由到 Responses，且不是图片生成/编辑模型。不是访问控制。 | Harness；热 |
+| `models[*].clientNativeRoute.claudeCode` | 未设置 | Harness 原生路由覆盖：仅当模型同时是 Claude Code 成员时，`messages` 请求强制使用原生 Messages 路由，优先于 `models[].routes`，并跳过 Catalog 对该路由的接口检查；上游仍需配置 `messages` 路由。移出 Harness 后失效。 | Harness；热 |
+| `models[*].clientNativeRoute.codex` | 未设置 | 同上，作用于 Codex 与 `responses`（含 `responses/compact`）；上游仍需配置 `responses` 路由。 | Harness；热 |
 
-Harness 会分别展示草稿成员、已保存成员和运行时生效目录；资格只代表静态配置符合原生路由要求，不代表已验证上游、CLI 或工具调用。资格刷新失败、加载中或结果过期时不能添加模型；仍可移除具有唯一 ID 的成员。添加窗口支持搜索、状态筛选、完整阻断原因及配置跳转，修改仍需统一审阅保存。
+Harness 会分别展示草稿成员、已保存成员和运行时生效目录；资格只代表静态配置符合原生路由要求，不代表已验证上游、CLI 或工具调用。资格刷新失败、加载中或结果过期时不能选择模型；仍可移除具有唯一 ID 的成员。“选择模型”窗口为多选：已是成员的模型直接显示为勾选，状态筛选为“全部模型 / 可选择 / 不可选择”（默认“可选择”），并支持搜索、完整阻断原因及配置跳转；确认后一次性应用新增与移除，修改仍需统一审阅保存。
+
+Model Catalog 未声明原生 `messages` / `responses` 的模型（例如 DeepSeek V4.1 Flash 接入 Codex）如果只因“最终上游路由使用了其他协议”或“无法解析原生路由”被阻断，且上游已配置对应的原生路由，则同样属于“可选择”：勾选并确认后自动写入 `clientNativeRoute.<client>=true`，取消勾选或移除时自动删除，之后恢复 `models[].routes` 与 Catalog 的规则。上游尚未配置 `messages` / `responses` 路由时，先在上游中添加该路由。该覆盖对模型的该公共路由整体生效，不修改 `models[].routes`、`upstreams[].routes` 或 Model Catalog。
 
 客户端接入向导需要显式填写公共代理地址，只生成带凭据占位符的 Bash/Zsh 或 Codex TOML，不读取密钥、不发起真实请求。Codex 高级区编辑已有 `models[].codex` 元数据覆盖；留空恢复继承，清除按钮仅移除界面列出的字段。推理档位列表在离开输入框时应用。预览与公开目录共用后端解析器，标记配置、Catalog 与既有回退来源；默认优先级随消费者权限过滤后的顺序变化。以上不新增 Feature Flag，也不改变既有配置校验和请求策略。
 

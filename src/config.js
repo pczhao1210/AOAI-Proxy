@@ -676,7 +676,10 @@ function validateRawBooleanFlags(raw) {
     throw new Error("compatibility.anthropic.unknownBetaPolicy must be passthrough, allow-direct-anthropic, or allowlist");
   }
   for (const [index, model] of (Array.isArray(raw?.models) ? raw.models : []).entries()) {
-    validate({ clientCompatibility: { claudeCode: false, codex: false } }, model, `models[${index}]`);
+    validate({
+      clientCompatibility: { claudeCode: false, codex: false },
+      clientNativeRoute: { claudeCode: false, codex: false }
+    }, model, `models[${index}]`);
   }
 }
 
@@ -1849,6 +1852,16 @@ function validateConfig(cfg) {
       for (const clientName of ["claudeCode", "codex"]) {
         if (model.clientCompatibility[clientName] != null && typeof model.clientCompatibility[clientName] !== "boolean") {
           throw new Error(`models[${idx}].clientCompatibility.${clientName} must be a boolean`);
+        }
+      }
+    }
+    if (model.clientNativeRoute != null) {
+      if (typeof model.clientNativeRoute !== "object" || Array.isArray(model.clientNativeRoute)) {
+        throw new Error(`models[${idx}].clientNativeRoute must be an object`);
+      }
+      for (const clientName of ["claudeCode", "codex"]) {
+        if (model.clientNativeRoute[clientName] != null && typeof model.clientNativeRoute[clientName] !== "boolean") {
+          throw new Error(`models[${idx}].clientNativeRoute.${clientName} must be a boolean`);
         }
       }
     }
