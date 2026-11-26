@@ -267,9 +267,9 @@ X1 真实路径自检及更广泛 CLI 高级能力仍不在本次交付范围内
 ## 9. 后续迭代：可选择 - 原生协议 / 可选择 - 需转换
 
 - 问题：DeepSeek 等上游没有 `/responses`，无法用第 8 节的原生覆盖接入；结构化表单也不编辑 `upstreams[].routes`。
-- 原则：原生优先且推荐。状态筛选改为“全部模型 / 可选择 - 原生协议 / 可选择 - 需转换 / 不可选择”，默认“可选择 - 原生协议”；有原生候选的模型永远归入原生类，排序为原生、转换、不可选择。
+- 原则：原生优先且推荐。状态筛选改为“全部模型 / 可选择 - 原生协议 / 可选择 - 需转换 / 不可选择”，默认“可选择 - 原生协议”；分类依据配置证据而非“上游是否声明了路由”：已配置路由本身解析为客户端协议（含已启用的覆盖）归原生，Catalog 未声明但可转换的归需转换，仅当转换不可用而覆盖可用时覆盖才归原生；排序为原生、转换、不可选择。
 - 方案：仅因 `NON_NATIVE_PROTOCOL` 被阻断、且最终路由为文本协议（Chat/Responses/Messages）的模型可选“需转换”，勾选写入 `models[].clientConversion.<client>=true`，移出时删除，且与 `clientNativeRoute` 互斥（原生优先）。标记不参与路由解析（运行时 shim 本就会转换），只用于资格检查、保存校验和目录发现；不成员时无效。
 - 门禁：`compatibility.protocolShim.rejectLossyRequests` 开启（运行时 `!== false`）时，Claude Code / Codex 的有损请求会被 400 拒绝，因此预览返回 `CONVERSION_BLOCKED_BY_POLICY`，保存校验同样拒绝。`ROUTE_UNAVAILABLE`、禁用模型、上游不可用、图片模型等不可通过转换修复。
 - 损失：Responses → Chat 不转发 `prompt_cache_key`、`include`、`reasoning.summary`、`previous_response_id`、`custom`/`web_search` 工具与 reasoning input item；Messages → Chat 不转发 `thinking`、`metadata`、`cache_control`；`responses/compact`、`messages/count_tokens` 不可用。转换成员的 Codex 目录条目不声明 `apply_patch_tool_type` 与 `supports_search_tool`。
-- 界面：转换条目显示警告徽标、转换说明与限制；有原生候选时提供“切换为原生”；`ROUTE_UNAVAILABLE` 时的“打开 JSON 编辑器”按钮跳到高级 JSON 页（`upstreams[].routes`），“编辑上游”仅用于 `UPSTREAM_*` 原因。
+- 界面：转换条目显示警告徽标、转换说明与限制；有原生候选时提示并提供“切换为原生”；配置失效的成员同时提供“启用原生路由覆盖”和“启用协议转换”；`ROUTE_UNAVAILABLE` 时的“打开 JSON 编辑器”按钮跳到高级 JSON 页（`upstreams[].routes`），“编辑上游”仅用于 `UPSTREAM_*` 原因。
 - 验证：`admin-harness-form.test.js`、`model-catalog.test.js`（转换是显式、按成员作用、原生优先）、`config-feature-flags.test.js`、`codex-models.test.js` 和路由契约 `harness-protocol-conversion`（保存校验、预览、两个目录、`/v1/responses` 以 chat/completions 到达上游、严格模式拒绝、移出后消失）。未验证真实 DeepSeek 上游与真实 Codex / Claude Code CLI 行为。

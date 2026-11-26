@@ -199,7 +199,7 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 要求：
 
 - `base_url` 应包含 `/v1`，Codex 会在其后请求 `/responses`。
-- `<responses-model-id>` 必须设置 `clientCompatibility.codex=true`，推荐原生路由到 `responses`。Model Catalog 未声明原生 Responses 的模型（如 DeepSeek V4.1 Flash）有两种接入方式：上游已配置 `responses` 路由时，在管理端 Harness 的 Codex 区域选择它（归入“可选择 - 原生协议”，写入 `clientNativeRoute.codex=true`，成员期间 `responses` 原生路由）；上游没有该端点时，可在“可选择 - 需转换”中选择（写入 `clientConversion.codex=true`，`responses` 请求转换为 Chat 等目标协议，有字段丢失）。移出 Harness 后两类标记都会删除并恢复 `models[].routes`。上游路由目前只能在高级 JSON 的 `upstreams[].routes` 中编辑。
+- `<responses-model-id>` 必须设置 `clientCompatibility.codex=true`，推荐原生路由到 `responses`。Model Catalog 未声明原生 Responses 的模型（如 DeepSeek V4.1 Flash）有两种接入方式：上游已配置 `responses` 路由时，在管理端 Harness 的 Codex 区域选择它（因 Catalog 未声明，归入“可选择 - 需转换”），再在成员卡片上点击“切换为原生路由”（写入 `clientNativeRoute.codex=true`，成员期间 `responses` 走原生路由）；上游没有该端点时，可在“可选择 - 需转换”中选择（写入 `clientConversion.codex=true`，`responses` 请求转换为 Chat 等目标协议，有字段丢失）。移出 Harness 后两类标记都会删除并恢复 `models[].routes`。上游路由目前只能在高级 JSON 的 `upstreams[].routes` 中编辑。
 - 建议显式设置 `model`；代理 `/models` 已能返回 Codex 专用模型目录，不再需要额外 `model_catalog_json` 来规避解析告警。
 - Codex 目录优先发布模型配置中的 `codex.contextWindow` 或 `contextWindow`，否则使用 Model Catalog 中经来源验证的完整 `contextWindow`；仅当总窗口未知时才使用 `maxInputTokens`，所有目录限制均缺失时继续使用旧版 `128000` 回退。
 - 保持 `supports_websockets = false`。代理已提供原生 `/v1/responses/compact`，但 Codex `0.153.2` 的自定义 provider 没有独立 compact 能力开关；不要通过伪装 provider 名称或地址来强制启用未经真实 CLI 验证的远端 compact。
