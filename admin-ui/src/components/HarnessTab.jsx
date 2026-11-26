@@ -15,21 +15,32 @@ const REASONS = {
   UPSTREAM_DISABLED: "The upstream is disabled.",
   PUBLIC_ROUTE_DISABLED: "The public client route is disabled.",
   UNSUPPORTED_MODEL_CAPABILITY: "Codex catalogs cannot include image generation or editing models.",
-  NON_NATIVE_PROTOCOL: "The final upstream route uses a different protocol. A native route is required.",
-  ROUTE_UNAVAILABLE: "No usable native route could be resolved."
+  NON_NATIVE_PROTOCOL: "The final upstream route uses a different protocol, and neither a native route nor protocol conversion is selected.",
+  ROUTE_UNAVAILABLE: "No usable native route could be resolved.",
+  CONVERSION_BLOCKED_BY_POLICY: "Lossy shim requests are rejected (compatibility.protocolShim.rejectLossyRequests), so protocol conversion cannot be used."
 };
 
-function setClientSelection(next, modelId, clientName, selected, nativeRoute = false) {
+const CONVERSION_LIMITS = {
+  claudeCode: "thinking, cache_control and metadata are not forwarded, messages/count_tokens is unavailable, and dropped fields log a proxy.protocol_shim_lossy_conversion warning.",
+  codex: "Responses-only features (freeform apply_patch, hosted web search, reasoning summaries, prompt_cache_key, previous_response_id) are not forwarded, responses/compact is unavailable, and dropped fields log a proxy.protocol_shim_lossy_conversion warning."
+};
+
+// Native routing is preferred; a converted route is the fallback when the upstream lacks the client's native endpoint.
+const ROUTE_MODES = { native: "native", conversion: "conversion" };
+
+function setClientSelection(next, modelId, clientName, selected, routeMode = "") {
   const matches = (next.models || []).filter(model => model?.id === modelId);
   if (!modelId || matches.length !== 1) throw new Error("Harness selection requires a unique model ID");
   const model = matches[0];
   model.clientCompatibility = { ...(model.clientCompatibility || {}), [clientName]: selected };
-  // The native-route rule belongs to the membership: removing a model restores its configured routes.
-  const nativeRoutes = { ...(model.clientNativeRoute || {}) };
-  if (selected && nativeRoute) nativeRoutes[clientName] = true;
-  else delete nativeRoutes[clientName];
-  if (Object.keys(nativeRoutes).length) model.clientNativeRoute = nativeRoutes;
-  else delete model.clientNativeRoute;
+  // The route rule belongs to the membership: removing a model restores its configured routes.
+  for (const [field, mode] of [["clientNativeRoute", ROUTE_MODES.native], ["clientConversion", ROUTE_MODES.conversion]]) {
+    const flags = { ...(model[field] || {}) };
+    if (selected && routeMode === mode) flags[clientName] = true;
+    else delete flags[clientName];
+    if (Object.keys(flags).length) model[field] = flags;
+    else delete model[field];
+  }
 }
 
 export default function HarnessTab({
@@ -39,7 +50,7 @@ export default function HarnessTab({
   const [activeClient, setActiveClient] = useState("");
   const [pendingIds, setPendingIds] = useState(() => new Set());
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("selectable");
+  const [filter, setFilter] = useState(ROUTE_MODES.native);
   const [actionError, setActionError] = useState("");
   const models = Array.isArray(config?.models) ? config.models : [];
   const items = Array.isArray(eligibility?.items) ? eligibility.items : [];
@@ -56,10 +67,23 @@ export default function HarnessTab({
   });
   const isMember = (row, clientName) => row.model.clientCompatibility?.[clientName] === true;
   const nativeCandidate = (row, clientName) => row.item?.clients?.[clientName]?.nativeRoute?.candidate;
+  const conversionCandidate = (row, clientName) => row.item?.clients?.[clientName]?.conversion?.candidate;
   const viaNativeRoute = (row, clientName) => row.unique && row.item?.clients?.[clientName]?.eligible !== true
     && nativeCandidate(row, clientName)?.eligible === true;
-  const selectable = (row, clientName) => row.unique
-    && (row.item?.clients?.[clientName]?.eligible === true || viaNativeRoute(row, clientName));
+  const viaConversion = (row, clientName) => row.unique && row.item?.clients?.[clientName]?.eligible !== true
+    && !viaNativeRoute(row, clientName) && conversionCandidate(row, clientName)?.eligible === true;
+  // Category of a model for one client: native first, then conversion, otherwise not selectable.
+  const categoryOf = (row, clientName) => {
+    if (!row.unique) return "";
+    const info = row.item?.clients?.[clientName];
+    if (info?.eligible === true) return info.mode === "conversion" ? ROUTE_MODES.conversion : ROUTE_MODES.native;
+    if (viaNativeRoute(row, clientName)) return ROUTE_MODES.native;
+    return viaConversion(row, clientName) ? ROUTE_MODES.conversion : "";
+  };
+  const selectable = (row, clientName) => Boolean(categoryOf(row, clientName));
+  // Flag the selection writes: only models that need it (override or conversion) get one.
+  const routeModeFor = (row, clientName) => viaNativeRoute(row, clientName) ? ROUTE_MODES.native
+    : viaConversion(row, clientName) ? ROUTE_MODES.conversion : "";
   const isChecked = row => row.unique ? pendingIds.has(row.model.id) : isMember(row, activeClient);
   const canToggle = row => row.unique && (isChecked(row) || selectable(row, activeClient));
   const additions = rows.filter(row => row.unique && pendingIds.has(row.model.id) && !isMember(row, activeClient));
@@ -70,7 +94,7 @@ export default function HarnessTab({
     setPendingIds(new Set(rows.filter(row => row.unique && isMember(row, clientName)).map(row => row.model.id)));
     setActiveClient(clientName);
     setSearch("");
-    setFilter("selectable");
+    setFilter(ROUTE_MODES.native);
   }
 
   function closeModal() {
@@ -95,51 +119,78 @@ export default function HarnessTab({
     }
     updateConfig(next => {
       for (const row of removals) setClientSelection(next, row.model.id, activeClient, false);
-      for (const row of additions) setClientSelection(next, row.model.id, activeClient, true, viaNativeRoute(row, activeClient));
+      for (const row of additions) setClientSelection(next, row.model.id, activeClient, true, routeModeFor(row, activeClient));
     });
     setActionError("");
     closeModal();
   }
 
-  function changeSelection(row, clientName, selected, nativeRoute = false) {
-    if (!row?.unique || (selected && !selectable(row, clientName))) {
+  function changeSelection(row, clientName, selected, routeMode = "") {
+    const valid = row?.unique && (!selected || (
+      routeMode === ROUTE_MODES.native ? nativeCandidate(row, clientName)?.eligible === true : selectable(row, clientName)
+    ));
+    if (!valid) {
       setActionError(t("harness.selectionChanged", "The selection is no longer valid. Refresh eligibility or fix the model ID."));
       return;
     }
-    updateConfig(next => setClientSelection(next, row.model.id, clientName, selected, nativeRoute));
+    updateConfig(next => setClientSelection(next, row.model.id, clientName, selected, routeMode));
     setActionError("");
   }
 
   function renderEligibility(row, client, { repairOnlyWhenBlocked = false } = {}) {
     const info = row.item?.clients?.[client.id];
     const candidate = nativeCandidate(row, client.id);
+    const convCandidate = conversionCandidate(row, client.id);
     const member = isMember(row, client.id);
+    const category = categoryOf(row, client.id);
     const viaNative = !member && viaNativeRoute(row, client.id);
+    const viaConv = !member && viaConversion(row, client.id);
+    const converted = info?.eligible === true && info.mode === ROUTE_MODES.conversion;
     const canEnable = member && viaNativeRoute(row, client.id);
+    const canSwitch = member && info?.conversion?.active === true && candidate?.eligible === true;
+    const conversion = info?.conversion?.active ? info.conversion : convCandidate;
     const nativePath = (candidate?.routePath || info?.nativeRoute?.routePath) || "-";
-    const withRoute = text => text.replaceAll("{route}", client.routeKey).replaceAll("{path}", nativePath);
-    const reasons = viaNative ? [] : [
+    const limits = t(`harness.conversion.limits.${client.id}`, CONVERSION_LIMITS[client.id]);
+    const fill = (text, path = nativePath) => text
+      .replaceAll("{route}", client.routeKey).replaceAll("{path}", path)
+      .replaceAll("{target}", conversion?.to || "-").replaceAll("{limits}", limits);
+    const knownCodes = (info?.reasons || []).map(reason => reason.code);
+    const reasons = viaNative || viaConv || converted ? [] : [
       ...(info?.reasons || []),
-      ...(candidate?.reasons || []).filter(reason => !(info?.reasons || []).some(known => known.code === reason.code))
+      ...[...(candidate?.reasons || []), ...(convCandidate?.reasons || [])]
+        .filter((reason, index, all) => !knownCodes.includes(reason.code) && all.findIndex(other => other.code === reason.code) === index)
     ];
-    const showRepair = onNavigate && !(repairOnlyWhenBlocked && (info?.eligible || viaNative));
+    const routeUnavailable = candidate && !candidate.eligible && candidate.reasons?.some(reason => reason.code === "ROUTE_UNAVAILABLE");
+    const showRepair = onNavigate && !(repairOnlyWhenBlocked && category);
     return (
       <div className="harness-stack">
-        <span className={`badge ${info ? info.eligible || viaNative ? "level-info" : "level-error" : ""}`}>
+        <span className={`badge ${info ? category === ROUTE_MODES.conversion ? "level-warn" : category ? "level-info" : "level-error" : ""}`}>
           {!row.unique ? t("harness.invalidId", "A unique, non-empty model ID is required.")
             : !info ? t("harness.unknown", "Eligibility not confirmed")
-              : info.eligible ? t("harness.eligible", "Configuration matches native routing")
-                : viaNative ? t("harness.nativeRoute.eligible", "Selectable with native route override")
-                  : t("harness.ineligible", "Not eligible")}
+              : converted ? t("harness.conversion.eligible", "Selectable with protocol conversion")
+                : info.eligible ? t("harness.eligible", "Configuration matches native routing")
+                  : viaNative ? t("harness.nativeRoute.eligible", "Selectable with native route override")
+                    : viaConv ? t("harness.conversion.eligible", "Selectable with protocol conversion")
+                      : t("harness.ineligible", "Not eligible")}
         </span>
         {info?.nativeRoute?.active ? (
           <p className="entity-meta">
-            {withRoute(t("harness.nativeRoute.active", "Native route override: {route} requests use {path}, ahead of the configured routes. Removing the model restores them."))}
+            {fill(t("harness.nativeRoute.active", "Native route override: {route} requests use {path}, ahead of the configured routes. Removing the model restores them."))}
           </p>
         ) : null}
         {viaNative ? (
           <p className="entity-meta">
-            {withRoute(t("harness.nativeRoute.notice", "The Model Catalog does not declare native {route} for this model. Selecting it enables a native route override: {route} requests use {path}, ahead of the configured routes. Removing the model restores them."))}
+            {fill(t("harness.nativeRoute.notice", "The Model Catalog does not declare native {route} for this model. Selecting it enables a native route override: {route} requests use {path}, ahead of the configured routes. Removing the model restores them."))}
+          </p>
+        ) : null}
+        {converted ? (
+          <p className="entity-meta">
+            {fill(t("harness.conversion.active", "Protocol conversion: {route} requests are converted to {target} ({path}). {limits} Removing the model restores the configured routes."), conversion?.routePath || "-")}
+          </p>
+        ) : null}
+        {viaConv ? (
+          <p className="entity-meta">
+            {fill(t("harness.conversion.notice", "The upstream has no native {route} route for this model. Selecting it converts {route} requests to {target} ({path}). {limits} Removing the model restores the configured routes."), conversion?.routePath || "-")}
           </p>
         ) : null}
         {reasons.length > 0 ? (
@@ -154,22 +205,33 @@ export default function HarnessTab({
         ) : null}
         {canEnable ? (
           <p className="entity-meta">
-            {withRoute(t("harness.nativeRoute.enableHint", "Enable the native route override: {route} requests use {path}, ahead of the configured routes."))}
+            {fill(t("harness.nativeRoute.enableHint", "Enable the native route override: {route} requests use {path}, ahead of the configured routes."))}
           </p>
         ) : null}
-        {candidate && !candidate.eligible && candidate.reasons?.some(reason => reason.code === "ROUTE_UNAVAILABLE") ? (
+        {canSwitch ? (
           <p className="entity-meta">
-            {withRoute(t("harness.nativeRoute.needsUpstreamRoute", "Add a native {route} route to the upstream; the model can then be selected with a native route override."))}
+            {fill(t("harness.conversion.switchHint", "The upstream now provides a native {route} route ({path}). Switch to it to avoid conversion."))}
+          </p>
+        ) : null}
+        {routeUnavailable ? (
+          <p className="entity-meta">
+            {fill(t("harness.nativeRoute.needsUpstreamRoute", "To use native {route}, add a {route} entry to this upstream's routes in the JSON editor (upstreams[].routes); the structured form does not edit upstream routes."))}
           </p>
         ) : null}
         {canEnable && !repairOnlyWhenBlocked ? (
-          <button type="button" onClick={() => changeSelection(row, client.id, true, true)}>{t("harness.nativeRoute.enable", "Enable native route override")}</button>
+          <button type="button" onClick={() => changeSelection(row, client.id, true, ROUTE_MODES.native)}>{t("harness.nativeRoute.enable", "Enable native route override")}</button>
+        ) : null}
+        {canSwitch && !repairOnlyWhenBlocked ? (
+          <button type="button" onClick={() => changeSelection(row, client.id, true, ROUTE_MODES.native)}>{t("harness.conversion.switch", "Switch to native route")}</button>
         ) : null}
         {showRepair ? (
           <div className="toolbar-cluster">
             <button type="button" className="ghost" onClick={() => onNavigate({ type: "model", id: row.model.id })}>{t("harness.editModel", "Edit model")}</button>
-            {[...(info?.reasons || []), ...(candidate?.reasons || [])].some(reason => reason.code.startsWith("UPSTREAM_") || reason.code === "ROUTE_UNAVAILABLE") ? (
+            {info?.reasons?.some(reason => reason.code.startsWith("UPSTREAM_")) ? (
               <button type="button" className="ghost" onClick={() => onNavigate({ type: "upstream", id: row.model.upstream })}>{t("harness.editUpstream", "Edit upstream")}</button>
+            ) : null}
+            {routeUnavailable ? (
+              <button type="button" className="ghost" onClick={() => onNavigate({ type: "advanced" })}>{t("harness.editJson", "Open JSON editor")}</button>
             ) : null}
             {info?.reasons?.some(reason => reason.code === "PUBLIC_ROUTE_DISABLED") ? (
               <button type="button" className="ghost" onClick={() => onNavigate({ type: "route" })}>{t("harness.editRoutes", "Edit public routes")}</button>
@@ -181,12 +243,14 @@ export default function HarnessTab({
   }
 
   const modalClient = CLIENTS.find(client => client.id === activeClient);
-  const candidateRank = row => selectable(row, activeClient) ? 0 : 1;
+  const candidateRank = row => categoryOf(row, activeClient) === ROUTE_MODES.native ? 0
+    : categoryOf(row, activeClient) === ROUTE_MODES.conversion ? 1 : 2;
   const visibleRows = rows.filter(row => {
     const matchesSearch = [row.model.id, row.model.displayName, row.model.upstream]
       .some(value => String(value || "").toLowerCase().includes(search.trim().toLowerCase()));
     return matchesSearch && (filter === "all"
-      || (filter === "selectable" && selectable(row, activeClient))
+      || (filter === ROUTE_MODES.native && categoryOf(row, activeClient) === ROUTE_MODES.native)
+      || (filter === ROUTE_MODES.conversion && categoryOf(row, activeClient) === ROUTE_MODES.conversion)
       || (filter === "unselectable" && !selectable(row, activeClient)));
   }).sort((left, right) => candidateRank(left) - candidateRank(right));
 
@@ -212,7 +276,7 @@ export default function HarnessTab({
         return (
           <Section
             id={client.sectionId} key={client.id} title={client.name}
-            desc={t(`harness.${client.id}.desc`, `Publish a model catalog for ${client.name}. Models must route natively through ${client.routeKey}.`)}
+            desc={t(`harness.${client.id}.desc`, `Publish a model catalog for ${client.name}. Native ${client.routeKey} routing is recommended; models without it can be selected with protocol conversion.`)}
             actions={(
               <div className="toolbar-cluster">
                 <label className="inline">
@@ -279,7 +343,8 @@ export default function HarnessTab({
           <Field label={t("harness.filter", "Model status")}>
             <select value={filter} onChange={event => setFilter(event.target.value)}>
               <option value="all">{t("harness.all", "All models")}</option>
-              <option value="selectable">{t("harness.selectable", "Selectable")}</option>
+              <option value="native">{t("harness.selectableNative", "Selectable - native protocol")}</option>
+              <option value="conversion">{t("harness.selectableConversion", "Selectable - needs conversion")}</option>
               <option value="unselectable">{t("harness.unselectable", "Not selectable")}</option>
             </select>
           </Field>

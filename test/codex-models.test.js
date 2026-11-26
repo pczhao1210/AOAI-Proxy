@@ -83,3 +83,15 @@ test("Codex incomplete and mismatched overrides retain existing fallback behavio
   assert.equal(metadata.info.priority, 3);
   assert.deepEqual(metadata.info.supported_reasoning_levels.map(level => level.effort), ["high", "future"]);
 });
+
+test("Codex metadata drops Responses-only tools for converted routes", () => {
+  const model = { id: "converted", capabilities: ["code-optimized", "web-search", "vision"] };
+  const native = getCodexModelMetadata(model, 0, null).info;
+  const converted = getCodexModelMetadata(model, 0, null, { converted: true }).info;
+  assert.equal(native.apply_patch_tool_type, "freeform");
+  assert.equal(native.supports_search_tool, true);
+  assert.equal(converted.apply_patch_tool_type, null);
+  assert.equal(converted.supports_search_tool, false);
+  assert.equal(converted.web_search_tool_type, "text");
+  assert.deepEqual(converted.input_modalities, native.input_modalities);
+});

@@ -7,12 +7,15 @@ setupWorkspaceFormTests();
 
 const t = (_key, fallback) => fallback;
 const model = { id: "native", upstream: "provider", clientCompatibility: {}, codex: { priority: 0 }, hidden: "keep" };
-const item = (modelId, eligible = true, reasons = [], nativeRoute) => ({
+const item = (modelId, eligible = true, reasons = [], nativeRoute, extra = {}) => ({
   modelId,
   clients: {
     claudeCode: { eligible: false, reasons: [] },
-    codex: { eligible, reasons, ...(nativeRoute ? { nativeRoute } : {}) }
+    codex: { eligible, reasons, ...(nativeRoute ? { nativeRoute } : {}), ...extra }
   }
+});
+const conversionPreview = (eligible = true, reasons = [], to = "chat/completions", routePath = "/openai/v1/chat/completions") => ({
+  conversion: { active: false, candidate: { eligible, reasons, from: "responses", to, routePath } }
 });
 const nativeCandidate = (eligible = true, routePath = "/openai/v1/responses", reasons = []) => ({
   active: false, candidate: { eligible, reasons, routePath }
@@ -144,11 +147,11 @@ test("Harness lists all blocking reasons, unknown codes, filters and repair targ
   assert.ok(view.getByText("No models match these filters."));
   fireEvent.change(view.getByRole("searchbox"), { target: { value: "provider" } });
   assert.equal(view.getByRole("dialog").querySelectorAll(".harness-candidate").length, 1);
-  fireEvent.change(view.getByRole("combobox", { name: "Model status" }), { target: { value: "selectable" } });
+  fireEvent.change(view.getByRole("combobox", { name: "Model status" }), { target: { value: "native" } });
   assert.equal(view.getByRole("dialog").querySelectorAll(".harness-candidate").length, 0);
 });
 
-test("Harness dialog is multi-select with Selectable as the default and no already-selected state", async () => {
+test("Harness dialog is multi-select with native Selectable as the default and no already-selected state", async () => {
   const React = await import("react");
   const { default: HarnessTab } = await loadAdminModule("/admin-ui/src/components/HarnessTab.jsx");
   const kept = { ...model, id: "kept", clientCompatibility: { codex: true } };
@@ -164,8 +167,10 @@ test("Harness dialog is multi-select with Selectable as the default and no alrea
   const view = renderElement(React.createElement(HarnessTab, options));
   fireEvent.click(view.getAllByRole("button", { name: "Select models", exact: true })[1]);
   const status = view.getByRole("combobox", { name: "Model status" });
-  assert.equal(status.value, "selectable");
-  assert.deepEqual([...status.options].map(option => option.textContent), ["All models", "Selectable", "Not selectable"]);
+  assert.equal(status.value, "native");
+  assert.deepEqual([...status.options].map(option => option.textContent), [
+    "All models", "Selectable - native protocol", "Selectable - needs conversion", "Not selectable"
+  ]);
   assert.equal(view.queryByText("Already selected"), null);
   assert.equal(view.getByRole("checkbox", { name: "kept (kept)" }).checked, true);
   assert.equal(view.getByRole("checkbox", { name: "first (first)" }).checked, false);
@@ -178,7 +183,7 @@ test("Harness dialog is multi-select with Selectable as the default and no alrea
   assert.deepEqual(current.models.map(entry => entry.clientCompatibility.codex), [false, true, true]);
   assert.deepEqual(current.models[2].clientCompatibility, { claudeCode: true, codex: true });
   assert.equal(current.models[2].zero, 0);
-  assert.ok(current.models.every(entry => entry.clientNativeRoute === undefined));
+  assert.ok(current.models.every(entry => entry.clientNativeRoute === undefined && entry.clientConversion === undefined));
 });
 
 test("Harness enables a native route override only for models selected without native catalog support", async () => {
@@ -188,9 +193,10 @@ test("Harness enables a native route override only for models selected without n
   const chatOnly = { ...model, id: "chat-only", clientNativeRoute: { claudeCode: true } };
   const blocked = { ...model, id: "no-route" };
   let current = { models: [native, chatOnly, blocked] };
+  const navigations = [];
   const nonNative = [{ code: "NON_NATIVE_PROTOCOL" }];
   const options = {
-    ...props, config: current, loadedConfig: current, onNavigate() {},
+    ...props, config: current, loadedConfig: current, onNavigate: target => navigations.push(target),
     eligibility: { items: [
       item("native"),
       item("chat-only", false, nonNative, nativeCandidate()),
@@ -216,9 +222,11 @@ test("Harness enables a native route override only for models selected without n
   view.rerender(React.createElement(HarnessTab, { ...options, config: current }));
   fireEvent.click(view.getAllByRole("button", { name: "Select models", exact: true })[1]);
   fireEvent.change(view.getByRole("combobox", { name: "Model status" }), { target: { value: "unselectable" } });
-  assert.ok(view.getByText(/Add a native responses route to the upstream/));
-  assert.ok(view.getByRole("button", { name: "Edit upstream" }));
+  assert.ok(view.getByText(/add a responses entry to this upstream's routes in the JSON editor/));
+  assert.equal(view.queryByRole("button", { name: "Edit upstream" }), null);
   assert.equal(view.getByRole("checkbox", { name: "no-route (no-route)" }).disabled, true);
+  fireEvent.click(view.getByRole("button", { name: "Open JSON editor" }));
+  assert.deepEqual(navigations, [{ type: "advanced" }]);
 });
 
 test("Harness removal clears only the removed client's native route override", async () => {
@@ -248,6 +256,80 @@ test("Harness removal clears only the removed client's native route override", a
   fireEvent.click(removeButtons[0]);
   assert.deepEqual(current.models[0].clientCompatibility, { codex: true, claudeCode: false });
   assert.deepEqual(current.models[0].clientNativeRoute, { codex: true });
+});
+
+test("Harness offers protocol conversion as its own category after native routing", async () => {
+  const React = await import("react");
+  const { default: HarnessTab } = await loadAdminModule("/admin-ui/src/components/HarnessTab.jsx");
+  const ids = ["native", "converted", "upgradable", "strict"];
+  let current = { models: ids.map(id => ({ ...model, id })) };
+  const nonNative = [{ code: "NON_NATIVE_PROTOCOL" }];
+  const missing = nativeCandidate(false, null, [{ code: "ROUTE_UNAVAILABLE" }]);
+  const policy = [{ code: "CONVERSION_BLOCKED_BY_POLICY" }];
+  const navigations = [];
+  const options = {
+    ...props, config: current, loadedConfig: current, onNavigate: target => navigations.push(target),
+    eligibility: { items: [
+      item("native"),
+      item("converted", false, nonNative, missing, conversionPreview()),
+      item("upgradable", false, nonNative, nativeCandidate(), conversionPreview()),
+      item("strict", false, nonNative, missing, conversionPreview(false, policy))
+    ] },
+    updateConfig: change => { current = structuredClone(current); change(current); }
+  };
+  const view = renderElement(React.createElement(HarnessTab, options));
+  fireEvent.click(view.getAllByRole("button", { name: "Select models", exact: true })[1]);
+  const filter = view.getByRole("combobox", { name: "Model status" });
+  const visible = () => [...view.getByRole("dialog").querySelectorAll(".harness-candidate-option span")].map(node => node.textContent);
+  assert.deepEqual(visible(), ["native (native)", "upgradable (upgradable)"]);
+  fireEvent.change(filter, { target: { value: "conversion" } });
+  assert.deepEqual(visible(), ["converted (converted)"]);
+  assert.ok(view.getByText("Selectable with protocol conversion"));
+  assert.ok(view.getByText(/converts responses requests to chat\/completions \(\/openai\/v1\/chat\/completions\)/));
+  assert.ok(view.getByText(/responses\/compact is unavailable/));
+  assert.equal(view.queryByText("ROUTE_UNAVAILABLE"), null);
+  fireEvent.click(view.getByRole("checkbox", { name: "converted (converted)" }));
+  fireEvent.change(filter, { target: { value: "unselectable" } });
+  assert.deepEqual(visible(), ["strict (strict)"]);
+  assert.ok(view.getByText(/Lossy shim requests are rejected/));
+  assert.equal(view.getByRole("checkbox", { name: "strict (strict)" }).disabled, true);
+  fireEvent.change(filter, { target: { value: "native" } });
+  fireEvent.click(view.getByRole("checkbox", { name: "upgradable (upgradable)" }));
+  fireEvent.click(confirmButton(view));
+  assert.deepEqual(current.models.map(entry => entry.clientCompatibility.codex), [undefined, true, true, undefined]);
+  assert.deepEqual(current.models[1].clientConversion, { codex: true });
+  assert.equal(current.models[1].clientNativeRoute, undefined);
+  assert.deepEqual(current.models[2].clientNativeRoute, { codex: true });
+  assert.equal(current.models[2].clientConversion, undefined);
+});
+
+test("Harness converted member can switch to native and removal clears only its own conversion flag", async () => {
+  const React = await import("react");
+  const { default: HarnessTab } = await loadAdminModule("/admin-ui/src/components/HarnessTab.jsx");
+  const member = {
+    ...model, id: "member",
+    clientCompatibility: { codex: true, claudeCode: true }, clientConversion: { codex: true, claudeCode: true }
+  };
+  let current = { models: [member] };
+  const active = { active: true, from: "responses", to: "chat/completions", routePath: "/openai/v1/chat/completions" };
+  const options = {
+    ...props, config: current, loadedConfig: current,
+    eligibility: { items: [item("member", true, [], nativeCandidate(), { mode: "conversion", conversion: active })] },
+    updateConfig: change => { current = structuredClone(current); change(current); }
+  };
+  const view = renderElement(React.createElement(HarnessTab, options));
+  assert.ok(view.getByText(/Protocol conversion: responses requests are converted to chat\/completions/));
+  assert.ok(view.getByText(/now provides a native responses route \(\/openai\/v1\/responses\)/));
+  fireEvent.click(view.getByRole("button", { name: "Switch to native route" }));
+  assert.deepEqual(current.models[0].clientNativeRoute, { codex: true });
+  assert.deepEqual(current.models[0].clientConversion, { claudeCode: true });
+  assert.equal(current.models[0].clientCompatibility.codex, true);
+  current = { models: [member] };
+  view.rerender(React.createElement(HarnessTab, { ...options, config: current }));
+  fireEvent.click(view.getAllByRole("button", { name: "Remove" })[0]);
+  assert.deepEqual(current.models[0].clientCompatibility, { codex: true, claudeCode: false });
+  assert.deepEqual(current.models[0].clientConversion, { codex: true });
+  assert.equal(current.models[0].clientNativeRoute, undefined);
 });
 
 test("Harness member that lost native catalog support can enable the override in place", async () => {

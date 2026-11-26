@@ -1409,6 +1409,10 @@ export default function App() {
       handleSectionNavClick(type === "route" ? "workspace-routing" : "ops-model-validation");
       return;
     }
+    if (type === "advanced") {
+      setActiveTab("advanced");
+      return;
+    }
     const collection = type === "upstream" ? config.upstreams || [] : config.models || [];
     const field = type === "upstream" ? "name" : "id";
     const matches = collection.map((item, index) => ({ item, index })).filter(({ item }) => item?.[field] === id);

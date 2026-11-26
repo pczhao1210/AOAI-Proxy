@@ -52,6 +52,7 @@ test("all default boolean flags reject strings, numbers, null and arrays before 
   }
   assert.throws(() => prepareConfigPreview({ models: [{ clientCompatibility: { codex: "false" } }] }), /must be a boolean/);
   assert.throws(() => prepareConfigPreview({ models: [{ clientNativeRoute: { codex: "true" } }] }), /clientNativeRoute\.codex must be a boolean/);
+  assert.throws(() => prepareConfigPreview({ models: [{ clientConversion: { codex: "true" } }] }), /clientConversion\.codex must be a boolean/);
 });
 
 test("export and image gate migration preserves every legacy AND combination without mutating input", () => {

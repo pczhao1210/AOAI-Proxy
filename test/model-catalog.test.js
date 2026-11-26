@@ -2383,3 +2383,68 @@ test("Harness native route override for Claude Code applies only to the messages
   assert.equal(overridden.eligible, true);
   assert.equal(overridden.nativeRoute.active, true);
 });
+
+test("Harness conversion is an explicit, membership-scoped state that native routing outranks", () => {
+  const upstream = (name, routes) => ({
+    name, provider: "azure-openai", baseUrl: "https://example.openai.azure.com/", status: "active", routes
+  });
+  const chatRoute = { "chat/completions": "/openai/v1/chat/completions" };
+  const model = (id, up, extra = {}) => ({
+    id, upstream: up, targetModel: "FW-DeepSeek-V4.1-Flash", pricingRef: "DeepSeek-V4.1-Flash", routes: {}, ...extra
+  });
+  const draft = {
+    compatibility: { protocolShim: { rejectLossyRequests: false } },
+    upstreams: [upstream("chat-only", chatRoute), upstream("full", { ...chatRoute, responses: "/openai/v1/responses" })],
+    models: [
+      model("plain", "chat-only"),
+      model("converted", "chat-only", {
+        clientCompatibility: { codex: true, claudeCode: true }, clientConversion: { codex: true, claudeCode: true }
+      }),
+      model("flag-only", "chat-only", { clientConversion: { codex: true } }),
+      model("both-flags", "full", {
+        clientCompatibility: { codex: true }, clientConversion: { codex: true }, clientNativeRoute: { codex: true }
+      }),
+      model("upgradable", "full", { clientCompatibility: { codex: true }, clientConversion: { codex: true } }),
+      model("disabled", "chat-only", { status: "disabled", clientConversion: { codex: true } })
+    ]
+  };
+  const snapshot = compileModelCatalog(draft);
+  const clients = new Map(getHarnessModelEligibility(draft, snapshot).map(item => [item.modelId, item.clients]));
+  const conversion = { from: "responses", to: "chat/completions", routePath: "/openai/v1/chat/completions" };
+
+  assert.deepEqual(clients.get("plain").codex.conversion, { active: false, candidate: { eligible: true, reasons: [], ...conversion } });
+  assert.equal(clients.get("plain").codex.eligible, false);
+  assert.equal(clients.get("plain").codex.mode, null);
+  assert.equal(clients.get("flag-only").codex.eligible, false, "The flag is inert without membership");
+  assert.equal(clients.get("converted").codex.eligible, true);
+  assert.equal(clients.get("converted").codex.mode, "conversion");
+  assert.deepEqual(clients.get("converted").codex.conversion, { active: true, ...conversion });
+  assert.deepEqual(clients.get("converted").claudeCode.conversion, {
+    active: true, from: "messages", to: "chat/completions", routePath: "/openai/v1/chat/completions"
+  });
+  assert.equal(clients.get("converted").codex.nativeRoute.candidate.eligible, false);
+  assert.deepEqual(clients.get("converted").codex.nativeRoute.candidate.reasons.map(reason => reason.code), ["ROUTE_UNAVAILABLE"]);
+  assert.equal(clients.get("both-flags").codex.mode, "native", "The native override outranks the conversion flag");
+  assert.deepEqual(clients.get("both-flags").codex.conversion, { active: false, candidate: null });
+  assert.equal(clients.get("upgradable").codex.mode, "conversion");
+  assert.equal(clients.get("upgradable").codex.nativeRoute.candidate.eligible, true, "A converted member can switch to native");
+  assert.deepEqual(clients.get("disabled").codex.conversion, { active: false, candidate: null }, "Other blockers are not repairable by conversion");
+  assert.equal(getHarnessClientEligibility(draft, draft.models[1], "codex", snapshot).eligible, true);
+  assert.equal(getHarnessClientEligibility(draft, draft.models[2], "codex", snapshot).eligible, false);
+
+  const strict = { ...draft, compatibility: { protocolShim: { rejectLossyRequests: true } } };
+  const strictClients = new Map(getHarnessModelEligibility(strict, snapshot).map(item => [item.modelId, item.clients]));
+  assert.deepEqual(strictClients.get("converted").codex.reasons.map(reason => reason.code), ["CONVERSION_BLOCKED_BY_POLICY"]);
+  assert.equal(strictClients.get("converted").codex.eligible, false);
+  assert.equal(strictClients.get("plain").codex.conversion.candidate.eligible, false);
+  assert.deepEqual(strictClients.get("plain").codex.conversion.candidate.reasons.map(reason => reason.code), ["CONVERSION_BLOCKED_BY_POLICY"]);
+  assert.equal(strictClients.get("both-flags").codex.eligible, true, "Native routing is unaffected by the lossy policy");
+  assert.match(
+    getConfiguredModelBindingIssues(strict, snapshot).map(issue => issue.message).join("\n"),
+    /rejectLossyRequests/
+  );
+  assert.equal(
+    getConfiguredModelBindingIssues(draft, snapshot).some(issue => /marked for (Codex|Claude Code)/.test(issue.message) && /"converted"/.test(issue.message)),
+    false
+  );
+});

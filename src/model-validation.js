@@ -183,6 +183,21 @@ const CLIENT_COMPATIBILITY_PROTOCOLS = {
   codex: { label: "Codex", routeKey: HARNESS_CLIENT_ROUTE_KEYS.codex }
 };
 const NATIVE_ROUTE_REPAIRABLE_REASONS = new Set(["NON_NATIVE_PROTOCOL", "ROUTE_UNAVAILABLE"]);
+const CONVERSION_REPAIRABLE_REASONS = new Set(["NON_NATIVE_PROTOCOL"]);
+const CONVERSION_ROUTE_KEYS = new Set(["chat/completions", "responses", "messages"]);
+
+// The conversion flag is an administrator acknowledgement that a Harness member may use the
+// shim-converted route. It is inert unless the model is a member, and the native override wins.
+function hasHarnessConversion(model, clientName) {
+  return model?.clientCompatibility?.[clientName] === true
+    && model?.clientConversion?.[clientName] === true
+    && model?.clientNativeRoute?.[clientName] !== true;
+}
+
+// Mirrors the request-side gate in proxy.js: strict mode rejects every lossy shim request.
+function rejectsLossyShimRequests(config) {
+  return config?.compatibility?.protocolShim?.rejectLossyRequests !== false;
+}
 
 function normalizeCapabilities(model, descriptor) {
   const capabilities = Array.isArray(descriptor?.capabilities) && descriptor.capabilities.length > 0
@@ -202,6 +217,7 @@ export function getHarnessClientEligibility(config, model, clientName, snapshot,
   }
 
   const reasons = [];
+  let conversion = null;
   const descriptor = context.descriptor ?? resolveModelDescriptor(model, snapshot);
   const upstream = context.upstream ?? findUpstream(config, model?.upstream);
   if (isDisabledStatus(model?.status)) {
@@ -247,10 +263,24 @@ export function getHarnessClientEligibility(config, model, clientName, snapshot,
     try {
       const target = buildValidationTarget(model, upstream, protocol.routeKey, descriptor);
       if (target.backendRouteKey !== protocol.routeKey) {
-        reasons.push(buildEligibilityReason(
-          "NON_NATIVE_PROTOCOL",
-          `model "${model?.id}" is marked for ${protocol.label} but ${protocol.routeKey} resolves to ${target.backendRouteKey}; native ${protocol.routeKey} is required`
-        ));
+        if (hasHarnessConversion(model, clientName) && CONVERSION_ROUTE_KEYS.has(target.backendRouteKey)) {
+          conversion = {
+            from: protocol.routeKey,
+            to: target.backendRouteKey,
+            routePath: new URL(target.targetUrl).pathname
+          };
+          if (rejectsLossyShimRequests(config)) {
+            reasons.push(buildEligibilityReason(
+              "CONVERSION_BLOCKED_BY_POLICY",
+              `model "${model?.id}" is marked for ${protocol.label} through ${protocol.routeKey} -> ${target.backendRouteKey} conversion, but compatibility.protocolShim.rejectLossyRequests rejects the lossy requests ${protocol.label} sends`
+            ));
+          }
+        } else {
+          reasons.push(buildEligibilityReason(
+            "NON_NATIVE_PROTOCOL",
+            `model "${model?.id}" is marked for ${protocol.label} but ${protocol.routeKey} resolves to ${target.backendRouteKey}; native ${protocol.routeKey} is required`
+          ));
+        }
       }
     } catch (error) {
       reasons.push(buildEligibilityReason(
@@ -260,10 +290,13 @@ export function getHarnessClientEligibility(config, model, clientName, snapshot,
     }
   }
 
+  const eligible = reasons.length === 0;
   return {
-    eligible: reasons.length === 0,
+    eligible,
+    mode: eligible ? (conversion ? "conversion" : "native") : null,
     routeKey: protocol.routeKey,
-    reasons
+    reasons,
+    ...(conversion ? { conversion } : {})
   };
 }
 
@@ -284,7 +317,9 @@ function getHarnessClientNativeRouteState(config, model, clientName, snapshot, e
   if (hasHarnessNativeRoute(model, eligibility.routeKey)) {
     return { active: true, routePath: resolveNativeRoutePath(config, model, clientName, snapshot) };
   }
-  if (!eligibility.reasons.length || !eligibility.reasons.every((reason) => NATIVE_ROUTE_REPAIRABLE_REASONS.has(reason.code))) {
+  const repairable = Boolean(eligibility.conversion)
+    || (eligibility.reasons.length > 0 && eligibility.reasons.every((reason) => NATIVE_ROUTE_REPAIRABLE_REASONS.has(reason.code)));
+  if (!repairable) {
     return { active: false, candidate: null };
   }
   const trial = {
@@ -303,11 +338,42 @@ function getHarnessClientNativeRouteState(config, model, clientName, snapshot, e
   };
 }
 
+function getHarnessClientConversionState(config, model, clientName, snapshot, eligibility) {
+  if (eligibility.conversion) {
+    return { active: true, ...eligibility.conversion };
+  }
+  if (
+    hasHarnessNativeRoute(model, eligibility.routeKey)
+    || !eligibility.reasons.length
+    || !eligibility.reasons.every((reason) => CONVERSION_REPAIRABLE_REASONS.has(reason.code))
+  ) {
+    return { active: false, candidate: null };
+  }
+  const trial = {
+    ...model,
+    clientCompatibility: { ...model?.clientCompatibility, [clientName]: true },
+    clientConversion: { ...model?.clientConversion, [clientName]: true }
+  };
+  const result = getHarnessClientEligibility(config, trial, clientName, snapshot);
+  return {
+    active: false,
+    candidate: {
+      eligible: result.eligible,
+      reasons: result.reasons,
+      from: result.conversion?.from ?? null,
+      to: result.conversion?.to ?? null,
+      routePath: result.conversion?.routePath ?? null
+    }
+  };
+}
+
 function getHarnessClientPreview(config, model, clientName, snapshot) {
   const eligibility = getHarnessClientEligibility(config, model, clientName, snapshot);
+  const { conversion, ...preview } = eligibility;
   return {
-    ...eligibility,
-    nativeRoute: getHarnessClientNativeRouteState(config, model, clientName, snapshot, eligibility)
+    ...preview,
+    nativeRoute: getHarnessClientNativeRouteState(config, model, clientName, snapshot, eligibility),
+    conversion: getHarnessClientConversionState(config, model, clientName, snapshot, eligibility)
   };
 }
 
@@ -332,7 +398,12 @@ export function getHarnessCatalogState(config, snapshot) {
   for (const [index, item] of items.entries()) {
     if (item.selected.codex && item.clients.codex.eligible) {
       const model = config.models[index];
-      item.codex = getCodexModelMetadata(model, codexIndex++, resolveModelDescriptor(model, snapshot));
+      item.codex = getCodexModelMetadata(
+        model,
+        codexIndex++,
+        resolveModelDescriptor(model, snapshot),
+        { converted: item.clients.codex.mode === "conversion" }
+      );
     }
   }
   return {

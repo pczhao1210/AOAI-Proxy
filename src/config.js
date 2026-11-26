@@ -678,7 +678,8 @@ function validateRawBooleanFlags(raw) {
   for (const [index, model] of (Array.isArray(raw?.models) ? raw.models : []).entries()) {
     validate({
       clientCompatibility: { claudeCode: false, codex: false },
-      clientNativeRoute: { claudeCode: false, codex: false }
+      clientNativeRoute: { claudeCode: false, codex: false },
+      clientConversion: { claudeCode: false, codex: false }
     }, model, `models[${index}]`);
   }
 }
@@ -1862,6 +1863,16 @@ function validateConfig(cfg) {
       for (const clientName of ["claudeCode", "codex"]) {
         if (model.clientNativeRoute[clientName] != null && typeof model.clientNativeRoute[clientName] !== "boolean") {
           throw new Error(`models[${idx}].clientNativeRoute.${clientName} must be a boolean`);
+        }
+      }
+    }
+    if (model.clientConversion != null) {
+      if (typeof model.clientConversion !== "object" || Array.isArray(model.clientConversion)) {
+        throw new Error(`models[${idx}].clientConversion must be an object`);
+      }
+      for (const clientName of ["claudeCode", "codex"]) {
+        if (model.clientConversion[clientName] != null && typeof model.clientConversion[clientName] !== "boolean") {
+          throw new Error(`models[${idx}].clientConversion.${clientName} must be a boolean`);
         }
       }
     }

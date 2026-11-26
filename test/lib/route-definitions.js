@@ -675,6 +675,83 @@ export const routeTests = [
     }
   },
   {
+    id: "harness-protocol-conversion",
+    description: "Harness membership can select a converted route for models without native Responses/Messages, unless lossy shim requests are rejected",
+    async run(ctx) {
+      const config = await ctx.readConfigFile();
+      const chatOnly = config.models.find((model) => model.id === "chat-only");
+      ensure(chatOnly, "Expected chat-only model");
+      const save = (payload) => ctx.adminRequest("/admin/api/config", {
+        method: "PUT",
+        headers: { "x-aoai-admin-csrf": "1" },
+        json: payload
+      });
+      const preview = async (payload) => {
+        const response = await ctx.adminRequest("/admin/api/harness/eligibility", {
+          method: "POST", headers: { "x-aoai-admin-csrf": "1" }, json: { config: payload }
+        });
+        assert.equal(response.status, 200, response.text);
+        return response.json.items.find((item) => item.modelId === "chat-only").clients;
+      };
+
+      chatOnly.clientCompatibility = { codex: true, claudeCode: true };
+      const withoutFlag = await save(config);
+      assert.equal(withoutFlag.status, 400, withoutFlag.text);
+      const candidates = await preview(config);
+      assert.equal(candidates.codex.conversion.candidate.eligible, true);
+      assert.equal(candidates.codex.conversion.candidate.to, "chat/completions");
+      assert.equal(candidates.claudeCode.conversion.candidate.eligible, true);
+
+      chatOnly.clientConversion = { codex: true, claudeCode: true };
+      const converted = await preview(config);
+      assert.equal(converted.codex.eligible, true);
+      assert.equal(converted.codex.mode, "conversion");
+      assert.deepEqual(converted.codex.conversion, {
+        active: true, from: "responses", to: "chat/completions", routePath: "/openai/v1/chat/completions"
+      });
+      assert.equal(converted.claudeCode.conversion.from, "messages");
+      const saved = await save(config);
+      assert.equal(saved.status, 200, saved.text);
+      const persisted = (await ctx.readConfigFile()).models.find((model) => model.id === "chat-only");
+      assert.deepEqual(persisted.clientConversion, { codex: true, claudeCode: true });
+      assert.deepEqual(persisted.routes, { "*": "chat/completions" });
+
+      const codexCatalog = await ctx.publicRequest("/v1/models", { headers: { "user-agent": "codex_cli_rs/0.147.0" } });
+      const codexEntry = codexCatalog.json.models.find((model) => model.slug === "chat-only");
+      ensure(codexEntry, "Expected converted model in the Codex catalog");
+      assert.equal(codexEntry.apply_patch_tool_type, null);
+      const claudeCatalog = await ctx.publicRequest("/v1/models?format=claude-code");
+      assert.ok(claudeCatalog.json.data.some((model) => model.id === "chat-only"));
+
+      ctx.clearUpstreamRequests();
+      const viaResponses = await ctx.publicRequest("/v1/responses", {
+        method: "POST",
+        json: { model: "chat-only", input: "hello" }
+      });
+      assert.equal(viaResponses.status, 200, viaResponses.text);
+      assert.match(ctx.upstreamRequests.at(-1).url, /\/openai\/v1\/chat\/completions(?:\?|$)/);
+      assert.equal(viaResponses.json?.model, "chat-only");
+
+      config.compatibility = {
+        ...(config.compatibility || {}),
+        protocolShim: { ...(config.compatibility?.protocolShim || {}), rejectLossyRequests: true }
+      };
+      const strictPreview = await preview(config);
+      assert.equal(strictPreview.codex.eligible, false);
+      assert.deepEqual(strictPreview.codex.reasons.map((reason) => reason.code), ["CONVERSION_BLOCKED_BY_POLICY"]);
+      const strictSave = await save(config);
+      assert.equal(strictSave.status, 400, strictSave.text);
+      assert.match(strictSave.json?.error || "", /rejectLossyRequests/);
+      config.compatibility.protocolShim.rejectLossyRequests = false;
+
+      chatOnly.clientCompatibility = { codex: false, claudeCode: false };
+      const removed = await save(config);
+      assert.equal(removed.status, 200, removed.text);
+      const afterRemoval = await ctx.publicRequest("/v1/models", { headers: { "user-agent": "codex_cli_rs/0.147.0" } });
+      assert.equal(afterRemoval.json.models.some((model) => model.slug === "chat-only"), false);
+    }
+  },
+  {
     id: "gpt-5.6-route-migration",
     description: "legacy GPT-5.6 wildcard routes migrate without blocking explicit v3 overrides",
     async run(ctx) {

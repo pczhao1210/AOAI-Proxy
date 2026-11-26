@@ -36,7 +36,8 @@ function getClientCompatibilityMeta(t, model) {
   return clients
     .filter(([clientName]) => model?.clientCompatibility?.[clientName] === true)
     .map(([clientName, label]) => `${label}: ${t("routing.compatibility.catalogMember", "Catalog member")}${
-      model?.clientNativeRoute?.[clientName] === true ? ` (${t("routing.compatibility.nativeRoute", "native route override")})` : ""
+      model?.clientNativeRoute?.[clientName] === true ? ` (${t("routing.compatibility.nativeRoute", "native route override")})`
+        : model?.clientConversion?.[clientName] === true ? ` (${t("routing.compatibility.conversion", "protocol conversion")})` : ""
     }`)
     .join(" · ");
 }

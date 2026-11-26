@@ -62,7 +62,7 @@
 - 同时接受 `Authorization: Bearer <key>` 和 `x-api-key: <key>`，可以分别承接 Codex 和 Claude Code 常见鉴权方式。
 - 客户端凭据不会直接作为上游凭据复用；代理会按配置生成 Azure API Key、Bearer token 或其他上游鉴权头。
 - 已提供模型发现接口，并会按消费者权限过滤模型。它可以返回标准 OpenAI `data`、Anthropic `data`，也可根据显式 `format=codex`、Codex `client_version` query 或 User-Agent 返回专用 `models` 目录。
-- Claude Code User-Agent 或 `format=claude-code` 只发现已标记且原生路由到 Messages 的模型；Codex 目录同样只发布已标记且原生路由到 Responses 的模型。模型 ID 必须唯一，避免目录与运行时解析分裂。
+- Claude Code User-Agent 或 `format=claude-code` 只发现已标记且原生路由到 Messages（或管理员已显式选择协议转换）的模型；Codex 目录同样只发布已标记且原生路由到 Responses（或已显式选择协议转换）的模型。模型 ID 必须唯一，避免目录与运行时解析分裂。
 
 ### 3.2 原生协议请求
 
@@ -92,7 +92,7 @@
 
 ## 4. 特殊点和使用边界
 
-### 4.1 必须优先使用原生协议路由
+### 4.1 优先使用原生协议路由，转换须显式选择
 
 路由由公开 route、模型 `routes` 和 upstream `routes` 共同决定。建议确保：
 
@@ -114,6 +114,8 @@
 ```
 
 实际配置还必须引用对应 upstream；上例只强调协议选择。双协议模型应保持 wildcard route 为空，使 Chat 与 Responses 客户端分别走原生入口；只有 Responses-only 模型才需要全局映射到 Responses。若把 Claude 模型路由到 Responses，或把 Codex 的 Responses 入口路由到 Messages/Chat，代理会启用 shim，能力评级随即降为“有限兼容”。
+
+上游没有原生端点的模型（例如只有 Chat 的 DeepSeek V4.1 Flash）在 Harness 中有两种选择：上游补齐原生路由后走原生路由；或在“可选择 - 需转换”中显式选择协议转换（`models[].clientConversion.<client>`），代价是 4.3 所述字段丢失和 `responses/compact`、`messages/count_tokens` 不可用。该选项在 `compatibility.protocolShim.rejectLossyRequests` 开启时不可用。
 
 ### 4.2 Claude Code 的 beta/header 是开放集合
 
@@ -137,7 +139,7 @@ Codex 自定义 provider 应明确设置 `wire_api = "responses"`。当前 Codex
 
 Codex `0.153.2` 在启用远端目录刷新时会请求 `<base_url>/models?client_version=0.153.2`，并严格按专用 `ModelsResponse { models }` 解析。普通 `env_key` 自定义 provider 在干净状态下可能直接使用内置目录；远端刷新条件包括 Codex backend auth 或 command-backed provider auth。代理按显式 `format`、非空 `client_version`、User-Agent 的顺序协商目录格式，同时保留标准 OpenAI 与 Anthropic 模型列表格式。UA 判断使用不区分大小写的客户端关键词，不绑定完整 header 文本或具体版本号。
 
-Codex 目录只暴露 `clientCompatibility.codex=true` 且原生路由到 Responses 的模型。目录优先使用模型配置覆盖，其次使用 Model Catalog 中经来源验证的完整 context window；仅当两者都缺失时回退到 128K。可通过 `models[].codex` 覆盖描述、context window、reasoning 档位、优先级和 `baseInstructions`。Codex `0.153.2` 要求每个条目提供 `base_instructions` 或 `model_messages.instructions_template`；代理不会复制 Codex 内置提示，而是输出简短默认指令或管理员配置的 deployment 专属指令。
+Codex 目录只暴露 `clientCompatibility.codex=true` 且原生路由到 Responses（或已显式选择协议转换）的模型；转换成员不声明 freeform `apply_patch` 与托管搜索。目录优先使用模型配置覆盖，其次使用 Model Catalog 中经来源验证的完整 context window；仅当两者都缺失时回退到 128K。可通过 `models[].codex` 覆盖描述、context window、reasoning 档位、优先级和 `baseInstructions`。Codex `0.153.2` 要求每个条目提供 `base_instructions` 或 `model_messages.instructions_template`；代理不会复制 Codex 内置提示，而是输出简短默认指令或管理员配置的 deployment 专属指令。
 
 ### 4.5 错误不是完全透明透传
 
@@ -197,7 +199,7 @@ export AOAI_PROXY_API_KEY="<proxy-api-key>"
 要求：
 
 - `base_url` 应包含 `/v1`，Codex 会在其后请求 `/responses`。
-- `<responses-model-id>` 必须设置 `clientCompatibility.codex=true` 并原生路由到 `responses`。Model Catalog 未声明原生 Responses 的模型（如 DeepSeek V4.1 Flash）需先在其上游配置 `responses` 路由，再在管理端 Harness 的 Codex 区域选择该模型；选择时会写入 `clientNativeRoute.codex=true`，使 `responses` 请求在成员期间原生路由，移出后恢复 `models[].routes`。
+- `<responses-model-id>` 必须设置 `clientCompatibility.codex=true`，推荐原生路由到 `responses`。Model Catalog 未声明原生 Responses 的模型（如 DeepSeek V4.1 Flash）有两种接入方式：上游已配置 `responses` 路由时，在管理端 Harness 的 Codex 区域选择它（归入“可选择 - 原生协议”，写入 `clientNativeRoute.codex=true`，成员期间 `responses` 原生路由）；上游没有该端点时，可在“可选择 - 需转换”中选择（写入 `clientConversion.codex=true`，`responses` 请求转换为 Chat 等目标协议，有字段丢失）。移出 Harness 后两类标记都会删除并恢复 `models[].routes`。上游路由目前只能在高级 JSON 的 `upstreams[].routes` 中编辑。
 - 建议显式设置 `model`；代理 `/models` 已能返回 Codex 专用模型目录，不再需要额外 `model_catalog_json` 来规避解析告警。
 - Codex 目录优先发布模型配置中的 `codex.contextWindow` 或 `contextWindow`，否则使用 Model Catalog 中经来源验证的完整 `contextWindow`；仅当总窗口未知时才使用 `maxInputTokens`，所有目录限制均缺失时继续使用旧版 `128000` 回退。
 - 保持 `supports_websockets = false`。代理已提供原生 `/v1/responses/compact`，但 Codex `0.153.2` 的自定义 provider 没有独立 compact 能力开关；不要通过伪装 provider 名称或地址来强制启用未经真实 CLI 验证的远端 compact。
@@ -284,7 +286,7 @@ P0 按“核心协议门禁”验收为已完成。第 3 项的固定版本单�
 3. **[已完成] 扩展 Responses item 和 Anthropic content block 覆盖**
    - 原生 HTTP/JSON 与 SSE 路径继续透明保留未知 item、未知事件和 content block，不把客户端能力限制在代理已知集合内。
    - 跨协议请求在访问上游前校验可表示性；默认无法无损转换时返回 `400 UnsupportedProtocolShim`。跨协议非流式响应默认返回 `502 UnsupportedProtocolShimResponse`；流式响应发送目标协议错误帧并按该协议正常结束连接。
-   - `compatibility.protocolShim.rejectLossyRequests` 与 `rejectLossyResponses` 可独立关闭严格门禁。兼容模式继续尽力转换，并通过 `proxy.protocol_shim_lossy_conversion` 记录阶段、字段路径、协议方向和丢失原因；默认值均为 `true`。
+   - `compatibility.protocolShim.rejectLossyRequests` 与 `rejectLossyResponses` 可独立关闭严格门禁。兼容模式继续尽力转换，并通过 `proxy.protocol_shim_lossy_conversion` 记录阶段、字段路径、协议方向和丢失原因；默认值均为 `false`（见配置指南）。
    - Chat 转 Responses/Messages 的流式 shim 会消费标准 `stream_options.include_usage`，并在 `[DONE]` 前生成 `choices: []` 的 Chat usage chunk；未知 stream option 仍进入有损门禁。
    - 已明确覆盖 `custom_tool_call/output`、`web_search_call`、`computer_call/output`、`shell/local_shell`、MCP、文件引用、引用/annotations、reasoning、compaction、Anthropic document/file image、server tool、redacted thinking 和 tool error 状态。
    - 同时拒绝会改变控制流但曾被静默删除的会话状态、非默认工具上限、多候选、非文本 modalities、prediction、top-k/metadata 和无法映射的异常终止原因。空 SDK 默认值（如 `include: []`、空状态对象、null reasoning 扩展）不会误触发门禁。

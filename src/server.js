@@ -274,18 +274,24 @@ function buildAnthropicModelList(config, consumer, { claudeCodeOnly = false } = 
   };
 }
 
-function modelUsesNativeResponses(config, model) {
+function getCodexDiscoveryEligibility(config, model) {
   if (model?.clientCompatibility?.codex !== true) {
-    return false;
+    return { eligible: false };
   }
-  return getHarnessClientEligibility(config, model, "codex").eligible;
+  return getHarnessClientEligibility(config, model, "codex");
 }
 
 function buildCodexModelList(config, consumer) {
   return {
     models: filterModelsForConsumer(config.models, consumer)
-      .filter((model) => modelUsesNativeResponses(config, model))
-      .map((model, index) => getCodexModelMetadata(model, index, resolveModelDescriptor(model.id)).info)
+      .map((model) => ({ model, eligibility: getCodexDiscoveryEligibility(config, model) }))
+      .filter(({ eligibility }) => eligibility.eligible)
+      .map(({ model, eligibility }, index) => getCodexModelMetadata(
+        model,
+        index,
+        resolveModelDescriptor(model.id),
+        { converted: eligibility.mode === "conversion" }
+      ).info)
   };
 }
 

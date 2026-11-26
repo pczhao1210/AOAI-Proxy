@@ -22,7 +22,8 @@ function normalizeReasoningLevels(values) {
     : [];
 }
 
-export function getCodexModelMetadata(model, index, descriptor) {
+// A converted route reaches a different upstream protocol, so Responses-only tools are dropped on the way.
+export function getCodexModelMetadata(model, index, descriptor, { converted = false } = {}) {
   const rawCapabilities = descriptor?.capabilities?.length ? descriptor.capabilities : model?.capabilities;
   const capabilities = new Set((Array.isArray(rawCapabilities) ? rawCapabilities : [])
     .filter(value => typeof value === "string")
@@ -54,7 +55,7 @@ export function getCodexModelMetadata(model, index, descriptor) {
     ? descriptor.inputModalities.filter(modality => ["text", "image"].includes(modality))
     : capabilities.has("vision") ? ["text", "image"] : ["text"];
   const supportsVision = inputModalities.includes("image");
-  const supportsWebSearch = capabilities.has("web-search");
+  const supportsWebSearch = capabilities.has("web-search") && !converted;
   const configuredInstructions = typeof model?.codex?.baseInstructions === "string" ? model.codex.baseInstructions.trim() : "";
   const configuredPriority = Number.isInteger(model?.codex?.priority);
   return {
@@ -86,7 +87,7 @@ export function getCodexModelMetadata(model, index, descriptor) {
       default_reasoning_summary: "none",
       support_verbosity: false,
       default_verbosity: null,
-      apply_patch_tool_type: capabilities.has("code-optimized") ? "freeform" : null,
+      apply_patch_tool_type: capabilities.has("code-optimized") && !converted ? "freeform" : null,
       web_search_tool_type: supportsVision && supportsWebSearch ? "text_and_image" : "text",
       truncation_policy: { mode: "tokens", limit: 10000 },
       supports_parallel_tool_calls: capabilities.has("parallel-tool-calling"),

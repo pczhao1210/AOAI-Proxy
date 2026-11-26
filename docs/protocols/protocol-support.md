@@ -79,7 +79,7 @@
 2. 跨协议路径只承诺文本、常见输入图片、普通 function tool、普通工具调用与结果、基础 token 限制、基础终止原因和 usage 的交集。
 3. Responses 的现代 item、服务端状态和内置工具，以及 Messages 的 thinking、document、cache control 等高级语义，不能视为可跨协议等价转换。
 4. 协议不可表达的核心状态必须明确拒绝。非核心字段默认按尽力模式转换并记录结构化丢失告警；运维方可开启对应 shim 严格开关，把这类损失也改为拒绝。
-5. Claude Code 必须绑定原生 Messages；Codex 必须绑定原生 Responses。转换路径只能作为普通客户端的基础兼容手段，不能作为这两个客户端的生产主路径。
+5. Claude Code 优先且推荐绑定原生 Messages，Codex 优先且推荐绑定原生 Responses。上游没有原生端点时，管理员可在 Harness 中显式选择“协议转换”（`models[].clientConversion.<client>`），转换仅承诺公共交集并有已知损失（见 18.3），因此原生路径始终排在前面。
 6. `responses/compact` 和 `messages/count_tokens` 是协议专属能力，不能由其他协议模拟。
 7. 请求控制字段的转换不是完全对称的。尤其是停止序列、采样控制和供应商扩展字段，必须按具体源协议和目标协议逐方向判断。
 
@@ -1125,14 +1125,16 @@ Anthropic 目录使用 Anthropic 客户端可理解的模型对象形状。普�
 2. 当前 API key 有权访问；
 3. 模型显式标记为 Claude Code 兼容；
 4. 公共 Messages 路由已启用；
-5. 模型最终解析为原生 Messages；
-6. 上游最终路径确实是 Messages。
+5. 模型最终解析为原生 Messages（推荐），或管理员已在 Harness 中显式选择协议转换；
+6. 原生时上游最终路径确实是 Messages；转换时最终路径是已解析的目标协议路径（如 Chat）。
 
 客户端识别只负责选择目录格式，不能把任意模型自动变成 Claude Code 兼容模型。
 
 管理端 Harness 页使用后端对当前未保存配置的路由解析结果生成候选列表。目录成员必须始终是当前可路由模型的子集；已选模型若因模型、上游或公共 route 被禁用而失效，配置保存会被拒绝。
 
 Harness 原生路由覆盖：Model Catalog 没有为模型声明原生 `messages` / `responses`（例如只声明 `chat/completions` 的 DeepSeek V4.1 Flash）时，选择该模型会写入 `models[].clientNativeRoute.claudeCode` / `.codex = true`。该标记只在模型同时是对应客户端的 Harness 成员时生效：Claude Code 覆盖 `messages`，Codex 覆盖 `responses`，两者都优先于 `models[].routes`，并跳过针对该路由的 Catalog 接口/路由目标检查；最终上游 URL 仍必须来自 `upstreams[].routes` 中的同名路由，协议仍由最终 URL 决定。`messages/count_tokens` 与 `responses/compact` 随各自协议一起覆盖。模型被移出 Harness 后标记不再生效（界面同时删除它），`models[].routes` 与 Catalog 路由规则恢复。该覆盖按公共路由和模型生效，并非只对 Codex / Claude Code 客户端生效；它不修改 `models[].routes`、`upstreams[].routes` 或 Model Catalog，也不放宽模型禁用、上游不可用、公共路由关闭或图片模型等其他资格检查。
+
+Harness 协议转换：上游没有原生 `messages` / `responses` 路由、最终 URL 解析为其他文本协议（如 `chat/completions`）时，管理员可在 Harness 中把该模型选为“可选择 - 需转换”，写入 `models[].clientConversion.claudeCode` / `.codex = true`。该标记只在模型同时是对应客户端的成员时生效，且被 `clientNativeRoute` 压过；它不改变路由解析，只允许“最终协议不是原生”这一项资格检查通过，移出 Harness 后界面同时删除它。资格预览以 `compatibility.protocolShim.rejectLossyRequests` 为门禁：该开关开启（运行时 `!== false`）时，Claude Code / Codex 通常携带的有损字段会被 400 拒绝，所以预览返回 `CONVERSION_BLOCKED_BY_POLICY` 并拒绝保存。转换沿用 shim 的既有边界：Codex（Responses → Chat）不转发 `prompt_cache_key`、`include`、`reasoning.summary`、`previous_response_id`、`custom`/`web_search` 工具和 input 中的 reasoning item；Claude Code（Messages → Chat）不转发 `thinking`、`metadata`、`cache_control`；`responses/compact` 与 `messages/count_tokens` 保持协议专属，不可用。转换成员的 Codex 目录条目不声明 freeform `apply_patch` 与托管搜索。原生路径永远优先：同一模型既有原生候选又有转换候选时，界面归入“可选择 - 原生协议”，已转换的成员在上游补齐原生路由后可一键切换。
 
 ### 18.4 Codex 模型目录
 
@@ -1147,7 +1149,7 @@ Harness 原生路由覆盖：Model Catalog 没有为模型声明原生 `messages
 1. 已启用且当前 key 可访问；
 2. 显式标记为 Codex 兼容；
 3. 公共 Responses 路由已启用；
-4. 最终解析为原生 Responses；
+4. 最终解析为原生 Responses（推荐），或管理员已在 Harness 中显式选择协议转换；
 5. 不是图片生成或编辑模型。
 
 Codex 模型元数据可包括：
@@ -1247,7 +1249,7 @@ Anthropic SDK -> /v1/messages -> 原生 Messages 上游
 Claude Code -> /v1/messages -> 原生 Anthropic Messages 上游
 ```
 
-模型必须显式标记为 Claude Code 兼容，并在配置校验阶段证明最终路由是原生 Messages。只要目标模型、route key、上游路径或公共 route 中任一项不满足，就不应进入 Claude Code 专用目录。
+模型必须显式标记为 Claude Code 兼容，并在配置校验阶段证明最终路由是原生 Messages（推荐），或管理员已显式选择协议转换。只要目标模型、route key、上游路径或公共 route 中任一项不满足，就不应进入 Claude Code 专用目录。
 
 ### 21.2 客户端配置原则
 
@@ -1662,8 +1664,8 @@ SSE 的 8 MiB 上限按单个原始事件的字节数计算（包含事件分隔
 
 - 模型 ID 唯一；
 - route key 与最终 URL 协议一致；
-- Claude Code 模型最终为原生 Messages；
-- Codex 模型最终为原生 Responses；
+- Claude Code 模型最终为原生 Messages，或已显式选择协议转换；
+- Codex 模型最终为原生 Responses，或已显式选择协议转换；
 - utility endpoint 不指向 shim；
 - route profile 已启用；
 - allowlist、blocklist 和 drop policy 无冲突；
@@ -1846,7 +1848,7 @@ SSE 的 8 MiB 上限按单个原始事件的字节数计算（包含事件分隔
 #### Claude Code
 
 - gateway model discovery；
-- 只看到显式标记的原生 Messages 模型；
+- 只看到显式标记的原生 Messages 或已选择协议转换的模型；
 - x-stainless/x-claude metadata；
 - 流式工具调用；
 - 客户端凭据不泄漏；
@@ -2015,8 +2017,8 @@ SSE 的 8 MiB 上限按单个原始事件的字节数计算（包含事件分隔
 - [ ] Anthropic 模型目录；
 - [ ] Claude Code 专用过滤；
 - [ ] Codex 专用 catalog；
-- [ ] Claude Code 只绑定原生 Messages；
-- [ ] Codex 只绑定原生 Responses；
+- [ ] Claude Code 优先绑定原生 Messages，转换须由管理员显式选择；
+- [ ] Codex 优先绑定原生 Responses，转换须由管理员显式选择；
 - [ ] WebSocket 能力声明与实际一致；
 - [ ] 真实固定版本 CLI 测试。
 
@@ -2078,7 +2080,7 @@ SSE 的 8 MiB 上限按单个原始事件的字节数计算（包含事件分隔
 2. 跨协议只转换经过证明的公共交集；
 3. 对不可表达语义明确失败；
 4. JSON 与 SSE 使用同一套语义边界；
-5. Claude Code 和 Codex 使用各自原生协议；
+5. Claude Code 和 Codex 优先使用各自原生协议；转换须由管理员显式选择；
 6. 模型发现、认证、路由、能力声明和真实运行行为保持一致；
 7. 用负向测试证明不会静默丢失，而不只是用成功请求证明“能通”。
 

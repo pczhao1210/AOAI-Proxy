@@ -292,14 +292,20 @@ Key/时间筛选与同步按钮。「Log Analytics 上传」只表示 Azure 日�
 | `compatibility.anthropic.normalizeManualThinkingToolChoice` | `true` | 修正 manual thinking 与强制工具选择的不兼容组合。 | Workspace；热 |
 | `compatibility.anthropic.sanitizeCacheControl` | `true` | 清理目标 Messages 实现不支持的 `cache_control` 位置或属性。 | Workspace；热 |
 | `compatibility.anthropic.validateThinkingByModel` | `true` | 按模型元数据校验 Claude thinking type 与 effort。 | Workspace；热 |
-| `models[*].clientCompatibility.claudeCode` | `false` | 将模型纳入 Claude Code 专用目录；模型必须启用、上游可用、公共 Messages 开启且最终原生路由到 Messages。不是访问控制。 | Harness；热 |
-| `models[*].clientCompatibility.codex` | `false` | 将模型纳入 Codex 专用目录；模型必须启用、上游可用、公共 Responses 开启、最终原生路由到 Responses，且不是图片生成/编辑模型。不是访问控制。 | Harness；热 |
+| `models[*].clientCompatibility.claudeCode` | `false` | 将模型纳入 Claude Code 专用目录；模型必须启用、上游可用、公共 Messages 开启，且最终路由为原生 Messages（推荐）或已选择协议转换。不是访问控制。 | Harness；热 |
+| `models[*].clientCompatibility.codex` | `false` | 将模型纳入 Codex 专用目录；模型必须启用、上游可用、公共 Responses 开启，最终路由为原生 Responses（推荐）或已选择协议转换，且不是图片生成/编辑模型。不是访问控制。 | Harness；热 |
 | `models[*].clientNativeRoute.claudeCode` | 未设置 | Harness 原生路由覆盖：仅当模型同时是 Claude Code 成员时，`messages` 请求强制使用原生 Messages 路由，优先于 `models[].routes`，并跳过 Catalog 对该路由的接口检查；上游仍需配置 `messages` 路由。移出 Harness 后失效。 | Harness；热 |
 | `models[*].clientNativeRoute.codex` | 未设置 | 同上，作用于 Codex 与 `responses`（含 `responses/compact`）；上游仍需配置 `responses` 路由。 | Harness；热 |
+| `models[*].clientConversion.claudeCode` | 未设置 | Harness 协议转换确认：仅当模型同时是 Claude Code 成员、且最终路由为其他文本协议（如 Chat）时，允许该模型通过资格检查；不改变路由解析，被 `clientNativeRoute.claudeCode` 压过；`compatibility.protocolShim.rejectLossyRequests` 开启时不可用。移出 Harness 后失效。 | Harness；热 |
+| `models[*].clientConversion.codex` | 未设置 | 同上，作用于 Codex；转换成员的 Codex 目录条目不声明 freeform `apply_patch` 与托管搜索。 | Harness；热 |
 
-Harness 会分别展示草稿成员、已保存成员和运行时生效目录；资格只代表静态配置符合原生路由要求，不代表已验证上游、CLI 或工具调用。资格刷新失败、加载中或结果过期时不能选择模型；仍可移除具有唯一 ID 的成员。“选择模型”窗口为多选：已是成员的模型直接显示为勾选，状态筛选为“全部模型 / 可选择 / 不可选择”（默认“可选择”），并支持搜索、完整阻断原因及配置跳转；确认后一次性应用新增与移除，修改仍需统一审阅保存。
+Harness 会分别展示草稿成员、已保存成员和运行时生效目录；资格只代表静态配置符合原生路由要求，不代表已验证上游、CLI 或工具调用。资格刷新失败、加载中或结果过期时不能选择模型；仍可移除具有唯一 ID 的成员。“选择模型”窗口为多选：已是成员的模型直接显示为勾选，状态筛选为“全部模型 / 可选择 - 原生协议 / 可选择 - 需转换 / 不可选择”（默认“可选择 - 原生协议”），并支持搜索、完整阻断原因及配置跳转；确认后一次性应用新增与移除，修改仍需统一审阅保存。
 
-Model Catalog 未声明原生 `messages` / `responses` 的模型（例如 DeepSeek V4.1 Flash 接入 Codex）如果只因“最终上游路由使用了其他协议”或“无法解析原生路由”被阻断，且上游已配置对应的原生路由，则同样属于“可选择”：勾选并确认后自动写入 `clientNativeRoute.<client>=true`，取消勾选或移除时自动删除，之后恢复 `models[].routes` 与 Catalog 的规则。上游尚未配置 `messages` / `responses` 路由时，先在上游中添加该路由。该覆盖对模型的该公共路由整体生效，不修改 `models[].routes`、`upstreams[].routes` 或 Model Catalog。
+Model Catalog 未声明原生 `messages` / `responses` 的模型（例如 DeepSeek V4.1 Flash 接入 Codex）如果只因“最终上游路由使用了其他协议”或“无法解析原生路由”被阻断，且上游已配置对应的原生路由，则同样属于“可选择”：勾选并确认后自动写入 `clientNativeRoute.<client>=true`，取消勾选或移除时自动删除，之后恢复 `models[].routes` 与 Catalog 的规则。该覆盖对模型的该公共路由整体生效，不修改 `models[].routes`、`upstreams[].routes` 或 Model Catalog。
+
+上游没有对应原生端点（例如 DeepSeek 没有 `/responses`）时，模型归入“可选择 - 需转换”：勾选并确认后写入 `clientConversion.<client>=true`，`responses` / `messages` 请求由 shim 转换为最终路由的协议（如 Chat）。转换沿用 shim 的既有边界：Codex 不转发 `prompt_cache_key`、`include`、`reasoning.summary`、`previous_response_id` 和 `custom` / `web_search` 工具，Claude Code 不转发 `thinking`、`metadata`、`cache_control`，`responses/compact` 与 `messages/count_tokens` 不可用，丢失字段记录 `proxy.protocol_shim_lossy_conversion` 警告。`compatibility.protocolShim.rejectLossyRequests` 开启时这类请求会被拒绝，因此该分类不可选（原因 `CONVERSION_BLOCKED_BY_POLICY`）。原生优先：同时具备原生候选的模型归入“原生协议”，已转换的成员在上游补齐路由后可一键切换为原生。
+
+上游路由（`upstreams[].routes`）目前不在结构化表单中编辑：如需原生端点，进入“JSON 编排”为该上游添加 `responses` / `messages` 路由（例如 `"responses": "/openai/v1/responses"`）后再选择模型。
 
 客户端接入向导需要显式填写公共代理地址，只生成带凭据占位符的 Bash/Zsh 或 Codex TOML，不读取密钥、不发起真实请求。Codex 高级区编辑已有 `models[].codex` 元数据覆盖；留空恢复继承，清除按钮仅移除界面列出的字段。推理档位列表在离开输入框时应用。预览与公开目录共用后端解析器，标记配置、Catalog 与既有回退来源；默认优先级随消费者权限过滤后的顺序变化。以上不新增 Feature Flag，也不改变既有配置校验和请求策略。
 
