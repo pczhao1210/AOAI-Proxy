@@ -82,6 +82,35 @@ function renderRuntime(overrides = {}) {
   return view;
 }
 
+test("usage tabs expose their selected section outside the collapsed overview, including target-model grouping", async () => {
+  const { PageSections } = await vite.ssrLoadModule("/admin-ui/src/components/ui.jsx");
+  function Form() {
+    const [tab, setTab] = React.useState("models");
+    const [group, setGroup] = React.useState("public");
+    return React.createElement("div", null,
+      ...["models", "keys", "analytics", "signals"].map(id => React.createElement("button", { key: id, onClick: () => setTab(id) }, id)),
+      React.createElement("button", { onClick: () => setGroup("canonical") }, "Target grouping"),
+      React.createElement(PageSections, { sections: ["runtime-overview", `runtime-${tab}`] },
+        React.createElement(RuntimeTab, runtimeProps({ usageTab: tab, grouping: group, canonicalModels: [] }))));
+  }
+  const view = testing.render(React.createElement(Form));
+  const summary = view.container.querySelector(".runtime-overview-disclosure");
+  assert.ok(summary);
+  assert.equal(summary.open, false);
+  for (const id of ["keys", "analytics", "signals", "models", "keys", "models"]) {
+    testing.fireEvent.click(view.getByRole("button", { name: id, exact: true }));
+    assert.ok(view.container.querySelector(`#runtime-${id}`));
+    assert.equal(view.container.querySelector(`#runtime-${id}`).closest("details:not([open])"), null);
+    assert.equal(view.container.querySelectorAll(".settings-section").length, 1);
+  }
+  testing.fireEvent.click(view.getByRole("button", { name: "Target grouping" }));
+  const table = view.container.querySelector("#runtime-models .runtime-channel-accounting");
+  assert.ok(table);
+  assert.equal(table.closest("[hidden], details:not([open])"), null);
+  assert.equal(view.getAllByRole("combobox", { name: "Key", exact: true }).length, 1);
+  assert.equal(view.getByRole("combobox", { name: "Key", exact: true }).closest("details"), null);
+});
+
 test("canonical model expansion shows recorded channel subtotals and unknown history without repricing it", () => {
   const amounts = { requests: 2, errors: 0, promptTokens: 20000, cachedTokens: 10, completionTokens: 5000,
     totalTokens: 25000, knownCostAmounts: { USD: 1.25 }, unknownCostRequests: 1 };

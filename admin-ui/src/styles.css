@@ -39,6 +39,7 @@
   --surface-raised: #1c2835; --surface-hover: #253648;
 }
 * { box-sizing: border-box; }
+[hidden]:not([hidden="until-found"]) { display: none !important; }
 body { margin: 0; color: var(--foreground); background: var(--background); }
 button, input, select, textarea { font: inherit; }
 button { font-weight: 400; }

@@ -22,7 +22,8 @@ export const settingsSections = {
   logging: "workspace-logging",
   media: "workspace-media",
   routing: "workspace-routing",
-  gateway: "ops-caddy"
+  gateway: "ops-caddy",
+  json: "advanced-json"
 };
 
 export function resolvePage(pathname) {

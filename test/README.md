@@ -50,6 +50,16 @@ round trips, bound route overrides, and searchable/read-only settings metadata.
 They use the shared visual jsdom setup in [admin-dom.js](lib/admin-dom.js).
 App tests continue to cover CAS conflicts, history rollback, stage retry, and
 snapshot fencing through the extracted draft/save controller.
+The shell regressions also switch away from and back to selected settings
+sections (not just fresh page loads), and exercise the single channel creation
+entry with exactly four provider choices and conditional Copilot authorization.
+Channel form tests retain explicit Catalog approval, stale-discovery fencing,
+invalid mapping JSON retention and no implicit publication/Key grants.
+They also cover same-name model IDs, reuse/bulk activation of deployment-to-card
+mappings, and first-edit legacy migration preserving zero-price overrides and
+permissions. Full-JSON replacement tests fence other persistence entry points
+while raw edits are pending; Copilot setup tests distinguish missing admin
+authentication from GitHub device authorization.
 
 For browser acceptance, compile with Vite into a disposable directory and use
 headless Chromium with mocked admin APIs, never the running service or its
@@ -57,6 +67,21 @@ configuration. Check 1440×900 and 390×844 in both themes, at least ten visible
 Key/channel rows on desktop, local table overflow only, mobile bulk disable plus
 review/save (including `If-Match` and `x-aoai-admin-csrf`), Sheet refresh/Back,
 custom base paths, and `j`/`k` navigation through a virtualized log list.
+For channel/settings repairs, exercise each provider creation flow, the full
+mocked Copilot device-login → discovery → selection → draft → reviewed-save
+sequence, legacy-model navigation, and repeated settings tab changes at both
+widths. Include populated mapping/history tables and empty governance panels:
+testing only URLs or empty mock responses misses these interaction/layout cases.
+For table alignment, compare the actual cell content/control vertical centers
+with their cells (3px tolerance), and compare the usage tab/selector centers;
+checking cell top edges alone cannot establish centered text. Use a headless
+environment with Chinese fonts for Chinese layout checks. Exercise invalid JSON
+roots, backend rejection, conflict/retry, tab retention and confirmed replacement
+without sending browser fixtures to a real config store.
+Click each usage tab and assert the selected content appears on the first screen,
+not merely that the URL changes or the section exists far below a shared overview.
+Cover target-model grouping, retained Key/time filters and Back/refresh, plus the
+legacy JSON URL redirect to the sole Settings entry.
 Measure the gzip sum of the entry's complete **static import graph** plus the
 current language chunk against 200,000 bytes; a single entry chunk is not that
 budget. Lazy route/chart/Catalog chunks are additional downloads. Semantic token

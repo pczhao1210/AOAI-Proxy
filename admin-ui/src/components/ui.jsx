@@ -19,9 +19,10 @@ export function StatCard({ label, value, note }) {
   );
 }
 
-export function Section({ id, title, desc, children, actions }) {
+export function Section({ id, title, desc, children, actions, bare = false }) {
   const sections = useContext(SectionContext);
   if (sections && id && !sections.includes(id)) return null;
+  if (bare) return <div className="section-body">{children}</div>;
   return (
     <section id={id} className="panel">
       <div className="panel-head">
@@ -56,6 +57,12 @@ export function AccordionSection({ id, title, desc, children, defaultOpen = fals
     if (detailsRef.current) detailsRef.current.open = open;
   }, [open]);
   if (sections && id && !sections.includes(id)) return null;
+  if (sections?.includes(id)) {
+    return <section id={id} className="settings-section" aria-label={title}>
+      <header className="settings-section-heading"><h3>{title}</h3>{desc ? <p>{desc}</p> : null}</header>
+      <div className="settings-section-body">{children}</div>
+    </section>;
+  }
 
   return (
     <details ref={detailsRef} id={id} className="accordion-section" data-accordion-group={group} onToggle={handleSingleOpenToggle}>

@@ -65,6 +65,37 @@ test("every persistence entry point rejects unapplied entity drafts before issui
   assert.equal(requests, 0);
 });
 
+test("pending full JSON blocks other saves and replacement writes the whole candidate through the save API", async context => {
+  const { ConfigDraftProvider, useConfigActions } = await loadAdminModule("/admin-ui/src/lib/config-draft.jsx");
+  let sent;
+  let accepted;
+  const candidate = { models: [], upstreams: [], apiKeys: [], hidden: { value: 0 } };
+  context.mock.method(globalThis, "fetch", async (_url, options) => {
+    sent = JSON.parse(options.body);
+    assert.equal(options.headers["x-aoai-admin-csrf"], "1");
+    return Response.json({ config: candidate });
+  });
+  function Form() {
+    const [error, setError] = useState("");
+    const actions = useConfigActions({
+      t: key => key, pendingConfigJson: true, setError, setMessage() {}, loadRequestRef: { current: 0 },
+      applyLoadedConfig: value => { accepted = value; }, async loadSecondaryData() {}
+    });
+    return createElement("div", null,
+      createElement("button", { onClick: () => actions.persistConfig({ unwanted: true }, "saved").catch(e => setError(e.message)) }, "Other save"),
+      createElement("button", { onClick: () => actions.persistConfig(candidate, "saved", true).catch(e => setError(e.message)) }, "Replace JSON"),
+      createElement("output", null, error));
+  }
+  const ui = renderElement(createElement(ConfigDraftProvider, null, createElement(Form)));
+  fireEvent.click(ui.getByRole("button", { name: "Other save" }));
+  await ui.findByText("advanced.pending");
+  assert.equal(sent, undefined);
+  fireEvent.click(ui.getByRole("button", { name: "Replace JSON" }));
+  const { waitFor } = await import("@testing-library/dom");
+  await waitFor(() => assert.deepEqual(accepted, candidate));
+  assert.deepEqual(sent, candidate);
+});
+
 test("injected admin basename is shared by deep-link APIs, including nested roots", async context => {
   const meta = document.createElement("meta");
   meta.name = "aoai-admin-base";
@@ -211,4 +242,68 @@ test("model route editing writes deployment-bound overrides without changing nat
   fireEvent.change(ui.getByLabelText("chat/completions"), { target: { value: "responses" } });
   assert.deepEqual(latest, { ...initial, bindingOverride: { ...initial.selectedBinding, routes: { "chat/completions": "responses" } } });
   assert.equal(Object.hasOwn(latest, "routes"), false);
+});
+
+test("selected settings sections remain expanded after switching away and returning", async () => {
+  const { PageSections, AccordionSection } = await loadAdminModule("/admin-ui/src/components/ui.jsx");
+  const { act } = await import("@testing-library/react/pure.js");
+  function Form() {
+    const [section, setSection] = useState("service");
+    return createElement("div", null,
+      ...["service", "persistence", "media"].map(id => createElement("button", { key: id, onClick: () => setSection(id) }, id)),
+      createElement(PageSections, { sections: [section] },
+        ...["service", "persistence", "media"].map(id => createElement(AccordionSection, {
+          key: id, id, title: id, defaultOpen: id === "service", group: "settings-test"
+        }, createElement("input", { "aria-label": `${id} input` })))));
+  }
+  const ui = renderElement(createElement(Form));
+  for (const id of ["service", "persistence", "media", "service", "persistence", "service"]) {
+    await act(async () => fireEvent.click(ui.getByRole("button", { name: id, exact: true })));
+    const input = ui.getByRole("textbox", { name: `${id} input` });
+    assert.ok(!input.closest("details:not([open])"), `${id} must not be hidden in a closed accordion`);
+    assert.equal(ui.getAllByRole("textbox").length, 1);
+  }
+});
+
+test("one channel creation entry selects four providers and opens conditional Copilot authorization without saving", async context => {
+  const { MemoryRouter } = await import("react-router");
+  const { ConfigDraftProvider } = await loadAdminModule("/admin-ui/src/lib/config-draft.jsx");
+  const { default: RoutingPage } = await loadAdminModule("/admin-ui/src/features/channels/RoutingPage.jsx");
+  const { within } = await import("@testing-library/react/pure.js");
+  const calls = [];
+  context.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    calls.push({ url, method: options.method });
+    return Response.json(String(url).includes("/copilot/")
+      ? { state: "idle", discovery: { state: "not_loaded", models: [] } }
+      : { capabilities: { preview: { models: [], upstreams: [] } } });
+  });
+  const initial = { models: [], upstreams: [], apiKeys: [] };
+  let latest = initial;
+  function Form() {
+    const [config, setConfig] = useState(initial);
+    latest = config;
+    return createElement(RoutingPage, { view: "channels", config, loadedConfig: initial, t: key => key,
+      pricingLibrary: [{ id: "mini", provider: "unrelated-card-vendor" }],
+      updateConfig: mutate => setConfig(current => { const next = structuredClone(current); mutate(next); return next; }) });
+  }
+  const ui = renderElement(createElement(MemoryRouter, { initialEntries: ["/channels"] },
+    createElement(ConfigDraftProvider, null, createElement(Form))));
+  assert.ok(!ui.queryByRole("button", { name: "copilot.add" }));
+  fireEvent.click(ui.getByRole("button", { name: "routing.addUpstream" }));
+  const chooser = within(await ui.findByRole("dialog"));
+  const provider = chooser.getByRole("combobox", { name: "field.provider" });
+  assert.deepEqual([...provider.options].map(option => option.value), ["azure-openai", "github-copilot", "openai", "anthropic"]);
+  fireEvent.change(provider, { target: { value: "github-copilot" } });
+  fireEvent.click(chooser.getByRole("button", { name: "ui.configureChannel" }));
+  const editor = within(await ui.findByRole("dialog"));
+  await editor.findByRole("button", { name: "copilot.login" });
+  assert.ok(!editor.queryByRole("combobox", { name: "field.upstreamAuthMode" }));
+  assert.deepEqual(latest, initial);
+  assert.equal(calls.some(call => call.method === "PUT"), false);
+  fireEvent.click(editor.getByRole("button", { name: "ui.applyDraft" }));
+  assert.equal(latest.upstreams.length, 1);
+  assert.equal(latest.upstreams[0].provider, "github-copilot");
+  assert.equal(latest.upstreams[0].auth.mode, "githubCopilot");
+  assert.deepEqual(latest.upstreams[0].modelMappings, []);
+  assert.deepEqual(latest.models, []);
 });

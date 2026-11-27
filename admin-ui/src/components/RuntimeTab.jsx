@@ -188,6 +188,8 @@ function formatCountdown(targetValue, nowTs, t) {
 
 export default function RuntimeTab({
   grouping,
+  usageTab,
+  trendChart,
   config = {},
   pricingLibrary = [],
   onApplyCardPricing,
@@ -327,8 +329,33 @@ export default function RuntimeTab({
     }
   }
 
+  const filterControls = <div className="runtime-filter-toolbar">
+    <label className="field runtime-filter-field">
+      <span className="field-label">{t("runtime.filterKey", "Key")}</span>
+      <select value={runtimeFilters?.keyId || ""} onChange={(event) => onRuntimeFilterChange?.({ keyId: event.target.value })}>
+        <option value="">{t("option.all", "All")}</option>
+        {Array.isArray(runtimeKeyOptions) ? runtimeKeyOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>) : null}
+      </select>
+    </label>
+    <label className="field runtime-filter-field">
+      <span className="field-label">{t("runtime.filterRange", "Time Range")}</span>
+      <select value={runtimeFilters?.timeRange || "all"} onChange={(event) => onRuntimeFilterChange?.({ timeRange: event.target.value })}>
+        <option value="all">{t("option.all", "All")}</option>
+        <option value="24h">{t("option.last24h", "Last 24h")}</option>
+        <option value="7d">{t("option.last7d", "Last 7d")}</option>
+        <option value="30d">{t("option.last30d", "Last 30d")}</option>
+      </select>
+    </label>
+    <button type="button" className="ghost" onClick={onSyncRuntime} disabled={runtimeSyncBusy}>
+      {runtimeSyncBusy ? t("runtime.syncNowRunning", "Syncing...") : t("runtime.syncNow", "Sync Now")}
+    </button>
+  </div>;
+  const OverviewContainer = usageTab ? "details" : Fragment;
   return (
     <div className="stack-lg runtime-dashboard">
+      {usageTab ? filterControls : null}
+      <OverviewContainer {...(usageTab ? { className: "runtime-overview-disclosure" } : {})}>
+      {usageTab ? <summary>{t("runtime.overview", "Runtime Overview")}</summary> : null}
       <Section
         id="runtime-overview"
         title={t("runtime.overview", "Runtime Overview")}
@@ -346,31 +373,7 @@ export default function RuntimeTab({
           {statsSnapshot.partial ? ` ${t("runtime.snapshot.partial", "Partial snapshot: pending events or unavailable storage. Use Sync Now to request a flush.")}` : ""}
           {statsSnapshot.error?.message ? ` ${statsSnapshot.error.message}` : ""}
         </p> : null}
-        <div className="runtime-filter-toolbar">
-          <label className="field runtime-filter-field">
-            <span className="field-label">{t("runtime.filterKey", "Key")}</span>
-            <select value={runtimeFilters?.keyId || ""} onChange={(event) => onRuntimeFilterChange?.({ keyId: event.target.value })}>
-              <option value="">{t("option.all", "All")}</option>
-              {Array.isArray(runtimeKeyOptions) ? runtimeKeyOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              )) : null}
-            </select>
-          </label>
-          <label className="field runtime-filter-field">
-            <span className="field-label">{t("runtime.filterRange", "Time Range")}</span>
-            <select value={runtimeFilters?.timeRange || "all"} onChange={(event) => onRuntimeFilterChange?.({ timeRange: event.target.value })}>
-              <option value="all">{t("option.all", "All")}</option>
-              <option value="24h">{t("option.last24h", "Last 24h")}</option>
-              <option value="7d">{t("option.last7d", "Last 7d")}</option>
-              <option value="30d">{t("option.last30d", "Last 30d")}</option>
-            </select>
-          </label>
-          <button type="button" className="ghost" onClick={onSyncRuntime} disabled={runtimeSyncBusy}>
-            {runtimeSyncBusy
-              ? t("runtime.syncNowRunning", "Syncing...")
-              : t("runtime.syncNow", "Sync Now")}
-          </button>
-        </div>
+        {!usageTab ? filterControls : null}
         <div className="runtime-scope">
           <h3>{snapshotFilters ? t("runtime.scopedStats", "Selected Range") : t("runtime.cumulativeStats", "Cumulative Snapshot")}</h3>
           <span className="muted">
@@ -388,7 +391,7 @@ export default function RuntimeTab({
           <StatCard label={t("table.cacheHitRatio", "Cache Hit Ratio")} value={<span title={runtimeTokenHelp(t)}>{formatCacheHitRatio(totals)}</span>} />
         </div>
         <p className="field-hint">{`${t("runtime.modelsObserved", "Observed Models")}: ${formatRuntimeNumber(modelCount)} · ${t("runtime.observedKeys", "Observed Keys")}: ${formatRuntimeNumber(observedKeyCount)}`}</p>
-        {grouping !== "public" ? <ChannelAccounting models={canonicalModels} filters={canonicalFilters} truncated={canonicalWindowTruncated} retentionDays={canonicalDetailRetentionDays} t={t} /> : null}
+        {!usageTab && grouping !== "public" ? <ChannelAccounting models={canonicalModels} filters={canonicalFilters} truncated={canonicalWindowTruncated} retentionDays={canonicalDetailRetentionDays} t={t} /> : null}
         <div className="runtime-periods">
           <h3>{t("runtime.periodStats", "Period Statistics")}</h3>
           <p className="field-hint">{t("runtime.periodHelp", "Latest recorded calendar buckets, not rolling windows. Bucket timestamps may precede the current period.")}</p>
@@ -459,6 +462,7 @@ export default function RuntimeTab({
           </div>
         </details>
       </Section>
+      </OverviewContainer>
 
       <AccordionSection id="runtime-persistence" group="runtime-sections" defaultOpen title={t("runtime.title", "Persistence / Logging Runtime")} desc={t("runtime.desc", "Read runtime API directly to inspect file, Azure Files, and database state plus Log Analytics sink health.")}>
         <div className="detail-grid runtime-detail-grid">
@@ -474,6 +478,7 @@ export default function RuntimeTab({
       </AccordionSection>
 
       <AccordionSection id="runtime-analytics" group="runtime-sections" title={t("runtime.analytics", "Historical Rollups")} desc={t("runtime.analyticsDesc", "Database rollups keep hourly, daily, and weekly runtime trends queryable without scanning the full detailed event table.")}>
+        {trendChart}
         <div className="detail-grid runtime-detail-grid runtime-trend-grid">
           <TrendTable title={t("runtime.rollupHourly", "Latest Hour")} rows={hourlyRollups} formatDateTime={formatDateTime} t={t} />
           <TrendTable title={t("runtime.rollupDaily", "Latest Day")} rows={dailyRollups} formatDateTime={formatDateTime} t={t} />
@@ -647,8 +652,9 @@ export default function RuntimeTab({
         </div>
       </AccordionSection>
 
-      <div hidden={grouping === "canonical"}>
+      <div hidden={!usageTab && grouping === "canonical"}>
       <AccordionSection id="runtime-models" group="runtime-sections" title={t("runtime.modelStats", "Model Stats")} desc={t("runtime.costReference", "Billing estimates may be incomplete and are for reference only. Final charges are determined by the Azure billing portal.")}>
+        {usageTab && grouping === "canonical" ? <ChannelAccounting models={canonicalModels} filters={canonicalFilters} truncated={canonicalWindowTruncated} retentionDays={canonicalDetailRetentionDays} t={t} /> : <>
         <div className="toolbar">
           <button type="button" className="ghost danger" disabled={isResetBusy || !onResetModelStats} onClick={() => setResetDialogOpen(true)}>
             {isResetBusy ? t("runtime.modelsResetPending", "Resetting model stats…") : t("runtime.modelsReset", "Reset all model stats")}
@@ -759,6 +765,7 @@ export default function RuntimeTab({
             </tbody>
           </table>
         </div>
+        </>}
       </AccordionSection>
       </div>
       <Modal

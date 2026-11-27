@@ -7,6 +7,90 @@ import { resolveChannelModels } from "../src/channel-bindings.js";
 
 setupWorkspaceFormTests();
 
+test("same-name upstream and target model IDs work with either implicit or explicit mappings", async () => {
+  const { MappingEditor } = await loadAdminModule("/admin-ui/src/components/ChannelModels.jsx");
+  for (const mappings of [[], [{ sourceModelId: "same", canonicalModelId: "same", enabled: false }]]) {
+    let latest;
+    function Form() {
+      const [config, setConfig] = useState({ upstreams: [{ name: "One", channelId: "one", modelMappings: mappings }], models: [] });
+      const [drafts, setDrafts] = useState({});
+      latest = config;
+      return createElement(MappingEditor, { config, up: config.upstreams[0], index: 0,
+        definitions: [{ id: "same" }], drafts, setDrafts, t: key => key,
+        updateConfig: mutate => setConfig(current => { const next = structuredClone(current); mutate(next); return next; }) });
+    }
+    const ui = renderElement(createElement(Form));
+    fireEvent.change(ui.getByRole("combobox", { name: "channel.modelIds" }), { target: { value: "same" } });
+    fireEvent.click(ui.getByRole("button", { name: "channel.addModels" }));
+    assert.deepEqual(latest.upstreams[0].modelMappings, [{ sourceModelId: "same", canonicalModelId: "same", enabled: true }]);
+    assert.deepEqual(latest.models, []);
+    ui.unmount();
+  }
+});
+
+test("channel model IDs create identity bindings or enable deployment mappings without publishing models", async () => {
+  const { MappingEditor } = await loadAdminModule("/admin-ui/src/components/ChannelModels.jsx");
+  const initial = { upstreams: [{ channelId: "one", name: "One", modelMappings: [
+    { sourceModelId: "mini-jpeast", canonicalModelId: "mini", enabled: false, pricing: { inputPer1mTokens: 0 } },
+    { sourceModelId: "large-west", canonicalModelId: "large", enabled: false }
+  ] }], models: [], apiKeys: [{ allowedModels: [] }] };
+  let latest;
+  function Form() {
+    const [config, setConfig] = useState(initial);
+    const [drafts, setDrafts] = useState({});
+    latest = config;
+    return createElement(MappingEditor, { config, up: config.upstreams[0], index: 0,
+      definitions: ["mini", "large", "direct"].map(id => ({ id })), drafts, setDrafts, t: key => key,
+      updateConfig: change => setConfig(prev => { const next = structuredClone(prev); change(next); return next; }) });
+  }
+  const ui = renderElement(createElement(Form));
+  const input = ui.getByRole("combobox", { name: "channel.modelIds" });
+  fireEvent.change(input, { target: { value: "not-in-catalog" } });
+  fireEvent.click(ui.getByRole("button", { name: "channel.addModels" }));
+  assert.match(ui.getByRole("alert").textContent, /channel.unknownModelIds/);
+  assert.deepEqual(latest, initial);
+  fireEvent.change(input, { target: { value: "mini, direct" } });
+  fireEvent.click(ui.getByRole("button", { name: "channel.addModels" }));
+  assert.deepEqual(latest.upstreams[0].modelMappings, [
+    { ...initial.upstreams[0].modelMappings[0], enabled: true },
+    initial.upstreams[0].modelMappings[1],
+    { sourceModelId: "direct", canonicalModelId: "direct", enabled: true }
+  ]);
+  fireEvent.click(ui.getByRole("button", { name: "channel.addMappedModels" }));
+  assert.ok(latest.upstreams[0].modelMappings.every(row => row.enabled));
+  assert.deepEqual(latest.models, []);
+  assert.deepEqual(latest.apiKeys, initial.apiKeys);
+  fireEvent.click(ui.getByRole("button", { name: "entity.delete direct" }));
+  assert.equal(latest.upstreams[0].modelMappings.find(row => row.sourceModelId === "direct").enabled, false);
+});
+
+test("legacy channels show the same model list and only migrate bindings when edited", async () => {
+  const { MappingEditor } = await loadAdminModule("/admin-ui/src/components/ChannelModels.jsx");
+  const initial = { upstreams: [{ name: "Legacy" }], apiKeys: [{ allowedModels: ["public"] }],
+    models: [{ id: "public", upstream: "Legacy", targetModel: "mini-east", pricingRef: "mini", pricing: { inputPer1mTokens: 0 } }] };
+  let latest;
+  function Form() {
+    const [config, setConfig] = useState(initial);
+    const [drafts, setDrafts] = useState({});
+    latest = config;
+    return createElement(MappingEditor, { up: config.upstreams[0], config, index: 0,
+      capabilityView: { models: [{ modelId: "public", canonicalModelId: "mini" }] },
+      definitions: [{ id: "mini" }, { id: "direct" }], drafts, setDrafts, t: key => key,
+      updateConfig: mutate => setConfig(current => { const next = structuredClone(current); mutate(next); return next; }) });
+  }
+  const ui = renderElement(createElement(Form));
+  const input = ui.getByRole("combobox", { name: "channel.modelIds" });
+  assert.deepEqual(latest, initial);
+  fireEvent.change(input, { target: { value: "direct" } });
+  fireEvent.click(ui.getByRole("button", { name: "channel.addModels" }));
+  const resolved = resolveChannelModels(latest, new Set(["mini", "direct"]));
+  assert.equal(resolved[0].id, "public");
+  assert.equal(resolved[0].targetModel, "mini-east");
+  assert.deepEqual(resolved[0].pricing, { inputPer1mTokens: 0 });
+  assert.deepEqual(latest.apiKeys, initial.apiKeys);
+  assert.equal(latest.upstreams[0].modelMappings.length, 2);
+});
+
 test("migrating shared deployments retains public order, private per-alias overrides and zero prices", async () => {
   const { migrateChannel } = await loadAdminModule("/admin-ui/src/components/ChannelModels.jsx");
   const config = {

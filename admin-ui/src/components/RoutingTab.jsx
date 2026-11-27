@@ -3,6 +3,7 @@ import { EntityCard, Field, ListInput, Section } from "./ui.jsx";
 import { BindingSelect, channelCandidates, ExposurePicker, MappingEditor } from "./ChannelModels.jsx";
 import CopilotChannel from "./CopilotChannel.jsx";
 import { copilotIdentity, isCopilotChannel } from "../copilot.js";
+import { channelProviders } from "../features/channels/providers.js";
 import {
   applyPricingTemplateToModel,
   findPricingTemplateByHint,
@@ -16,6 +17,10 @@ import {
 
 function getRouteOptionLabel(t, value) {
   return t(`routing.route.${value}`, value);
+}
+
+function EditorBody({ children }) {
+  return <div className="routing-editor">{children}</div>;
 }
 
 function setModelWildcardRoute(next, modelIndex, value) {
@@ -117,9 +122,10 @@ export default function RoutingTab({
       || (item.displayName || "").toLowerCase().includes(searchTerm)
       || (item.upstream || "").toLowerCase().includes(searchTerm)
     )).filter(({ index }) => !editor || (editor.type === "models" && editor.index === index));
+  const Container = editor ? EditorBody : Section;
 
   return (
-    <Section
+    <Container
       title={t("routing.title", "Upstream / Model")}
       desc={t("routing.desc", "Maintain upstreams and model mappings.")}
       actions={editor ? null :
@@ -150,8 +156,8 @@ export default function RoutingTab({
         </p>
         {capabilitiesError ? <p role="alert">{capabilitiesError}</p> : null}
         {!editor || editor.type === "upstreams" ? <div id="routing-upstreams">
-          <h3 className="subhead">{t("entity.upstreams", "Upstreams")}</h3>
-          <div className="entity-grid">
+          {!editor ? <h3 className="subhead">{t("entity.upstreams", "Upstreams")}</h3> : null}
+          <div className={editor ? "editor-fields" : "entity-grid"}>
             {filteredUpstreams.map(({ item, index, copilot, hidden }) => {
               const capabilities = capabilityView?.upstreams?.find(upstream => upstream.name === item.name)?.capabilities;
               const capabilityCount = capabilities ? capabilities.length : "-";
@@ -176,7 +182,7 @@ export default function RoutingTab({
                     next.upstreams = (next.upstreams || []).filter((_, upstreamIndex) => upstreamIndex !== index);
                   })}
                 >
-                  <div hidden={editor?.section === "mappings"}>
+                  <div className="connection-fields" hidden={editor?.section === "mappings"}>
                   <div className="form-grid compact">
                     <Field label={t("field.name", "Name")}><input value={item.name || ""} onChange={(event) => updateConfig((next) => {
                       const oldName = next.upstreams[index].name;
@@ -186,8 +192,10 @@ export default function RoutingTab({
                     <Field label={t("field.provider", "Provider")}><select disabled={copilot} value={item.provider || "azure-openai"} onChange={(event) => {
                       const provider = event.target.value;
                       if (provider.trim().toLowerCase() !== "github-copilot") updateConfig(next => { next.upstreams[index].provider = provider; });
-                    }}>{[...new Set([item.provider || "azure-openai", "azure-openai", "openai", "anthropic", ...catalogDefinitions.map(card => card.provider).filter(provider => provider && provider !== "github-copilot")])]
-                      .map(provider => <option key={provider}>{provider}</option>)}</select></Field>
+                    }}>
+                      {!channelProviders.some(provider => provider.value === (item.provider || "azure-openai")) ? <option value={item.provider} disabled>{item.provider}</option> : null}
+                      {channelProviders.map(provider => <option key={provider.value} value={provider.value} disabled={provider.value === "github-copilot" && !copilot}>{provider.label}</option>)}
+                    </select></Field>
                     <Field label={t("field.status", "Status")}><select value={item.status || "active"} onChange={(event) => updateConfig((next) => { next.upstreams[index].status = event.target.value; })}><option value="active">{t("option.active", "active")}</option><option value="disabled">{t("option.disabled", "disabled")}</option></select></Field>
                     <Field label={t("field.priority", "Priority")}><input type="number" value={item.priority || 0} onChange={(event) => updateConfig((next) => { next.upstreams[index].priority = Number(event.target.value || 0); })} /></Field>
                   </div>
@@ -223,6 +231,7 @@ export default function RoutingTab({
                   </div>
                   <div hidden={Boolean(editor) && editor.section !== "mappings" && !(copilot && editor.section === "connection")}>
                   {copilot ? <CopilotChannel key={copilotIdentity(item)} up={item} definitions={mappingDefinitions} tickets={copilotOperations}
+                    section={editor?.section}
                     saved={loadedConfig?.upstreams?.find(up => item.channelId === up.channelId)}
                     referenced={[...new Set([...models, ...(loadedConfig?.models || [])]
                       .filter(m => m.selectedBinding?.channelId === item.channelId).map(m => m.id))]}
@@ -397,6 +406,6 @@ export default function RoutingTab({
           </div>
         </div> : null}
       </div>
-    </Section>
+    </Container>
   );
 }

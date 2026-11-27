@@ -80,7 +80,7 @@ export default function AppShell({ page, runtime, dirty, changedGroups, applicat
       <div className="alert-region">{alerts}</div>
       <header className="page-header"><h1>{t(`shell.page.${page?.id || "notFound"}`)}</h1><p>{t(`shell.desc.${page?.id || "notFound"}`)}</p></header>
       {page?.id === "settings" ? <nav className="section-tabs" aria-label={t("nav.details")}>{Object.keys(settingsSections).map(id => <NavLink key={id} to={`/settings/${id}`}>{t(`shell.settings.${id}`)}</NavLink>)}</nav> : null}
-      {page?.id === "config" ? <nav className="section-tabs" aria-label={t("nav.details")}>{["history", "sync", "json"].map(id => <NavLink key={id} to={`/config/${id}`}>{t(`shell.config.${id}`)}</NavLink>)}</nav> : null}
+      {page?.id === "config" ? <nav className="section-tabs" aria-label={t("nav.details")}>{["history", "sync"].map(id => <NavLink key={id} to={`/config/${id}`}>{t(`shell.config.${id}`)}</NavLink>)}</nav> : null}
       <div className="tab-content legacy-page">{children}</div>
     </main>
     {saveDock}

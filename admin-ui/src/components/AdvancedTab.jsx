@@ -1,34 +1,49 @@
-import { Section } from "./ui.jsx";
+import { useState } from "react";
+import { Modal, Section } from "./ui.jsx";
+import { buildConfigDiffPreview, computeConfigDiff, summarizeConfigDiff } from "../utils.js";
 
-export default function AdvancedTab({ advancedJsonEnabled, advancedJson, updateAdvancedJson, jsonError, dirty, configIssues, configDiffCount, configDiffPreview, t }) {
+export default function AdvancedTab({ advancedJsonEnabled, advancedJson, config, updateAdvancedJson, onSaveJson, onResetJson, saving, pending, jsonError, dirty, configDiffCount, configDiffPreview, t }) {
+  const [review, setReview] = useState(false);
+  const diff = !jsonError && config ? computeConfigDiff(config, JSON.parse(advancedJson)) : null;
+  const replacementDiff = diff ? buildConfigDiffPreview(diff, t, Infinity) : "";
   return (
-    <Section title={t("advanced.title", "Advanced JSON")} desc={t("advanced.desc", "Advanced mode outside the structured forms.")}>
+    <Section id="advanced-json" title={t("advanced.title", "Advanced JSON")} desc={t("advanced.desc", "Advanced mode outside the structured forms.")}>
       <div className="status-grid" style={{ marginBottom: "1rem" }}>
         <div className="stat-card">
           <div className="stat-label">{t("config.summary.state", "Editor State")}</div>
           <div className="stat-value">{dirty ? t("config.state.dirty", "Dirty") : t("config.state.clean", "Clean")}</div>
-          <div className="stat-note">{t("config.summary.diff", "Changed Fields")} {configDiffCount}</div>
+          <div className="stat-note">{t("config.summary.diff", "Changed Fields")} {pending ? diff ? summarizeConfigDiff(diff) : "—" : configDiffCount}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">{t("config.summary.validity", "Structure")}</div>
-          <div className="stat-value">{configIssues.length ? t("config.validity.invalid", "Needs Review") : t("config.validity.valid", "Valid")}</div>
-          <div className="stat-note">{configIssues.length ? t("config.validation.issueCount", "{count} issues detected", { count: configIssues.length }) : t("config.validation.ok", "No structural issues detected.")}</div>
+          <div className="stat-label">JSON</div>
+          <div className="stat-value">{jsonError ? t("config.validity.invalid", "Needs Review") : t("advanced.parsed")}</div>
+          <div className="stat-note">{t("advanced.serverValidation")}</div>
         </div>
       </div>
       <div className="detail-grid" style={{ marginBottom: "1rem" }}>
         <div className="code-block">
           <div className="code-block-head">{t("config.diff.previewTitle", "Diff Preview")}</div>
-          <pre>{configDiffPreview}</pre>
+          <pre>{pending ? replacementDiff : configDiffPreview}</pre>
         </div>
         <div className="code-block">
           <div className="code-block-head">{t("config.validation.title", "Structure Validation")}</div>
-          <pre>{configIssues.length ? configIssues.join("\n") : t("config.validation.ok", "No structural issues detected.")}</pre>
+          <pre>{jsonError || t("advanced.serverValidation")}</pre>
         </div>
       </div>
       {advancedJsonEnabled ? (
         <>
-          <textarea className="json-editor" rows={28} value={advancedJson} onChange={(event) => updateAdvancedJson(event.target.value)} />
-          {jsonError ? <div className="inline-error">{jsonError}</div> : null}
+          <p>{t("advanced.replaceHint")}</p>
+          <textarea aria-label={t("advanced.title")} className="json-editor" spellCheck={false} rows={28} value={advancedJson} onChange={(event) => updateAdvancedJson(event.target.value)} />
+          {jsonError ? <div role="alert" className="inline-error">{jsonError}</div> : null}
+          <div className="table-toolbar">
+            <button disabled={!pending || !!jsonError || saving} onClick={() => setReview(true)}>{t("advanced.reviewReplace")}</button>
+            <button className="ghost" disabled={!pending || saving} onClick={onResetJson}>{t("advanced.reset")}</button>
+          </div>
+          <Modal isOpen={review} title={t("advanced.reviewReplace")} onClose={() => setReview(false)}
+            onConfirm={() => { setReview(false); void onSaveJson(); }} disabled={saving || !!jsonError}
+            confirmLabel={t("advanced.confirmReplace")} cancelLabel={t("common.cancel")} closeLabel={t("common.close")}>
+            <p>{t("advanced.replaceHint")}</p><pre>{replacementDiff}</pre>
+          </Modal>
         </>
       ) : (
         <div className="empty-state">{t("advanced.disabled", "The advanced JSON editor is disabled in the current configuration. Continue editing with the structured React forms above.")}</div>

@@ -29,7 +29,8 @@
 .retained-drafts { display: grid; gap: 4px; max-height: 40vh; overflow: auto; white-space: normal; }
 .section-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 .section-tabs a { padding: 8px 12px; border-radius: 6px; text-decoration: none; }
-.section-tabs a.active { background: var(--surface-hover); color: var(--primary); }
+.section-tabs a.active, .section-tabs button[aria-pressed="true"] { background: var(--surface-hover); color: var(--primary); border-color: var(--primary); }
+.runtime-overview-disclosure > summary { cursor: pointer; padding: 8px 0; color: var(--muted); }
 .mobile-nav-trigger { display: none; }
 .ui-backdrop { position: fixed; inset: 0; background: var(--overlay); z-index: 1000; }
 .mobile-sidebar { position: fixed; inset: 0 auto 0 0; width: min(300px, 90vw); overflow: auto; background: var(--card); padding: 16px; z-index: 1001; }
@@ -38,6 +39,8 @@
 .legacy-page .panel-head { margin-bottom: 16px; }
 .legacy-page .panel-head h2 { font-size: 16px; }
 .legacy-page .stat-value { font-size: 24px; }
+.console-shell .status-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; overflow: visible; margin: 0 0 20px; }
+.console-shell .stat-label { text-transform: none; }
 .legacy-page .status-grid { gap: 12px; }
 .legacy-page .form-grid { max-width: 960px; }
 .legacy-page .accordion-body { padding: 16px; }
@@ -53,17 +56,20 @@
 .sidebar-collapsed { --sidebar-width: 68px; }
 .sidebar-collapsed .shell-brand strong, .sidebar-collapsed .shell-nav-link > span, .sidebar-collapsed .shell-nav-group > p, .sidebar-collapsed .sidebar-collapse span { display: none; }
 .sidebar-collapsed .shell-sidebar { padding-inline: 8px; }
-.table-toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.table-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .table-toolbar input { max-width: 320px; }
 .table-toolbar select { width: auto; }
+.table-toolbar > .section-tabs { margin-bottom: 0; align-items: center; }
 .table-options { display: flex; gap: 16px; margin-bottom: 8px; justify-content: space-between; }
 .table-bulk { display: flex; gap: 8px; align-items: center; }
 .column-picker { margin-left: auto; position: relative; }
 .column-picker > div { position: absolute; right: 0; z-index: 20; padding: 12px; min-width: 200px; background: var(--card); box-shadow: var(--shadow-md); border: 1px solid var(--border); }
 .column-picker label { display: flex; gap: 8px; padding: 4px; }
-.table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.table-scroll { min-width: 0; max-width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
 .data-table table { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; background: var(--card); font-variant-numeric: tabular-nums; }
+.console-shell th, .console-shell td { vertical-align: middle; }
 .data-table th, .data-table td { padding: 4px 12px; height: 40px; border-bottom: 1px solid var(--border); text-align: left; }
+.data-table input[type="checkbox"] { display: block; margin: 0; }
 .data-table th { color: var(--muted); font-weight: 500; background: var(--surface-raised); }
 .data-table tr:last-child td { border-bottom: 0; }
 .data-table th:first-child, .data-table td:first-child { position: sticky; left: 0; background: var(--card); z-index: 1; }
@@ -90,11 +96,49 @@
 .row-actions { display: flex; align-items: center; gap: 12px; }
 .table-group th { background: var(--surface-raised); text-align: left; font-weight: 500; }
 .data-table .ghost { padding: 3px 8px; font-size: 12px; }
-.entity-sheet { position: fixed; inset: 0 0 0 auto; width: min(840px, 85vw); z-index: 1001; display: flex; flex-direction: column; background: var(--card); color: var(--foreground); box-shadow: var(--shadow-lg); }
+.routing-page { display: block; align-self: start; }
+.routing-page .data-table td { padding-block: 8px; }
+.inline { display: inline-flex; align-items: center; gap: 8px; }
+.inline input[type="checkbox"], .inline input[type="radio"] { width: 16px; height: 16px; flex: none; margin: 0; }
+.entity-sheet { position: fixed; inset: 0 0 0 auto; width: min(960px, calc(100vw - 40px)); height: 100dvh; z-index: 1001; display: flex; flex-direction: column; background: var(--card); color: var(--foreground); box-shadow: var(--shadow-lg); }
 .entity-sheet > header, .entity-sheet > footer { display: flex; padding: 16px 24px; gap: 12px; align-items: center; border-bottom: 1px solid var(--border); }
 .entity-sheet h2 { flex: 1; margin: 0; font-size: 20px; }
 .entity-sheet > footer { margin-top: auto; border-top: 1px solid var(--border); justify-content: flex-end; }
-.sheet-body { padding: 24px; overflow-y: auto; min-height: 0; }
+.sheet-body { flex: 1; padding: 24px; overflow-y: auto; min-height: 0; }
+.editor-note { margin: 0 0 16px; color: var(--muted); line-height: 1.6; }
+.routing-editor .panel-head, .routing-editor .subhead { display: none; }
+.routing-editor .entity-grid, .editor-fields { display: block; min-width: 0; }
+.connection-fields, .entity-editor { display: grid; align-content: start; gap: 16px; min-width: 0; }
+.entity-sheet .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.entity-sheet .field-label { font-size: 13px; font-weight: 500; }
+.entity-sheet fieldset { min-width: 0; }
+.channel-model-guide { padding: 12px 16px; background: var(--surface-raised); border-radius: 6px; margin-bottom: 16px; line-height: 1.6; }
+.channel-model-guide p { margin: 0 0 8px; }
+.channel-model-guide a { color: var(--primary); }
+.channel-model-links { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 8px; }
+.mapping-editor, .copilot-setup { border: 0; padding: 0; margin: 0; }
+.mapping-editor > legend, .copilot-setup > legend { font-weight: 500; padding: 0; margin-bottom: 8px; }
+.mapping-editor > p { color: var(--muted); line-height: 1.6; margin-block: 8px 12px; }
+.mapping-editor .toolbar-cluster { margin-block: 12px; align-items: center; }
+.mapping-table { width: 100%; min-width: 600px; border-collapse: collapse; background: var(--card); }
+.mapping-table th, .mapping-table td { text-align: left; vertical-align: middle; padding: 12px; border-bottom: 1px solid var(--border); }
+.mapping-table th { font-size: 12px; font-weight: 500; color: var(--muted); background: var(--surface-raised); text-transform: none; letter-spacing: normal; }
+.mapping-table tr:last-child td { border-bottom: 0; }
+.mapping-table input:not([type="checkbox"]), .mapping-table select { min-width: 180px; width: 100%; }
+.mapping-table input[type="checkbox"] { display: block; width: 16px; height: 16px; margin: 0; }
+.mapping-table .inline { align-items: flex-start; white-space: normal; min-width: 180px; }
+.mapping-table .inline input[type="checkbox"] { margin: 2px 0; }
+.mapping-table code { overflow-wrap: anywhere; }
+.mapping-table small { display: block; min-width: 160px; line-height: 1.6; }
+.mapping-migration { display: grid; gap: 16px; }
+.mapping-migration > button { justify-self: start; }
+.channel-model-list { display: grid; gap: 12px; margin-bottom: 24px; }
+.channel-model-list h3, .channel-model-list p { margin: 0; }
+.settings-section-heading { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 16px; }
+.settings-section-heading h3 { margin: 0 0 8px; font-size: 16px; font-weight: 500; }
+.settings-section-heading p { margin: 0; color: var(--muted); line-height: 1.6; }
+.settings-section-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.settings-section, .settings-section-body > *, .form-grid > *, .runtime-mini-panel { min-width: 0; }
 .entity-sheet .section-tabs button[aria-selected="true"] { color: var(--primary); border-color: var(--primary); }
 .multi-chips { display: flex; flex-wrap: wrap; gap: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
 .multi-chips input { min-width: 100px; flex: 1; width: auto; border: none; }
@@ -110,9 +154,11 @@
   .shell-sidebar { padding-inline: 8px; }
 }
 @media (max-width: 899px) {
+  .console-shell .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-lists, .playground-grid { grid-template-columns: minmax(0, 1fr); }
   .wide-screen-note { display: block; color: var(--warning); }
   .entity-sheet { width: 100%; }
+  .entity-sheet .form-grid { grid-template-columns: minmax(0, 1fr); }
   .sheet-body { padding: 16px; }
   .console-shell { --sidebar-width: 0px; padding: 0; }
   .shell-sidebar { display: none; }

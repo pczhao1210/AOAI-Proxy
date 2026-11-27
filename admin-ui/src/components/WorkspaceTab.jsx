@@ -74,7 +74,7 @@ export default function WorkspaceTab({
 
   return (
     <div className="stack-lg">
-      <Section title={t("workspace.title", "Configuration Workspace")} desc={t("workspace.desc", "Bring persistence, Log Analytics, media, and routing domains into structured editing.")}>
+      <Section bare={Boolean(coreGroup)} title={t("workspace.title", "Configuration Workspace")} desc={t("workspace.desc", "Bring persistence, Log Analytics, media, and routing domains into structured editing.")}>
         <div className="stack-lg">
           {configDeprecations.length ? (
             <aside className="code-block config-deprecations" role="note">
@@ -94,7 +94,8 @@ export default function WorkspaceTab({
           {effectiveProfile === "minimum" ? (
             <p className="field-hint">{t("config.minimumFlagsNote", "The active minimum profile disables database administration, Log Analytics upload, runtime database statistics and budgets. Persisted settings are retained when saving.")}</p>
           ) : null}
-          <AccordionSection id="workspace-core" title={t("workspace.core.title", "Core And Governance Defaults")} desc={t("workspace.core.desc", "Host, admin path, proxy timeouts, API key defaults, and budget defaults.")} defaultOpen group="workspace-sections">
+          <AccordionSection id="workspace-core" title={coreGroup ? t(`shell.settings.${coreGroup}`) : t("workspace.core.title", "Core And Governance Defaults")}
+            desc={!coreGroup ? t("workspace.core.desc", "Host, admin path, proxy timeouts, API key defaults, and budget defaults.") : null} defaultOpen group="workspace-sections">
             <div className="form-grid">
               {serviceFields ? <>
               <Field path="distribution.profile" label={t("field.distributionProfile", "Distribution Profile")}>
@@ -111,6 +112,12 @@ export default function WorkspaceTab({
               </Field>
               <Field path="admin.basePath" label={t("field.adminBasePath", "Admin Base Path")}>
                 <input value={getValueByPath(config, "admin.basePath") || ""} onChange={(event) => updateField("admin.basePath", event.target.value)} />
+              </Field>
+              <Field path="admin.auth.username" label={t("field.adminUsername")}>
+                <input autoComplete="username" value={getValueByPath(config, "admin.auth.username") || ""} onChange={(event) => updateField("admin.auth.username", event.target.value)} />
+              </Field>
+              <Field path="admin.auth.password" label={t("field.adminPassword")} hint={t("field.adminPasswordHint")}>
+                <input type="password" autoComplete="new-password" value={getValueByPath(config, "admin.auth.password") || ""} onChange={(event) => updateField("admin.auth.password", event.target.value)} />
               </Field>
               </> : null}
               {accessFields ? <>

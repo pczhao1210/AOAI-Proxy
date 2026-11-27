@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { deploymentFields, hasHarnessRouteConfirmation, sameBinding, validateMappingRows } from "../../../src/channel-bindings.js";
 import { Field } from "./ui.jsx";
-import { newChannelId } from "../utils.js";
+import { newChannelId, parseList } from "../utils.js";
 import { copilotIdentity, isCopilotChannel, matchesDiscoveredRoutes } from "../copilot.js";
 import OpenAIChannelDiscovery, { canDiscoverOpenAIChannel } from "./OpenAIChannelDiscovery.jsx";
 
@@ -33,8 +33,66 @@ export function migrateChannel(config, index, channelId, capabilityView) {
   Object.assign(up, { channelId, modelMappings: [...mappings.values()] });
 }
 
+function ChannelModelList({ up, models, definitions, updateRows, blocked, t }) {
+  const optionsId = useId();
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const rows = up.modelMappings;
+  const catalogIds = new Set(definitions.map(card => card.id));
+  const activeIds = [...new Set(rows.filter(row => row.enabled).map(row => row.canonicalModelId))];
+  const change = mutate => {
+    const next = structuredClone(rows);
+    try {
+      mutate(next);
+      validateMappingRows(next, "modelMappings", catalogIds);
+      updateRows(next);
+      setError("");
+      return true;
+    } catch (failure) {
+      setError(failure.message);
+      return false;
+    }
+  };
+  return <section className="channel-model-list" aria-label={t("channel.modelIds")}>
+    <h3>{t("channel.modelIds")}</h3>
+    <p className="muted">{t("channel.modelIdsHint")}</p>
+    <div className="multi-chips">{activeIds.length ? activeIds.map(id => <span className="multi-chip" key={id}>
+      {id}<button type="button" aria-label={`${t("entity.delete")} ${id}`} disabled={blocked}
+        onClick={() => change(next => {
+          const sources = new Set(next.filter(row => row.canonicalModelId === id).map(row => row.sourceModelId));
+          const refs = models.filter(model => model.selectedBinding?.channelId === up.channelId && sources.has(model.selectedBinding.sourceModelId));
+          if (refs.length) throw new Error(`${t("channel.referenced")}: ${refs.map(model => model.id).join(", ")}`);
+          next.forEach(row => { if (row.canonicalModelId === id) row.enabled = false; });
+        })}>×</button>
+    </span>) : <span className="muted">{t("channel.noModelIds")}</span>}</div>
+    <div className="table-toolbar">
+      <input list={optionsId} aria-label={t("channel.modelIds")} value={text} disabled={blocked}
+        placeholder={t("channel.modelIdsPlaceholder")} onChange={event => setText(event.target.value)} />
+      <datalist id={optionsId}>{definitions.map(card => <option key={card.id} value={card.id} />)}</datalist>
+      <button type="button" disabled={blocked || !parseList(text).length} onClick={() => {
+        if (change(next => {
+          const ids = [...new Set(parseList(text))];
+          const unknown = ids.filter(id => !catalogIds.has(id));
+          if (unknown.length) throw new Error(`${t("channel.unknownModelIds")}: ${unknown.join(", ")}`);
+          for (const id of ids) {
+            const matches = next.filter(row => row.canonicalModelId === id);
+            if (matches.length) matches.forEach(row => { row.enabled = true; });
+            else next.push({ sourceModelId: id, canonicalModelId: id, enabled: true });
+          }
+        })) setText("");
+      }}>{t("channel.addModels")}</button>
+      <button type="button" className="ghost" disabled={blocked || !rows.some(row => !row.enabled)} onClick={() => change(next => {
+        next.forEach(row => { row.enabled = true; });
+      })}>{t("channel.addMappedModels")}</button>
+    </div>
+    {error ? <p role="alert">{error}</p> : null}
+  </section>;
+}
+
 export function MappingEditor({ up, saved, index, config, capabilityView, definitions, updateConfig, drafts, setDrafts, t }) {
   const [migrationError, setMigrationError] = useState("");
+  const [migrationId] = useState(newChannelId);
+  const optionsId = useId();
   const id = up.channelId;
   const draft = Object.hasOwn(drafts, id) ? drafts[id] : null;
   const rows = up.modelMappings || [];
@@ -46,7 +104,38 @@ export function MappingEditor({ up, saved, index, config, capabilityView, defini
     delete next[id];
     return next;
   });
-  if (!id) return <div>
+  let migrated;
+  let migrationIssue = "";
+  if (!id && (capabilityView || !config.models?.some(model => model.upstream === up.name))) {
+    try {
+      const candidate = structuredClone(config);
+      migrateChannel(candidate, index, migrationId, capabilityView);
+      validateMappingRows(candidate.upstreams[index].modelMappings, "modelMappings", ids);
+      migrated = candidate;
+    } catch (error) {
+      migrationIssue = error.message;
+    }
+    if (migrated) return <>
+      <p className="muted">{t("channel.legacyEditHint")}</p>
+      <MappingEditor up={migrated.upstreams[index]} index={index} config={migrated} capabilityView={capabilityView}
+        definitions={definitions} drafts={drafts} setDrafts={setDrafts} t={t}
+        updateConfig={mutate => {
+          const next = structuredClone(migrated);
+          mutate(next);
+          updateConfig(draft => { draft.models = next.models; draft.upstreams[index] = next.upstreams[index]; });
+        }} />
+    </>;
+  }
+  if (!id) return <div className="mapping-migration">
+    <p>{t("ui.legacyMappingHint")}</p>
+    {migrationIssue ? <p role="alert">{t("channel.migrateFailed")}: {migrationIssue}</p> : null}
+    <div className="table-scroll"><table className="mapping-table">
+      <thead><tr><th>{t("routing.field.proxyModelId")}</th><th>{t("channel.source")}</th><th>{t("channel.canonical")}</th></tr></thead>
+      <tbody>{(config.models || []).filter(model => model.upstream === up.name).map(model => <tr key={model.id}>
+        <td>{model.id}</td><td><code>{model.targetModel || model.id}</code></td>
+        <td>{capabilityView?.models?.find(entry => entry.modelId === model.id)?.canonicalModelId || t("ui.unknown")}</td>
+      </tr>)}</tbody>
+    </table></div>
     <button type="button" className="ghost" disabled={!capabilityView && config.models?.some(m => m.upstream === up.name)}
       onClick={() => {
         const next = structuredClone(config);
@@ -68,8 +157,12 @@ export function MappingEditor({ up, saved, index, config, capabilityView, defini
     validateMappingRows(parsed, "modelMappings", ids);
     if (draft && draft.base !== JSON.stringify(rows)) issue = t("channel.stale");
   } catch (error) { issue = error.message; }
-  return <fieldset><legend>{t("channel.mappings")}</legend>
-    <p>{t("channel.manual")} <code>{id}</code></p>
+  return <div>
+    {tableEditable ? <ChannelModelList up={up} models={config.models || []} definitions={definitions} blocked={Boolean(draft)}
+      updateRows={rows => updateConfig(next => { next.upstreams[index].modelMappings = rows; })} t={t} /> : null}
+    <fieldset className="mapping-editor"><legend>{t("channel.mappings")}</legend>
+    <p>{t("channel.mappingDirection")} <code>{id}</code></p>
+    <datalist id={optionsId}>{definitions.map(card => <option key={card.id} value={card.id} />)}</datalist>
     {draft ? <>
       <Field label={t("channel.json")}><textarea rows={9} value={draft.text} onChange={event => {
         const text = event.target.value;
@@ -83,21 +176,23 @@ export function MappingEditor({ up, saved, index, config, capabilityView, defini
     </> : <>
       {tableEditable && canDiscoverOpenAIChannel(up, saved) &&
         <OpenAIChannelDiscovery up={up} saved={saved} definitions={definitions} updateConfig={updateConfig} t={t} />}
-      {tableEditable && rows.map((row, i) => <div className="form-grid compact" key={i}>
-        <Field label={t("channel.source")}><input value={row.sourceModelId} onChange={e => {
+      {tableEditable && rows.length > 0 ? <div className="table-scroll"><table className="mapping-table">
+        <thead><tr><th>{t("channel.source")}</th><th>{t("channel.canonical")}</th><th>{t("channel.enabled")}</th><th>{t("ui.actions")}</th></tr></thead>
+        <tbody>{rows.map((row, i) => <tr key={i}>
+        <td><input list={optionsId} aria-label={`${t("channel.source")} ${i + 1}`} value={row.sourceModelId} onChange={e => {
           const value = e.target.value;
           writeRows(list => { list[i].sourceModelId = value; });
-        }} /></Field>
-        <Field label={t("channel.canonical")}><select value={row.canonicalModelId} onChange={e => {
+        }} /></td>
+        <td><input list={optionsId} aria-label={`${t("channel.canonical")} ${i + 1}`} value={row.canonicalModelId} onChange={e => {
           const value = e.target.value;
           writeRows(list => { list[i].canonicalModelId = value; });
-        }}><option value="">—</option>{definitions.map(card => <option key={card.id}>{card.id}</option>)}</select></Field>
-        <label><input type="checkbox" checked={row.enabled} onChange={e => {
+        }} /></td>
+        <td><input aria-label={`${t("channel.enabled")} ${i + 1}`} type="checkbox" checked={row.enabled} onChange={e => {
           const checked = e.target.checked;
           writeRows(list => { list[i].enabled = checked; });
-        }} /> {t("channel.enabled")}</label>
-        <button type="button" className="ghost" onClick={() => writeRows(list => list.splice(i, 1))}>{t("entity.delete", "Delete")}</button>
-      </div>)}
+        }} /></td>
+        <td><button type="button" className="ghost danger" onClick={() => writeRows(list => list.splice(i, 1))}>{t("entity.delete", "Delete")}</button></td>
+      </tr>)}</tbody></table></div> : tableEditable ? <p className="empty-state">{t("ui.noMappings")}</p> : null}
       <div className="toolbar-cluster">
         <button type="button" disabled={!tableEditable} onClick={() => writeRows(list => list.push({ sourceModelId: "", canonicalModelId: "", enabled: false }))}>{t("channel.addRow")}</button>
         {tableEditable && rows.length > 0 && <button type="button" className="ghost" onClick={() => {
@@ -110,7 +205,7 @@ export function MappingEditor({ up, saved, index, config, capabilityView, defini
       </div>
     </>}
     {issue && <p role="alert">{issue}</p>}
-  </fieldset>;
+  </fieldset></div>;
 }
 
 export function channelCandidates(upstreams, definitions, evidence) {

@@ -214,6 +214,29 @@ redirect to the configured path. Unknown API paths still return API errors.
   enable/disable. Models default to canonical-model grouping. Narrow screens
   keep horizontal scrolling inside tables; complex editing is intended for a
   wider screen.
+- **Channels → Add Upstream** is the single creation entry. Choose Azure,
+  GitHub Copilot, OpenAI Compatible, or Anthropic, then configure the channel.
+  Copilot opens its device-login controls instead of API-key authentication;
+  use **Models & mappings** to fetch and explicitly approve discovered models.
+  The choices are UI templates, not a new backend provider allowlist, and do not
+  rewrite existing channel routes or remove legacy provider values.
+  GitHub uses Device Flow and server-local credential storage. Its admin APIs
+  separately require authenticated admin access: `COPILOT_ADMIN_AUTH_REQUIRED`
+  means configure the admin username/password and enable authentication under
+  **Settings → Service & security**, not supply GitHub credentials to the proxy.
+- Each channel row has a **Models & mappings** action. It shows the upstream
+  deployment IDs, Catalog mappings, and links to already exposed models.
+  Add **Channel model IDs** by typing exact Model Card IDs (comma-separated for
+  multiple IDs) or selecting suggestions. When upstream and target model IDs
+  match, mapping is optional; explicit same-name mappings are also accepted.
+  For other deployment names, configure **deployment ID → Model Card
+  ID**, then add all mapped IDs to the list in one action. Deployment names
+  remain arbitrary; channel model IDs and mapping targets must match the Catalog.
+  These controls use the existing `modelMappings`/`enabled` binding format.
+  Legacy direct bindings use the same controls when the Catalog resolves them;
+  the first edit migrates only the draft, retaining public identities/overrides.
+  Mapping/enablement does not publish a model or grant Key access: publish under
+  **Exposed models**, then grant permissions under **API Keys**.
 - Key/channel/model Sheets edit complete local copies. **Apply to draft** merges
   the copy into the global configuration draft, not the running service.
   **Cancel** discards that copy; closing or browser Back retains it in memory.
@@ -228,12 +251,27 @@ redirect to the configured path. Unknown API paths still return API errors.
   are not displayed as successful zero values.
 - Usage and log filters are URL-backed, for example
   `/admin/usage?key=team-a&group=canonical` and `/admin/logs?key=team-a`.
+  Usage tabs show their selected content directly; the shared overview is
+  expandable, filters stay visible, and target-model grouping stays within the
+  Models tab. Charts and historical rollups appear under Trends.
   Key log filtering only covers retained records with an unredacted recorded
   identity; it cannot recover redacted identities or evicted history.
 - Settings support path/label search, modified-only filtering, and read-only
-  environment/profile source badges. Configuration history is an inline list
+  environment/profile source badges. Selected settings tabs display their form
+  directly, without a second accordion that can remain collapsed on return.
+  Configuration history is an inline list
   with grouped differences; restore creates a new revision and preserves current
   credentials and persistence settings.
+- **Settings → Configuration JSON** is the only full-configuration fallback
+  editor entry; old `/admin/config/json` links redirect there.
+  Raw edits remain separate from forms
+  until **Review & replace configuration → Confirm replacement and save**.
+  This replaces the stored configuration, rather than merging individual
+  properties. Invalid input and failed/conflicting saves retain the text.
+  Other saves are blocked while JSON edits are pending. The editor exposes the
+  complete editable, secret-masked configuration, not unredacted file bytes;
+  server validation, revision checks, normalization, masked-secret restoration,
+  environment-managed settings and restart requirements still apply.
 
 See the [UI implementation status](UI_enhance.md#15-实施状态与验收记录)
 for the progressive migration boundaries and remaining work.

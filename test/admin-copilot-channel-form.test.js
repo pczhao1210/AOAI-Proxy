@@ -7,6 +7,21 @@ import { fireEvent, loadAdminModule, renderElement, setupWorkspaceFormTests } fr
 
 setupWorkspaceFormTests();
 
+test("Copilot admin-auth rejection explains the prerequisite and links to security settings", async ctx => {
+  const { MemoryRouter } = await import("react-router");
+  const { default: CopilotChannel } = await loadAdminModule("/admin-ui/src/components/CopilotChannel.jsx");
+  ctx.mock.method(globalThis, "fetch", async () => Response.json({
+    code: "COPILOT_ADMIN_AUTH_REQUIRED", error: "COPILOT_ADMIN_AUTH_REQUIRED"
+  }, { status: 403 }));
+  const ui = renderElement(createElement(MemoryRouter, null, createElement(CopilotChannel, {
+    up: newCopilotChannel("test", "Test"), definitions: [], referenced: [], updateConfig() {}, onEvidence() {}, t: key => key
+  })));
+  await ui.findByText(/copilot.adminAuthRequired/);
+  assert.equal(ui.getByRole("link", { name: "shell.settings.service" }).getAttribute("href"), "/settings/service");
+  assert.equal(ui.getByRole("button", { name: "copilot.login" }).disabled, true);
+  assert.equal(ui.getByRole("button", { name: "copilot.status" }).disabled, false);
+});
+
 const routes = { messages: "messages", responses: "messages", "chat/completions": "messages" };
 const idle = { state: "idle", discovery: { state: "not_loaded", models: [] } };
 const authorized = {

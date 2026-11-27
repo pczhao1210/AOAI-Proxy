@@ -27,7 +27,7 @@ export function useConfigDraft() {
 }
 
 export function useConfigActions({
-  t, dirty, pendingMappingJson, pricingCatalogError, jsonError, setError, setMessage,
+  t, dirty, pendingMappingJson, pendingConfigJson, pricingCatalogError, jsonError, setError, setMessage,
   loadRequestRef, applyLoadedConfig, loadSecondaryData, loadAll, loadCaddyStatusAction, closeHistory
 }) {
   const { config, setConfig, lastLoadedText, entityDrafts } = useConfigDraft();
@@ -45,9 +45,10 @@ export function useConfigActions({
     return window.confirm(`${t("config.validation.confirm", "The current configuration still has structural issues. Save anyway?")}\n- ${issues.slice(0, 5).join("\n- ")}`);
   }
 
-  async function persistConfig(nextConfig, successMessage) {
+  async function persistConfig(nextConfig, successMessage, replaceJsonDraft = false) {
     if (hasEntityDrafts) throw new Error(t("ui.unapplied"));
     if (pendingMappingJson) throw new Error(t("channel.pendingJson"));
+    if (pendingConfigJson && !replaceJsonDraft) throw new Error(t("advanced.pending"));
     const result = await saveConfig(nextConfig);
     acceptPersistedResult(result, successMessage);
   }
@@ -146,6 +147,10 @@ export function useConfigActions({
     }
     if (pendingMappingJson) {
       setError(t("channel.pendingJson"));
+      return;
+    }
+    if (pendingConfigJson) {
+      setError(t("advanced.pending"));
       return;
     }
     if (pricingCatalogError || jsonError) {

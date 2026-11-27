@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Link } from "react-router";
 import { fetchCopilotStatus, runCopilotAction } from "../api.js";
 import { copilotIdentity, discoveredRoutes, discoveryDeadline, matchesDiscoveredRoutes, selectableModels } from "../copilot.js";
 import { Field } from "./ui.jsx";
@@ -43,7 +44,7 @@ function DiscoveryPicker({ up, definitions, snapshot, allowed, edit, t }) {
   const models = new Map(snapshot?.discovery.models.map(model => [model.id, model]));
   const ids = new Set([...models.keys(), ...rows.keys()]);
   const filter = search.trim().toLowerCase();
-  return <fieldset><legend>{t("channel.mappings")}</legend>
+  return <fieldset className="mapping-editor"><legend>{t("channel.mappings")}</legend>
     <p>{t("copilot.mappingHint")}</p>
     <p>{t("copilot.discovery")}: {t(`copilot.state.${snapshot?.discovery.state || "not_loaded"}`)}
       {snapshot?.discovery.updatedAt && <> · <time>{snapshot.discovery.updatedAt}</time></>}
@@ -52,15 +53,17 @@ function DiscoveryPicker({ up, definitions, snapshot, allowed, edit, t }) {
       <Field label={t("copilot.search")}><input type="search" value={search} onChange={e => setSearch(e.target.value)} /></Field>
       <label><input type="checkbox" checked={selectedOnly} onChange={e => setSelectedOnly(e.target.checked)} /> {t("copilot.selectedOnly")}</label>
     </div>
-    {[...ids].map(id => {
+    {!ids.size ? <p className="empty-state">{t("ui.copilotModelsEmpty")}</p> : <div className="table-scroll"><table className="mapping-table">
+      <thead><tr><th>{t("channel.source")}</th><th>{t("channel.canonical")}</th><th>{t("field.status")}</th><th>{t("ui.actions")}</th></tr></thead>
+      <tbody>{[...ids].map(id => {
       const model = models.get(id);
       const row = rows.get(id);
       const checked = row?.enabled === true;
       if (selectedOnly && !checked || !`${id} ${model?.name || ""}`.toLowerCase().includes(filter)) return null;
       const canonical = choices.get(id) ?? row?.canonicalModelId ?? (catalogIds.has(id) ? id : "");
       const routes = allowed.get(id);
-      return <div key={id} className="form-grid compact">
-        <label><input type="checkbox" checked={checked} disabled={!Array.isArray(up.modelMappings) || (!checked && !(routes && catalogIds.has(canonical)))}
+      return <tr key={id}>
+        <td><label className="inline"><input type="checkbox" checked={checked} disabled={!Array.isArray(up.modelMappings) || (!checked && !(routes && catalogIds.has(canonical)))}
           onChange={event => {
             const enabled = event.target.checked;
             if (enabled && (!routes || !catalogIds.has(canonical))) return;
@@ -71,25 +74,26 @@ function DiscoveryPicker({ up, definitions, snapshot, allowed, edit, t }) {
               if (current) Object.assign(current, mapping);
               else channel.modelMappings.push(mapping);
             });
-          }} /> <code>{id}</code>{model?.name && model.name !== id && ` · ${model.name}`}</label>
-        <Field label={`${t("channel.canonical")} · ${id}`}><select value={canonical}
+          }} /> <code>{id}</code>{model?.name && model.name !== id && ` · ${model.name}`}</label></td>
+        <td><select aria-label={`${t("channel.canonical")} · ${id}`} value={canonical}
           disabled={checked || !routes} onChange={e => {
             const value = e.target.value;
             setChoices(prev => new Map(prev).set(id, value));
-          }}><option value="">—</option>{definitions.map(card => <option key={card.id}>{card.id}</option>)}</select></Field>
-        <small>{!routes ? t("copilot.unavailable") : !catalogIds.has(canonical) ? t("copilot.needCatalog")
+          }}><option value="">—</option>{canonical && !catalogIds.has(canonical) ? <option value={canonical}>{canonical}</option> : null}
+          {definitions.map(card => <option key={card.id}>{card.id}</option>)}</select></td>
+        <td><small>{!routes ? t("copilot.unavailable") : !catalogIds.has(canonical) ? t("copilot.needCatalog")
           : checked && !matchesDiscoveredRoutes(row, routes) ? t("copilot.routesChanged") : null}
           {model?.vendor && <> {model.vendor} ·</>}
-          {model?.routes && <> {Object.entries(model.routes).map(([key, target]) => `${key} → ${target}`).join(" · ")}</>}</small>
-        {row && !checked && <button type="button" className="ghost" onClick={() => edit(channel => {
+          {model?.routes && <> {Object.entries(model.routes).map(([key, target]) => `${key} → ${target}`).join(" · ")}</>}</small></td>
+        <td>{row && !checked && <button type="button" className="ghost" onClick={() => edit(channel => {
           channel.modelMappings = channel.modelMappings.filter(entry => entry?.sourceModelId !== id);
-        })}>{t("entity.delete")}</button>}
-      </div>;
-    })}
+        })}>{t("entity.delete")}</button>}</td>
+      </tr>;
+    })}</tbody></table></div>}
   </fieldset>;
 }
 
-export default function CopilotChannel({ up, saved, tickets, definitions, referenced, updateConfig, onEvidence, t }) {
+export default function CopilotChannel({ up, saved, tickets, definitions, referenced, updateConfig, onEvidence, section, t }) {
   const identity = copilotIdentity(up);
   const profile = up.copilot?.authProfile;
   const credentialRef = up.auth?.credentialRef;
@@ -207,7 +211,12 @@ export default function CopilotChannel({ up, saved, tickets, definitions, refere
 
   const allowed = busy || error ? new Map() : selectableModels(up, snapshot);
   const pending = operation.current || snapshot?.state === "pending";
-  return <fieldset><legend>GitHub Copilot</legend>
+  const adminAuthRequired = error === "COPILOT_ADMIN_AUTH_REQUIRED";
+  return <fieldset className="copilot-setup"><legend>GitHub Copilot</legend>
+    {adminAuthRequired ? <p role="alert">{t("copilot.adminAuthRequired")}{" "}
+      <Link to="/settings/service">{t("shell.settings.service")}</Link> <code>{error}</code>
+    </p> : null}
+    <div className="connection-fields" hidden={section === "mappings"}>
     <p>{t("copilot.channel")}: <code>{up.channelId}</code></p>
     <Field label={t("copilot.profile")} hint={t("copilot.profileHint")}><select value={profile || ""}
       disabled={!!saved || !!credentialRef || !!pending || !!up.modelMappings?.length || (!!busy && busy !== "status")}
@@ -223,13 +232,13 @@ export default function CopilotChannel({ up, saved, tickets, definitions, refere
       {snapshot.nextRetryAt && <>{" · "}{t("copilot.nextRetry")}: <time>{snapshot.nextRetryAt}</time></>}
     </p>}
     <p><code>{Object.entries(up.routes || {}).map(([route, path]) => `${route}: ${path}`).join(" · ")}</code></p>
-    {(!valid || error || snapshot?.errorCode) && <p role="alert">{t("copilot.requestError")} {error === "unknown" ? "" : error || snapshot?.errorCode}</p>}
+    {!adminAuthRequired && (!valid || error || snapshot?.errorCode) && <p role="alert">{t("copilot.requestError")} {error === "unknown" ? "" : error || snapshot?.errorCode}</p>}
     {device && device.expires > now && <p>
       <a href={verificationUri} target="_blank" rel="noopener noreferrer">{t("copilot.verify")}</a>{" · "}
       {t("copilot.code")}: <code>{device.code}</code>{" · "}{t("copilot.secondsLeft")}: {Math.ceil((device.expires - now) / 1000)}
     </p>}
     <div className="toolbar-cluster">
-      <button type="button" disabled={!valid || !!busy || !!pending || unboundApprovals} onClick={() => void run("login")}>{t("copilot.login")}</button>
+      <button type="button" disabled={adminAuthRequired || !valid || !!busy || !!pending || unboundApprovals} onClick={() => void run("login")}>{t("copilot.login")}</button>
       <button type="button" className="ghost" disabled={!valid || !!busy} onClick={() => void run("status")}>{t("copilot.status")}</button>
       <button type="button" className="ghost" disabled={!valid || !pending || (!!busy && busy !== "status")} onClick={() => void run("cancel")}>{t("copilot.cancel")}</button>
       <button type="button" disabled={!valid || !!busy || !!pending || !credentialRef || snapshot?.state !== "authorized"}
@@ -242,6 +251,16 @@ export default function CopilotChannel({ up, saved, tickets, definitions, refere
     {unboundApprovals && <p>{t("copilot.clearApprovals")}</p>}
     {referenced.length > 0 && <p>{t("copilot.disconnectRefs")}: {referenced.join(", ")}</p>}
     <a href="https://github.com/settings/applications" target="_blank" rel="noopener noreferrer">{t("copilot.githubAuthorizations")}</a>
+    </div>
+    <div hidden={Boolean(section) && section !== "mappings"}>
+    {section === "mappings" ? <div className="toolbar-cluster">
+      <span>{t("copilot.authStatus")}: {t(`copilot.state.${snapshot?.state || "unknown"}`)}</span>
+      <button type="button" className="ghost" disabled={!valid || !!busy} onClick={() => void run("status")}>{t("copilot.status")}</button>
+      <button type="button" disabled={!valid || !!busy || !!pending || !credentialRef || snapshot?.state !== "authorized"}
+        onClick={() => void run("discover")}>{t("copilot.discover")}</button>
+      {error && !adminAuthRequired ? <p role="alert">{t("copilot.requestError")}</p> : null}
+    </div> : null}
     <DiscoveryPicker up={up} definitions={definitions} snapshot={snapshot} allowed={allowed} edit={edit} t={t} />
+    </div>
   </fieldset>;
 }

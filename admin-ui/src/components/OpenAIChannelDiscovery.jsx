@@ -1,6 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { discoverOpenAIChannel } from "../api.js";
-import { Field } from "./ui.jsx";
 
 export function canDiscoverOpenAIChannel(up, saved) {
   if (!up?.channelId || !saved || up.channelId !== saved.channelId || up.status === "disabled" || up.provider !== "openai"
@@ -64,18 +63,20 @@ export default function OpenAIChannelDiscovery({ up, saved, definitions, updateC
     {failed && <p role="alert">{t("channel.fetchFailed")}</p>}
     {discovery && <fieldset><legend>{t("channel.availableIds")}</legend>
       <p>{t("channel.importHint")} · <time>{discovery.updatedAt}</time> · {discovery.ids.length}</p>
-      {discovery.ids.map(id => <div key={id} className="form-grid compact">
-        <label><input type="checkbox" checked={selected.has(id)} disabled={existing.has(id) || !catalog.has(target(id))}
+      <div className="table-scroll"><table className="mapping-table">
+        <thead><tr><th>{t("channel.source")}</th><th>{t("channel.canonical")}</th></tr></thead>
+        <tbody>{discovery.ids.map(id => <tr key={id}>
+        <td><label className="inline"><input type="checkbox" checked={selected.has(id)} disabled={existing.has(id) || !catalog.has(target(id))}
           onChange={event => {
             const checked = event.target.checked;
             setSelected(prev => { const next = new Set(prev); if (checked) next.add(id); else next.delete(id); return next; });
-          }} /> <code>{id}</code></label>
-        <Field label={`${t("channel.canonical")} · ${id}`}><select value={target(id)} disabled={existing.has(id)} onChange={event => {
+          }} /> <code>{id}</code></label></td>
+        <td><select aria-label={`${t("channel.canonical")} · ${id}`} value={target(id)} disabled={existing.has(id)} onChange={event => {
           const value = event.target.value;
           setCanonical(prev => new Map(prev).set(id, value));
           if (!catalog.has(value)) setSelected(prev => { const next = new Set(prev); next.delete(id); return next; });
-        }}><option value="">—</option>{definitions.map(card => <option key={card.id}>{card.id}</option>)}</select></Field>
-      </div>)}
+        }}><option value="">—</option>{definitions.map(card => <option key={card.id}>{card.id}</option>)}</select></td>
+      </tr>)}</tbody></table></div>
       <button type="button" disabled={!canAdd} onClick={() => {
         if (!canAdd) return;
         updateConfig(next => {

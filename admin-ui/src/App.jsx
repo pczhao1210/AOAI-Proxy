@@ -134,7 +134,9 @@ function bindingLabel(config, model) {
 
 export default function App() {
   return <BrowserRouter basename={getAdminBasePath()}><ConfigDraftProvider>
-    <Routes><Route path="/" element={<Navigate to="/overview" replace />} /><Route path="*" element={<AdminConsole />} /></Routes>
+    <Routes><Route path="/" element={<Navigate to="/overview" replace />} />
+      <Route path="/config/json" element={<Navigate to="/settings/json" replace />} />
+      <Route path="*" element={<AdminConsole />} /></Routes>
   </ConfigDraftProvider></BrowserRouter>;
 }
 
@@ -145,7 +147,8 @@ function AdminConsole() {
   const navigate = useNavigate();
   const page = resolvePage(location.pathname);
   const subsection = location.pathname.split("/")[2];
-  const activeTab = page?.id === "settings" && subsection === "gateway" ? "ops" : page?.legacy;
+  const activeTab = page?.id === "settings" && subsection === "gateway" ? "ops"
+    : page?.id === "settings" && subsection === "json" ? "advanced" : page?.legacy;
   const sections = page?.id === "settings" ? [settingsSections[subsection] || settingsSections.service] : page?.sections;
   const [runtime, setRuntime] = useState(null);
   const [stats, setStats] = useState(null);
@@ -169,6 +172,7 @@ function AdminConsole() {
   const [showConfigHistory, setShowConfigHistory] = useState(false);
 
   const [advancedJson, setAdvancedJson] = useState("{}");
+  const [pendingConfigJson, setPendingConfigJson] = useState(false);
   const [pricingCatalogText, setPricingCatalogText] = useState("{}");
   const [pricingCatalogError, setPricingCatalogError] = useState("");
   const [jsonError, setJsonError] = useState("");
@@ -197,6 +201,7 @@ function AdminConsole() {
   const [showModelTemplateModal, setShowModelTemplateModal] = useState(false);
   const [runtimeFilters, setRuntimeFilters] = useUrlFilters(DEFAULT_RUNTIME_FILTERS, page?.id === "usage", { keyId: "key", timeRange: "range" });
   const [usageView, setUsageView] = useUrlFilters({ group: "public", tab: "models" }, page?.id === "usage");
+  const usageTab = ["models", "keys", "analytics", "signals"].includes(usageView.tab) ? usageView.tab : "models";
   const [runtimeLoader] = useState(() => createRuntimeLoader({ fetchRuntime, fetchStats, initialFilters: runtimeFilters }));
   const runtimeQueryRef = useRef(JSON.stringify(runtimeFilters));
   const [modelTemplateSearch, setModelTemplateSearch] = useState("");
@@ -213,14 +218,14 @@ function AdminConsole() {
   const harnessEligibilityContextRef = useRef(null);
   const modelStatsResetRef = useRef(null);
 
-  const dirty = useMemo(() => !!pendingMappingJson || JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText, pendingMappingJson]);
+  const dirty = useMemo(() => pendingConfigJson || !!pendingMappingJson || JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText, pendingMappingJson, pendingConfigJson]);
   const hasEntityDrafts = Object.keys(entityDrafts).length > 0;
   const {
     configConflict, lastApplication, applyingStage, saving, setSaving, showSaveModal, setShowSaveModal,
     confirmConfigIssues, persistConfig, reportApplication, closeConfigConflict, retryApplication,
     restoreHistoricalConfig, showConfigConflict, reportConfigSaveError, handleSave, proceedSave, handleDiscardChanges, handleReload
   } = useConfigActions({
-    t, dirty, pendingMappingJson, pricingCatalogError, jsonError, setError, setMessage,
+    t, dirty, pendingMappingJson, pendingConfigJson, pricingCatalogError, jsonError, setError, setMessage,
     loadRequestRef, applyLoadedConfig, loadSecondaryData, loadAll, loadCaddyStatusAction,
     closeHistory: success => { setShowConfigHistory(false); if (success && page?.id === "config") navigate("/config/sync"); }
   });
@@ -406,6 +411,7 @@ function AdminConsole() {
     const text = JSON.stringify(configJson, null, 2);
     setConfig(configJson);
     setAdvancedJson(text);
+    setPendingConfigJson(false);
     setLastLoadedText(text);
     setPricingCatalogText(JSON.stringify(configJson?.access?.pricingCatalog || {}, null, 2));
     setPricingCatalogError("");
@@ -587,9 +593,9 @@ function AdminConsole() {
   }, []);
 
   useEffect(() => {
-    if (!config) return;
+    if (!config || pendingConfigJson) return;
     setAdvancedJson(JSON.stringify(config, null, 2));
-  }, [config]);
+  }, [config, pendingConfigJson]);
 
   useEffect(() => {
     if (!config) return;
@@ -674,12 +680,27 @@ function AdminConsole() {
 
   function updateAdvancedJson(text) {
     setAdvancedJson(text);
+    setPendingConfigJson(true);
     try {
-      const parsed = JSON.parse(text || "{}");
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(t("advanced.objectRequired"));
       setJsonError("");
-      setConfig(parsed);
     } catch (parseError) {
       setJsonError(parseError.message || t("messages.advancedJsonInvalid", "Invalid JSON."));
+    }
+  }
+
+  async function saveAdvancedJson() {
+    setSaving(true);
+    setError("");
+    try {
+      const parsed = JSON.parse(advancedJson);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(t("advanced.objectRequired"));
+      await persistConfig(parsed, t("messages.saved"), true);
+    } catch (saveError) {
+      await reportConfigSaveError(saveError, t("messages.saveFailed"));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -1141,7 +1162,7 @@ function AdminConsole() {
       return;
     }
     if (type === "advanced") {
-      navigate("/config/json");
+      navigate("/settings/json");
       return;
     }
     const collection = type === "upstream" ? config.upstreams || [] : config.models || [];
@@ -1367,7 +1388,7 @@ function AdminConsole() {
         </div>
       </Modal>
 
-      {page?.id === "settings" ? <div className="table-toolbar">
+      {page?.id === "settings" && subsection !== "json" ? <div className="table-toolbar">
         <input type="search" value={settingsFilters.search} aria-label={t("ui.settingsSearch")} placeholder={t("ui.settingsSearch")}
           onChange={event => setSettingsFilters(current => ({ ...current, search: event.target.value }))} />
         <label className="inline"><input type="checkbox" checked={settingsFilters.modifiedOnly}
@@ -1375,7 +1396,7 @@ function AdminConsole() {
       </div> : null}
       {page?.id === "usage" ? <div className="table-toolbar">
         <nav className="section-tabs" aria-label={t("shell.page.usage")}>
-          {["models", "keys", "analytics", "signals"].map(tab => <button key={tab} className="ghost" aria-pressed={usageView.tab === tab}
+          {["models", "keys", "analytics", "signals"].map(tab => <button key={tab} className="ghost" aria-pressed={usageTab === tab}
             onClick={() => setUsageView(current => ({ ...current, tab }))}>{t(`ui.usage.${tab}`)}</button>)}
         </nav>
         <select aria-label={t("ui.groupBy")} value={usageView.group} onChange={event => setUsageView(current => ({ ...current, group: event.target.value }))}>
@@ -1384,9 +1405,9 @@ function AdminConsole() {
       </div> : null}
       <SettingsFieldsProvider value={page?.id === "settings" ? { ...settingsFilters, config, loadedConfig, metadata: runtime?.configuration?.fieldMetadata, t } : null}>
       <PageSections sections={page?.id === "usage"
-        ? ["runtime-overview", `runtime-${["models", "keys", "analytics", "signals"].includes(usageView.tab) ? usageView.tab : "models"}`] : sections}>
+        ? ["runtime-overview", `runtime-${usageTab}`] : sections}>
           <Suspense fallback={<div className="loading">{t("common.loading", "Loading...")}</div>}>
-      {["overview", "usage"].includes(page?.id) ? !overviewAwaitingGlobal && stats?.analytics?.rollups?.hourly?.length
+      {page?.id === "overview" ? !overviewAwaitingGlobal && stats?.analytics?.rollups?.hourly?.length
         ? <UsageChart rollups={stats.analytics.rollups.hourly} t={t} />
         : <p className="chart-empty">{t("ui.chartEmpty")} <Link to="/settings/persistence">{t("shell.settings.persistence")}</Link></p> : null}
       {page?.id === "overview" ? <OverviewLists models={overviewAwaitingGlobal ? {} : modelStats} keys={overviewAwaitingGlobal ? {} : perKeyStats} validation={modelValidationResult} t={t} /> : null}
@@ -1478,6 +1499,10 @@ function AdminConsole() {
       {activeTab === "runtime" ? (
         <RuntimeTab
           grouping={page?.id === "usage" ? usageView.group === "canonical" ? "canonical" : "public" : undefined}
+          usageTab={page?.id === "usage" ? usageTab : undefined}
+          trendChart={page?.id === "usage" ? stats?.analytics?.rollups?.hourly?.length
+            ? <UsageChart rollups={stats.analytics.rollups.hourly} t={t} />
+            : <p className="chart-empty">{t("ui.chartEmpty")} <Link to="/settings/persistence">{t("shell.settings.persistence")}</Link></p> : null}
           config={config}
           pricingLibrary={pricingLibrary}
           onApplyCardPricing={modelIds => {
@@ -1577,14 +1602,18 @@ function AdminConsole() {
         />
       ) : null}
 
-      {activeTab === "advanced" && subsection === "json" ? (
+      {page?.id === "settings" && subsection === "json" ? (
         <AdvancedTab
           advancedJsonEnabled={advancedJsonEnabled}
           advancedJson={advancedJson}
+          config={config}
           updateAdvancedJson={updateAdvancedJson}
+          onSaveJson={saveAdvancedJson}
+          saving={saving}
+          pending={pendingConfigJson}
+          onResetJson={() => { setPendingConfigJson(false); setJsonError(""); }}
           jsonError={jsonError}
           dirty={dirty}
-          configIssues={configIssues}
           configDiffCount={configDiffCount}
           configDiffPreview={configDiffPreview}
           t={t}
