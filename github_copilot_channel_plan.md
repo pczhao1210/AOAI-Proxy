@@ -1,7 +1,7 @@
 # 渠道模型映射、模型暴露与 GitHub Copilot 接入计划
 
 > 修订：2026-11-27。工作区已包含普通渠道映射与可信发现、固定绑定、批量暴露、Key 权限、两种 Copilot 凭据流程、发现与批准、运维记录和渠道历史统计。实施及启动边界见[配置指南](docs/configuration/feature-flags.zh-CN.md#copilot-启动前提默认不启用)。
-> 真实授权、供应商验收和灰度未执行，也未读取本机登录态或迁移线上配置。双 profile 用固定版本参考项目核对流程，以离线替身验证；不附带第三方应用 ID，不宣称私有上游接口对本部署已获批准。下列矩阵是上线门槛，不是实网测试报告。
+> 真实授权、供应商验收和灰度未执行，也未读取本机登录态或迁移线上配置。双 profile 用固定版本参考项目核对流程，以离线替身验证；按所有者决定，选择身份即带出参考项目的公开应用 ID 与客户端标头（可用环境变量覆盖），不宣称这些应用或私有上游接口对本部署已获批准。下列矩阵是上线门槛，不是实网测试报告。
 
 ## 1. 目标、已确认需求与边界
 
@@ -288,7 +288,7 @@ allowed =
 | GitHub Copilot | `vscode` | GitHub OAuth token 换短期 Copilot token | 分别管理长期授权和短期 token；根据真实交换结果刷新 |
 | OpenCode | `opencode` | 直接使用 OAuth token | 依据实际 OAuth 有效期/刷新能力处理，不能套用 Copilot token exchange |
 
-两种 profile 的 OAuth 应用、scope、身份 headers、token 模式均由服务端受控配置决定。不能只改 User-Agent 就宣称完成身份切换；不能无授权地照抄参考项目的 OAuth client ID 并假定可用于本部署。
+两种 profile 的 OAuth 应用、scope、身份 headers、token 模式均由服务端决定，下游客户端不能覆盖。不能只改 User-Agent 就宣称完成身份切换。所有者已决定完全参考固定版本参考项目：`vscode` 默认使用 `Iv1.b507a08c87ecfe98` 及 VS Code Copilot Chat 标头，`opencode` 默认使用 `Ov23li8tweQw6odWQebz` 及 OpenCode 标头；`COPILOT_VSCODE_CLIENT_ID`、`COPILOT_OPENCODE_CLIENT_ID` 只作覆盖。这些应用属于 GitHub 与 OpenCode，条款与账号风险由部署方确认，离线测试不能证明其可用于本部署。
 
 有效 `expires_at` / `expires_in` / `refresh_in` 需要按对应接口解释并检查单位。短期 Copilot token 若缺失必要有效期证据，报告异常，不照搬参考代码的固定 25 分钟兜底。
 
@@ -630,4 +630,4 @@ P0–P4 的通用渠道、连接、绑定门禁和可观测性实现纳入离线
 - 参考[认证/Profile/模型发现](https://github.com/pczhao1210/ghcp-pool-proxy-codebase/blob/401a3dce4ed0992aa6bd0da5b7d832550af7616d/internal/provider/copilot/auth.go)、[token 刷新与并发协调](https://github.com/pczhao1210/ghcp-pool-proxy-codebase/blob/401a3dce4ed0992aa6bd0da5b7d832550af7616d/internal/provider/copilot/token_source.go)、[推理端点](https://github.com/pczhao1210/ghcp-pool-proxy-codebase/blob/401a3dce4ed0992aa6bd0da5b7d832550af7616d/internal/provider/copilot/provider.go)。
 - [官方 Copilot SDK 认证说明](https://github.com/github/copilot-sdk/blob/main/docs/auth/README.md)用于区分身份与服务端授权方式；不据此声称参考仓库的内部 HTTP 接口具有同样支持保证。
 
-本计划参考行为和边界，不复制参考项目的实现。参考仓库未提供已核实的许可信息，代码复用前需要另行确认；内部 token 接口与客户端身份集成均需实际授权验证。
+本计划参考行为和边界，不复制参考项目的实现；客户端身份常量（应用 ID、身份标头值及设备授权请求格式）按所有者决定与参考项目保持一致。参考仓库未提供已核实的许可信息，代码复用前需要另行确认；内部 token 接口与客户端身份集成均需实际授权验证。

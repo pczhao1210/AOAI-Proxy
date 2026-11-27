@@ -59,17 +59,18 @@ JSON 中的所有有效布尔开关及被迁移的旧布尔别名只接受 `true
 - 使用 API Key 的 `openai` 渠道若已保存，且地址为 `https://api.openai.com` 或 `https://api.openai.com/v1`（可带末尾 `/`），可点**获取可用型号 ID**。服务端使用已保存的渠道认证获取清单；确认 Catalog ID 后将所选条目添加为停用的草稿映射，不会发布。Azure 及其他普通渠道须手填实际部署名，不能把厂商型号目录当作账号部署清单。
 - Key 的授权对象是**公开 ID**。新建 Key 默认 `selected: []`，不能调用任何模型。`all` 包含未来发布且启用的模型，不能与非空名单并用。旧 Key 省略模式时，非空名单按原 ID 限制，省略或空名单依旧不限制。删除被引用的 ID 时必须在 **Key 管理** 中显式修正名单；停用模型仍不可访问。`requireApiKey=false` 允许不带 Key 的匿名身份，不能用于强隔离。
 - 保存、重载和回滚复用现有修订及应用流程。降低版本前先转换回旧版能等价表达的配置，尤其不要把 `selected: []` 转为旧版空名单（含义相反，应停用该 Key）。
-- 若部署的服务端已配置获准的 Copilot 身份与凭据存储，可在**上游 / 模型 → 新增 GitHub Copilot 渠道**中选择 GitHub Copilot（VS Code）或 OpenCode 身份，在 GitHub 设备授权页面完成登录。查询状态只读；刷新清单是独立管理操作。草稿只接收服务端生成的 `credentialRef`，不填写 token；凭据不可用时不回落到 Azure 认证。
+- 若部署的服务端已配置 Copilot 凭据存储，可在**上游 / 模型 → 新增 GitHub Copilot 渠道**中选择 GitHub Copilot（VS Code）或 OpenCode 身份，在 GitHub 设备授权页面完成登录。查询状态只读；刷新清单是独立管理操作。草稿只接收服务端生成的 `credentialRef`，不填写 token；凭据不可用时不回落到 Azure 认证。
 - Copilot 渠道不提供手填型号或映射 JSON。新发现的条目默认不勾选，只能勾选本连接当前可选、具有文本协议证据的准确 ID；名称相似不等于 Catalog 匹配，可显式选择正确的 Catalog ID。清单过期或失败时不能新增绑定，但可以停用映射或切出。变更使用原有全局草稿审阅保存。断开前要先保存解绑或切换；本地断开不会撤销 [GitHub 的 OAuth 授权](https://github.com/settings/applications)。
 
 ## 当前有效开关
 
 ### Copilot 启动前提（默认不启用）
 
-- 部署方须获得所用应用、组织、账号和用途的授权。`COPILOT_VSCODE_CLIENT_ID`、`COPILOT_OPENCODE_CLIENT_ID` 分别指定**部署方获准使用**、已开启 device flow 的两个独立应用；可只配置获准的一个。代理不自带参考项目的应用 ID，不冒用编辑器标头，不读取机器的 GitHub 登录态。`vscode` 使用 OAuth 换短期推理 token；`opencode` 使用 OAuth 本身。二者不是用户名或账号池。
+- 选择身份即带出客户端身份，与参考项目 [ghcp-pool-proxy@401a3dc](https://github.com/pczhao1210/ghcp-pool-proxy-codebase/blob/401a3dce4ed0992aa6bd0da5b7d832550af7616d/internal/provider/copilot/auth.go) 一致，无需额外配置应用 ID：`vscode` 使用 GitHub Copilot 编辑器应用 `Iv1.b507a08c87ecfe98`，设备授权以表单提交，token 交换、模型清单和推理带 `GitHubCopilotChat/0.38.2`、`Editor-Version: vscode/1.110.1`、`Editor-Plugin-Version: copilot-chat/0.38.2`、`X-GitHub-Api-Version: 2025-10-01`，清单另带 `Copilot-Integration-Id: vscode-chat`；`opencode` 使用 OpenCode 应用 `Ov23li8tweQw6odWQebz`，设备授权以 JSON 提交，带 `opencode/1.0.0`、`X-GitHub-Api-Version: 2026-06-01`，推理另带 `Openai-Intent: conversation-edits`。下游客户端不能覆盖这些标头。`vscode` 使用 OAuth 换短期推理 token；`opencode` 使用 OAuth 本身。二者不是用户名或账号池，代理也不读取机器的 GitHub 登录态。
+- 上述应用属于 GitHub 与 OpenCode，并非本项目所有；GitHub 会把请求视为对应客户端。部署方须自行确认账号、组织和用途符合 GitHub 条款并承担相应风险。如有自有且已开启 device flow 的应用，可用 `COPILOT_VSCODE_CLIENT_ID`、`COPILOT_OPENCODE_CLIENT_ID` 覆盖对应身份的应用 ID（空值表示使用默认值）；两种身份最终的应用 ID 不得相同，否则返回 `COPILOT_APPLICATION_NOT_CONFIGURED`。已有凭据绑定登录时的应用 ID，修改或移除覆盖值后须重新登录。
 - 启用管理 Basic Auth。所有授权操作使用现有管理入口，写请求必须带 `x-aoai-admin-csrf: 1`。GitHub 密码、OAuth token、设备码不得放入配置。备份时将外部密钥和加密数据分别保护；详见[凭据存储与故障恢复](../development/copilot-credential-store.md)。
 - 启动环境设置 `COPILOT_CREDENTIAL_KEY_VERSION` 和 `COPILOT_CREDENTIAL_KEYS`（版本到 base64 编码 32 字节密钥的 JSON 对象）。文件模式使用配置文件旁的 `.copilot-credentials` 私有目录；可用 `COPILOT_CREDENTIAL_DIRECTORY` 指定本机单写目录。多实例使用配置数据库及相同密钥、schema、configKey；禁止用共享文件目录代替数据库。修改应用、存储或主密钥后重启。
-- 服务端只调用固定的 GitHub 设备授权、账号身份、token 交换和推理主机；不跟随重定向或身份返回的任意 URL。若组织需要专属端点或提供商要求代理无权使用的客户端身份，**不要上线该连接**。模型清单必须提供 `supported_endpoints` 中的已识别路径。只有 ID、显示名或模型家族，没有协议证据时不开通推理。
+- 服务端只调用固定的 GitHub 设备授权、账号身份、token 交换和推理主机；不跟随重定向或身份返回的任意 URL。若组织需要专属端点或禁止使用上述客户端身份，**不要上线该连接**。模型清单必须提供 `supported_endpoints` 中的已识别路径。只有 ID、显示名或模型家族，没有协议证据时不开通推理。
 - 冷启动可继续使用已签发的绑定，无需联网重新勾选；未验证的手填绑定不能取得推理凭据。新增/切入须先刷新同一凭据的清单（15 分钟），不会自动切换承接渠道。401 令当前凭据版本失效，不重放已发送请求；403、429 不换账号。未给映射行显式定价时，Copilot 费用未知，不继承 Azure 卡价。
 - 同一修订涉及多个新凭据时，`apply.proxy` 在同一个凭据存储事务中激活它们；一项冲突不会只切换部分渠道。冷启动若无法读取凭据，只停用相应运行时模型，不改写保存配置；修复密钥或存储后显式重载。渠道页区分推理凭据到期时间、后台续期能力及最早重试时间；供应商未给出的到期时间显示为未知。
 

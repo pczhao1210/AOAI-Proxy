@@ -1,7 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { COPILOT_ORIGIN, COPILOT_ROUTES, copilotError, createCopilotTransport } from "./copilot-provider.js";
+import { COPILOT_ORIGIN, COPILOT_ROUTES, copilotError, copilotIdentityHeaders, createCopilotTransport } from "./copilot-provider.js";
 import { approveCopilotSelection, grantSignature, retainedCopilotApproval, verifyCopilotAdmission } from "./copilot-approval.js";
 import { channelCredentialStore, closeChannelCredentials } from "./copilot-storage.js";
 import { recordChannelOperation } from "./channel-operations.js";
@@ -162,7 +162,7 @@ export class CopilotRuntime {
           if (oauth.pending === "slow_down") interval += 5000;
           continue;
         }
-        const subject = await this.transport.subject(oauth, signal);
+        const subject = await this.transport.subject(s.profile, oauth, signal);
         if (previous && subject !== previous.subject) throw copilotError("COPILOT_CREDENTIAL_MISMATCH", 409);
         const inference = await this.transport.inferenceCredential(s.profile, oauth, signal);
         live();
@@ -266,7 +266,7 @@ export class CopilotRuntime {
       try {
         const row = await this.credential(ref, true, operation);
         let models;
-        try { models = await this.transport.discover(row.secrets.inference, e.controller.signal); }
+        try { models = await this.transport.discover(ref.profile, row.secrets.inference, e.controller.signal); }
         catch (error) {
           if (safeCode(error) === "COPILOT_HTTP_401" && row.state === "active") {
             e.rejectedVersion = row.credentialVersion;
@@ -374,7 +374,7 @@ export class CopilotRuntime {
     if (!this.active?.has(keyOf(ref))) throw copilotError("COPILOT_AUTH_REQUIRED", 403);
     const current = await this.credential(ref, false, { trigger: "request", requestId });
     verifyCopilotAdmission(current.secrets.approvalKey, up, model);
-    const headers = { authorization: `Bearer ${current.secrets.inference.token}`, "user-agent": "AOAI-Proxy" };
+    const headers = { ...copilotIdentityHeaders(ref.profile), authorization: `Bearer ${current.secrets.inference.token}` };
     Object.defineProperty(headers, receipt, { value: current.credentialVersion });
     return headers;
   }

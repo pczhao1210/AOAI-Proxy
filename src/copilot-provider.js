@@ -12,6 +12,22 @@ const LOGIN = "https://github.com/login";
 const GH = "https://api.github.com";
 const MAX_BYTES = 2 * 1024 * 1024;
 const allowedProfile = profile => profile === "vscode" || profile === "opencode";
+
+// Client identities follow ghcp-pool-proxy@401a3dc (internal/config/config.go, internal/provider/copilot/auth.go).
+export const COPILOT_PROFILES = Object.freeze({
+  vscode: Object.freeze({ clientId: "Iv1.b507a08c87ecfe98", userAgent: "GitHubCopilotChat/0.38.2", apiVersion: "2025-10-01",
+    editorVersion: "vscode/1.110.1", editorPluginVersion: "copilot-chat/0.38.2", integrationId: "vscode-chat" }),
+  opencode: Object.freeze({ clientId: "Ov23li8tweQw6odWQebz", userAgent: "opencode/1.0.0", apiVersion: "2026-06-01" })
+});
+
+export function copilotIdentityHeaders(profile, { models = false } = {}) {
+  if (!allowedProfile(profile)) throw copilotError("COPILOT_PROFILE_INVALID");
+  const p = COPILOT_PROFILES[profile];
+  if (profile === "opencode") return { "user-agent": p.userAgent, "x-github-api-version": p.apiVersion,
+    ...(models ? {} : { "openai-intent": "conversation-edits" }) };
+  return { "editor-version": p.editorVersion, "editor-plugin-version": p.editorPluginVersion, "user-agent": p.userAgent,
+    "x-github-api-version": p.apiVersion, ...(models ? { "copilot-integration-id": p.integrationId } : {}) };
+}
 const seconds = value => Number.isSafeInteger(value) && value > 0 && value <= 315360000;
 const token = value => typeof value === "string" && value.length > 0 && value.length <= 16384 && !/[\s\x00-\x1f\x7f]/.test(value);
 
@@ -50,20 +66,27 @@ async function boundedJson(response) {
 }
 
 export function createCopilotTransport({ env = process.env, fetchImpl = fetch, now = Date.now } = {}) {
+  const configured = profile => env[`COPILOT_${profile.toUpperCase()}_CLIENT_ID`]?.trim() || COPILOT_PROFILES[profile].clientId;
   function application(profile) {
     if (!allowedProfile(profile)) throw copilotError("COPILOT_PROFILE_INVALID");
-    const id = env[`COPILOT_${profile.toUpperCase()}_CLIENT_ID`];
-    if (!token(id) || id === env[`COPILOT_${profile === "vscode" ? "OPENCODE" : "VSCODE"}_CLIENT_ID`]) {
+    const id = configured(profile);
+    if (!token(id) || id === configured(profile === "vscode" ? "opencode" : "vscode")) {
       throw copilotError("COPILOT_APPLICATION_NOT_CONFIGURED", 503);
     }
     return id;
   }
-  async function json(url, signal, { form, authorization } = {}) {
-    const headers = { accept: "application/json", "user-agent": "AOAI-Proxy" };
+  // GitHub login endpoints: OpenCode posts JSON, the VS Code profile posts a form.
+  const login = (profile, url, form, signal) => json(url, signal, { form, profile,
+    headers: { "user-agent": COPILOT_PROFILES[profile].userAgent } });
+  async function json(url, signal, { form, profile, authorization, headers: extra } = {}) {
+    const headers = { accept: "application/json", ...extra };
     if (authorization) headers.authorization = authorization;
     const options = { method: form ? "POST" : "GET", headers, redirect: "error",
       signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]) };
-    if (form) options.body = new URLSearchParams(form);
+    if (form) {
+      headers["content-type"] = profile === "opencode" ? "application/json" : "application/x-www-form-urlencoded";
+      options.body = profile === "opencode" ? JSON.stringify(form) : new URLSearchParams(form).toString();
+    }
     try {
       const response = await fetchImpl(url, options);
       if (!response.ok) {
@@ -89,7 +112,7 @@ export function createCopilotTransport({ env = process.env, fetchImpl = fetch, n
   return {
     application,
     async start(profile, signal) {
-      const data = await json(`${LOGIN}/device/code`, signal, { form: { client_id: application(profile), scope: "read:user" } });
+      const data = await login(profile, `${LOGIN}/device/code`, { client_id: application(profile), scope: "read:user" }, signal);
       if (!token(data.device_code) || !token(data.user_code) || data.user_code.length > 64
         || data.verification_uri !== `${LOGIN}/device` || !seconds(data.expires_in)
         || (data.interval !== undefined && !seconds(data.interval))) throw copilotError("COPILOT_DEVICE_RESPONSE_INVALID", 502);
@@ -97,36 +120,40 @@ export function createCopilotTransport({ env = process.env, fetchImpl = fetch, n
         expiresAt: now() + Math.min(data.expires_in, 1800) * 1000, interval: (data.interval ?? 5) * 1000 };
     },
     async poll(profile, deviceCode, signal) {
-      const data = await json(`${LOGIN}/oauth/access_token`, signal, { form: { client_id: application(profile),
-        device_code: deviceCode, grant_type: "urn:ietf:params:oauth:grant-type:device_code" } });
+      const data = await login(profile, `${LOGIN}/oauth/access_token`, { client_id: application(profile),
+        device_code: deviceCode, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }, signal);
       if (data.error === "authorization_pending" || data.error === "slow_down") return { pending: data.error };
       if (data.error) throw copilotError(data.error === "expired_token" ? "COPILOT_DEVICE_EXPIRED" : "COPILOT_AUTH_DENIED", 403);
       return normalizeOAuth(data);
     },
     async refreshOAuth(profile, previous, signal) {
       if (!previous.refreshToken) throw copilotError("COPILOT_AUTH_REQUIRED", 401);
-      const data = await json(`${LOGIN}/oauth/access_token`, signal, { form: { client_id: application(profile),
-        grant_type: "refresh_token", refresh_token: previous.refreshToken } });
+      const data = await login(profile, `${LOGIN}/oauth/access_token`, { client_id: application(profile),
+        grant_type: "refresh_token", refresh_token: previous.refreshToken }, signal);
       if (data.error) throw copilotError("COPILOT_AUTH_REQUIRED", 401);
       return normalizeOAuth(data);
     },
-    async subject(oauth, signal) {
-      const data = await json(`${GH}/user`, signal, { authorization: `Bearer ${oauth.accessToken}` });
+    async subject(profile, oauth, signal) {
+      const data = await json(`${GH}/user`, signal, { authorization: `Bearer ${oauth.accessToken}`,
+        headers: { "user-agent": COPILOT_PROFILES[profile].userAgent } });
       if (!Number.isSafeInteger(data.id) || data.id <= 0) throw copilotError("COPILOT_SUBJECT_INVALID", 502);
       return String(data.id);
     },
     async inferenceCredential(profile, oauth, signal) {
       application(profile);
       if (profile === "opencode") return { token: oauth.accessToken, expiresAt: oauth.expiresAt ?? null, issuedAt: oauth.issuedAt };
-      const data = await json(`${GH}/copilot_internal/v2/token`, signal, { authorization: `token ${oauth.accessToken}` });
+      const { userAgent, editorVersion, editorPluginVersion } = COPILOT_PROFILES.vscode;
+      const data = await json(`${GH}/copilot_internal/v2/token`, signal, { authorization: `token ${oauth.accessToken}`,
+        headers: { "user-agent": userAgent, "editor-version": editorVersion, "editor-plugin-version": editorPluginVersion } });
       const expiresAt = Number.isSafeInteger(data.expires_at) ? data.expires_at * 1000 :
         typeof data.expires_at === "string" && /^\d{4}-\d\d-\d\dT/.test(data.expires_at) ? Date.parse(data.expires_at) : NaN;
       if (!token(data.token) || !Number.isSafeInteger(expiresAt) || expiresAt <= now() + 10000 || expiresAt > now() + 31536000000
         || (data.refresh_in != null && !seconds(data.refresh_in))) throw copilotError("COPILOT_TOKEN_METADATA_INVALID", 502);
       return { token: data.token, issuedAt: now(), expiresAt, refreshAt: data.refresh_in ? now() + 1000 * data.refresh_in : null };
     },
-    async discover(credential, signal) {
-      return discoveryModels(await json(`${COPILOT_ORIGIN}/models`, signal, { authorization: `Bearer ${credential.token}` }));
+    async discover(profile, credential, signal) {
+      return discoveryModels(await json(`${COPILOT_ORIGIN}/models`, signal, { authorization: `Bearer ${credential.token}`,
+        headers: { "content-type": "application/json", ...copilotIdentityHeaders(profile, { models: true }) } }));
     }
   };
 }

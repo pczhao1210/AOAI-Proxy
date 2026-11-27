@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCopilotTransport, discoveryModels } from "../src/copilot-provider.js";
+import { copilotIdentityHeaders, createCopilotTransport, discoveryModels } from "../src/copilot-provider.js";
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { withTestContext } from "./lib/harness.js";
@@ -10,7 +10,7 @@ import { approveCopilotSelection } from "../src/copilot-approval.js";
 test("direct OAuth never exchanges a token; exchange profile requires real lifetime evidence", async () => {
   const calls = [];
   const transport = createCopilotTransport({
-    env: { COPILOT_VSCODE_CLIENT_ID: "owned-a", COPILOT_OPENCODE_CLIENT_ID: "owned-b" },
+    env: {},
     fetchImpl: async (url, options) => {
       calls.push({ url, options });
       return Response.json({ token: "short" });
@@ -22,7 +22,38 @@ test("direct OAuth never exchanges a token; exchange profile requires real lifet
   await assert.rejects(transport.inferenceCredential("vscode", oauth), { code: "COPILOT_TOKEN_METADATA_INVALID" });
   assert.equal(calls[0].url, "https://api.github.com/copilot_internal/v2/token");
   assert.equal(calls[0].options.redirect, "error");
-  assert.notEqual(calls[0].options.headers["user-agent"], "vscode");
+  assert.deepEqual(calls[0].options.headers, { accept: "application/json", authorization: "token fixture",
+    "user-agent": "GitHubCopilotChat/0.38.2", "editor-version": "vscode/1.110.1", "editor-plugin-version": "copilot-chat/0.38.2" });
+});
+
+test("selected profile supplies the reference client identity; environment IDs only override it", async () => {
+  const device = { device_code: "d", user_code: "U", verification_uri: "https://github.com/login/device", expires_in: 60 };
+  const run = async (env, profile) => {
+    const calls = [];
+    const transport = createCopilotTransport({ env, fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return Response.json(url.endsWith("/models") ? { data: [] } : device);
+    } });
+    await transport.start(profile);
+    await transport.discover(profile, { token: "inference" });
+    return calls;
+  };
+  const [vsLogin, vsModels] = await run({}, "vscode");
+  assert.equal(vsLogin.options.body, "client_id=Iv1.b507a08c87ecfe98&scope=read%3Auser");
+  assert.equal(vsLogin.options.headers["content-type"], "application/x-www-form-urlencoded");
+  assert.equal(vsLogin.options.headers["user-agent"], "GitHubCopilotChat/0.38.2");
+  assert.equal(vsModels.options.headers["copilot-integration-id"], "vscode-chat");
+  assert.equal(vsModels.options.headers["x-github-api-version"], "2025-10-01");
+  const [ocLogin, ocModels] = await run({ COPILOT_OPENCODE_CLIENT_ID: " " }, "opencode");
+  assert.deepEqual(JSON.parse(ocLogin.options.body), { client_id: "Ov23li8tweQw6odWQebz", scope: "read:user" });
+  assert.equal(ocLogin.options.headers["content-type"], "application/json");
+  assert.equal(ocLogin.options.headers["user-agent"], "opencode/1.0.0");
+  assert.deepEqual(Object.keys(ocModels.options.headers).filter(key => /editor|integration|intent/.test(key)), []);
+  const [overridden] = await run({ COPILOT_VSCODE_CLIENT_ID: "owned-app" }, "vscode");
+  assert.equal(new URLSearchParams(overridden.options.body).get("client_id"), "owned-app");
+  await assert.rejects(run({ COPILOT_VSCODE_CLIENT_ID: "Ov23li8tweQw6odWQebz" }, "vscode"), { code: "COPILOT_APPLICATION_NOT_CONFIGURED" });
+  assert.equal(copilotIdentityHeaders("opencode")["openai-intent"], "conversation-edits");
+  assert.equal(copilotIdentityHeaders("vscode")["copilot-integration-id"], undefined);
 });
 
 test("discovery cannot substitute a name, duplicate, or unsupported endpoint for provider evidence", () => {
@@ -218,6 +249,6 @@ for (const profile of ["vscode", "opencode"]) test(`offline ${profile}: durable 
     const diagnostics = JSON.stringify([await ctx.readConfigFile(), (await ctx.adminRequest("/admin/api/logs")).json]);
     assert.doesNotMatch(diagnostics, /fixture-user-code|device-fixture-private|fixture-oauth-private|fixture-exchanged-private/);
   }, { proxyArgs: ["--import", "./test/lib/copilot-fixture.js", "src/server.js"],
-    proxyEnv: { COPILOT_VSCODE_CLIENT_ID: profile === "vscode" ? "owned-v" : "", COPILOT_OPENCODE_CLIENT_ID: profile === "opencode" ? "owned-o" : "",
+    proxyEnv: { COPILOT_FIXTURE_PROFILE: profile, COPILOT_VSCODE_CLIENT_ID: "", COPILOT_OPENCODE_CLIENT_ID: "",
       COPILOT_CREDENTIAL_KEY_VERSION: "v1", COPILOT_CREDENTIAL_KEYS: JSON.stringify({ v1: randomBytes(32).toString("base64") }) } });
 });
