@@ -1,4 +1,5 @@
-import { Fragment, useState } from "react";
+import { Fragment, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 // [column, min width in px, optional max width in px] per view. Columns without a max stay fixed. Columns with a max
 // equal their min up to the baseline viewport and then grow with it, so wide screens show fuller model/route text.
@@ -150,7 +151,7 @@ const CELLS = {
   }
 };
 
-function LogDetail({ entry, requestView, helpers }) {
+export function LogDetail({ entry, requestView, helpers }) {
   const { t, formatDateTime, getLogDetails, getLogMessage, getLogEventLabel } = helpers;
   const headline = requestView
     ? entry.failureReason || entry.message || t("logs.failureReasonMissing", "Failure reason not recorded.")
@@ -211,6 +212,7 @@ function LogDetail({ entry, requestView, helpers }) {
 }
 
 export default function LogTable({
+  onOpenDetails,
   view,
   items,
   emptyMessage,
@@ -224,6 +226,14 @@ export default function LogTable({
   onCopyLogSummary
 }) {
   const [expanded, setExpanded] = useState(() => new Set());
+  const scroll = useRef(null);
+  const virtualized = Boolean(onOpenDetails) && items.length > 100;
+  const virtual = useVirtualizer({
+    count: items.length, getScrollElement: () => scroll.current, estimateSize: () => 48,
+    overscan: 8, enabled: virtualized
+  });
+  const visible = virtualized ? virtual.getVirtualItems().map(row => ({ entry: items[row.index], index: row.index, row }))
+    : items.map((entry, index) => ({ entry, index }));
   const activeView = VIEW_LAYOUTS[view] ? view : "requests";
   const requestView = activeView === "requests";
   const layout = VIEW_LAYOUTS[activeView];
@@ -253,7 +263,7 @@ export default function LogTable({
   }
 
   return (
-    <div className="log-table-scroll">
+    <div className="log-table-scroll" ref={scroll} style={virtualized ? { maxHeight: 600, overflow: "auto" } : undefined}>
       <table className={`log-table log-table-${activeView}`} style={{ minWidth }}>
         <colgroup>
           {layout.map(([column, min, max]) => <col key={column} style={min ? { width: columnWidth(min, max) } : undefined} />)}
@@ -268,14 +278,15 @@ export default function LogTable({
           </tr>
         </thead>
         <tbody>
-          {items.length ? items.map((entry, index) => {
+          {virtualized && visible[0]?.row.start > 0 ? <tr aria-hidden="true"><td colSpan={columns.length} style={{ height: visible[0].row.start, padding: 0 }} /></tr> : null}
+          {items.length ? visible.map(({ entry, index, row }) => {
             const key = entry.id ?? `${entry.ts || "log"}-${entry.event || "event"}-${index}`;
             const isExpanded = expanded.has(key);
             const severity = rowSeverity(entry, requestView);
-            const context = { entry, isExpanded, onToggle: () => toggle(key), helpers };
+            const context = { entry, isExpanded, onToggle: () => onOpenDetails ? onOpenDetails(entry, index) : toggle(key), helpers };
             return (
               <Fragment key={key}>
-                <tr className={`log-row${severity ? ` severity-${severity}` : ""}${isExpanded ? " is-expanded" : ""}`}>
+                <tr data-index={index} ref={row ? virtual.measureElement : undefined} className={`log-row${severity ? ` severity-${severity}` : ""}${isExpanded ? " is-expanded" : ""}`}>
                   {columns.map((column) => <Fragment key={column}>{CELLS[column](context)}</Fragment>)}
                 </tr>
                 {isExpanded ? (
@@ -288,6 +299,7 @@ export default function LogTable({
               </Fragment>
             );
           }) : <tr><td className="log-empty-cell" colSpan={columns.length}><div className="empty-state">{emptyMessage}</div></td></tr>}
+          {virtualized && visible.length ? <tr aria-hidden="true"><td colSpan={columns.length} style={{ height: virtual.getTotalSize() - visible.at(-1).row.end, padding: 0 }} /></tr> : null}
         </tbody>
       </table>
     </div>

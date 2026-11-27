@@ -200,6 +200,44 @@ reloads do not rewrite the file: review and save to persist cleanup. Environment
 overrides and profile-disabled persisted settings remain protected. See the
 [flag and migration guide](docs/configuration/feature-flags.zh-CN.md).
 
+## Admin Console
+
+The console uses task-based navigation under `/admin` (or `server.adminPath`):
+overview, channels, exposed models, client access, Catalog, API Keys, usage,
+logs, health, Playground, diagnostics, settings, and configuration history/sync.
+Deep links such as `/admin/keys?edit=team-a&tab=access` and
+`/admin/settings/persistence` survive refresh. The server supplies the effective
+base path to both the router and API client; `/admin/...` compatibility links
+redirect to the configured path. Unknown API paths still return API errors.
+
+- Tables support sorting, column visibility, selection, and draft-only bulk
+  enable/disable. Models default to canonical-model grouping. Narrow screens
+  keep horizontal scrolling inside tables; complex editing is intended for a
+  wider screen.
+- Key/channel/model Sheets edit complete local copies. **Apply to draft** merges
+  the copy into the global configuration draft, not the running service.
+  **Cancel** discards that copy; closing or browser Back retains it in memory.
+  Pending copies are accessible from the configuration status menu. Apply or
+  cancel them before **Review & Save**.
+- Navigation preserves drafts. Reloading/leaving the application prompts when
+  changes would be lost; drafts are not stored in the browser or recovered after
+  a full reload. Saves retain revision/CSRF protection and report proxy, Caddy,
+  and persistence application separately. Stage retry does not replace the draft.
+- Theme defaults to the system preference. Light/dark overrides and language
+  selection are retained locally. Unknown budgets, usage, and application state
+  are not displayed as successful zero values.
+- Usage and log filters are URL-backed, for example
+  `/admin/usage?key=team-a&group=canonical` and `/admin/logs?key=team-a`.
+  Key log filtering only covers retained records with an unredacted recorded
+  identity; it cannot recover redacted identities or evicted history.
+- Settings support path/label search, modified-only filtering, and read-only
+  environment/profile source badges. Configuration history is an inline list
+  with grouped differences; restore creates a new revision and preserves current
+  credentials and persistence settings.
+
+See the [UI implementation status](UI_enhance.md#15-实施状态与验收记录)
+for the progressive migration boundaries and remaining work.
+
 ## Environment Variables
 
 ### General

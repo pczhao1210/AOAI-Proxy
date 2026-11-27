@@ -1316,6 +1316,10 @@ function isRequestRetryEvent(entry) {
 }
 
 export function queryLogs(filters = {}) {
+  const keyId = typeof filters.keyId === "string" ? filters.keyId : "";
+  const consumerKey = entry => [entry.consumerKeyId, entry.fields?.keyId]
+    .find(value => typeof value === "string" && value && value !== "[REDACTED]") || "";
+  const matchesKey = entry => !keyId || (keyId !== "[REDACTED]" && consumerKey(entry) === keyId);
   const dimensionFilters = ["canonicalModelId", "channelId", "sourceModelId", "configRevision"]
     .filter(name => typeof filters[name] === "string" && filters[name]);
   const matchesDimensions = entry => dimensionFilters.every(name => entry[name] === filters[name]);
@@ -1394,6 +1398,7 @@ export function queryLogs(filters = {}) {
       const request = {
         id: groupKey,
         requestId: primary.requestId,
+        consumerKeyId: latestEvents.map(consumerKey).find(Boolean) || "",
         ts: httpCompletion?.ts || primary.ts,
         level,
         outcome,
@@ -1420,6 +1425,7 @@ export function queryLogs(filters = {}) {
       };
 
       if (filters.outcome && filters.outcome !== "all" && filters.outcome !== outcome) continue;
+      if (keyId && !events.some(matchesKey)) continue;
       if (!events.some(matchesConnection)) continue;
       if (event && !events.some((entry) => entry.event.toLowerCase() === event)) continue;
       if (modelId && request.modelId.toLowerCase() !== modelId) continue;
@@ -1442,6 +1448,7 @@ export function queryLogs(filters = {}) {
   }
 
   const filtered = logBuffer.filter((entry) => {
+    if (!matchesKey(entry)) return false;
     if (!matchesConnection(entry)) return false;
     if (filters.operationId && entry.fields?.operationId !== filters.operationId) return false;
     if (filters.configRevision && entry.fields?.configRevision !== filters.configRevision) return false;

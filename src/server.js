@@ -1196,6 +1196,9 @@ app.post("/admin/api/stats/models/reset", async (_req, reply) => {
 
 app.get("/admin/api/logs", async (req, reply) => {
   reply.header("Cache-Control", "no-store");
+  if (req.query?.view === "operations" && req.query?.keyId) {
+    return reply.code(400).send({ error: "Key filters apply to request, event and access logs, not channel operations." });
+  }
   if (req.query?.view === "operations") return queryChannelOperations(getConfig(), req.query);
   return queryLogs(req.query || {});
 });
@@ -1231,6 +1234,20 @@ const adminAppAssetsRoot = path.resolve(adminAppRoot, "assets");
 const hasBuiltAdminApp = fs.existsSync(adminAppRoot) && fs.existsSync(adminAppAssetsRoot);
 
 if (hasBuiltAdminApp) {
+  const adminIndex = fs.readFileSync(path.join(adminAppRoot, "index.html"), "utf8");
+  const sendAdminIndex = (req, reply) => {
+    const configuredBase = getConfiguredAdminPath();
+    const originalUrl = req.originalUrl;
+    if (configuredBase !== STATIC_ADMIN_PATH && originalUrl.startsWith(`${STATIC_ADMIN_PATH}/`)
+      && !originalUrl.startsWith(`${configuredBase}/`) && !originalUrl.startsWith(`${configuredBase}?`)) {
+      return reply.redirect(`${configuredBase}${originalUrl.slice(STATIC_ADMIN_PATH.length)}`);
+    }
+    const base = configuredBase.replace(/[&<>"']/g, character => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[character]));
+    return reply.header("cache-control", "no-cache").type("text/html; charset=utf-8")
+      .send(adminIndex.replace("</head>", `<meta name="aoai-admin-base" content="${base}"></head>`));
+  };
   app.register(fastifyStatic, {
     root: adminAppAssetsRoot,
     prefix: "/admin/assets/",
@@ -1242,18 +1259,18 @@ if (hasBuiltAdminApp) {
   });
 
   app.get("/admin/", async (req, reply) => {
-    return reply.sendFile("index.html", adminAppRoot);
+    return sendAdminIndex(req, reply);
   });
 
   app.get("/admin/*", async (req, reply) => {
-    const requestPath = req.raw?.url?.split("?")[0] || req.url;
+    const requestPath = rewriteAdminUrl(req.raw?.url || req.url).split("?")[0];
     if (requestPath.startsWith("/admin/api/")) {
       return reply.callNotFound();
     }
     if (requestPath.startsWith("/admin/legacy/")) {
       return reply.redirect(`${getConfiguredAdminPath()}/`);
     }
-    return reply.sendFile("index.html", adminAppRoot);
+    return sendAdminIndex(req, reply);
   });
 } else {
   app.get("/admin", async (req, reply) => {

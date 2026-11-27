@@ -4,6 +4,9 @@ import { Toaster } from "react-hot-toast";
 import App from "./App.jsx";
 import { I18nProvider } from "./i18n.jsx";
 import "./styles.css";
+import { initializeTheme } from "./app/theme.js";
+
+initializeTheme();
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>

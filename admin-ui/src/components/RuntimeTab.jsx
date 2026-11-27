@@ -187,6 +187,7 @@ function formatCountdown(targetValue, nowTs, t) {
 }
 
 export default function RuntimeTab({
+  grouping,
   config = {},
   pricingLibrary = [],
   onApplyCardPricing,
@@ -387,7 +388,7 @@ export default function RuntimeTab({
           <StatCard label={t("table.cacheHitRatio", "Cache Hit Ratio")} value={<span title={runtimeTokenHelp(t)}>{formatCacheHitRatio(totals)}</span>} />
         </div>
         <p className="field-hint">{`${t("runtime.modelsObserved", "Observed Models")}: ${formatRuntimeNumber(modelCount)} · ${t("runtime.observedKeys", "Observed Keys")}: ${formatRuntimeNumber(observedKeyCount)}`}</p>
-        <ChannelAccounting models={canonicalModels} filters={canonicalFilters} truncated={canonicalWindowTruncated} retentionDays={canonicalDetailRetentionDays} t={t} />
+        {grouping !== "public" ? <ChannelAccounting models={canonicalModels} filters={canonicalFilters} truncated={canonicalWindowTruncated} retentionDays={canonicalDetailRetentionDays} t={t} /> : null}
         <div className="runtime-periods">
           <h3>{t("runtime.periodStats", "Period Statistics")}</h3>
           <p className="field-hint">{t("runtime.periodHelp", "Latest recorded calendar buckets, not rolling windows. Bucket timestamps may precede the current period.")}</p>
@@ -646,6 +647,7 @@ export default function RuntimeTab({
         </div>
       </AccordionSection>
 
+      <div hidden={grouping === "canonical"}>
       <AccordionSection id="runtime-models" group="runtime-sections" title={t("runtime.modelStats", "Model Stats")} desc={t("runtime.costReference", "Billing estimates may be incomplete and are for reference only. Final charges are determined by the Azure billing portal.")}>
         <div className="toolbar">
           <button type="button" className="ghost danger" disabled={isResetBusy || !onResetModelStats} onClick={() => setResetDialogOpen(true)}>
@@ -758,6 +760,7 @@ export default function RuntimeTab({
           </table>
         </div>
       </AccordionSection>
+      </div>
       <Modal
         title={t("runtime.reviewTierPricing", "Review tier pricing")}
         isOpen={pricingDialogOpen}

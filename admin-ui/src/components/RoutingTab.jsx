@@ -56,6 +56,7 @@ function syncModelUpstreams(next, modelIndex, previousUpstream) {
 }
 
 export default function RoutingTab({
+  editor, evidence,
   config, loadedConfig, copilotOperations, pricingLibrary, capabilityView, capabilitiesLoading, capabilitiesError, capabilityPreview, capabilityFallbackModels = [],
   updateConfig, addUpstream, addModel, addBlankModel, mappingDrafts = {}, setMappingDrafts, onEditKey, t
 }) {
@@ -81,7 +82,7 @@ export default function RoutingTab({
       mappingIds.add(model.canonicalModelId);
     }
   }
-  const groups = channelCandidates(upstreams, mappingDefinitions, copilotEvidence);
+  const groups = channelCandidates(upstreams, mappingDefinitions, evidence || copilotEvidence);
   const hasLegacyChannels = !upstreams.length || upstreams.some(up => !up.channelId);
 
   function applyTemplateForModel(next, modelIndex, definition) {
@@ -105,7 +106,7 @@ export default function RoutingTab({
   const filteredUpstreams = upstreams
     .map((item, index) => ({ item, index, copilot: isCopilotChannel(item),
       hidden: !!searchTerm && ![item.name, item.baseUrl].some(value => value?.toLowerCase().includes(searchTerm)) }))
-    .filter(({ hidden, copilot }) => !hidden || copilot);
+    .filter(({ hidden, copilot, index }) => editor ? editor.type === "upstreams" && editor.index === index : !hidden || copilot);
 
   const models = config.models || [];
   const filteredModels = models
@@ -115,13 +116,13 @@ export default function RoutingTab({
       || (item.id || "").toLowerCase().includes(searchTerm)
       || (item.displayName || "").toLowerCase().includes(searchTerm)
       || (item.upstream || "").toLowerCase().includes(searchTerm)
-    ));
+    )).filter(({ index }) => !editor || (editor.type === "models" && editor.index === index));
 
   return (
     <Section
       title={t("routing.title", "Upstream / Model")}
       desc={t("routing.desc", "Maintain upstreams and model mappings.")}
-      actions={
+      actions={editor ? null :
         <div className="toolbar-cluster">
           <input
             className="search-field"
@@ -148,7 +149,7 @@ export default function RoutingTab({
               : t("routing.capabilities.unavailable", "Capability information unavailable.")}
         </p>
         {capabilitiesError ? <p role="alert">{capabilitiesError}</p> : null}
-        <div id="routing-upstreams">
+        {!editor || editor.type === "upstreams" ? <div id="routing-upstreams">
           <h3 className="subhead">{t("entity.upstreams", "Upstreams")}</h3>
           <div className="entity-grid">
             {filteredUpstreams.map(({ item, index, copilot, hidden }) => {
@@ -158,6 +159,7 @@ export default function RoutingTab({
               const authMode = item.auth?.mode || "inherit";
               return (
                 <EntityCard
+                  editorOnly={Boolean(editor)}
                   id={`upstream-card-${index}`}
                   hidden={hidden}
                   key={item.channelId || `upstream-${index}`}
@@ -174,16 +176,18 @@ export default function RoutingTab({
                     next.upstreams = (next.upstreams || []).filter((_, upstreamIndex) => upstreamIndex !== index);
                   })}
                 >
+                  <div hidden={editor?.section === "mappings"}>
                   <div className="form-grid compact">
                     <Field label={t("field.name", "Name")}><input value={item.name || ""} onChange={(event) => updateConfig((next) => {
                       const oldName = next.upstreams[index].name;
                       next.upstreams[index].name = event.target.value;
                       for (const model of next.models || []) if (model.upstream === oldName) model.upstream = event.target.value;
                     })} /></Field>
-                    <Field label={t("field.provider", "Provider")}><input readOnly={copilot} value={item.provider || "azure-openai"} onChange={(event) => {
+                    <Field label={t("field.provider", "Provider")}><select disabled={copilot} value={item.provider || "azure-openai"} onChange={(event) => {
                       const provider = event.target.value;
                       if (provider.trim().toLowerCase() !== "github-copilot") updateConfig(next => { next.upstreams[index].provider = provider; });
-                    }} /></Field>
+                    }}>{[...new Set([item.provider || "azure-openai", "azure-openai", "openai", "anthropic", ...catalogDefinitions.map(card => card.provider).filter(provider => provider && provider !== "github-copilot")])]
+                      .map(provider => <option key={provider}>{provider}</option>)}</select></Field>
                     <Field label={t("field.status", "Status")}><select value={item.status || "active"} onChange={(event) => updateConfig((next) => { next.upstreams[index].status = event.target.value; })}><option value="active">{t("option.active", "active")}</option><option value="disabled">{t("option.disabled", "disabled")}</option></select></Field>
                     <Field label={t("field.priority", "Priority")}><input type="number" value={item.priority || 0} onChange={(event) => updateConfig((next) => { next.upstreams[index].priority = Number(event.target.value || 0); })} /></Field>
                   </div>
@@ -216,6 +220,8 @@ export default function RoutingTab({
                     label={t("routing.capabilities.combined", "Combined model capabilities")}
                     hint={t("routing.capabilities.unionHint", "Union of bound models' effective capabilities; not a guarantee for every model or an upstream restriction.")}
                   ><input value={formatList(capabilities)} readOnly disabled={!capabilities} /></Field>
+                  </div>
+                  <div hidden={Boolean(editor) && editor.section !== "mappings" && !(copilot && editor.section === "connection")}>
                   {copilot ? <CopilotChannel key={copilotIdentity(item)} up={item} definitions={mappingDefinitions} tickets={copilotOperations}
                     saved={loadedConfig?.upstreams?.find(up => item.channelId === up.channelId)}
                     referenced={[...new Set([...models, ...(loadedConfig?.models || [])]
@@ -224,16 +230,17 @@ export default function RoutingTab({
                     <MappingEditor up={item} saved={loadedConfig?.upstreams?.find(up => item.channelId === up.channelId)}
                       index={index} config={config} capabilityView={capabilityView}
                       definitions={mappingDefinitions} updateConfig={updateConfig} drafts={mappingDrafts} setDrafts={setMappingDrafts} t={t} />}
+                  </div>
                 </EntityCard>
               );
             })}
           </div>
-        </div>
+        </div> : null}
 
-        <div id="routing-models">
+        {!editor || editor.type === "models" ? <div id="routing-models">
           <h3 className="subhead">{t("channel.exposure", "Exposed models")}</h3>
-          <ExposurePicker groups={groups} models={models} search={searchTerm} updateConfig={updateConfig} t={t} />
-          {(config.apiKeys || []).map((key, index) => {
+          {!editor ? <ExposurePicker groups={groups} models={models} search={searchTerm} updateConfig={updateConfig} t={t} /> : null}
+          {!editor && (config.apiKeys || []).map((key, index) => {
             const missing = (key.allowedModels || []).filter(id => !models.some(model => model.id === id));
             return missing.length ? <p key={index} role="alert">{t("channel.referenced")} {missing.join(", ")} ·
               <button type="button" className="ghost" onClick={() => onEditKey(index)}>{t("channel.editKey")} {key.id}</button></p> : null;
@@ -256,6 +263,7 @@ export default function RoutingTab({
               const references = (config.apiKeys || []).filter(key => key.allowedModels?.includes(item.id));
               return (
                 <EntityCard
+                  editorOnly={Boolean(editor)}
                   id={`model-card-${index}`}
                   key={`model-${index}`}
                   title={item.displayName || item.id || `model-${index + 1}`}
@@ -387,7 +395,7 @@ export default function RoutingTab({
               );
             })}
           </div>
-        </div>
+        </div> : null}
       </div>
     </Section>
   );

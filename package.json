@@ -49,12 +49,20 @@
     "glob": "^14.0.3"
   },
   "devDependencies": {
+    "@base-ui/react": "^1.9.0",
+    "@tailwindcss/vite": "^4.3.5",
+    "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-virtual": "^3.14.28",
     "@testing-library/react": "^16.3.3",
     "@vitejs/plugin-react": "^6.1.2",
     "jsdom": "^30.0.1",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
+    "lucide-react": "^1.82.0",
+    "react": "^19.2.9",
+    "react-dom": "^19.2.9",
     "react-hot-toast": "^2.6.0",
+    "react-router": "^8.5.3",
+    "recharts": "^3.11.1",
+    "tailwindcss": "^4.3.5",
     "vite": "^8.3.5"
   }
 }

@@ -1,4 +1,4 @@
-import { AccordionSection, Field, ListInput, Section } from "./ui.jsx";
+import { AccordionSection, Field, ListInput, Section, SettingLabel } from "./ui.jsx";
 import LogContentModeField from "./LogContentModeField.jsx";
 import MediaPolicySection from "./MediaPolicySection.jsx";
 import RoutingPolicySection from "./RoutingPolicySection.jsx";
@@ -21,6 +21,7 @@ function formatBool(value, t) {
 
 export default function WorkspaceTab({
   config,
+  coreGroup,
   capabilities,
   effectiveProfile,
   configDeprecations = [],
@@ -67,6 +68,9 @@ export default function WorkspaceTab({
   const databaseSettingsVisible = persistenceMode.includes("database");
   const compatibilityExportEnabled = getValueByPath(config, "persistence.compatibilityExport.enabled") !== false;
   const logAnalyticsEnabled = getValueByPath(config, "observability.logAnalytics.enabled") === true;
+  const serviceFields = !coreGroup || coreGroup === "service";
+  const proxyFields = !coreGroup || coreGroup === "proxy";
+  const accessFields = !coreGroup || coreGroup === "access";
 
   return (
     <div className="stack-lg">
@@ -92,54 +96,61 @@ export default function WorkspaceTab({
           ) : null}
           <AccordionSection id="workspace-core" title={t("workspace.core.title", "Core And Governance Defaults")} desc={t("workspace.core.desc", "Host, admin path, proxy timeouts, API key defaults, and budget defaults.")} defaultOpen group="workspace-sections">
             <div className="form-grid">
-              <Field label={t("field.distributionProfile", "Distribution Profile")}>
+              {serviceFields ? <>
+              <Field path="distribution.profile" label={t("field.distributionProfile", "Distribution Profile")}>
                 <select value={getValueByPath(config, "distribution.profile") || "nextgen"} onChange={(event) => updateField("distribution.profile", event.target.value)}>
                   <option value="nextgen">nextgen</option>
                   <option value="minimum">minimum</option>
                 </select>
               </Field>
-              <Field label={t("field.serverHost", "Server Host")}>
+              <Field path="server.host" label={t("field.serverHost", "Server Host")}>
                 <input value={getValueByPath(config, "server.host") || ""} onChange={(event) => updateField("server.host", event.target.value)} />
               </Field>
-              <Field label={t("field.serverPort", "Server Port")}>
+              <Field path="server.port" label={t("field.serverPort", "Server Port")}>
                 <input type="number" value={getValueByPath(config, "server.port") || 0} onChange={(event) => updateField("server.port", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.adminBasePath", "Admin Base Path")}>
+              <Field path="admin.basePath" label={t("field.adminBasePath", "Admin Base Path")}>
                 <input value={getValueByPath(config, "admin.basePath") || ""} onChange={(event) => updateField("admin.basePath", event.target.value)} />
               </Field>
-              <Field label={t("field.keyHeaderNames", "Key Header Names")} hint={t("field.keyHeaderNamesHint", "Comma-separated and matched in order.")}>
+              </> : null}
+              {accessFields ? <>
+              <Field path="access.defaults.keyHeaderNames" label={t("field.keyHeaderNames", "Key Header Names")} hint={t("field.keyHeaderNamesHint", "Comma-separated and matched in order.")}>
                 <ListInput value={getValueByPath(config, "access.defaults.keyHeaderNames")} onChange={(value) => updateField("access.defaults.keyHeaderNames", value)} />
               </Field>
-              <Field label={t("field.connectMs", "Connect ms")}>
+              </> : null}
+              {proxyFields ? <>
+              <Field path="proxy.timeouts.connectMs" label={t("field.connectMs", "Connect ms")}>
                 <input type="number" value={getValueByPath(config, "proxy.timeouts.connectMs") || 0} onChange={(event) => updateField("proxy.timeouts.connectMs", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.requestMs", "Request ms")}>
+              <Field path="proxy.timeouts.requestMs" label={t("field.requestMs", "Request ms")}>
                 <input type="number" value={getValueByPath(config, "proxy.timeouts.requestMs") || 0} onChange={(event) => updateField("proxy.timeouts.requestMs", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.firstByteMs", "First Byte ms")}>
+              <Field path="proxy.timeouts.firstByteMs" label={t("field.firstByteMs", "First Byte ms")}>
                 <input type="number" value={getValueByPath(config, "proxy.timeouts.firstByteMs") || 0} onChange={(event) => updateField("proxy.timeouts.firstByteMs", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.idleMs", "Idle ms")}>
+              <Field path="proxy.timeouts.idleMs" label={t("field.idleMs", "Idle ms")}>
                 <input type="number" value={getValueByPath(config, "proxy.timeouts.idleMs") || 0} onChange={(event) => updateField("proxy.timeouts.idleMs", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.defaultRpm", "Default RPM")}>
+              </> : null}
+              {accessFields ? <>
+              <Field path="access.rateLimits.defaultRpm" label={t("field.defaultRpm", "Default RPM")}>
                 <input type="number" value={getValueByPath(config, "access.rateLimits.defaultRpm") || 0} onChange={(event) => updateField("access.rateLimits.defaultRpm", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.defaultTpm", "Default TPM")}>
+              <Field path="access.rateLimits.defaultTpm" label={t("field.defaultTpm", "Default TPM")}>
                 <input type="number" value={getValueByPath(config, "access.rateLimits.defaultTpm") || 0} onChange={(event) => updateField("access.rateLimits.defaultTpm", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.defaultConcurrency", "Default Concurrency")}>
+              <Field path="access.rateLimits.defaultConcurrency" label={t("field.defaultConcurrency", "Default Concurrency")}>
                 <input type="number" value={getValueByPath(config, "access.rateLimits.defaultConcurrency") || 0} onChange={(event) => updateField("access.rateLimits.defaultConcurrency", asNumber(event.target.value))} />
               </Field>
               {budgetsEnabled ? (
                 <>
-                  <Field label={t("field.budgetCurrency", "Budget Currency")}>
+                  <Field path="access.budgets.defaultCurrency" label={t("field.budgetCurrency", "Budget Currency")}>
                     <input value={getValueByPath(config, "access.budgets.defaultCurrency") || "USD"} onChange={(event) => updateField("access.budgets.defaultCurrency", event.target.value)} />
                   </Field>
-                  <Field label={t("field.softLimitRatio", "Soft Limit Ratio")}>
+                  <Field path="access.budgets.softLimitRatio" label={t("field.softLimitRatio", "Soft Limit Ratio")}>
                     <input type="number" step="0.05" min="0" max="1" value={getValueByPath(config, "access.budgets.softLimitRatio") || 0} onChange={(event) => updateField("access.budgets.softLimitRatio", Number(event.target.value || 0))} />
                   </Field>
-                  <Field label={t("field.hardLimitAction", "Hard Limit Action")}>
+                  <Field path="access.budgets.hardLimitAction" label={t("field.hardLimitAction", "Hard Limit Action")}>
                     <select value={getValueByPath(config, "access.budgets.hardLimitAction") || "block"} onChange={(event) => updateField("access.budgets.hardLimitAction", event.target.value)}>
                       <option value="block">{t("option.block", "block")}</option>
                       <option value="warn">{t("option.warn", "warn")}</option>
@@ -147,15 +158,22 @@ export default function WorkspaceTab({
                   </Field>
                 </>
               ) : null}
+              </> : null}
             </div>
             <div className="checkbox-row">
-              <label><input type="checkbox" checked={getValueByPath(config, "server.trustProxy") === true} onChange={(event) => updateField("server.trustProxy", event.target.checked)} /> {t("field.trustProxy", "Trust Proxy Headers")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "server.requireConfigRevision") === true} onChange={(event) => updateField("server.requireConfigRevision", event.target.checked)} /> {t("field.requireConfigRevision", "Require configuration revision on save")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "admin.auth.enabled") === true} onChange={(event) => updateField("admin.auth.enabled", event.target.checked)} /> {t("field.enableAdminAuth", "Enable Admin Basic Auth")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "access.defaults.requireApiKey") !== false} onChange={(event) => updateField("access.defaults.requireApiKey", event.target.checked)} /> {t("field.requireApiKey", "Require API Key")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "access.budgets.enabled") === true} disabled={!budgetsAvailable} onChange={(event) => updateField("access.budgets.enabled", event.target.checked)} /> {t("field.enableBudget", "Enable Budgets")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "admin.features.enableLegacyJsonEditor") !== false} onChange={(event) => updateField("admin.features.enableLegacyJsonEditor", event.target.checked)} /> {t("field.enableAdvancedJson", "Enable Advanced JSON Editor")}</label>
+              {serviceFields ? <>
+              <SettingLabel path="server.trustProxy"><input type="checkbox" checked={getValueByPath(config, "server.trustProxy") === true} onChange={(event) => updateField("server.trustProxy", event.target.checked)} /> {t("field.trustProxy", "Trust Proxy Headers")}</SettingLabel>
+              <SettingLabel path="server.requireConfigRevision"><input type="checkbox" checked={getValueByPath(config, "server.requireConfigRevision") === true} onChange={(event) => updateField("server.requireConfigRevision", event.target.checked)} /> {t("field.requireConfigRevision", "Require configuration revision on save")}</SettingLabel>
+              <SettingLabel path="admin.auth.enabled"><input type="checkbox" checked={getValueByPath(config, "admin.auth.enabled") === true} onChange={(event) => updateField("admin.auth.enabled", event.target.checked)} /> {t("field.enableAdminAuth", "Enable Admin Basic Auth")}</SettingLabel>
+              <SettingLabel path="admin.features.enableLegacyJsonEditor"><input type="checkbox" checked={getValueByPath(config, "admin.features.enableLegacyJsonEditor") !== false} onChange={(event) => updateField("admin.features.enableLegacyJsonEditor", event.target.checked)} /> {t("field.enableAdvancedJson", "Enable Advanced JSON Editor")}</SettingLabel>
+              </> : null}
+              {accessFields ? <>
+              <SettingLabel path="access.defaults.requireApiKey"><input type="checkbox" checked={getValueByPath(config, "access.defaults.requireApiKey") !== false} onChange={(event) => updateField("access.defaults.requireApiKey", event.target.checked)} /> {t("field.requireApiKey", "Require API Key")}</SettingLabel>
+              <SettingLabel path="access.budgets.enabled"><input type="checkbox" checked={getValueByPath(config, "access.budgets.enabled") === true} disabled={!budgetsAvailable} onChange={(event) => updateField("access.budgets.enabled", event.target.checked)} /> {t("field.enableBudget", "Enable Budgets")}</SettingLabel>
+              </> : null}
             </div>
+          </AccordionSection>
+          <AccordionSection id="workspace-pricing" title={t("field.pricingCatalog", "Pricing Catalog")}>
             <Field label={t("field.pricingCatalog", "Pricing Catalog")} hint={t("field.pricingCatalogHint", "JSON object. Token rates use USD per million tokens. Set cacheWritePer1mTokens for cache writes; tiers must declare their own write rates, without inheriting base rates. Writes are part of input tokens and their cost is already included in totals. Missing prices or usage mean unknown or partial cost, not free; known subtotals still count toward budgets.")}>
               <textarea rows={8} value={pricingCatalogText} onChange={(event) => updatePricingCatalog(event.target.value)} />
             </Field>
@@ -164,7 +182,7 @@ export default function WorkspaceTab({
 
           <AccordionSection id="workspace-persistence" title={t("workspace.persistence.title", "Persistence And Cache")} desc={t("workspace.persistence.desc", "Configure file, Azure Files, database, and database+Azure Files persistence modes plus PostgreSQL storage, cache, and compatibility export.")} group="workspace-sections">
             <div className="form-grid">
-              <Field label={t("field.persistenceMode", "Persistence Mode")}>
+              <Field path="persistence.configStore.mode" label={t("field.persistenceMode", "Persistence Mode")}>
                 <select value={persistenceMode} onChange={(event) => updateField("persistence.configStore.mode", event.target.value)}>
                   <option value="file">{t("option.file", "file")}</option>
                   <option value="azureFile">{t("option.azureFile", "azureFile")}</option>
@@ -173,28 +191,28 @@ export default function WorkspaceTab({
                 </select>
               </Field>
               {fileSettingsVisible ? (
-                <Field label={t("field.configFilePath", "Config File Path")}>
+                <Field path="persistence.configStore.filePath" label={t("field.configFilePath", "Config File Path")}>
                   <input value={getValueByPath(config, "persistence.configStore.filePath") || ""} onChange={(event) => updateField("persistence.configStore.filePath", event.target.value)} />
                 </Field>
               ) : null}
               {databaseSettingsVisible ? (
                 <>
-                  <Field label={t("field.databaseProvider", "Database Provider")}>
+                  <Field path="persistence.configStore.database.provider" label={t("field.databaseProvider", "Database Provider")}>
                     <input value={getValueByPath(config, "persistence.configStore.database.provider") || "postgresql"} onChange={(event) => updateField("persistence.configStore.database.provider", event.target.value)} />
                   </Field>
-                  <Field label={t("field.databaseConnectionRef", "Connection Ref")}>
+                  <Field path="persistence.configStore.database.connectionRef" label={t("field.databaseConnectionRef", "Connection Ref")}>
                     <input value={getValueByPath(config, "persistence.configStore.database.connectionRef") || ""} onChange={(event) => updateField("persistence.configStore.database.connectionRef", event.target.value)} />
                   </Field>
-                  <Field label={t("field.databaseSchema", "Schema")}>
+                  <Field path="persistence.configStore.database.schema" label={t("field.databaseSchema", "Schema")}>
                     <input value={getValueByPath(config, "persistence.configStore.database.schema") || "public"} onChange={(event) => updateField("persistence.configStore.database.schema", event.target.value)} />
                   </Field>
-                  <Field label={t("field.databaseTable", "Table Name")}>
+                  <Field path="persistence.configStore.database.tableName" label={t("field.databaseTable", "Table Name")}>
                     <input value={getValueByPath(config, "persistence.configStore.database.tableName") || "proxy_configs"} onChange={(event) => updateField("persistence.configStore.database.tableName", event.target.value)} />
                   </Field>
-                  <Field label={t("field.databaseConfigKey", "Config Key")}>
+                  <Field path="persistence.configStore.database.configKey" label={t("field.databaseConfigKey", "Config Key")}>
                     <input value={getValueByPath(config, "persistence.configStore.database.configKey") || "active"} onChange={(event) => updateField("persistence.configStore.database.configKey", event.target.value)} />
                   </Field>
-                  <Field label={t("field.databaseFallback", "Read Fallback")}>
+                  <Field path="persistence.configStore.database.readFallbackMode" label={t("field.databaseFallback", "Read Fallback")}>
                     <select value={getValueByPath(config, "persistence.configStore.database.readFallbackMode") || "lastKnownGood"} onChange={(event) => updateField("persistence.configStore.database.readFallbackMode", event.target.value)}>
                       <option value="lastKnownGood">{t("option.lastKnownGood", "lastKnownGood")}</option>
                       <option value="none">{t("option.none", "none")}</option>
@@ -202,22 +220,22 @@ export default function WorkspaceTab({
                   </Field>
                 </>
               ) : null}
-              <Field label={t("field.cacheType", "Cache Type")}>
+              <Field path="persistence.cache.type" label={t("field.cacheType", "Cache Type")}>
                 <select value={getValueByPath(config, "persistence.cache.type") || "memory"} onChange={(event) => updateField("persistence.cache.type", event.target.value)}>
                   <option value="memory">{t("option.memory", "memory")}</option>
                 </select>
               </Field>
-              <Field label={t("field.cacheTtlMs", "Cache TTL ms")}>
+              <Field path="persistence.cache.ttlMs" label={t("field.cacheTtlMs", "Cache TTL ms")}>
                 <input type="number" value={getValueByPath(config, "persistence.cache.ttlMs") || 0} onChange={(event) => updateField("persistence.cache.ttlMs", asNumber(event.target.value))} />
               </Field>
               {compatibilityExportEnabled ? (
-                <Field label={t("field.compatibilityExportPath", "Legacy Config Path")}>
+                <Field path="persistence.compatibilityExport.legacyConfigPath" label={t("field.compatibilityExportPath", "Legacy Config Path")}>
                   <input value={getValueByPath(config, "persistence.compatibilityExport.legacyConfigPath") || ""} onChange={(event) => updateField("persistence.compatibilityExport.legacyConfigPath", event.target.value)} />
                 </Field>
               ) : null}
             </div>
             <div className="checkbox-row">
-              <label><input type="checkbox" checked={getValueByPath(config, "persistence.compatibilityExport.enabled") !== false} onChange={(event) => updateField("persistence.compatibilityExport.enabled", event.target.checked)} /> {t("field.compatibilityExportEnabled", "Enable compatibility export")}</label>
+              <SettingLabel path="persistence.compatibilityExport.enabled"><input type="checkbox" checked={getValueByPath(config, "persistence.compatibilityExport.enabled") !== false} onChange={(event) => updateField("persistence.compatibilityExport.enabled", event.target.checked)} /> {t("field.compatibilityExportEnabled", "Enable compatibility export")}</SettingLabel>
             </div>
 
             {databaseSettingsVisible && databaseAdminAvailable ? <div className="database-probe-panel">
@@ -291,7 +309,7 @@ export default function WorkspaceTab({
 
           <AccordionSection id="workspace-logging" title={t("workspace.logging.title", "Logging And Log Analytics")} desc={t("workspace.logging.desc", "Control log level, content policy, and the Azure Monitor Logs Ingestion sink.") } group="workspace-sections">
             <div className="form-grid">
-              <Field label={t("field.logLevel", "Log Level")}>
+              <Field path="observability.logs.level" label={t("field.logLevel", "Log Level")}>
                 <select value={getValueByPath(config, "observability.logs.level") || "warn"} onChange={(event) => updateField("observability.logs.level", event.target.value)}>
                   <option value="trace">{t("option.trace", "trace")}</option>
                   <option value="debug">{t("option.debug", "debug")}</option>
@@ -300,67 +318,67 @@ export default function WorkspaceTab({
                   <option value="error">{t("option.error", "error")}</option>
                 </select>
               </Field>
-              <Field label={t("field.logSinks", "Log Sinks")}>
+              <Field path="observability.logs.sinks" label={t("field.logSinks", "Log Sinks")}>
                 <ListInput value={getValueByPath(config, "observability.logs.sinks")} onChange={(value) => updateField("observability.logs.sinks", value)} />
               </Field>
-              <Field label={t("field.logBufferSize", "Log Buffer Size")}>
+              <Field path="observability.logs.bufferSize" label={t("field.logBufferSize", "Log Buffer Size")}>
                 <input type="number" value={getValueByPath(config, "observability.logs.bufferSize") || 0} onChange={(event) => updateField("observability.logs.bufferSize", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.logBufferMaxBytes", "Log Buffer Max Bytes")}>
+              <Field path="observability.logs.maxBufferBytes" label={t("field.logBufferMaxBytes", "Log Buffer Max Bytes")}>
                 <input type="number" value={getValueByPath(config, "observability.logs.maxBufferBytes") || 0} onChange={(event) => updateField("observability.logs.maxBufferBytes", asNumber(event.target.value))} />
               </Field>
               <LogContentModeField config={config} updateField={updateField} t={t} />
-              <Field label={t("field.logMaxPayloadBytes", "Max Payload Log Bytes")}>
+              <Field path="observability.logs.maxPayloadLogBytes" label={t("field.logMaxPayloadBytes", "Max Payload Log Bytes")}>
                 <input type="number" value={getValueByPath(config, "observability.logs.maxPayloadLogBytes") || 0} onChange={(event) => updateField("observability.logs.maxPayloadLogBytes", asNumber(event.target.value))} />
               </Field>
-              <Field label={t("field.workspaceResourceId", "Workspace Resource ID")}>
+              <Field path="observability.logAnalytics.workspaceResourceId" label={t("field.workspaceResourceId", "Workspace Resource ID")}>
                 <input value={getValueByPath(config, "observability.logAnalytics.workspaceResourceId") || ""} onChange={(event) => updateField("observability.logAnalytics.workspaceResourceId", event.target.value)} />
               </Field>
-              <Field label={t("field.dataCollectionEndpointResourceId", "DCE Resource ID")}>
+              <Field path="observability.logAnalytics.dataCollectionEndpointResourceId" label={t("field.dataCollectionEndpointResourceId", "DCE Resource ID")}>
                 <input value={getValueByPath(config, "observability.logAnalytics.dataCollectionEndpointResourceId") || ""} onChange={(event) => updateField("observability.logAnalytics.dataCollectionEndpointResourceId", event.target.value)} />
               </Field>
-              <Field label={t("field.dataCollectionRuleName", "DCR Name")}>
+              <Field path="observability.logAnalytics.dataCollectionRuleName" label={t("field.dataCollectionRuleName", "DCR Name")}>
                 <input value={getValueByPath(config, "observability.logAnalytics.dataCollectionRuleName") || "aoai-proxy-logs"} onChange={(event) => updateField("observability.logAnalytics.dataCollectionRuleName", event.target.value)} />
               </Field>
-              <Field label={t("field.tableName", "Table Name")}>
+              <Field path="observability.logAnalytics.tableName" label={t("field.tableName", "Table Name")}>
                 <input value={getValueByPath(config, "observability.logAnalytics.tableName") || "AOAIProxyLogs_CL"} onChange={(event) => updateField("observability.logAnalytics.tableName", event.target.value)} />
               </Field>
-              <Field label={t("field.streamName", "Stream Name")}>
+              <Field path="observability.logAnalytics.streamName" label={t("field.streamName", "Stream Name")}>
                 <input value={getValueByPath(config, "observability.logAnalytics.streamName") || "Custom-AOAIProxyLogs"} onChange={(event) => updateField("observability.logAnalytics.streamName", event.target.value)} />
               </Field>
-              <Field label={t("field.credentialRef", "Credential Ref")}>
+              <Field path="observability.logAnalytics.credentialRef" label={t("field.credentialRef", "Credential Ref")}>
                 <input value={getValueByPath(config, "observability.logAnalytics.credentialRef") || ""} onChange={(event) => updateField("observability.logAnalytics.credentialRef", event.target.value)} />
               </Field>
-              <Field label={t("field.audience", "Audience")}>
+              <Field path="observability.logAnalytics.audience" label={t("field.audience", "Audience")}>
                 <input value={getValueByPath(config, "observability.logAnalytics.audience") || ""} onChange={(event) => updateField("observability.logAnalytics.audience", event.target.value)} />
               </Field>
               {logAnalyticsEnabled ? (
                 <>
-                  <Field label={t("field.workspaceId", "Workspace ID")}><input value={getValueByPath(config, "observability.logAnalytics.workspaceId") || ""} onChange={(event) => updateField("observability.logAnalytics.workspaceId", event.target.value)} /></Field>
-                  <Field label={t("field.endpoint", "Logs Ingestion Endpoint")}><input value={getValueByPath(config, "observability.logAnalytics.endpoint") || ""} onChange={(event) => updateField("observability.logAnalytics.endpoint", event.target.value)} /></Field>
-                  <Field label={t("field.dataCollectionRuleResourceId", "DCR Resource ID")}><input value={getValueByPath(config, "observability.logAnalytics.dataCollectionRuleResourceId") || ""} onChange={(event) => updateField("observability.logAnalytics.dataCollectionRuleResourceId", event.target.value)} /></Field>
-                  <Field label={t("field.dcrImmutableId", "DCR Immutable ID")}><input value={getValueByPath(config, "observability.logAnalytics.dcrImmutableId") || ""} onChange={(event) => updateField("observability.logAnalytics.dcrImmutableId", event.target.value)} /></Field>
-                  <Field label={t("field.flushIntervalMs", "Flush Interval ms")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.flushIntervalMs") || 0} onChange={(event) => updateField("observability.logAnalytics.flushIntervalMs", asNumber(event.target.value))} /></Field>
-                  <Field label={t("field.batchSize", "Batch Size")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.batchSize") || 0} onChange={(event) => updateField("observability.logAnalytics.batchSize", asNumber(event.target.value))} /></Field>
-                  <Field label={t("field.samplingRatio", "Sampling Ratio")}><input type="number" step="0.1" min="0" max="1" value={getValueByPath(config, "observability.logAnalytics.samplingRatio") || 0} onChange={(event) => updateField("observability.logAnalytics.samplingRatio", Number(event.target.value || 0))} /></Field>
-                  <Field label={t("field.maxConcurrency", "Max Concurrency")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.maxConcurrency") || 0} onChange={(event) => updateField("observability.logAnalytics.maxConcurrency", asNumber(event.target.value))} /></Field>
-                  <Field label={t("field.maxQueueSize", "Max Queue Size")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.maxQueueSize") || 0} onChange={(event) => updateField("observability.logAnalytics.maxQueueSize", asNumber(event.target.value))} /></Field>
-                  <Field label={t("field.maxQueueBytes", "Max Queue Bytes")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.maxQueueBytes") || 0} onChange={(event) => updateField("observability.logAnalytics.maxQueueBytes", asNumber(event.target.value))} /></Field>
-                  <Field label={t("field.uploadTimeoutMs", "Upload Timeout ms")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.uploadTimeoutMs") || 0} onChange={(event) => updateField("observability.logAnalytics.uploadTimeoutMs", asNumber(event.target.value))} /></Field>
-                  <Field label={t("field.maxUploadRetries", "Max Upload Retries")}><input type="number" min="0" value={getValueByPath(config, "observability.logAnalytics.maxUploadRetries") ?? 0} onChange={(event) => updateField("observability.logAnalytics.maxUploadRetries", asNumber(event.target.value))} /></Field>
-                  <Field label={t("field.retryBaseDelayMs", "Retry Base Delay ms")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.retryBaseDelayMs") || 0} onChange={(event) => updateField("observability.logAnalytics.retryBaseDelayMs", asNumber(event.target.value))} /></Field>
-                  <Field label={t("field.retryMaxDelayMs", "Retry Max Delay ms")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.retryMaxDelayMs") || 0} onChange={(event) => updateField("observability.logAnalytics.retryMaxDelayMs", asNumber(event.target.value))} /></Field>
+                  <Field path="observability.logAnalytics.workspaceId" label={t("field.workspaceId", "Workspace ID")}><input value={getValueByPath(config, "observability.logAnalytics.workspaceId") || ""} onChange={(event) => updateField("observability.logAnalytics.workspaceId", event.target.value)} /></Field>
+                  <Field path="observability.logAnalytics.endpoint" label={t("field.endpoint", "Logs Ingestion Endpoint")}><input value={getValueByPath(config, "observability.logAnalytics.endpoint") || ""} onChange={(event) => updateField("observability.logAnalytics.endpoint", event.target.value)} /></Field>
+                  <Field path="observability.logAnalytics.dataCollectionRuleResourceId" label={t("field.dataCollectionRuleResourceId", "DCR Resource ID")}><input value={getValueByPath(config, "observability.logAnalytics.dataCollectionRuleResourceId") || ""} onChange={(event) => updateField("observability.logAnalytics.dataCollectionRuleResourceId", event.target.value)} /></Field>
+                  <Field path="observability.logAnalytics.dcrImmutableId" label={t("field.dcrImmutableId", "DCR Immutable ID")}><input value={getValueByPath(config, "observability.logAnalytics.dcrImmutableId") || ""} onChange={(event) => updateField("observability.logAnalytics.dcrImmutableId", event.target.value)} /></Field>
+                  <Field path="observability.logAnalytics.flushIntervalMs" label={t("field.flushIntervalMs", "Flush Interval ms")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.flushIntervalMs") || 0} onChange={(event) => updateField("observability.logAnalytics.flushIntervalMs", asNumber(event.target.value))} /></Field>
+                  <Field path="observability.logAnalytics.batchSize" label={t("field.batchSize", "Batch Size")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.batchSize") || 0} onChange={(event) => updateField("observability.logAnalytics.batchSize", asNumber(event.target.value))} /></Field>
+                  <Field path="observability.logAnalytics.samplingRatio" label={t("field.samplingRatio", "Sampling Ratio")}><input type="number" step="0.1" min="0" max="1" value={getValueByPath(config, "observability.logAnalytics.samplingRatio") || 0} onChange={(event) => updateField("observability.logAnalytics.samplingRatio", Number(event.target.value || 0))} /></Field>
+                  <Field path="observability.logAnalytics.maxConcurrency" label={t("field.maxConcurrency", "Max Concurrency")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.maxConcurrency") || 0} onChange={(event) => updateField("observability.logAnalytics.maxConcurrency", asNumber(event.target.value))} /></Field>
+                  <Field path="observability.logAnalytics.maxQueueSize" label={t("field.maxQueueSize", "Max Queue Size")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.maxQueueSize") || 0} onChange={(event) => updateField("observability.logAnalytics.maxQueueSize", asNumber(event.target.value))} /></Field>
+                  <Field path="observability.logAnalytics.maxQueueBytes" label={t("field.maxQueueBytes", "Max Queue Bytes")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.maxQueueBytes") || 0} onChange={(event) => updateField("observability.logAnalytics.maxQueueBytes", asNumber(event.target.value))} /></Field>
+                  <Field path="observability.logAnalytics.uploadTimeoutMs" label={t("field.uploadTimeoutMs", "Upload Timeout ms")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.uploadTimeoutMs") || 0} onChange={(event) => updateField("observability.logAnalytics.uploadTimeoutMs", asNumber(event.target.value))} /></Field>
+                  <Field path="observability.logAnalytics.maxUploadRetries" label={t("field.maxUploadRetries", "Max Upload Retries")}><input type="number" min="0" value={getValueByPath(config, "observability.logAnalytics.maxUploadRetries") ?? 0} onChange={(event) => updateField("observability.logAnalytics.maxUploadRetries", asNumber(event.target.value))} /></Field>
+                  <Field path="observability.logAnalytics.retryBaseDelayMs" label={t("field.retryBaseDelayMs", "Retry Base Delay ms")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.retryBaseDelayMs") || 0} onChange={(event) => updateField("observability.logAnalytics.retryBaseDelayMs", asNumber(event.target.value))} /></Field>
+                  <Field path="observability.logAnalytics.retryMaxDelayMs" label={t("field.retryMaxDelayMs", "Retry Max Delay ms")}><input type="number" value={getValueByPath(config, "observability.logAnalytics.retryMaxDelayMs") || 0} onChange={(event) => updateField("observability.logAnalytics.retryMaxDelayMs", asNumber(event.target.value))} /></Field>
                 </>
               ) : null}
             </div>
             <div className="checkbox-row">
-              <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeClientIp") === true} onChange={(event) => updateField("observability.logs.includeClientIp", event.target.checked)} /> {t("field.includeClientIp", "Include Client IP")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeUsage") === true} onChange={(event) => updateField("observability.logs.includeUsage", event.target.checked)} /> {t("field.includeUsage", "Include Usage")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeHeaders") === true} onChange={(event) => updateField("observability.logs.includeHeaders", event.target.checked)} /> {t("field.includeHeaders", "Include Headers")}</label>
-              <label title={t("field.includeAuthRejectedHint", "Log requests rejected by API key, admin Basic Auth, or admin IP checks. Usually scanner or crawler noise.")}><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeAuthRejected") === true} onChange={(event) => updateField("observability.logs.includeAuthRejected", event.target.checked)} /> {t("field.includeAuthRejected", "Log Auth-Rejected Requests")}</label>
+              <SettingLabel path="observability.logs.includeClientIp"><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeClientIp") === true} onChange={(event) => updateField("observability.logs.includeClientIp", event.target.checked)} /> {t("field.includeClientIp", "Include Client IP")}</SettingLabel>
+              <SettingLabel path="observability.logs.includeUsage"><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeUsage") === true} onChange={(event) => updateField("observability.logs.includeUsage", event.target.checked)} /> {t("field.includeUsage", "Include Usage")}</SettingLabel>
+              <SettingLabel path="observability.logs.includeHeaders"><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeHeaders") === true} onChange={(event) => updateField("observability.logs.includeHeaders", event.target.checked)} /> {t("field.includeHeaders", "Include Headers")}</SettingLabel>
+              <SettingLabel path="observability.logs.includeAuthRejected" title={t("field.includeAuthRejectedHint", "Log requests rejected by API key, admin Basic Auth, or admin IP checks. Usually scanner or crawler noise.")}><input type="checkbox" checked={getValueByPath(config, "observability.logs.includeAuthRejected") === true} onChange={(event) => updateField("observability.logs.includeAuthRejected", event.target.checked)} /> {t("field.includeAuthRejected", "Log Auth-Rejected Requests")}</SettingLabel>
               <label title={t("field.redactSecretsEnforced", "Sensitive values are always redacted and this protection cannot be disabled.")}><input type="checkbox" checked disabled /> {t("field.redactSecrets", "Redact Secrets")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "observability.logs.redactApiKeyInfo") !== false} onChange={(event) => updateField("observability.logs.redactApiKeyInfo", event.target.checked)} /> {t("field.redactApiKeyInfo", "Redact API Key Info")}</label>
-              <label><input type="checkbox" checked={getValueByPath(config, "observability.logAnalytics.enabled") === true} disabled={!logAnalyticsAvailable} onChange={(event) => updateField("observability.logAnalytics.enabled", event.target.checked)} /> {t("field.logAnalyticsEnabled", "Enable Log Analytics Sink")}</label>
+              <SettingLabel path="observability.logs.redactApiKeyInfo"><input type="checkbox" checked={getValueByPath(config, "observability.logs.redactApiKeyInfo") !== false} onChange={(event) => updateField("observability.logs.redactApiKeyInfo", event.target.checked)} /> {t("field.redactApiKeyInfo", "Redact API Key Info")}</SettingLabel>
+              <SettingLabel path="observability.logAnalytics.enabled"><input type="checkbox" checked={getValueByPath(config, "observability.logAnalytics.enabled") === true} disabled={!logAnalyticsAvailable} onChange={(event) => updateField("observability.logAnalytics.enabled", event.target.checked)} /> {t("field.logAnalyticsEnabled", "Enable Log Analytics Sink")}</SettingLabel>
             </div>
             {logAnalyticsAvailable ? <div className="database-probe-panel log-analytics-init-panel">
               <div className="database-probe-header">

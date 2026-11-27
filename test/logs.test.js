@@ -91,6 +91,26 @@ test("event exclusion filters hide noisy events", () => {
   assert.deepEqual(remaining.map((entry) => entry.event), ["test.exclude.keep"]);
 });
 
+test("Key filters are exact before limiting and retain the entire matching request timeline without bypassing redaction", () => {
+  configureLogs({ redactApiKeyInfo: false });
+  for (const [index, consumerKeyId] of ["Key-Filter-Team", "Key-Filter-Team-other", "key-filter-team"].entries()) {
+    const requestId = `key-filter-${index}`;
+    appendStructuredLog("info", { requestId, source: "proxy", event: "proxy.request_started" });
+    appendStructuredLog("info", { requestId, source: "proxy", event: "proxy.usage_recorded", consumerKeyId, totalTokens: 0 });
+    appendStructuredLog("info", { requestId, source: "http", event: "http.request_completed", status: 200 });
+  }
+  const result = queryLogs({ view: "requests", keyId: "Key-Filter-Team", limit: 1 });
+  assert.equal(result.total, 1);
+  assert.equal(result.items[0].requestId, "key-filter-0");
+  assert.equal(result.items[0].events.length, 3);
+  assert.equal(result.items[0].consumerKeyId, "Key-Filter-Team");
+  assert.equal(queryLogs({ keyId: "Key-Filter-Team" }).total, 1);
+  configureLogs({ redactApiKeyInfo: true });
+  appendStructuredLog("info", { requestId: "key-filter-redacted", consumerKeyId: "Hidden-Key-Filter", event: "proxy.usage_recorded" });
+  assert.equal(queryLogs({ view: "requests", keyId: "Hidden-Key-Filter" }).total, 0);
+  assert.equal(queryLogs({ keyId: "[REDACTED]" }).total, 0);
+});
+
 test("request view groups correlated errors and keeps cost warnings out of the outcome", () => {
   configureLogs();
   const requestContext = {

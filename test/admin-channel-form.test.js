@@ -76,7 +76,9 @@ test("mapping editor keeps invalid JSON, and exposure requires an explicit deplo
 });
 
 test("key form removes orphaned permissions without widening a legacy restricted key", async () => {
+  const { MemoryRouter } = await import("react-router");
   const { default: KeysTab } = await loadAdminModule("/admin-ui/src/components/KeysTab.jsx");
+  const { ConfigDraftProvider } = await loadAdminModule("/admin-ui/src/lib/config-draft.jsx");
   let latest;
   function Form() {
     const [config, setConfig] = useState({ models: [{ id: "published" }], apiKeys: [{ id: "team", allowedModels: ["removed"] }] });
@@ -84,12 +86,19 @@ test("key form removes orphaned permissions without widening a legacy restricted
     return createElement(KeysTab, { config, t: (key, fallback) => fallback || key,
       updateConfig: change => setConfig(prev => { const next = structuredClone(prev); change(next); return next; }) });
   }
-  const ui = renderElement(createElement(Form));
-  ui.container.querySelector("details").open = true;
-  fireEvent.click(ui.getByRole("checkbox", { name: /removed/ }));
+  const ui = renderElement(createElement(MemoryRouter, { initialEntries: ["/keys?edit=team&tab=access"] },
+    createElement(ConfigDraftProvider, null, createElement(Form))));
+  fireEvent.click(await ui.findByRole("button", { name: "entity.delete removed" }));
+  assert.deepEqual(latest.apiKeys[0].allowedModels, ["removed"], "entity edits do not modify the global draft");
+  fireEvent.click(ui.getByRole("button", { name: "ui.applyDraft" }));
   assert.equal(latest.apiKeys[0].modelAccessMode, "selected");
   assert.deepEqual(latest.apiKeys[0].allowedModels, []);
-  fireEvent.click(ui.getByRole("checkbox", { name: "published" }));
+  const picker = ui.getByRole("combobox", { name: "field.allowedModels" });
+  picker.focus();
+  fireEvent.click(picker);
+  fireEvent.input(picker, { target: { value: "pub" }, inputType: "insertText" });
+  fireEvent.click(await ui.findByRole("option", { name: "published" }));
+  fireEvent.click(ui.getByRole("button", { name: "ui.applyDraft" }));
   assert.deepEqual(latest.apiKeys[0].allowedModels, ["published"]);
 });
 

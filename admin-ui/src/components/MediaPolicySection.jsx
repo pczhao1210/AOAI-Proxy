@@ -1,4 +1,4 @@
-import { AccordionSection, Field } from "./ui.jsx";
+import { AccordionSection, Field, SettingLabel } from "./ui.jsx";
 import { getValueByPath, parseList, formatList } from "../utils.js";
 
 function asNumber(value) {
@@ -47,28 +47,28 @@ export default function MediaPolicySection({ config, updateField, t }) {
     <AccordionSection id="workspace-media" title={t("workspace.media.title", "Media Policy")} desc={t("workspace.media.desc", "Control input compression, remote images, inline images, and image generation defaults.") } group="workspace-sections">
       <div className="form-grid">
         {Object.entries(transportFields).flatMap(([transport, fields]) => getValueByPath(config, `media.${transport}.enabled`) === true
-          ? fields.map(([field, label, defaultValue]) => <Field key={`${transport}.${field}`} label={t(`mediaLimit.${transport}.${field}`, label)}>
+          ? fields.map(([field, label, defaultValue]) => <Field path={`media.${transport}.${field}`} key={`${transport}.${field}`} label={t(`mediaLimit.${transport}.${field}`, label)}>
             <input type="number" min={field === "clientSecretTtlSeconds" ? 10 : 1} max={field === "clientSecretTtlSeconds" ? 7200 : 2147483647}
               step="1" value={getValueByPath(config, `media.${transport}.${field}`) ?? defaultValue}
               onChange={(event) => updateField(`media.${transport}.${field}`, asNumber(event.target.value))} />
           </Field>) : [])}
-        {compressionEnabled ? <Field label={t("field.mediaCompressionMode", "Compression Mode")}>
+        {compressionEnabled ? <Field path="media.inputCompression.mode" label={t("field.mediaCompressionMode", "Compression Mode")}>
           <select value={compressionMode} onChange={(event) => updateField("media.inputCompression.mode", event.target.value)}>
             <option value="legacy">{t("option.mediaLegacy", "Legacy")}</option>
             <option value="preserve">{t("option.mediaPreserve", "Preserve Original")}</option>
             <option value="adaptive">{t("option.mediaAdaptive", "Adaptive JPEG")}</option>
           </select>
         </Field> : null}
-        {compressionEnabled && compressionMode !== "preserve" ? <><Field label={t("field.mediaMaxLongSide", "Max Long Side px")}>
+        {compressionEnabled && compressionMode !== "preserve" ? <><Field path="media.inputCompression.maxLongSidePx" label={t("field.mediaMaxLongSide", "Max Long Side px")}>
           <input type="number" value={getValueByPath(config, "media.inputCompression.maxLongSidePx") || 0} onChange={(event) => updateField("media.inputCompression.maxLongSidePx", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.mediaQuality", "Quality")}>
+        <Field path="media.inputCompression.quality" label={t("field.mediaQuality", "Quality")}>
           <input type="number" step="0.05" min="0" max="1" value={getValueByPath(config, "media.inputCompression.quality") || 0} onChange={(event) => updateField("media.inputCompression.quality", Number(event.target.value || 0))} />
         </Field>
-        <Field label={t("field.mediaMinQuality", "Min Quality")}>
+        <Field path="media.inputCompression.minQuality" label={t("field.mediaMinQuality", "Min Quality")}>
           <input type="number" step="0.05" min="0" max="1" value={getValueByPath(config, "media.inputCompression.minQuality") || 0} onChange={(event) => updateField("media.inputCompression.minQuality", Number(event.target.value || 0))} />
         </Field>
-        {compressionMode === "legacy" ? <Field label={t("field.mediaOutputFormat", "Output Format")}>
+        {compressionMode === "legacy" ? <Field path="media.inputCompression.outputFormat" label={t("field.mediaOutputFormat", "Output Format")}>
           <select value={getValueByPath(config, "media.inputCompression.outputFormat") || "jpeg"} onChange={(event) => updateField("media.inputCompression.outputFormat", event.target.value)}>
             <option value="jpeg">{t("option.jpeg", "jpeg")}</option>
             <option value="webp">{t("option.webp", "webp")}</option>
@@ -82,68 +82,68 @@ export default function MediaPolicySection({ config, updateField, t }) {
           ["maxQueue", "field.mediaMaxQueue", "Queue Capacity", 8, 0, 256, 1],
           ["timeoutMs", "field.mediaTimeout", "Preparation Budget ms", 5000, 1, 60000, 1]
         ].map(([field, label, fallback, defaultValue, min, max, step]) => (
-          <Field key={field} label={t(label, fallback)}>
+          <Field path={`media.inputCompression.${field}`} key={field} label={t(label, fallback)}>
             <input type="number" min={min} max={max} step={step} value={getValueByPath(config, `media.inputCompression.${field}`) ?? defaultValue} onChange={(event) => updateField(`media.inputCompression.${field}`, asNumber(event.target.value))} />
           </Field>
         )) : null}
-        {remoteImagesEnabled ? <><Field label={t("field.remoteImagesMaxMb", "Remote Download Limit MB")}>
+        {remoteImagesEnabled ? <><Field path="media.remoteImages.maxDownloadSizeMb" label={t("field.remoteImagesMaxMb", "Remote Download Limit MB")}>
           <input type="number" value={getValueByPath(config, "media.remoteImages.maxDownloadSizeMb") || 0} onChange={(event) => updateField("media.remoteImages.maxDownloadSizeMb", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.remoteImagesTimeoutMs", "Remote Timeout ms")}>
+        <Field path="media.remoteImages.timeoutMs" label={t("field.remoteImagesTimeoutMs", "Remote Timeout ms")}>
           <input type="number" value={getValueByPath(config, "media.remoteImages.timeoutMs") || 0} onChange={(event) => updateField("media.remoteImages.timeoutMs", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.remoteImagesMimeTypes", "Remote Allowed MIME Types")}>
+        <Field path="media.remoteImages.allowedMimeTypes" label={t("field.remoteImagesMimeTypes", "Remote Allowed MIME Types")}>
           <input value={formatList(getValueByPath(config, "media.remoteImages.allowedMimeTypes"))} onChange={(event) => updateField("media.remoteImages.allowedMimeTypes", parseList(event.target.value))} />
         </Field>
-        <Field label={t("field.remoteImagesHosts", "Remote Allowed Hosts")}>
+        <Field path="media.remoteImages.allowedHosts" label={t("field.remoteImagesHosts", "Remote Allowed Hosts")}>
           <input value={formatList(getValueByPath(config, "media.remoteImages.allowedHosts"))} onChange={(event) => updateField("media.remoteImages.allowedHosts", parseList(event.target.value))} />
         </Field></> : null}
-        <Field label={t("field.inlineImagesMaxBase64", "Inline Max Base64 Bytes")}>
+        <Field path="media.inlineImages.maxBase64Bytes" label={t("field.inlineImagesMaxBase64", "Inline Max Base64 Bytes")}>
           <input type="number" value={getValueByPath(config, "media.inlineImages.maxBase64Bytes") || 0} onChange={(event) => updateField("media.inlineImages.maxBase64Bytes", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.inlineImagesMaxCount", "Image Count Limit (0 = unlimited)")}>
+        <Field path="media.inlineImages.maxImages" label={t("field.inlineImagesMaxCount", "Image Count Limit (0 = unlimited)")}>
           <input type="number" min="0" step="1" value={getValueByPath(config, "media.inlineImages.maxImages") ?? 0} onChange={(event) => updateField("media.inlineImages.maxImages", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.inlineImagesMaxTotal", "Total Inline Bytes (0 = unlimited)")}>
+        <Field path="media.inlineImages.maxTotalBytes" label={t("field.inlineImagesMaxTotal", "Total Inline Bytes (0 = unlimited)")}>
           <input type="number" min="0" step="1" value={getValueByPath(config, "media.inlineImages.maxTotalBytes") ?? 0} onChange={(event) => updateField("media.inlineImages.maxTotalBytes", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.inlineImagesPreview", "Inline Log Preview Chars")}>
+        <Field path="media.inlineImages.logPreviewChars" label={t("field.inlineImagesPreview", "Inline Log Preview Chars")}>
           <input type="number" value={getValueByPath(config, "media.inlineImages.logPreviewChars") || 0} onChange={(event) => updateField("media.inlineImages.logPreviewChars", asNumber(event.target.value))} />
         </Field>
-        {generationEnabled ? <><Field label={t("field.mediaGenerationDefaultModel", "Default Generation Model")}>
+        {generationEnabled ? <><Field path="media.generation.defaultModel" label={t("field.mediaGenerationDefaultModel", "Default Generation Model")}>
           <input value={getValueByPath(config, "media.generation.defaultModel") || ""} onChange={(event) => updateField("media.generation.defaultModel", event.target.value)} />
         </Field>
-        <Field label={t("field.mediaGenerationRequestTimeout", "Generation Request Timeout ms")}>
+        <Field path="media.generation.requestTimeoutMs" label={t("field.mediaGenerationRequestTimeout", "Generation Request Timeout ms")}>
           <input type="number" value={getValueByPath(config, "media.generation.requestTimeoutMs") || 0} onChange={(event) => updateField("media.generation.requestTimeoutMs", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.mediaGenerationPollInterval", "Generation Poll Interval ms")}>
+        <Field path="media.generation.pollIntervalMs" label={t("field.mediaGenerationPollInterval", "Generation Poll Interval ms")}>
           <input type="number" value={getValueByPath(config, "media.generation.pollIntervalMs") || 0} onChange={(event) => updateField("media.generation.pollIntervalMs", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.mediaGenerationPollTimeout", "Generation Poll Timeout ms")}>
+        <Field path="media.generation.pollTimeoutMs" label={t("field.mediaGenerationPollTimeout", "Generation Poll Timeout ms")}>
           <input type="number" value={getValueByPath(config, "media.generation.pollTimeoutMs") || 0} onChange={(event) => updateField("media.generation.pollTimeoutMs", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.mediaGenerationMaxImages", "Max Images")}>
+        <Field path="media.generation.maxImages" label={t("field.mediaGenerationMaxImages", "Max Images")}>
           <input type="number" value={getValueByPath(config, "media.generation.maxImages") || 0} onChange={(event) => updateField("media.generation.maxImages", asNumber(event.target.value))} />
         </Field>
-        <Field label={t("field.mediaGenerationAllowedSizes", "Allowed Sizes")}>
+        <Field path="media.generation.allowedSizes" label={t("field.mediaGenerationAllowedSizes", "Allowed Sizes")}>
           <input value={formatList(getValueByPath(config, "media.generation.allowedSizes"))} onChange={(event) => updateField("media.generation.allowedSizes", parseList(event.target.value))} />
         </Field>
-        <Field label={t("field.mediaGenerationAllowedQualityModes", "Allowed Quality Modes")}>
+        <Field path="media.generation.allowedQualityModes" label={t("field.mediaGenerationAllowedQualityModes", "Allowed Quality Modes")}>
           <input value={formatList(getValueByPath(config, "media.generation.allowedQualityModes"))} onChange={(event) => updateField("media.generation.allowedQualityModes", parseList(event.target.value))} />
         </Field></> : null}
       </div>
       <div className="checkbox-row">
-        <label><input type="checkbox" checked={getValueByPath(config, "media.http.enabled") === true} onChange={(event) => updateField("media.http.enabled", event.target.checked)} /> {t("field.mediaHttpEnabled", "Enable HTTP Audio and Image Edits")}</label>
-        <label><input type="checkbox" checked={getValueByPath(config, "media.realtime.enabled") === true} onChange={(event) => updateField("media.realtime.enabled", event.target.checked)} /> {t("field.mediaRealtimeEnabled", "Enable Realtime WebSocket")}</label>
-        <label><input type="checkbox" checked={getValueByPath(config, "media.webrtc.enabled") === true} onChange={(event) => updateField("media.webrtc.enabled", event.target.checked)} /> {t("field.mediaWebRtcEnabled", "Enable WebRTC Setup and Control")}</label>
-        {getValueByPath(config, "media.webrtc.enabled") === true ? <label><input type="checkbox" checked={getValueByPath(config, "media.webrtc.allowClientSecrets") === true} onChange={(event) => {
+        <SettingLabel path="media.http.enabled"><input type="checkbox" checked={getValueByPath(config, "media.http.enabled") === true} onChange={(event) => updateField("media.http.enabled", event.target.checked)} /> {t("field.mediaHttpEnabled", "Enable HTTP Audio and Image Edits")}</SettingLabel>
+        <SettingLabel path="media.realtime.enabled"><input type="checkbox" checked={getValueByPath(config, "media.realtime.enabled") === true} onChange={(event) => updateField("media.realtime.enabled", event.target.checked)} /> {t("field.mediaRealtimeEnabled", "Enable Realtime WebSocket")}</SettingLabel>
+        <SettingLabel path="media.webrtc.enabled"><input type="checkbox" checked={getValueByPath(config, "media.webrtc.enabled") === true} onChange={(event) => updateField("media.webrtc.enabled", event.target.checked)} /> {t("field.mediaWebRtcEnabled", "Enable WebRTC Setup and Control")}</SettingLabel>
+        {getValueByPath(config, "media.webrtc.enabled") === true ? <SettingLabel path="media.webrtc.allowClientSecrets"><input type="checkbox" checked={getValueByPath(config, "media.webrtc.allowClientSecrets") === true} onChange={(event) => {
           if (event.target.checked && !window.confirm(t("confirm.mediaClientSecrets", "Exported provider credentials can create multiple sessions and bypass proxy controls. Expiration does not end active sessions. Continue?"))) return;
           updateField("media.webrtc.allowClientSecrets", event.target.checked);
-        }} /> {t("field.mediaClientSecrets", "Export Upstream Client Secrets")}</label> : null}
-        <label><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.enabled") === true} onChange={(event) => updateField("media.inputCompression.enabled", event.target.checked)} /> {t("field.mediaCompressionEnabled", "Enable Input Compression")}</label>
-        <label><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.progressive") === true} onChange={(event) => updateField("media.inputCompression.progressive", event.target.checked)} /> {t("field.mediaProgressive", "Progressive")}</label>
-        <label><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.useMozJpeg") === true} onChange={(event) => updateField("media.inputCompression.useMozJpeg", event.target.checked)} /> {t("field.mediaMozJpeg", "Prefer mozjpeg")}</label>
-        <label><input type="checkbox" checked={getValueByPath(config, "media.remoteImages.allow") === true} onChange={(event) => updateField("media.remoteImages.allow", event.target.checked)} /> {t("field.remoteImagesAllow", "Allow Remote Images")}</label>
+        }} /> {t("field.mediaClientSecrets", "Export Upstream Client Secrets")}</SettingLabel> : null}
+        <SettingLabel path="media.inputCompression.enabled"><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.enabled") === true} onChange={(event) => updateField("media.inputCompression.enabled", event.target.checked)} /> {t("field.mediaCompressionEnabled", "Enable Input Compression")}</SettingLabel>
+        <SettingLabel path="media.inputCompression.progressive"><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.progressive") === true} onChange={(event) => updateField("media.inputCompression.progressive", event.target.checked)} /> {t("field.mediaProgressive", "Progressive")}</SettingLabel>
+        <SettingLabel path="media.inputCompression.useMozJpeg"><input type="checkbox" checked={getValueByPath(config, "media.inputCompression.useMozJpeg") === true} onChange={(event) => updateField("media.inputCompression.useMozJpeg", event.target.checked)} /> {t("field.mediaMozJpeg", "Prefer mozjpeg")}</SettingLabel>
+        <SettingLabel path="media.remoteImages.allow"><input type="checkbox" checked={getValueByPath(config, "media.remoteImages.allow") === true} onChange={(event) => updateField("media.remoteImages.allow", event.target.checked)} /> {t("field.remoteImagesAllow", "Allow Remote Images")}</SettingLabel>
       </div>
       <p className="field-hint">{t("field.inlineImagesRedactEnforced", "Inline image content is always redacted from logs; this protection cannot be disabled.")}</p>
       <p className="field-hint">{t("field.imageGenerationGate", "Image generation is controlled by Enable image generations in the Routing section.")}</p>

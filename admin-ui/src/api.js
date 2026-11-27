@@ -26,8 +26,10 @@ async function readJson(response) {
   return json;
 }
 
-function getAdminBasePath() {
+export function getAdminBasePath() {
   if (typeof window === "undefined") return "/admin";
+  const injected = document.querySelector('meta[name="aoai-admin-base"]')?.getAttribute("content");
+  if (injected?.startsWith("/") && !injected.startsWith("//")) return injected.replace(/\/+$/, "") || "/admin";
   const pathname = window.location?.pathname || "/admin/";
   if (pathname === "/admin" || pathname.startsWith("/admin/")) return "/admin";
   const trimmed = pathname.replace(/\/+$/, "");
@@ -220,7 +222,7 @@ export async function fetchLogs(params = {}) {
   if (Array.isArray(params.level) && params.level.length > 0) {
     search.set("level", params.level.join(","));
   }
-  ["event", "excludeEvent", "modelId", "requestId", "keyword", "since", "limit", "recordSource", "connectionId", "operationId", "configRevision"].forEach((key) => {
+  ["event", "excludeEvent", "modelId", "keyId", "requestId", "keyword", "since", "limit", "recordSource", "connectionId", "operationId", "configRevision"].forEach((key) => {
     const value = params[key];
     if (value != null && value !== "") {
       search.set(key, String(value));

@@ -1,7 +1,13 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { formatList, parseList } from "../utils.js";
+import { useSettingsField } from "../lib/settings-fields.jsx";
 
 const FOCUSABLE_SELECTOR = "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
+const SectionContext = createContext(null);
+
+export function PageSections({ sections, children }) {
+  return <SectionContext.Provider value={sections || null}>{children}</SectionContext.Provider>;
+}
 
 export function StatCard({ label, value, note }) {
   return (
@@ -14,6 +20,8 @@ export function StatCard({ label, value, note }) {
 }
 
 export function Section({ id, title, desc, children, actions }) {
+  const sections = useContext(SectionContext);
+  if (sections && id && !sections.includes(id)) return null;
   return (
     <section id={id} className="panel">
       <div className="panel-head">
@@ -41,10 +49,13 @@ function handleSingleOpenToggle(event) {
 }
 
 export function AccordionSection({ id, title, desc, children, defaultOpen = false, group }) {
+  const sections = useContext(SectionContext);
   const detailsRef = useRef(null);
+  const open = sections?.includes(id) || defaultOpen;
   useLayoutEffect(() => {
-    if (detailsRef.current) detailsRef.current.open = defaultOpen;
-  }, [defaultOpen]);
+    if (detailsRef.current) detailsRef.current.open = open;
+  }, [open]);
+  if (sections && id && !sections.includes(id)) return null;
 
   return (
     <details ref={detailsRef} id={id} className="accordion-section" data-accordion-group={group} onToggle={handleSingleOpenToggle}>
@@ -60,14 +71,29 @@ export function AccordionSection({ id, title, desc, children, defaultOpen = fals
   );
 }
 
-export function Field({ label, children, hint }) {
-  return (
+export function Field({ label, children, hint, path }) {
+  const setting = useSettingsField(path, label);
+  if (setting?.visible === false) return null;
+  const content = (
     <label className="field">
       <span className="field-label">{label}</span>
       {children}
       {hint ? <small className="field-hint">{hint}</small> : null}
     </label>
   );
+  return setting ? <fieldset className="setting-field" disabled={setting.readOnly}>
+    {content}<small className="field-hint">{setting.badge}{setting.modified ? " · *" : ""}</small>
+  </fieldset> : content;
+}
+
+export function SettingLabel({ children, path, ...props }) {
+  const label = children.filter?.(child => typeof child === "string").join(" ") || "";
+  const setting = useSettingsField(path, label);
+  if (setting?.visible === false) return null;
+  const content = <label {...props}>{children}</label>;
+  return setting ? <fieldset className="setting-field setting-toggle" disabled={setting.readOnly}>
+    {content}<small className="field-hint">{setting.badge}{setting.modified ? " · *" : ""}</small>
+  </fieldset> : content;
 }
 
 export function ListInput({ value, onChange, ...props }) {
@@ -105,11 +131,12 @@ export function ListInput({ value, onChange, ...props }) {
   );
 }
 
-export function EntityCard({ id, title, subtitle, onRemove, removeLabel, expandLabel = "Edit configuration", collapseLabel = "Collapse", children, collapsible = false, defaultOpen = true, meta, group, hidden = false }) {
+export function EntityCard({ id, title, subtitle, onRemove, removeLabel, expandLabel = "Edit configuration", collapseLabel = "Collapse", children, collapsible = false, defaultOpen = true, meta, group, hidden = false, editorOnly = false }) {
   const detailsRef = useRef(null);
   useLayoutEffect(() => {
     if (detailsRef.current) detailsRef.current.open = defaultOpen;
   }, [defaultOpen]);
+  if (editorOnly) return <div id={id} className="entity-editor">{children}</div>;
 
   if (collapsible) {
     return (

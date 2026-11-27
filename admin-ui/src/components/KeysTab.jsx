@@ -1,152 +1,120 @@
-import { useState } from "react";
-import { EntityCard, Field, ListInput, Section, StatCard } from "./ui.jsx";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router";
+import toast from "react-hot-toast";
+import DataTable from "./ui/DataTable.jsx";
+import Sheet from "./ui/Sheet.jsx";
+import KeyEditor, { accessSummary } from "../features/keys/KeyEditor.jsx";
+import { useConfigDraft } from "../lib/config-draft.jsx";
+import { cloneJson, DEFAULT_KEY_TEMPLATE, ensureUniqueName, formatDateTime } from "../utils.js";
 
-function grantedIds(config, key) {
-  if (!key || key.status === "disabled") return [];
-  const all = key.modelAccessMode === "all" || (!key.modelAccessMode && !key.allowedModels?.length);
-  return (config.models || []).filter(m => m.id && m.status !== "disabled" && (all || key.allowedModels?.includes(m.id))).map(m => m.id);
-}
-
-export default function KeysTab({ config, loadedConfig = {}, updateConfig, addApiKey, onCopyApiKey, t }) {
-  const [search, setSearch] = useState("");
-  const [copyingKey, setCopyingKey] = useState("");
-  const items = config.apiKeys || [];
-  const exposed = (config.models || []).filter(model => model.id && model.status !== "disabled").map(model => model.id);
-  const searchTerm = search.trim().toLowerCase();
-  const filteredItems = items
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => (
-      !searchTerm
-      || (item.id || "").toLowerCase().includes(searchTerm)
-      || (item.displayName || "").toLowerCase().includes(searchTerm)
-      || (item.owner || "").toLowerCase().includes(searchTerm)
-    ));
-  const activeCount = items.filter((item) => (item.status || "active") === "active").length;
-  const disabledCount = items.filter((item) => item.status === "disabled").length;
-  const budgetedCount = items.filter((item) => Number(item.budget?.limitAmount || 0) > 0).length;
-
-  return (
-    <Section
-      id="keys-overview"
-      title={t("keys.title", "Key Governance")}
-      desc={t("keys.desc", "Maintain key ownership, model permissions, rate limits, budgets, and notes.")}
-      actions={
-        <div className="toolbar-cluster">
-          <input 
-            className="search-field"
-            type="search" 
-            placeholder={t("keys.search", "Search keys...")} 
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <button type="button" onClick={addApiKey}>{t("keys.add", "Add Key")}</button>
-        </div>
-      }
-    >
-      <div className="status-grid">
-        <StatCard label={t("keys.summary.total", "Total Keys")} value={items.length} note={t("keys.summary.filtered", "Visible {count}", { count: filteredItems.length })} />
-        <StatCard label={t("keys.summary.active", "Active Keys")} value={activeCount} note={`${t("keys.summary.disabled", "Disabled")} ${disabledCount}`} />
-        <StatCard label={t("keys.summary.budgeted", "Budgeted")} value={budgetedCount} note={t("keys.summary.modelScoped", "Keys with budget or model restrictions") } />
-        <StatCard label={t("keys.summary.search", "Current View")} value={searchTerm ? t("keys.summary.filteredShort", "Filtered") : t("keys.summary.all", "All")} note={searchTerm || t("keys.summary.noSearch", "No search filter applied")} />
-      </div>
-
-      <div id="keys-list" className="entity-grid">
-        {filteredItems.map(({ item, index }) => {
-          const copyStateKey = `${item.id || "key"}-${index}`;
-          const allowedModelsCount = Array.isArray(item.allowedModels) ? item.allowedModels.length : 0;
-          const accessMode = item.modelAccessMode || (allowedModelsCount ? "selected" : "all");
-          const candidates = [...new Set([...exposed, ...(item.allowedModels || [])])];
-          const before = new Set(grantedIds(loadedConfig, loadedConfig.apiKeys?.find(key => key.id === item.id)));
-          const after = new Set(grantedIds(config, item));
-          const changes = [...[...after].filter(id => !before.has(id)).map(id => `+ ${id}`), ...[...before].filter(id => !after.has(id)).map(id => `− ${id}`)];
-          const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
-          const budgetText = Number(item.budget?.limitAmount || 0) > 0
-            ? `${Number(item.budget.limitAmount || 0).toFixed(2)} ${item.budget?.currency || "USD"}`
-            : t("keys.summary.noBudget", "No budget");
-          return (
-            <EntityCard
-              id={`key-card-${index}`}
-              key={`key-${index}`}
-              title={item.displayName || item.id || `key-${index + 1}`}
-              subtitle={item.owner || t("status.keySubtitleFallback", "Owner not set")}
-              meta={`${t("field.status", "Status")}: ${statusLabel} · ${t("field.allowedModels", "Allowed Models")}: ${accessMode === "all" ? t("keys.summary.all", "All") : allowedModelsCount} · ${t("field.budgetLimit", "Budget Limit")}: ${budgetText}`}
-              removeLabel={t("entity.delete", "Delete")}
-              expandLabel={t("entity.expand", "Edit configuration")}
-              collapseLabel={t("entity.collapse", "Collapse")}
-              collapsible
-              defaultOpen={false}
-              group="keys-list"
-              onRemove={() => updateConfig((next) => {
-                next.apiKeys = (next.apiKeys || []).filter((_, keyIndex) => keyIndex !== index);
-              })}
-            >
-              <div className="form-grid compact">
-                <Field label={t("field.id", "ID")}><input value={item.id || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].id = event.target.value; })} /></Field>
-                <Field label={t("field.displayName", "Display Name")}><input value={item.displayName || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].displayName = event.target.value; })} /></Field>
-                <Field label={t("field.owner", "Owner")}><input value={item.owner || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].owner = event.target.value; })} /></Field>
-                <Field label={t("field.status", "Status")}><select value={item.status || "active"} onChange={(event) => updateConfig((next) => { next.apiKeys[index].status = event.target.value; })}><option value="active">{t("option.active", "active")}</option><option value="disabled">{t("option.disabled", "disabled")}</option></select></Field>
-                <Field label={t("field.key", "Key")}>
-                  <div className="key-secret-control">
-                    <input type="password" autoComplete="new-password" value={item.key || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].key = event.target.value; })} />
-                    <button
-                      type="button"
-                      className="ghost"
-                      aria-label={t("keys.copyLabel", "Copy API key {id}", { id: item.id || index + 1 })}
-                      title={t("keys.copyLabel", "Copy API key {id}", { id: item.id || index + 1 })}
-                      disabled={copyingKey === copyStateKey || (!item.key && !item.id)}
-                      onClick={async () => {
-                        setCopyingKey(copyStateKey);
-                        try {
-                          await onCopyApiKey(item);
-                        } finally {
-                          setCopyingKey("");
-                        }
-                      }}
-                    >
-                      {copyingKey === copyStateKey ? t("keys.copying", "Copying...") : t("keys.copy", "Copy")}
-                    </button>
-                  </div>
-                </Field>
-                <Field label={t("channel.access", "Model access")}>
-                  <select value={accessMode} onChange={event => {
-                    const mode = event.target.value;
-                    if (mode === "all" && !window.confirm(t("channel.confirmAll"))) return;
-                    updateConfig(next => {
-                      next.apiKeys[index].modelAccessMode = mode;
-                      next.apiKeys[index].allowedModels = [];
-                    });
-                  }}>
-                    <option value="selected">{t("channel.selected")}</option>
-                    <option value="all">{t("channel.all")}</option>
-                  </select>
-                </Field>
-                {accessMode === "selected" && <fieldset><legend>{t("field.allowedModels", "Allowed Models")}</legend>
-                  {candidates.map(id => <label key={id}><input type="checkbox" checked={(item.allowedModels || []).includes(id)}
-                    onChange={event => {
-                      const checked = event.target.checked;
-                      updateConfig(next => {
-                        const key = next.apiKeys[index];
-                        key.modelAccessMode = "selected";
-                        key.allowedModels = checked ? [...(key.allowedModels || []), id] : key.allowedModels.filter(value => value !== id);
-                      });
-                    }} /> {id}{!exposed.includes(id) && ` (${t("channel.unavailable")})`}</label>)}
-                  {!allowedModelsCount && <small>{t("channel.noAccess")}</small>}
-                </fieldset>}
-                {config.access?.defaults?.requireApiKey === false && <small>{t("channel.anonymous")}</small>}
-                {changes.length > 0 && <p role="status">{t("channel.accessChanges")} {changes.join(", ")}</p>}
-                <Field label={t("field.rateLimitRpm", "Rate Limit RPM")}><input type="number" value={item.rateLimit?.rpm || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.rpm = Number(event.target.value || 0); })} /></Field>
-                <Field label={t("field.rateLimitTpm", "Rate Limit TPM")}><input type="number" value={item.rateLimit?.tpm || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.tpm = Number(event.target.value || 0); })} /></Field>
-                <Field label={t("field.concurrency", "Concurrency")}><input type="number" value={item.rateLimit?.concurrency || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.concurrency = Number(event.target.value || 0); })} /></Field>
-                <Field label={t("field.windowSeconds", "Window Seconds")}><input type="number" value={item.rateLimit?.windowSeconds || 60} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.windowSeconds = Number(event.target.value || 0); })} /></Field>
-                <Field label={t("field.budgetLimit", "Budget Limit")}><input type="number" step="0.01" value={item.budget?.limitAmount || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].budget = next.apiKeys[index].budget || {}; next.apiKeys[index].budget.limitAmount = Number(event.target.value || 0); })} /></Field>
-                <Field label={t("field.budgetWindow", "Budget Window")}><select value={item.budget?.windowType || "monthly"} onChange={(event) => updateConfig((next) => { next.apiKeys[index].budget = next.apiKeys[index].budget || {}; next.apiKeys[index].budget.windowType = event.target.value; })}><option value="daily">{t("option.daily", "daily")}</option><option value="weekly">{t("option.weekly", "weekly")}</option><option value="monthly">{t("option.monthly", "monthly")}</option></select></Field>
-              </div>
-              <Field label={t("field.tags", "Tags")}><ListInput value={item.tags} onChange={(value) => updateConfig((next) => { next.apiKeys[index].tags = value; })} /></Field>
-              <Field label={t("field.notes", "Notes")}><textarea rows={3} value={item.notes || ""} onChange={(event) => updateConfig((next) => { next.apiKeys[index].notes = event.target.value; })} /></Field>
-            </EntityCard>
-          );
-        })}
-      </div>
-    </Section>
-  );
+export default function KeysTab({ config, loadedConfig = {}, updateConfig, onCopyApiKey, governanceKeys = [], t }) {
+  const [params, setParams] = useSearchParams();
+  const { entityDrafts, setEntityDrafts } = useConfigDraft();
+  const [error, setError] = useState("");
+  const edit = params.get("edit");
+  const cacheKey = edit ? `keys:${edit}` : "";
+  const original = config.apiKeys?.find(item => item.id === edit);
+  const cached = entityDrafts[cacheKey];
+  const isNew = cached?.isNew === true;
+  const item = cached?.value || original;
+  const search = params.get("q") || "";
+  const status = params.get("status") || "";
+  const tab = params.get("tab") || "basic";
+  const query = values => setParams(current => {
+    const next = new URLSearchParams(current);
+    for (const [key, value] of Object.entries(values)) value ? next.set(key, value) : next.delete(key);
+    return next;
+  });
+  useEffect(() => { setError(""); }, [edit]);
+  const begin = id => { query({ edit: id, tab: "basic" }); };
+  const update = mutator => {
+    const value = cloneJson(item);
+    mutator(value);
+    setEntityDrafts(prev => ({ ...prev, [cacheKey]: { ...cached, base: cached?.base ?? cloneJson(original ?? null), value } }));
+  };
+  const close = () => {
+    if (cached && !window.confirm(t("ui.closeRetain"))) return;
+    query({ edit: "", tab: "" });
+    if (cached) toast(t("ui.retained"));
+  };
+  const clear = () => setEntityDrafts(prev => {
+    const next = { ...prev }; delete next[cacheKey]; return next;
+  });
+  const apply = () => {
+    if (!item?.id?.trim() || config.apiKeys?.some(key => key.id === item.id && (isNew || key.id !== edit))) return setError(t("ui.identityRequired"));
+    if (!isNew && cached && JSON.stringify(cached.base) !== JSON.stringify(original)) return setError(t("ui.entityConflict"));
+    updateConfig(next => {
+      next.apiKeys ||= [];
+      if (isNew) next.apiKeys.push(cloneJson(item));
+      else next.apiKeys[next.apiKeys.findIndex(key => key.id === edit)] = cloneJson(item);
+    });
+    clear();
+    query({ edit: item.id });
+  };
+  const setStatus = (rows, value) => updateConfig(next => {
+    const ids = new Set(rows.map(row => row.id));
+    next.apiKeys.forEach(key => { if (ids.has(key.id)) key.status = value; });
+  });
+  const rows = (config.apiKeys || []).filter(item => (!status || (item.status || "active") === status)
+    && [item.id, item.owner, item.displayName, ...(item.tags || [])].some(value => String(value || "").toLowerCase().includes(search.toLowerCase())));
+  const columns = [
+    { accessorKey: "id", header: t("field.id"), cell: ({ row }) => <button className="table-link" onClick={() => begin(row.original.id)}>{row.original.displayName || row.original.id}</button> },
+    { accessorKey: "owner", header: t("field.owner") },
+    { accessorKey: "status", header: t("field.status"), cell: ({ row }) => <button className="ghost row-status" onClick={() => setStatus([row.original], row.original.status === "disabled" ? "active" : "disabled")}>{t(`option.${row.original.status || "active"}`)}</button> },
+    { id: "access", header: t("channel.access"), accessorFn: item => accessSummary(item, t) },
+    { id: "limits", header: "RPM / TPM", accessorFn: item => `${item.rateLimit?.rpm ?? 0} / ${item.rateLimit?.tpm ?? 0}` },
+    { id: "budget", header: t("ui.budgetUsage"), cell: ({ row }) => {
+      const runtime = governanceKeys.find(key => key.keyId === row.original.id)?.runtime;
+      const state = runtime?.budgetWindow;
+      const limit = row.original.budget?.limitAmount;
+      if (!state || runtime.known === false || state.spentAmount == null) return t("ui.unknown");
+      const partial = state.textUnknownCostRequests > 0 || state.mediaUnknownCostRequests > 0;
+      return <span>{partial && state.spentAmount === 0 ? t("ui.unknown") : state.spentAmount} / {limit ?? "—"}
+        {partial ? ` · ${t("ui.unknown")}` : limit > 0 ? <progress max={limit} value={state.spentAmount} aria-label={t("ui.budgetUsage")} /> : null}</span>;
+    } },
+    { id: "lastSeen", header: t("ui.lastSeen"), cell: ({ row }) => {
+      const timestamp = governanceKeys.find(key => key.keyId === row.original.id)?.runtime?.lastSeenAt;
+      return timestamp ? formatDateTime(timestamp) : t("ui.unknown");
+    } },
+    { id: "draft", header: t("changes.unsaved"), cell: ({ row }) => JSON.stringify(row.original) !== JSON.stringify(loadedConfig.apiKeys?.find(key => key.id === row.original.id)) ? <span className="status-pill status-dirty">{t("changes.unsaved")}</span> : "—" },
+    { id: "actions", header: t("ui.actions"), cell: ({ row }) => <div className="row-actions">
+      <Link to={`/usage?key=${encodeURIComponent(row.original.id)}`}>{t("ui.usage")}</Link>
+      <Link to={`/logs?key=${encodeURIComponent(row.original.id)}`}>{t("ui.logs")}</Link>
+      <button className="ghost danger" onClick={() => {
+        if (window.prompt(t("ui.deleteConfirm", "Delete {name}?", { name: row.original.id })) !== row.original.id) return;
+        updateConfig(next => { next.apiKeys = next.apiKeys.filter(key => key.id !== row.original.id); });
+      }}>{t("entity.delete")}</button>
+    </div> }
+  ];
+  return <section aria-label={t("shell.page.keys")}>
+    <div className="table-toolbar">
+      <input aria-label={t("ui.search")} placeholder={t("keys.search")} type="search" value={search} onChange={event => query({ q: event.target.value })} />
+      <select aria-label={t("field.status")} value={status} onChange={event => query({ status: event.target.value })}><option value="">{t("ui.allStatuses")}</option>{["active", "disabled"].map(value => <option key={value} value={value}>{t(`option.${value}`)}</option>)}</select>
+      <button onClick={() => {
+        const pending = Object.entries(entityDrafts).find(([key, draft]) => key.startsWith("keys:") && draft.isNew);
+        if (pending) { begin(pending[0].slice(5)); return; }
+        const value = cloneJson(DEFAULT_KEY_TEMPLATE);
+        value.id = ensureUniqueName("key", (config.apiKeys || []).map(item => item.id));
+        value.modelAccessMode = "selected"; value.allowedModels = [];
+        value.budget = {
+          ...value.budget,
+          currency: config.access?.budgets?.defaultCurrency || value.budget.currency,
+          windowType: config.access?.budgets?.defaultWindowType || value.budget.windowType,
+          softLimitRatio: config.access?.budgets?.softLimitRatio ?? value.budget.softLimitRatio,
+          hardLimitAction: config.access?.budgets?.hardLimitAction || value.budget.hardLimitAction
+        };
+        setEntityDrafts(prev => ({ ...prev, [`keys:${value.id}`]: { value, isNew: true } }));
+        begin(value.id);
+      }}>{t("keys.add")}</button>
+    </div>
+    <DataTable rows={rows} columns={columns} getRowId={row => row.id} label={t("shell.page.keys")} t={t} onBulkStatus={setStatus} />
+    {edit && !item ? <p role="alert">{t("ui.entityMissing")}</p> : null}
+    <Sheet open={Boolean(edit && item)} title={item?.displayName || item?.id || t("keys.add")} onClose={close}
+      onCancel={() => { if (!cached || window.confirm(t("ui.cancelDraft"))) { clear(); query({ edit: "", tab: "" }); } }}
+      onApply={apply} t={t}>
+      {error ? <p role="alert">{error}</p> : null}
+      {item ? <KeyEditor item={item} original={cached?.base || original} config={config} update={update}
+        tab={["basic", "access", "limits", "budget", "notes"].includes(tab) ? tab : "basic"} onTab={tab => query({ tab })} onCopy={onCopyApiKey} t={t} /> : null}
+    </Sheet>
+  </section>;
 }

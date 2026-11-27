@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import { JSDOM } from "jsdom";
+import { installAdminDom } from "./admin-dom.js";
 import { setValueByPath } from "../../admin-ui/src/utils.js";
 
 let vite;
@@ -16,15 +16,10 @@ let render;
 let within;
 let cleanup;
 export let fireEvent;
-const originalGlobals = new Map();
 
 export function setupWorkspaceFormTests() {
   before(async () => {
-    dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
-    for (const name of ["window", "document", "navigator", "HTMLElement", "HTMLDetailsElement", "Node", "MutationObserver"]) {
-      originalGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-      Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
-    }
+    dom = installAdminDom();
     React = await import("react");
     ({ render, fireEvent, within, cleanup } = await import("@testing-library/react/pure.js"));
     viteCacheDir = await mkdtemp(path.join(tmpdir(), "aoai-proxy-vite-test-"));
@@ -43,11 +38,7 @@ export function setupWorkspaceFormTests() {
   after(async () => {
     await vite?.close();
     if (viteCacheDir) await rm(viteCacheDir, { recursive: true, force: true });
-    dom?.window.close();
-    for (const [name, descriptor] of originalGlobals) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else delete globalThis[name];
-    }
+    dom?.restore();
   });
 }
 

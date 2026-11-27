@@ -1,7 +1,10 @@
-import { AccordionSection, Field, Section, StatCard } from "./ui.jsx";
+import { AccordionSection, Field, Section, StatCard, SettingLabel } from "./ui.jsx";
 import LogTable from "./LogTable.jsx";
 
 export default function OpsTab({
+  onEditModel,
+  onEditChannel,
+  LogComponent = LogTable,
   config,
   updateField,
   pricingLibraryStatus,
@@ -68,7 +71,8 @@ export default function OpsTab({
   const operations = logFilters.view === "operations";
   const requestView = !operations && logFilters.view !== "events" && logFilters.view !== "access";
   const logView = requestView ? "requests" : logFilters.view;
-  const logsMatchView = logs.view === logView && (!operations || logs.recordSource === logFilters.recordSource);
+  const logsMatchView = logs.view === logView && (logs.keyId || "") === (logFilters.keyId || "")
+    && (!operations || logs.recordSource === logFilters.recordSource);
   const logItems = logsMatchView ? logs.items : [];
   const logTotal = logsMatchView ? logs.total : 0;
   const emptyLogsMessage = logsLoading
@@ -76,7 +80,7 @@ export default function OpsTab({
     : !logsMatchView
       ? t("logs.viewNotLoaded", "This log view has not loaded. Refresh to retry.")
       : t("ops.noLogs", "No logs yet. Adjust filters and refresh.");
-  const advancedFiltersOpen = operations || Boolean(logFilters.connectionId || logFilters.event || logFilters.modelId || logFilters.requestId || logFilters.keyword || Number(logFilters.limit || 100) !== 100);
+  const advancedFiltersOpen = operations || Boolean(logFilters.keyId || logFilters.connectionId || logFilters.event || logFilters.modelId || logFilters.requestId || logFilters.keyword || Number(logFilters.limit || 100) !== 100);
   const pricingRepoLabel = pricingLibraryStatus?.githubOwner && pricingLibraryStatus?.githubRepo
     ? `${pricingLibraryStatus.githubOwner}/${pricingLibraryStatus.githubRepo}`
     : "-";
@@ -148,7 +152,16 @@ export default function OpsTab({
           <button type="button" onClick={handleValidateConfiguredModels} disabled={diagnosticsBusy.modelValidation === true}>
             {diagnosticsBusy.modelValidation === true ? t("ops.validationRunning", "Validating...") : t("ops.validationRun", "Validate Configured Models")}
           </button>
+          <p className="field-hint">{t("ui.probeCost", "Live validation sends upstream requests and may incur charges.")}</p>
         </div>
+        {modelValidationResult?.items?.length ? <div className="table-scroll"><table>
+          <thead><tr><th>{t("field.model", "Model")}</th><th>{t("field.upstream", "Upstream")}</th><th>{t("field.status", "Status")}</th></tr></thead>
+          <tbody>{modelValidationResult.items.map(item => <tr key={item.modelId}>
+            <td><button type="button" className="table-link" onClick={() => onEditModel?.(item.modelId)}>{item.modelId}</button></td>
+            <td><button type="button" className="table-link" onClick={() => onEditChannel?.(item.upstream)}>{item.upstream}</button></td>
+            <td>{item.state}</td>
+          </tr>)}</tbody>
+        </table></div> : null}
         <div className="status-grid">
           <StatCard label={t("ops.validationTotal", "Total")} value={validationSummary.total ?? 0} note={t("ops.validationCheckedAt", "Last Check") + ": " + formatDateTime(modelValidationResult?.checkedAt)} />
           <StatCard label={t("ops.validationOk", "Healthy")} value={validationSummary.ok ?? 0} note={t("ops.validationStaticProbe", "Static + probe checks")} />
@@ -253,19 +266,19 @@ export default function OpsTab({
           <StatCard label={t("status.aad", "AAD")} value={aadStatus?.state ? t(`status.aad.${aadStatus.state}`, aadStatus.state) : t("status.idle", "idle")} note={aadStatus?.detail || formatDateTime(aadStatus?.checkedAt)} />
         </div>
         <div className="checkbox-row">
-          <label><input type="checkbox" checked={caddyEnabled} onChange={(event) => updateField("server.caddy.enabled", event.target.checked)} /> {t("field.enableCaddy", "Enable Caddy")}</label>
+          <SettingLabel path="server.caddy.enabled"><input type="checkbox" checked={caddyEnabled} onChange={(event) => updateField("server.caddy.enabled", event.target.checked)} /> {t("field.enableCaddy", "Enable Caddy")}</SettingLabel>
         </div>
         {caddyEnabled ? (
           <>
             <div className="form-grid" style={{ marginTop: "1rem" }}>
-              <Field label={t("field.domain", "Domain")}><input value={getValueByPath(config, "server.caddy.domain") || ""} onChange={(event) => updateField("server.caddy.domain", event.target.value)} /></Field>
-              <Field label={t("field.email", "Email")}><input value={getValueByPath(config, "server.caddy.email") || ""} onChange={(event) => updateField("server.caddy.email", event.target.value)} /></Field>
-              <Field label={t("field.httpsPort", "HTTPS Port")}><input type="number" value={getValueByPath(config, "server.caddy.httpsPort") || 443} onChange={(event) => updateField("server.caddy.httpsPort", Number(event.target.value || 0))} /></Field>
-              <Field label={t("field.upstreamHost", "Upstream Host")}><input value={getValueByPath(config, "server.caddy.upstreamHost") || "127.0.0.1"} onChange={(event) => updateField("server.caddy.upstreamHost", event.target.value)} /></Field>
-              <Field label={t("field.upstreamPort", "Upstream Port")}><input type="number" value={getValueByPath(config, "server.caddy.upstreamPort") || 3000} onChange={(event) => updateField("server.caddy.upstreamPort", Number(event.target.value || 0))} /></Field>
-              <Field label={t("field.dialTimeoutMs", "Dial Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.dialTimeoutMs") || 5000} onChange={(event) => updateField("server.caddy.transport.dialTimeoutMs", Number(event.target.value || 0))} /></Field>
-              <Field label={t("field.responseHeaderTimeoutMs", "Response Header Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.responseHeaderTimeoutMs") || 300000} onChange={(event) => updateField("server.caddy.transport.responseHeaderTimeoutMs", Number(event.target.value || 0))} /></Field>
-              <Field label={t("field.keepAliveTimeoutMs", "KeepAlive Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.keepAliveTimeoutMs") || 120000} onChange={(event) => updateField("server.caddy.transport.keepAliveTimeoutMs", Number(event.target.value || 0))} /></Field>
+              <Field path="server.caddy.domain" label={t("field.domain", "Domain")}><input value={getValueByPath(config, "server.caddy.domain") || ""} onChange={(event) => updateField("server.caddy.domain", event.target.value)} /></Field>
+              <Field path="server.caddy.email" label={t("field.email", "Email")}><input value={getValueByPath(config, "server.caddy.email") || ""} onChange={(event) => updateField("server.caddy.email", event.target.value)} /></Field>
+              <Field path="server.caddy.httpsPort" label={t("field.httpsPort", "HTTPS Port")}><input type="number" value={getValueByPath(config, "server.caddy.httpsPort") || 443} onChange={(event) => updateField("server.caddy.httpsPort", Number(event.target.value || 0))} /></Field>
+              <Field path="server.caddy.upstreamHost" label={t("field.upstreamHost", "Upstream Host")}><input value={getValueByPath(config, "server.caddy.upstreamHost") || "127.0.0.1"} onChange={(event) => updateField("server.caddy.upstreamHost", event.target.value)} /></Field>
+              <Field path="server.caddy.upstreamPort" label={t("field.upstreamPort", "Upstream Port")}><input type="number" value={getValueByPath(config, "server.caddy.upstreamPort") || 3000} onChange={(event) => updateField("server.caddy.upstreamPort", Number(event.target.value || 0))} /></Field>
+              <Field path="server.caddy.transport.dialTimeoutMs" label={t("field.dialTimeoutMs", "Dial Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.dialTimeoutMs") || 5000} onChange={(event) => updateField("server.caddy.transport.dialTimeoutMs", Number(event.target.value || 0))} /></Field>
+              <Field path="server.caddy.transport.responseHeaderTimeoutMs" label={t("field.responseHeaderTimeoutMs", "Response Header Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.responseHeaderTimeoutMs") || 300000} onChange={(event) => updateField("server.caddy.transport.responseHeaderTimeoutMs", Number(event.target.value || 0))} /></Field>
+              <Field path="server.caddy.transport.keepAliveTimeoutMs" label={t("field.keepAliveTimeoutMs", "KeepAlive Timeout ms")}><input type="number" value={getValueByPath(config, "server.caddy.transport.keepAliveTimeoutMs") || 120000} onChange={(event) => updateField("server.caddy.transport.keepAliveTimeoutMs", Number(event.target.value || 0))} /></Field>
             </div>
             <div className="code-block" style={{ marginTop: "1rem" }}>
               <div className="code-block-head">{t("ops.caddyPreview", "Caddy Preview")}</div>
@@ -301,7 +314,7 @@ export default function OpsTab({
                 {t("logs.view.access", "Access & Auth")}
               </button>
               <button type="button" role="tab" aria-selected={operations} className={operations ? "selected" : "ghost"}
-                onClick={() => setLogFilters(current => ({ ...current, view: "operations", limit: Math.min(current.limit, 100) }))}>
+                onClick={() => setLogFilters(current => ({ ...current, view: "operations", keyId: "", limit: Math.min(current.limit, 100) }))}>
                 {t("logs.view.operations", "Channel operations")}
               </button>
             </div>
@@ -354,6 +367,7 @@ export default function OpsTab({
                 </>}
                 <Field label={t("field.event", "Event")}><input value={logFilters.event} onChange={(event) => setLogFilters((current) => ({ ...current, event: event.target.value }))} placeholder={t("field.eventPlaceholder", "proxy.request_rejected")} /></Field>
                 <Field label={t("field.model", "Model")}><input value={logFilters.modelId} onChange={(event) => setLogFilters((current) => ({ ...current, modelId: event.target.value }))} placeholder={t("field.modelPlaceholder", "gpt-5.4")} /></Field>
+                {!operations ? <Field label={t("table.key", "Key")} hint={t("ui.keyLogCoverage", "Exact Key filtering includes only retained logs with recorded Key IDs. Redacted or missing identities cannot be recovered.")}><input value={logFilters.keyId || ""} onChange={event => setLogFilters(current => ({ ...current, keyId: event.target.value }))} /></Field> : null}
                 <Field label={t("field.requestId", "Request ID")}><input value={logFilters.requestId} onChange={(event) => setLogFilters((current) => ({ ...current, requestId: event.target.value }))} placeholder={t("field.requestIdPlaceholder", "req-123")} /></Field>
                 {!operations && <Field label={t("field.keyword", "Keyword")}><input value={logFilters.keyword} onChange={(event) => setLogFilters((current) => ({ ...current, keyword: event.target.value }))} placeholder={t("field.keywordPlaceholder", "timeout")} /></Field>}
                 <Field label={t("field.limit", "Limit")}>
@@ -382,7 +396,7 @@ export default function OpsTab({
           </div>}
         </div>
 
-        <LogTable
+        <LogComponent
           key={logView}
           view={operations ? "events" : logView}
           items={logItems}
@@ -445,15 +459,18 @@ export default function OpsTab({
         <div className="muted" style={{ marginTop: "0.35rem" }}>{t("compress.note", "When no file is selected, inline image data inside the payload can still be recompressed before the request is sent.")}</div>
         <div className="muted" style={{ marginTop: "0.35rem" }}>{compressionStats}</div>
         <div className="muted" style={{ marginTop: "0.35rem" }}>{payloadNote}</div>
+        <div className="playground-grid"><div>
         <Field label={t("field.payload", "Payload")} hint={t("ops.payloadHint", "Set stream to true to test streaming responses.")}>
           <textarea className="json-editor small" rows={14} value={testPayloadText} onChange={(event) => setTestPayloadText(event.target.value)} />
         </Field>
         <div className="toolbar" style={{ marginTop: "1rem" }}>
           <button type="button" onClick={handleSendTestRequest} disabled={diagnosticsBusy.test}>{diagnosticsBusy.test ? t("ops.sending", "Sending...") : t("ops.send", "Send Request")}</button>
         </div>
+        </div>
         <div className="code-block" style={{ marginTop: "1rem" }}>
           <div className="code-block-head">{t("ops.response", "Response")}</div>
           <pre>{testResponseText || t("ops.noRequestYet", "No request sent yet.")}</pre>
+        </div>
         </div>
       </AccordionSection>
     </div>

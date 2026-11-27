@@ -21,6 +21,7 @@ node --test test/model-statistics.test.js test/runtime-store.test.js test/model-
 node --test test/request-policy.test.js
 node --test test/request-body-policy.test.js test/anthropic-body-policy.test.js
 node --test test/admin-runtime-loader.test.js
+node --test test/admin-shell.test.js test/admin-runtime-stats.test.js
 node --test test/config-feature-flags.test.js test/config-environment.test.js test/config-v2-upgrade.test.js
 node --test test/admin-media-form.test.js
 node --test test/admin-routing-form.test.js
@@ -41,6 +42,27 @@ node --test test/realtime.test.js test/webrtc.test.js
 node --test test/real-protocol-matrix.test.js test/pricing-sync.test.js
 node --test test/model-card-source-priority.test.js test/model-card-format.test.js test/model-catalog.test.js
 ```
+
+The admin shell tests cover language key/interpolation parity and duplicate keys,
+custom-base HTML/API deep links, protected persistence entry points, grouped-table
+selection, entity-copy retention across browser history, complete-object Key
+round trips, bound route overrides, and searchable/read-only settings metadata.
+They use the shared visual jsdom setup in [admin-dom.js](lib/admin-dom.js).
+App tests continue to cover CAS conflicts, history rollback, stage retry, and
+snapshot fencing through the extracted draft/save controller.
+
+For browser acceptance, compile with Vite into a disposable directory and use
+headless Chromium with mocked admin APIs, never the running service or its
+configuration. Check 1440×900 and 390×844 in both themes, at least ten visible
+Key/channel rows on desktop, local table overflow only, mobile bulk disable plus
+review/save (including `If-Match` and `x-aoai-admin-csrf`), Sheet refresh/Back,
+custom base paths, and `j`/`k` navigation through a virtualized log list.
+Measure the gzip sum of the entry's complete **static import graph** plus the
+current language chunk against 200,000 bytes; a single entry chunk is not that
+budget. Lazy route/chart/Catalog chunks are additional downloads. Semantic token
+contrast measurements alone do not establish a complete WCAG audit.
+The one-off browser evidence and remaining migration work are recorded in
+[UI_enhance.md](../UI_enhance.md#15-实施状态与验收记录).
 
 Security regressions cover percent-encoded matched admin routes, custom admin paths,
 CSRF/IP policy and header authentication before body parsing. Redirect tests freeze all

@@ -82,6 +82,12 @@ test("environment-managed config values remain memory-only across saves", async 
   try {
     const { getConfig, getConfigRuntimeInfo, reloadConfig, saveConfig } = await import("../src/config.js");
     const effectiveConfig = await reloadConfig();
+    const metadata = getConfigRuntimeInfo().configuration.fieldMetadata;
+    assert.equal(metadata["admin.auth.enabled"].variable, "AOAI_PROXY_ADMIN_PASSWORD");
+    assert.equal(metadata["server.caddy.enabled"].variable, "AOAI_PROXY_CADDY_DOMAIN");
+    assert.equal(metadata["access.budgets"].readOnly, true);
+    assert.equal(metadata["access.budgets"].source, "profile");
+    assert.doesNotMatch(JSON.stringify(metadata), /environment-admin-secret|environment-proxy-secret|environment\.example\.com/);
     assert.equal(effectiveConfig.distribution.profile, "minimum");
     assert.equal(effectiveConfig.observability.logAnalytics.enabled, false);
     assert.equal(effectiveConfig.observability.runtimeStore.enabled, false);

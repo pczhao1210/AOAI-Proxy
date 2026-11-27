@@ -215,6 +215,7 @@ export const DEFAULT_MODEL_TEMPLATE = {
 const LEGACY_ROUTE_CAPABILITIES = new Set(["chat", "responses", "messages", "stream", "images", "image"]);
 
 export const DEFAULT_LOG_FILTERS = {
+  keyId: "",
   view: "requests",
   outcome: "all",
   level: ["fatal", "error", "warn", "info"],

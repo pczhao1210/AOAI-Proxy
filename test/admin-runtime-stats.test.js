@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { JSDOM } from "jsdom";
+import { installAdminDom } from "./lib/admin-dom.js";
 import { createServer } from "vite";
 import toast from "react-hot-toast";
 import { resetModelStats } from "../admin-ui/src/api.js";
@@ -18,7 +18,6 @@ let testing;
 let RuntimeTab;
 let I18nProvider;
 let useI18n;
-const originals = new Map();
 const fallback = (_key, value) => value;
 const tokens = {
   promptTokens: 1000, cachedTokens: 250, completionTokens: 100, totalTokens: 1100,
@@ -36,11 +35,7 @@ function deferred() {
 }
 
 before(async () => {
-  dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/admin/", pretendToBeVisual: true });
-  for (const name of ["window", "document", "navigator", "HTMLElement", "HTMLDetailsElement", "Node", "MutationObserver", "requestAnimationFrame", "cancelAnimationFrame"]) {
-    originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
-  }
+  dom = installAdminDom("http://localhost/admin/settings/service");
   React = await import("react");
   testing = await import("@testing-library/react/pure.js");
   viteCacheDir = await mkdtemp(`${tmpdir()}/aoai-runtime-stats-vite-`);
@@ -61,18 +56,14 @@ afterEach(async () => {
     toast.remove();
     testing.cleanup();
   });
-  window.history.replaceState(null, "", "/admin/");
+  window.history.replaceState(null, "", "/admin/settings/service");
   window.localStorage.clear();
 });
 
 after(async () => {
   await vite?.close();
   if (viteCacheDir) await rm(viteCacheDir, { recursive: true, force: true });
-  dom?.window.close();
-  for (const [name, descriptor] of originals) {
-    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-    else delete globalThis[name];
-  }
+  dom?.restore();
 });
 
 function runtimeProps(overrides = {}) {
@@ -322,7 +313,7 @@ test("GPT-6.1 Sol card updates explain unrecorded tiers without reclassifying hi
 
 test("billing breakdown aligns labels and numbers separately and allows headers and long labels to wrap", context => {
   const style = document.createElement("style");
-  style.textContent = readFileSync(new URL("../admin-ui/src/styles.css", import.meta.url), "utf8");
+  style.textContent = readFileSync(new URL("../admin-ui/src/legacy.css", import.meta.url), "utf8");
   document.head.append(style);
   context.after(() => style.remove());
   const actualModelId = "a-very-long-provider-deployment-name-without-short-aliases";
@@ -532,7 +523,7 @@ test("model stats reset API uses POST, custom admin paths and CSRF without filte
   await assert.rejects(resetModelStats(), error => error.message === "Reset rejected" && error.status === 503);
 });
 
-test("Chinese runtime labels, tier statuses, reset explanation and timestamp are localized", () => {
+test("Chinese runtime labels, tier statuses, reset explanation and timestamp are localized", async () => {
   function LocalizedRuntime() {
     const { t, setLanguage } = useI18n();
     return React.createElement(React.Fragment, null,
@@ -547,6 +538,7 @@ test("Chinese runtime labels, tier statuses, reset explanation and timestamp are
   }
   const view = testing.render(React.createElement(I18nProvider, null, React.createElement(LocalizedRuntime)));
   testing.fireEvent.click(view.getByRole("button", { name: "中文" }));
+  await testing.waitFor(() => assert.ok(view.getByRole("button", { name: "清空模型统计" })));
   view.container.querySelector("#runtime-models").open = true;
   testing.fireEvent.click(view.getByRole("button", { name: "展开 model" }));
   assert.ok(view.getByText("不分档"));
@@ -587,6 +579,10 @@ test("App reset refreshes with latest filters and fences pre-reset responses whi
       statsCalls += 1;
       if (statsCalls === 1) return Response.json(originalStats);
       if (statsCalls === 2) return stale.promise;
+      if (statsCalls > 3) {
+        assert.equal(parsed.searchParams.get("timeRange"), "all");
+        return Response.json({ ...originalStats, perModel: {}, modelsResetAt: timestamp });
+      }
       assert.equal(parsed.searchParams.get("timeRange"), "24h");
       return refreshed.promise;
     }
@@ -598,8 +594,8 @@ test("App reset refreshes with latest filters and fences pre-reset responses whi
   });
 
   const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
-  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
-  testing.fireEvent.click(view.getByRole("button", { name: "Runtime" }));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".shell-sidebar")));
+  testing.fireEvent.click(view.getByRole("link", { name: "Usage", exact: true }));
   await testing.waitFor(() => assert.ok(view.container.querySelector("#runtime-models")));
   view.container.querySelector("#runtime-models").open = true;
   assert.ok(view.getByText("old-model"));
@@ -615,6 +611,8 @@ test("App reset refreshes with latest filters and fences pre-reset responses whi
   await testing.act(async () => stale.resolve(Response.json(originalStats)));
   assert.equal(view.queryByText("old-model"), null);
   assert.ok(view.getByText(`Model stats reset at: ${formatDateTime(timestamp)}`));
+  testing.fireEvent.click(view.getByRole("link", { name: "Overview", exact: true }));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".status-strip")));
   const summary = view.container.querySelector(".status-strip");
   assert.ok(testing.within(summary).getByText("99"));
   assert.match(summary.textContent, /Cost estimates may be incomplete\./);
@@ -659,8 +657,8 @@ test("App tier repair stays in the draft until reviewed save and preserves share
     throw new Error(`Unexpected request ${url}`);
   });
   const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
-  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
-  testing.fireEvent.click(view.getByRole("button", { name: "Runtime" }));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".shell-sidebar")));
+  testing.fireEvent.click(view.getByRole("link", { name: "Usage", exact: true }));
   await testing.waitFor(() => assert.ok(view.container.querySelector("#runtime-models")));
   view.container.querySelector("#runtime-models").open = true;
   testing.fireEvent.click(view.getByRole("button", { name: "Review tier pricing" }));
@@ -675,7 +673,7 @@ test("App tier repair stays in the draft until reviewed save and preserves share
   assert.deepEqual(saved.models[0].routes, original.models[0].routes);
   assert.deepEqual(saved.models[0].defaultParams, { temperature: 0 });
   assert.equal(fetchMock.mock.calls.filter(call => call.arguments[1]?.method === "PUT").length, 1);
-  await testing.waitFor(() => assert.ok(testing.within(view.container.querySelector(".status-strip")).getByText("Synced")));
+  await testing.waitFor(() => assert.ok(!view.container.querySelector(".save-dock")));
 });
 
 test("configuration conflict compares latest settings without replacing the draft or revision", async context => {
@@ -802,12 +800,14 @@ test("application retry keeps the draft and history rollback is on demand and re
   await testing.waitFor(() => assert.ok(retried));
   assert.equal(view.getByLabelText("Server Host").value, "unsaved-host");
   assert.equal(historyReads, 0);
-  testing.fireEvent.click(view.getByRole("button", { name: "Configuration history" }));
+  testing.fireEvent.click(view.getByRole("link", { name: "Configuration center", exact: true }));
   await testing.waitFor(() => assert.ok(view.getByRole("option", { name: /admin/ })), { timeout: 5000 });
   testing.fireEvent.change(view.getByLabelText("Historical version"), { target: { value: "old-version" } });
-  await testing.waitFor(() => assert.match(view.getByRole("dialog").textContent, /server\.host/));
-  assert.match(view.getByRole("dialog").textContent, /current credentials and storage settings/);
-  testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Restore as new revision" }));
+  await testing.waitFor(() => assert.match(view.getByRole("region", { name: "Configuration history" }).textContent, /server\.host/));
+  assert.match(view.getByRole("region", { name: "Configuration history" }).textContent, /current credentials and storage settings/);
+  testing.fireEvent.click(testing.within(view.getByRole("region", { name: "Configuration history" })).getByRole("button", { name: "Restore as new revision" }));
+  await testing.waitFor(() => assert.ok(!view.queryByRole("dialog")));
+  testing.fireEvent.click(view.getByRole("link", { name: "Settings", exact: true }));
   await testing.waitFor(() => assert.equal(view.getByLabelText("Server Host").value, "historical-host"));
   assert.ok(restored);
   assert.equal(historyReads, 1);
@@ -853,7 +853,7 @@ test("App allows reviewed canonical cleanup without editing unrelated settings",
   assert.ok(dialog.getByText(deprecatedFlags[0].path));
   assert.equal(saved, false);
   await testing.act(async () => testing.fireEvent.click(dialog.getByRole("button", { name: "Save", exact: true })));
-  await testing.waitFor(() => assert.ok(testing.within(view.container.querySelector(".status-strip")).getByText("Synced")));
+  await testing.waitFor(() => assert.ok(!view.container.querySelector(".save-dock")));
   assert.equal(view.container.querySelector(".save-dock"), null);
   assert.equal(saved, true);
 });
@@ -903,10 +903,10 @@ test("App capability previews fence stale responses and preserve legacy labels, 
     throw new Error(`Unexpected request ${url}`);
   });
   const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
-  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
-  testing.fireEvent.click(view.getByRole("button", { name: "Upstream / Model" }));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".shell-sidebar")));
+  testing.fireEvent.click(view.getByRole("link", { name: "Exposed models", exact: true }));
+  testing.fireEvent.click(await view.findByRole("button", { name: "legacy", exact: true }));
   await testing.waitFor(() => assert.ok(view.getByText("Active configuration")));
-  view.container.querySelector("#model-card-0").open = true;
   const input = view.getByRole("textbox", { name: /Legacy configuration capabilities/ });
   input.focus();
   testing.fireEvent.change(input, { target: { value: "vision" } });
@@ -924,6 +924,8 @@ test("App capability previews fence stale responses and preserve legacy labels, 
   await testing.act(async () => pending[0].resolve(Response.json(previewResult(stale))));
   assert.equal(view.getByRole("textbox", { name: /Effective capabilities/ }).value, "function-calling");
   assert.ok(view.getByText("Draft preview (not saved)"));
+  testing.fireEvent.click(view.getByRole("button", { name: "Apply to draft" }));
+  testing.fireEvent.click(view.getByRole("button", { name: "Close", exact: true }));
   testing.fireEvent.click(view.getByRole("button", { name: "Review & Save" }));
   await testing.act(async () => testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true })));
   await testing.waitFor(() => assert.ok(saved));
@@ -931,7 +933,7 @@ test("App capability previews fence stale responses and preserve legacy labels, 
   assert.deepEqual(saved.models[0].defaultParams, { temperature: 0 });
   assert.deepEqual(saved.upstreams[0].auth, original.upstreams[0].auth);
   assert.equal(Object.hasOwn(saved, "capabilityView"), false);
-  await testing.waitFor(() => assert.ok(view.getByText("Active configuration")));
+  await testing.waitFor(() => assert.ok(!view.container.querySelector(".save-dock")));
 });
 
 test("App Harness cancels obsolete eligibility requests and fences late responses across tabs", async context => {
@@ -963,12 +965,12 @@ test("App Harness cancels obsolete eligibility requests and fences late response
     throw new Error(`Unexpected request ${url}`);
   });
   const view = testing.render(React.createElement(I18nProvider, null, React.createElement(App)));
-  await testing.waitFor(() => assert.ok(view.container.querySelector(".left-nav")));
-  testing.fireEvent.click(view.getByRole("button", { name: "Harness", exact: true }));
+  await testing.waitFor(() => assert.ok(view.container.querySelector(".shell-sidebar")));
+  testing.fireEvent.click(view.getByRole("link", { name: "Client access", exact: true }));
   await testing.waitFor(() => assert.equal(requests.length, 1));
-  testing.fireEvent.click(view.getByRole("button", { name: "Upstream / Model" }));
+  testing.fireEvent.click(view.getByRole("link", { name: "Channels", exact: true }));
   assert.equal(requests[0].signal?.aborted, true);
-  testing.fireEvent.click(view.getByRole("button", { name: "Harness", exact: true }));
+  testing.fireEvent.click(view.getByRole("link", { name: "Client access", exact: true }));
   await testing.waitFor(() => assert.equal(requests.length, 2));
   await testing.act(async () => requests[1].resolve(Response.json(result(false))));
   await testing.act(async () => requests[0].resolve(Response.json(result(true))));

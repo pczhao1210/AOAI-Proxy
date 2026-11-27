@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
+import { waitFor } from "@testing-library/dom";
 import { DEFAULT_LOG_FILTERS, getValueByPath } from "../admin-ui/src/utils.js";
 import { fireEvent, loadAdminModule, renderAdminComponent, renderElement, renderWorkspace, setupWorkspaceFormTests } from "./lib/admin-workspace-form.js";
 
@@ -407,7 +408,7 @@ test("localized log tables label the summary column and keep one header set per 
         const props = opsProps({}, {}, logViewProps(view));
         const Connected = () => createElement(OpsTab, { ...props, t: useI18n().t });
         const rendered = renderElement(createElement(I18nProvider, null, createElement(Connected)));
-        assert.deepEqual(logHeaders(rendered), expected, `${language} ${view} headers`);
+        await waitFor(() => assert.deepEqual(logHeaders(rendered), expected, `${language} ${view} headers`));
         assert.ok(!rendered.container.textContent.includes("错误摘要"));
         assert.ok(!rendered.container.textContent.includes("Error summary"));
         if (view === "requests") {

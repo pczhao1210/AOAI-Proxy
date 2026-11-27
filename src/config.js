@@ -2342,7 +2342,8 @@ export async function reloadConfig({ discardPendingDatabaseSync: discardPending 
 
 export function getConfigRuntimeInfo() {
   return {
-    configuration: { deprecatedFlags: cloneConfig(configDeprecations), cleanupRequired: configCleanupRequired, appliedRevision },
+    configuration: { deprecatedFlags: cloneConfig(configDeprecations), cleanupRequired: configCleanupRequired, appliedRevision,
+      fieldMetadata: getConfigFieldMetadata(currentConfig) },
     distribution: {
       profile: resolveDistributionProfile(currentConfig),
       capabilities: getDistributionCapabilities(currentConfig)
@@ -2352,4 +2353,33 @@ export function getConfigRuntimeInfo() {
     logging: getLogRuntimeInfo(currentConfig),
     runtimeStore: getRuntimeStoreInfo(currentConfig)
   };
+}
+
+export function getConfigFieldMetadata(config) {
+  const fields = {};
+  const sourceName = (...names) => names.find(name => typeof name === "string" && name && getEnvironmentValue(name)) || "";
+  const assign = (paths, name) => {
+    if (name) for (const path of paths) fields[path] = { source: "environment", variable: name, readOnly: true, restartRequired: true };
+  };
+  const booleanSource = (...names) => getEnvironmentBoolean(...names) === null ? "" : sourceName(...names);
+  const password = sourceName("AOAI_PROXY_ADMIN_PASSWORD", "ADMIN_PASSWORD", config?.admin?.auth?.passwordRef);
+  const domain = sourceName("AOAI_PROXY_CADDY_DOMAIN", "CADDY_DOMAIN");
+  assign(["distribution.profile"], sourceName("AOAI_PROXY_PROFILE"));
+  assign(["admin.auth.username", "server.adminAuth.username"], sourceName("AOAI_PROXY_ADMIN_USERNAME", "ADMIN_USERNAME"));
+  assign(["admin.auth.password", "server.adminAuth.password"], password);
+  assign(["admin.auth.enabled", "server.adminAuth.enabled"], booleanSource("AOAI_PROXY_ADMIN_AUTH_ENABLED", "ADMIN_AUTH_ENABLED") || password);
+  assign(["auth.apiKey"], sourceName("AOAI_PROXY_UPSTREAM_API_KEY", "UPSTREAM_API_KEY"));
+  const defaultIndex = config?.apiKeys?.findIndex(key => key.id === "default") ?? -1;
+  if (defaultIndex >= 0) assign([`apiKeys.${defaultIndex}.key`, `apiKeys.${defaultIndex}.status`], sourceName("AOAI_PROXY_API_KEY", "PROXY_API_KEY"));
+  assign(["server.caddy.domain"], domain);
+  assign(["server.caddy.email"], sourceName("AOAI_PROXY_CADDY_EMAIL", "CADDY_EMAIL"));
+  assign(["server.caddy.enabled"], booleanSource("AOAI_PROXY_CADDY_ENABLED", "CADDY_ENABLED") || domain);
+  assign(["server.trustProxy"], booleanSource("AOAI_PROXY_TRUST_PROXY", "TRUST_PROXY"));
+  for (const path of ["server.host", "server.port"]) fields[path] = { source: "configuration", restartRequired: true };
+  if (resolveDistributionProfile(config) === "minimum") {
+    for (const path of ["observability.logAnalytics", "observability.runtimeStore", "access.budgets"]) {
+      fields[path] = { source: "profile", profile: "minimum", readOnly: true };
+    }
+  }
+  return fields;
 }

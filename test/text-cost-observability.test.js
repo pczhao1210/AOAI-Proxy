@@ -124,18 +124,13 @@ test("budget reference costs retain limits without unknown-fee suffixes", () => 
 });
 
 test("runtime reference costs remove unknown fees while preserving incomplete token coverage and a single model disclaimer", async () => {
-  const { JSDOM } = await import("jsdom");
+  const { installAdminDom } = await import("./lib/admin-dom.js");
   const { createServer } = await import("vite");
-  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
-  const originals = new Map();
+  const dom = installAdminDom();
   let vite;
   let viteCacheDir;
   let cleanup;
   try {
-    for (const name of ["window", "document", "navigator", "HTMLElement", "HTMLDetailsElement", "Node", "MutationObserver"]) {
-      originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-      Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: dom.window[name] });
-    }
     const React = await import("react");
     const testing = await import("@testing-library/react/pure.js");
     cleanup = testing.cleanup;
@@ -218,10 +213,6 @@ test("runtime reference costs remove unknown fees while preserving incomplete to
     cleanup?.();
     await vite?.close();
     if (viteCacheDir) await rm(viteCacheDir, { recursive: true, force: true });
-    dom.window.close();
-    for (const [name, descriptor] of originals) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else delete globalThis[name];
-    }
+    dom.restore();
   }
 });

@@ -1,11 +1,17 @@
 import { lazy, startTransition, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
+import AppShell from "./app/AppShell.jsx";
+import { resolvePage, settingsSections } from "./app/routes.js";
+import { ConfigDraftProvider, useConfigDraft, useConfigActions } from "./lib/config-draft.jsx";
+import { useUrlFilters } from "./lib/url-filters.js";
+import { SettingsFieldsProvider } from "./lib/settings-fields.jsx";
 import {
   fetchCaddyStatus,
+  getAdminBasePath,
   fetchApiKeySecret,
   fetchConfig,
   fetchDatabaseConfig,
   fetchHarnessEligibility,
-  fetchLatestConfig,
   fetchLogs,
   fetchPricingLibrary,
   fetchRuntime,
@@ -14,9 +20,6 @@ import {
   reloadConfig,
   resetModelStats,
   restartService,
-  retryConfigurationApplication,
-  rollbackConfiguration,
-  saveConfig,
   sendProxyRequest,
   syncRuntime,
   syncPricingLibrary,
@@ -24,9 +27,8 @@ import {
   validateConfiguredModels,
   verifyAad
 } from "./api.js";
-import { StatCard, Modal } from "./components/ui.jsx";
+import { StatCard, Modal, PageSections } from "./components/ui.jsx";
 import { useI18n } from "./i18n.jsx";
-import { newCopilotChannel } from "./copilot.js";
 import { createRuntimeLoader } from "./runtime-loader.js";
 import toast from "react-hot-toast";
 import {
@@ -39,11 +41,8 @@ import {
   buildSuggestedUpstreamName,
   buildUpstreamFromPricingTemplate,
   computeConfigDiff,
-  DEFAULT_KEY_TEMPLATE,
   DEFAULT_LOG_FILTERS,
   DEFAULT_MODEL_TEMPLATE,
-  DEFAULT_UPSTREAM_TEMPLATE,
-  newChannelId,
   TEST_ENDPOINTS,
   buildCaddyPreview,
   buildDefaultTestPayload,
@@ -76,10 +75,14 @@ const AdvancedTab = lazy(() => import("./components/AdvancedTab.jsx"));
 const HarnessTab = lazy(() => import("./components/HarnessTab.jsx"));
 const KeysTab = lazy(() => import("./components/KeysTab.jsx"));
 const OpsTab = lazy(() => import("./components/OpsTab.jsx"));
-const RoutingTab = lazy(() => import("./components/RoutingTab.jsx"));
+const RoutingTab = lazy(() => import("./features/channels/RoutingPage.jsx"));
 const RuntimeTab = lazy(() => import("./components/RuntimeTab.jsx"));
 const WorkspaceTab = lazy(() => import("./components/WorkspaceTab.jsx"));
 const ConfigHistoryModal = lazy(() => import("./components/ConfigHistoryModal.jsx"));
+const LogExplorer = lazy(() => import("./features/logs/LogExplorer.jsx"));
+const UsageChart = lazy(() => import("./features/overview/UsageChart.jsx"));
+const ReviewChanges = lazy(() => import("./components/ReviewChanges.jsx"));
+const OverviewLists = lazy(() => import("./features/overview/OverviewLists.jsx"));
 let bundledPricingLibraryPromise = null;
 
 function loadBundledPricingLibrary() {
@@ -130,9 +133,20 @@ function bindingLabel(config, model) {
 }
 
 export default function App() {
-  const { language, languages, setLanguage, t } = useI18n();
-  const [config, setConfig] = useState(null);
-  const [lastLoadedText, setLastLoadedText] = useState("");
+  return <BrowserRouter basename={getAdminBasePath()}><ConfigDraftProvider>
+    <Routes><Route path="/" element={<Navigate to="/overview" replace />} /><Route path="*" element={<AdminConsole />} /></Routes>
+  </ConfigDraftProvider></BrowserRouter>;
+}
+
+function AdminConsole() {
+  const { t } = useI18n();
+  const { config, setConfig, lastLoadedText, setLastLoadedText, loadedConfig, updateConfig, updateField, entityDrafts, setEntityDrafts } = useConfigDraft();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const page = resolvePage(location.pathname);
+  const subsection = location.pathname.split("/")[2];
+  const activeTab = page?.id === "settings" && subsection === "gateway" ? "ops" : page?.legacy;
+  const sections = page?.id === "settings" ? [settingsSections[subsection] || settingsSections.service] : page?.sections;
   const [runtime, setRuntime] = useState(null);
   const [stats, setStats] = useState(null);
   const [statsUpdatedAt, setStatsUpdatedAt] = useState(null);
@@ -151,11 +165,9 @@ export default function App() {
   const [caddyStatus, setCaddyStatus] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [configConflict, setConfigConflict] = useState(null);
+
   const [showConfigHistory, setShowConfigHistory] = useState(false);
-  const [lastApplication, setLastApplication] = useState(null);
-  const [applyingStage, setApplyingStage] = useState("");
-  const [activeTab, setActiveTab] = useState("workspace");
+
   const [advancedJson, setAdvancedJson] = useState("{}");
   const [pricingCatalogText, setPricingCatalogText] = useState("{}");
   const [pricingCatalogError, setPricingCatalogError] = useState("");
@@ -165,9 +177,10 @@ export default function App() {
   const copilotOperations = useRef(new Map());
   const pendingMappingJson = config?.upstreams?.some(up => up.channelId && Object.hasOwn(mappingDrafts, up.channelId));
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+
   const [logsLoading, setLogsLoading] = useState(false);
-  const [logFilters, setLogFilters] = useState(DEFAULT_LOG_FILTERS);
+  const [logFilters, setLogFilters] = useUrlFilters(DEFAULT_LOG_FILTERS, page?.id === "logs", { keyword: "q", modelId: "model", keyId: "key" });
+  const [settingsFilters, setSettingsFilters] = useUrlFilters({ search: "", modifiedOnly: false }, page?.id === "settings", { search: "q", modifiedOnly: "modified" });
   const [aadStatus, setAadStatus] = useState(null);
   const [diagnosticsBusy, setDiagnosticsBusy] = useState({ verify: false, restart: false, test: false, pricingSync: false, databaseTest: false, databaseDefaults: false, logAnalyticsInitialize: false, runtimeSync: false, modelValidation: false });
   const [testEndpoint, setTestEndpoint] = useState(TEST_ENDPOINTS[0]);
@@ -180,11 +193,12 @@ export default function App() {
   const [imageFileInfo, setImageFileInfo] = useState("");
   const [compressionStats, setCompressionStats] = useState("");
   const [payloadNote, setPayloadNote] = useState("");
-  const [showSaveModal, setShowSaveModal] = useState(false);
+
   const [showModelTemplateModal, setShowModelTemplateModal] = useState(false);
-  const [activeSectionId, setActiveSectionId] = useState("");
-  const [runtimeFilters, setRuntimeFilters] = useState(DEFAULT_RUNTIME_FILTERS);
-  const [runtimeLoader] = useState(() => createRuntimeLoader({ fetchRuntime, fetchStats, initialFilters: DEFAULT_RUNTIME_FILTERS }));
+  const [runtimeFilters, setRuntimeFilters] = useUrlFilters(DEFAULT_RUNTIME_FILTERS, page?.id === "usage", { keyId: "key", timeRange: "range" });
+  const [usageView, setUsageView] = useUrlFilters({ group: "public", tab: "models" }, page?.id === "usage");
+  const [runtimeLoader] = useState(() => createRuntimeLoader({ fetchRuntime, fetchStats, initialFilters: runtimeFilters }));
+  const runtimeQueryRef = useRef(JSON.stringify(runtimeFilters));
   const [modelTemplateSearch, setModelTemplateSearch] = useState("");
   const [selectedPricingTemplateId, setSelectedPricingTemplateId] = useState("");
   const [templateUpstreamMode, setTemplateUpstreamMode] = useState("existing");
@@ -193,14 +207,23 @@ export default function App() {
   const [templateRouteOverride, setTemplateRouteOverride] = useState("");
   const [templateImportPricing, setTemplateImportPricing] = useState(true);
   const loadRequestRef = useRef(0);
-  const conflictRequestRef = useRef(0);
+
   const logsRequestRef = useRef(0);
   const harnessEligibilityRequestRef = useRef(0);
   const harnessEligibilityContextRef = useRef(null);
   const modelStatsResetRef = useRef(null);
-  const sectionNavigationTargetRef = useRef(null);
 
   const dirty = useMemo(() => !!pendingMappingJson || JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText, pendingMappingJson]);
+  const hasEntityDrafts = Object.keys(entityDrafts).length > 0;
+  const {
+    configConflict, lastApplication, applyingStage, saving, setSaving, showSaveModal, setShowSaveModal,
+    confirmConfigIssues, persistConfig, reportApplication, closeConfigConflict, retryApplication,
+    restoreHistoricalConfig, showConfigConflict, reportConfigSaveError, handleSave, proceedSave, handleDiscardChanges, handleReload
+  } = useConfigActions({
+    t, dirty, pendingMappingJson, pricingCatalogError, jsonError, setError, setMessage,
+    loadRequestRef, applyLoadedConfig, loadSecondaryData, loadAll, loadCaddyStatusAction,
+    closeHistory: success => { setShowConfigHistory(false); if (success && page?.id === "config") navigate("/config/sync"); }
+  });
   const harnessEligibilityFresh = !harnessEligibilityLoading && !harnessEligibilityError
     && harnessEligibilityContextRef.current?.config === config
     && harnessEligibilityContextRef.current?.pricingLibrary === pricingLibrary
@@ -218,6 +241,7 @@ export default function App() {
   const governanceKeys = stats?.governance?.keys || [];
   const modelStats = stats?.perModel || {};
   const perKeyStats = stats?.perKey || {};
+  const overviewAwaitingGlobal = page?.id === "overview" && Boolean(stats?.filters?.keyId || (stats?.filters?.timeRange && stats.filters.timeRange !== "all"));
   const persistenceRuntime = runtime?.persistence || {};
   const loggingRuntime = runtime?.logging || {};
   const runtimeStore = runtime?.runtimeStore || {};
@@ -237,14 +261,6 @@ export default function App() {
     () => describeLoggingRuntime(loggingRuntime, t),
     [loggingRuntime, t]
   );
-  const loadedConfig = useMemo(() => {
-    if (!lastLoadedText) return {};
-    try {
-      return JSON.parse(lastLoadedText);
-    } catch {
-      return {};
-    }
-  }, [lastLoadedText]);
   const supportedPricingTemplates = useMemo(
     () => (pricingLibrary || []).filter((definition) => supportsPricingTemplate(definition)),
     [pricingLibrary]
@@ -298,7 +314,7 @@ export default function App() {
   // Hook to warn the user if they try to close or refresh the tab with unsaved changes
   useEffect(() => {
     const handleBeforeUnload = (e) => {
-      if (dirty) {
+      if (dirty || hasEntityDrafts) {
         e.preventDefault();
         e.returnValue = "";
         return "";
@@ -306,7 +322,7 @@ export default function App() {
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [dirty]);
+  }, [dirty, hasEntityDrafts]);
 
   const configIssues = useMemo(() => inspectConfigStructure(config || {}), [config]);
   const configDiff = useMemo(() => computeConfigDiff(loadedConfig, config || {}), [loadedConfig, config]);
@@ -335,6 +351,7 @@ export default function App() {
         event: filters.event,
         excludeEvent: filters.hideAuthRejected ? "http.auth_rejected" : "",
         modelId: filters.modelId,
+        keyId: filters.keyId,
         requestId: filters.requestId,
         keyword: filters.view === "operations" ? "" : filters.keyword,
         connectionId: filters.connectionId,
@@ -346,6 +363,7 @@ export default function App() {
       if (requestId !== logsRequestRef.current) return;
       startTransition(() => {
         setLogs({
+          keyId: filters.keyId || "",
           recordSource: json.recordSource,
           persistence: json.persistence,
           capturedAt: json.capturedAt,
@@ -393,6 +411,7 @@ export default function App() {
     setPricingCatalogError("");
     setJsonError("");
     setMappingDrafts({});
+    setEntityDrafts({});
     setRoutingGeneration(value => value + 1);
     copilotOperations.current.clear();
     setDatabaseTestResult(null);
@@ -493,13 +512,24 @@ export default function App() {
 
   async function handleRuntimeFilterChange(patch) {
     const nextFilters = runtimeLoader.updateFilters(patch);
+    runtimeQueryRef.current = JSON.stringify(nextFilters);
     setRuntimeFilters(nextFilters);
     try {
       await refreshRuntimeAndStats();
     } catch (loadError) {
       setError(loadError.message || t("messages.loadFailed", "Load failed."));
     }
+
   }
+
+  useEffect(() => {
+    const effectiveFilters = page?.id === "usage" ? runtimeFilters : DEFAULT_RUNTIME_FILTERS;
+    const query = JSON.stringify(effectiveFilters);
+    if (runtimeQueryRef.current === query) return;
+    runtimeQueryRef.current = query;
+    runtimeLoader.updateFilters(effectiveFilters);
+    void refreshRuntimeAndStats().catch(error => setError(error.message));
+  }, [page?.id, runtimeFilters.keyId, runtimeFilters.timeRange]);
 
   async function handleRuntimeSync() {
     setDiagnosticsBusy((current) => ({ ...current, runtimeSync: true }));
@@ -581,20 +611,20 @@ export default function App() {
   }, [activeTab, caddyStatus]);
 
   useEffect(() => {
-    if (activeTab !== "ops") return undefined;
+    if (page?.id !== "logs") return undefined;
     const timer = setTimeout(() => {
       void loadLogsAction(logFilters);
     }, 180);
     return () => clearTimeout(timer);
-  }, [activeTab, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected, logFilters.recordSource, logFilters.connectionId, logFilters.operationId, logFilters.configRevision]);
+  }, [page?.id, logFilters.keyId, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected, logFilters.recordSource, logFilters.connectionId, logFilters.operationId, logFilters.configRevision]);
 
   useEffect(() => {
-    if (activeTab !== "ops" || !logFilters.autoRefresh) return undefined;
+    if (page?.id !== "logs" || !logFilters.autoRefresh) return undefined;
     const interval = setInterval(() => {
       void loadLogsAction(logFilters);
     }, 5000);
     return () => clearInterval(interval);
-  }, [activeTab, logFilters.autoRefresh, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected, logFilters.recordSource, logFilters.connectionId, logFilters.operationId, logFilters.configRevision]);
+  }, [page?.id, logFilters.keyId, logFilters.autoRefresh, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected, logFilters.recordSource, logFilters.connectionId, logFilters.operationId, logFilters.configRevision]);
 
   useEffect(() => {
     if (!["harness", "routing"].includes(activeTab) || !config) return undefined;
@@ -628,20 +658,6 @@ export default function App() {
     };
   }, [activeTab, config, pricingLibrary, t, harnessEligibilityRevision]);
 
-  function updateConfig(mutator) {
-    setConfig((current) => {
-      const next = cloneJson(current || {});
-      mutator(next);
-      return next;
-    });
-  }
-
-  function updateField(path, value) {
-    updateConfig((next) => {
-      setValueByPath(next, path, value);
-    });
-  }
-
   function updatePricingCatalog(text) {
     setPricingCatalogText(text);
     try {
@@ -665,104 +681,6 @@ export default function App() {
     } catch (parseError) {
       setJsonError(parseError.message || t("messages.advancedJsonInvalid", "Invalid JSON."));
     }
-  }
-
-  function confirmConfigIssues(nextConfig) {
-    const issues = inspectConfigStructure(nextConfig);
-    if (!issues.length) return true;
-    return window.confirm(`${t("config.validation.confirm", "The current configuration still has structural issues. Save anyway?")}\n- ${issues.slice(0, 5).join("\n- ")}`);
-  }
-
-  async function persistConfig(nextConfig, successMessage) {
-    if (pendingMappingJson) throw new Error(t("channel.pendingJson"));
-    const result = await saveConfig(nextConfig);
-    acceptPersistedResult(result, successMessage);
-  }
-
-  function acceptPersistedResult(result, successMessage) {
-    const saved = result.config;
-    const requestId = loadRequestRef.current + 1;
-    loadRequestRef.current = requestId;
-    applyLoadedConfig(saved);
-    void loadSecondaryData(requestId, { notifyOnError: true });
-    reportApplication(result.apply, successMessage);
-  }
-
-  function reportApplication(apply, successMessage) {
-    setLastApplication(apply || null);
-    const warnings = [];
-    if (apply?.proxy?.ok === false) {
-      warnings.push(t("messages.savedButProxyFailed", "Configuration was saved, but proxy settings could not be fully applied: {error}", { error: apply.proxy.error }));
-    }
-    if (apply?.caddy?.ok === false) {
-      warnings.push(t("messages.savedButCaddyFailed", "Configuration was saved, but Caddy could not apply it: {error}", {
-        error: apply.caddy.error || "Caddy reload failed"
-      }));
-    }
-    if (apply?.persistence?.pendingDatabaseSync) {
-      warnings.push(t("messages.savedPendingDatabase", "Configuration was saved locally; database synchronization is pending."));
-    }
-    for (const failure of [apply?.persistence?.cacheError, apply?.persistence?.historyError]) {
-      if (failure) warnings.push(t("messages.savedButCopyFailed", "Configuration was saved, but a cache/history copy failed: {error}", { error: failure.message }));
-    }
-    setError(warnings.join(" "));
-    setMessage(warnings.length ? "" : successMessage);
-  }
-
-  function closeConfigConflict() {
-    conflictRequestRef.current++;
-    setConfigConflict(null);
-  }
-
-  async function retryApplication(stage) {
-    setApplyingStage(stage);
-    try {
-      const result = await retryConfigurationApplication(stage);
-      reportApplication(result.apply, t("config.apply.retried", "Configuration application retried."));
-      await loadCaddyStatusAction();
-    } catch (failure) {
-      await reportConfigSaveError(failure, t("messages.saveFailed", "Save failed."));
-    } finally {
-      setApplyingStage("");
-    }
-  }
-
-  async function restoreHistoricalConfig(id) {
-    if (!confirmDiscardChanges()) return;
-    setSaving(true);
-    try {
-      const result = await rollbackConfiguration(id);
-      acceptPersistedResult(result, t("config.history.restored", "Historical configuration restored as a new revision."));
-      setShowConfigHistory(false);
-    } catch (failure) {
-      if (failure.payload?.code !== "CONFIG_REVISION_CONFLICT") throw failure;
-      setShowConfigHistory(false);
-      await reportConfigSaveError(failure, t("messages.saveFailed", "Save failed."));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function showConfigConflict() {
-    const requestId = ++conflictRequestRef.current;
-    setConfigConflict({ loading: true, latest: null, error: "" });
-    try {
-      const latest = await fetchLatestConfig();
-      if (requestId !== conflictRequestRef.current) return;
-      setConfigConflict({ loading: false, latest: latest.config, activeRevision: latest.activeRevision, error: "" });
-    } catch (loadError) {
-      if (requestId !== conflictRequestRef.current) return;
-      setConfigConflict({ loading: false, latest: null, error: loadError.message || t("messages.loadFailed", "Load failed.") });
-    }
-  }
-
-  async function reportConfigSaveError(saveError, fallback, attemptedConfig = config) {
-    if (saveError.payload?.code !== "CONFIG_REVISION_CONFLICT") {
-      setError(saveError.message || fallback);
-      return;
-    }
-    if (attemptedConfig !== config) setConfig(attemptedConfig);
-    await showConfigConflict();
   }
 
   async function handleReloadDatabaseDefaults() {
@@ -854,95 +772,25 @@ export default function App() {
     }
   }
 
-  async function handleSave() {
-    if (!config) return;
-    if (pendingMappingJson) {
-      setError(t("channel.pendingJson"));
-      return;
-    }
-    if (pricingCatalogError || jsonError) {
-      setError(t("messages.invalidJson", "JSON parse errors must be fixed before saving."));
-      return;
-    }
-    if (!confirmConfigIssues(config)) {
-      return;
-    }
-    setShowSaveModal(true);
-  }
-
-  async function proceedSave() {
-    setShowSaveModal(false);
-    setSaving(true);
-    setError("");
-    try {
-      await persistConfig(config, t("messages.saved", "Configuration saved. React admin now covers configuration, governance, and baseline operations."));
-    } catch (saveError) {
-      await reportConfigSaveError(saveError, t("messages.saveFailed", "Save failed."));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function confirmDiscardChanges() {
-    return !dirty || window.confirm(t("changes.discardConfirm", "Discard all unsaved changes?"));
-  }
-
-  function handleDiscardChanges() {
-    if (!lastLoadedText || !confirmDiscardChanges()) return;
-    try {
-      applyLoadedConfig(JSON.parse(lastLoadedText));
-      setMessage(t("messages.discarded", "Unsaved changes discarded."));
-    } catch {
-      setError(t("messages.loadFailed", "Load failed."));
-    }
-  }
-
-  async function handleReload(mode = "load", { discardPendingDatabaseSync = false, expectedRevision } = {}) {
-    if (discardPendingDatabaseSync && !window.confirm(t("config.conflict.discardPending", "Reloading may discard locally saved configuration awaiting database synchronization, as well as your draft. Continue?"))) return;
-    if (!confirmDiscardChanges()) return;
-    await loadAll(mode, { discardPendingDatabaseSync, expectedRevision });
-  }
-
-  function addApiKey() {
-    updateConfig((next) => {
-      next.apiKeys = Array.isArray(next.apiKeys) ? next.apiKeys : [];
-      next.apiKeys.push({
-        ...cloneJson(DEFAULT_KEY_TEMPLATE),
-        id: `key_${next.apiKeys.length + 1}`,
-        budget: {
-          ...cloneJson(DEFAULT_KEY_TEMPLATE.budget),
-          currency: next?.access?.budgets?.defaultCurrency || "USD",
-          windowType: next?.access?.budgets?.defaultWindowType || "monthly",
-          softLimitRatio: Number(next?.access?.budgets?.softLimitRatio || DEFAULT_KEY_TEMPLATE.budget.softLimitRatio),
-          hardLimitAction: next?.access?.budgets?.hardLimitAction || DEFAULT_KEY_TEMPLATE.budget.hardLimitAction
-        }
-      });
-    });
-  }
-
-  function addUpstream(kind) {
-    const channelId = newChannelId();
-    updateConfig((next) => {
-      next.upstreams = Array.isArray(next.upstreams) ? next.upstreams : [];
-      const name = ensureUniqueName(`upstream_${next.upstreams.length + 1}`, next.upstreams.map(up => up.name));
-      next.upstreams.push(kind === "github-copilot" ? newCopilotChannel(channelId, name) : {
-        ...cloneJson(DEFAULT_UPSTREAM_TEMPLATE),
-        channelId,
-        modelMappings: [],
-        name
-      });
-    });
+  function openNewModelDraft(next) {
+    const index = next.models.length - 1;
+    const id = next.models[index].id;
+    const cacheKey = `models:${id}`;
+    if (entityDrafts[cacheKey] && !window.confirm(t("ui.cancelDraft"))) return false;
+    setEntityDrafts(previous => ({ ...previous, [cacheKey]: { base: config, value: next, index } }));
+    navigate(`/models?edit=${encodeURIComponent(id)}&tab=basic`);
+    return true;
   }
 
   function addBlankModel() {
-    updateConfig((next) => {
-      next.models = Array.isArray(next.models) ? next.models : [];
-      next.models.push({
-        ...cloneJson(DEFAULT_MODEL_TEMPLATE),
-        id: `model_${next.models.length + 1}`,
-        upstream: next.upstreams?.find(up => !up.channelId)?.name || ""
-      });
+    const next = cloneJson(config);
+    next.models ||= [];
+    next.models.push({
+      ...cloneJson(DEFAULT_MODEL_TEMPLATE),
+      id: ensureUniqueName("model", next.models.map(model => model.id)),
+      upstream: next.upstreams?.find(up => !up.channelId)?.name || ""
     });
+    openNewModelDraft(next);
   }
 
   function addModel() {
@@ -966,7 +814,8 @@ export default function App() {
   function applyPricingTemplateSelection() {
     if (!selectedPricingTemplate) return;
 
-    updateConfig((next) => {
+    const next = cloneJson(config);
+    {
       next.upstreams = Array.isArray(next.upstreams) ? next.upstreams : [];
       next.models = Array.isArray(next.models) ? next.models : [];
 
@@ -997,9 +846,8 @@ export default function App() {
       if (upstream && (!Array.isArray(upstream.capabilities) || upstream.capabilities.length === 0)) {
         upstream.capabilities = [...modelEntry.capabilities];
       }
-    });
-
-    setShowModelTemplateModal(false);
+    }
+    if (openNewModelDraft(next)) setShowModelTemplateModal(false);
   }
 
   function toggleLogLevel(level) {
@@ -1268,11 +1116,16 @@ export default function App() {
   }
 
   const summary = useMemo(() => {
-    const totals = stats?.totals || {};
+    const totals = overviewAwaitingGlobal ? {} : stats?.totals || {};
     return {
-      requests: totals.requests || 0,
-      errors: totals.errors || 0,
-      cost: formatEstimatedCost(totals, t),
+      requests: totals.requests,
+      errors: totals.errors,
+      promptTokens: totals.promptTokens,
+      completionTokens: totals.completionTokens,
+      errorRate: Number.isFinite(totals.errors) && Number.isFinite(totals.requests)
+        ? totals.requests > 0 ? `${(totals.errors / totals.requests * 100).toFixed(1)}%` : totals.errors === 0 ? "0%" : t("ui.unknown")
+        : t("ui.unknown"),
+      cost: totals.estimatedCostAmount == null ? t("ui.unknown") : formatEstimatedCost(totals, t),
       persistence: runtime?.persistence?.activeMode || runtime?.persistence?.mode || "file",
       logging: statusLabel(
         runtime?.logging?.memoryEnabled || runtime?.logging?.consoleEnabled || runtime?.logging?.logAnalyticsConfigured,
@@ -1280,176 +1133,15 @@ export default function App() {
       ),
       caddy: caddyStatus?.state || (config?.server?.caddy?.enabled ? "unknown" : "disabled")
     };
-  }, [runtime, stats, caddyStatus, config?.server?.caddy?.enabled, t]);
-
-  const categories = [
-    {
-      id: "config",
-      label: t("category.config", "配置控制台"),
-      tabs: [
-        { id: "workspace", label: t("tabs.workspace", "基础设置") },
-        { id: "advanced", label: t("tabs.advanced", "JSON 编排") }
-      ]
-    },
-    {
-      id: "governance",
-      label: t("category.governance", "策略与规则"),
-      tabs: [
-        { id: "keys", label: t("tabs.keys", "Key 治理") },
-        { id: "routing", label: t("tabs.routing", "上游与模型") },
-        { id: "harness", label: t("tabs.harness", "Harness") }
-      ]
-    },
-    {
-      id: "observability",
-      label: t("category.observability", "监控与运维"),
-      tabs: [
-        { id: "runtime", label: t("tabs.runtime", "运行时统计") },
-        { id: "ops", label: t("tabs.ops", "诊断与日志") }
-      ]
-    }
-  ];
-
-  const sectionLinksByTab = {
-    workspace: [
-      { id: "workspace-core", label: t("workspace.nav.core", "基础与默认值") },
-      { id: "workspace-persistence", label: t("workspace.nav.persistence", "持久化与缓存") },
-      { id: "workspace-logging", label: t("workspace.nav.logging", "日志与分析") },
-      { id: "workspace-media", label: t("workspace.nav.media", "媒体策略") },
-      { id: "workspace-routing", label: t("workspace.nav.routing", "路由域") }
-    ],
-    keys: [
-      { id: "keys-overview", label: t("keys.nav.overview", "Key 概览") },
-      { id: "keys-list", label: t("keys.nav.list", "Key 列表") }
-    ],
-    routing: [
-      { id: "routing-upstreams", label: t("routing.nav.upstreams", "上游列表") },
-      { id: "routing-models", label: t("routing.nav.models", "模型配置") }
-    ],
-    harness: [
-      { id: "harness-claude-code", label: t("harness.nav.claudeCode", "Claude Code") },
-      { id: "harness-codex", label: t("harness.nav.codex", "Codex") }
-    ],
-    ops: [
-      { id: "ops-overview", label: t("ops.overview", "Operations Overview") },
-      { id: "ops-model-validation", label: t("ops.nav.validation", "Model Validation") },
-      { id: "ops-pricing", label: t("ops.nav.pricing", "Pricing 库") },
-      { id: "ops-caddy", label: t("ops.nav.caddy", "Caddy 与服务") },
-      { id: "ops-logs", label: t("ops.nav.logs", "运行日志") },
-      { id: "ops-test", label: t("ops.nav.test", "代理测试") }
-    ],
-    runtime: [
-      { id: "runtime-persistence", label: t("runtime.nav.persistence", "运行态") },
-      { id: "runtime-keys", label: t("runtime.nav.keys", "Key 统计") },
-      { id: "runtime-models", label: t("runtime.nav.models", "模型统计") }
-    ]
-  };
-  const currentSectionLinks = sectionLinksByTab[activeTab] || [];
-  const currentSectionIds = currentSectionLinks.map((link) => link.id).join("|");
-  const currentSectionValue = currentSectionLinks.some((link) => link.id === activeSectionId)
-    ? activeSectionId
-    : currentSectionLinks[0]?.id || "";
-
-  useEffect(() => {
-    if (!currentSectionLinks.length) {
-      setActiveSectionId("");
-      return undefined;
-    }
-
-    setActiveSectionId((current) => (
-      currentSectionLinks.some((link) => link.id === current) ? current : currentSectionLinks[0].id
-    ));
-
-    let animationFrame = 0;
-    const updateActiveSection = () => {
-      cancelAnimationFrame(animationFrame);
-      animationFrame = requestAnimationFrame(() => {
-        const sectionElements = currentSectionLinks
-          .map((link) => document.getElementById(link.id))
-          .filter(Boolean);
-        if (!sectionElements.length) return;
-
-        const mobileNav = window.innerWidth <= 900 ? document.querySelector(".left-nav") : null;
-        const activationLine = mobileNav ? mobileNav.getBoundingClientRect().bottom + 64 : 96;
-        const pendingTarget = sectionNavigationTargetRef.current;
-        if (pendingTarget) {
-          const targetTop = document.getElementById(pendingTarget.id)?.getBoundingClientRect().top;
-          const reachedTarget = targetTop != null
-            && targetTop >= activationLine - 96
-            && targetTop <= activationLine + 16;
-          if (!reachedTarget && performance.now() < pendingTarget.expiresAt) return;
-          sectionNavigationTargetRef.current = null;
-        }
-
-        let nextSectionId = sectionElements[0].id;
-
-        for (const element of sectionElements) {
-          if (element.getBoundingClientRect().top > activationLine) break;
-          nextSectionId = element.id;
-        }
-
-        setActiveSectionId((current) => current === nextSectionId ? current : nextSectionId);
-      });
-    };
-
-    const contentRoot = document.querySelector(".tab-content");
-    const contentObserver = new MutationObserver(updateActiveSection);
-    if (contentRoot) {
-      contentObserver.observe(contentRoot, { childList: true, subtree: true });
-    }
-
-    updateActiveSection();
-    window.addEventListener("scroll", updateActiveSection, { passive: true });
-    window.addEventListener("resize", updateActiveSection);
-    return () => {
-      cancelAnimationFrame(animationFrame);
-      contentObserver.disconnect();
-      window.removeEventListener("scroll", updateActiveSection);
-      window.removeEventListener("resize", updateActiveSection);
-    };
-  }, [activeTab, currentSectionIds]);
-
-  function handleSectionNavClick(sectionId) {
-    const pendingTarget = {
-      id: sectionId,
-      expiresAt: performance.now() + 1600
-    };
-    sectionNavigationTargetRef.current = pendingTarget;
-
-    const navigate = () => {
-      if (sectionNavigationTargetRef.current !== pendingTarget) return;
-      const target = document.getElementById(sectionId);
-      if (!target) {
-        if (performance.now() < pendingTarget.expiresAt) {
-          requestAnimationFrame(navigate);
-        } else {
-          sectionNavigationTargetRef.current = null;
-        }
-        return;
-      }
-
-      if (target instanceof HTMLDetailsElement) {
-        const summary = target.querySelector(":scope > summary");
-        if (!target.open && summary instanceof HTMLElement) {
-          summary.click();
-        }
-      }
-
-      setActiveSectionId(sectionId);
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    };
-
-    navigate();
-  }
+  }, [runtime, stats, caddyStatus, config?.server?.caddy?.enabled, overviewAwaitingGlobal, t]);
 
   function handleHarnessNavigate({ type, id }) {
     if (type === "route" || type === "diagnostics") {
-      setActiveTab(type === "route" ? "workspace" : "ops");
-      handleSectionNavClick(type === "route" ? "workspace-routing" : "ops-model-validation");
+      navigate(type === "route" ? "/settings/routing" : "/diagnostics");
       return;
     }
     if (type === "advanced") {
-      setActiveTab("advanced");
+      navigate("/config/json");
       return;
     }
     const collection = type === "upstream" ? config.upstreams || [] : config.models || [];
@@ -1457,11 +1149,11 @@ export default function App() {
     const matches = collection.map((item, index) => ({ item, index })).filter(({ item }) => item?.[field] === id);
     if (matches.length !== 1) {
       setError(t("harness.targetMissing", "The target is missing or ambiguous. Edit its identity in Upstream / Model."));
-      setActiveTab("routing");
+      navigate(type === "upstream" ? "/channels" : "/models");
       return;
     }
-    setActiveTab("routing");
-    handleSectionNavClick(`${type === "upstream" ? "upstream" : "model"}-card-${matches[0].index}`);
+    const target = matches[0].item;
+    navigate(`/${type === "upstream" ? "channels" : "models"}?edit=${encodeURIComponent(type === "upstream" ? target.channelId || target.name : target.id)}`);
   }
 
   if (loading && !config) {
@@ -1469,34 +1161,39 @@ export default function App() {
   }
 
   return (
-    <div className={dirty || configCleanupRequired ? "app-shell has-save-dock" : "app-shell"}>
-      <header className="app-header">
-        <div className="app-identity">
-          <span className="app-logo" aria-hidden="true">AP</span>
-          <div>
-            <h1>AOAI Proxy</h1>
-            <p>{t("header.console", "Admin Console")}</p>
+    <AppShell page={page} runtime={runtime} dirty={dirty || hasEntityDrafts} application={application} entityDrafts={entityDrafts}
+      onRefresh={() => loadSecondaryData(loadRequestRef.current, { notifyOnError: true })}
+      onReload={() => handleReload("reload")}
+      changedGroups={new Set([
+        ...(JSON.stringify(config?.apiKeys) !== JSON.stringify(loadedConfig.apiKeys) ? ["keys"] : []),
+        ...(JSON.stringify(config?.upstreams) !== JSON.stringify(loadedConfig.upstreams) ? ["channels"] : []),
+        ...(JSON.stringify(config?.models) !== JSON.stringify(loadedConfig.models) ? ["models", "clients"] : []),
+        ...(configDiffCount ? ["config"] : [])
+      ])}
+      saveDock={dirty || hasEntityDrafts || configCleanupRequired ? (
+        <aside className="save-dock" role="status" aria-live="polite">
+          <div className="save-dock-copy">
+            <strong>{dirty || hasEntityDrafts ? t("changes.unsaved", "Unsaved changes") : t("config.flagCleanupPending", "Configuration cleanup pending")}</strong>
+            <span>{hasEntityDrafts ? t("ui.unapplied") : dirty ? t("changes.count", "{count} changed paths", { count: configDiffCount })
+              : t("config.flagCleanupCount", "{count} deprecated configuration entries", { count: runtime?.configuration?.deprecatedFlags?.length || 0 })}</span>
           </div>
-        </div>
-        <div className="toolbar header-actions">
-          <label className="inline language-control">
-            <span>{t("common.language", "Language")}</span>
-            <select value={language} onChange={(event) => setLanguage(event.target.value)}>
-              {languages.map((code) => <option key={code} value={code}>{t(`lang.${code}`, code)}</option>)}
-            </select>
-          </label>
-          <button type="button" className="ghost" onClick={() => handleReload()}>{t("hero.reload", "Reload")}</button>
-          <button type="button" className="ghost" onClick={() => handleReload("reload")}>{t("hero.reloadFromStore", "Reload From Store")}</button>
-          <button type="button" className="ghost" onClick={() => setShowConfigHistory(true)}>{t("config.history.title", "Configuration history")}</button>
-        </div>
-      </header>
-
-      <section className="summary-grid status-strip" aria-label={t("summary.title", "System status") }>
+          <div className="toolbar save-dock-actions">
+            {dirty || hasEntityDrafts ? <button type="button" className="ghost" onClick={handleDiscardChanges}>{t("changes.discard", "Discard")}</button> : null}
+            <button type="button" onClick={handleSave} disabled={saving || !config}>
+              {saving ? t("hero.saving", "Saving...") : t("changes.reviewSave", "Review & Save")}
+            </button>
+          </div>
+        </aside>
+      ) : null}>
+      {page?.id === "overview" ? <section className="summary-grid status-strip" aria-label={t("summary.title", "System status") }>
         <StatCard label={t("summary.requests", "Requests")} value={formatRuntimeNumber(summary.requests)} note={`${t("summary.errors", "Errors")} ${formatRuntimeNumber(summary.errors)}`} />
+        <StatCard label={t("ui.errorRate")} value={summary.errorRate} />
+        <StatCard label={t("ui.inputTokens")} value={formatRuntimeNumber(summary.promptTokens)} />
+        <StatCard label={t("ui.outputTokens")} value={formatRuntimeNumber(summary.completionTokens)} />
         <StatCard label={t("summary.cost", "Reference Cost")} value={summary.cost} note={t("runtime.costHint", "Cost estimates may be incomplete.")} />
         <StatCard label={t("summary.persistence", "Persistence")} value={t(`option.${summary.persistence}`, summary.persistence)} note={`${t("summary.logging", "Logging")} ${t(`status.${summary.logging}`, summary.logging)}`} />
         <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : configCleanupRequired ? t("config.flagCleanupPending", "Configuration cleanup pending") : t("summary.synced", "Synced")} />
-      </section>
+      </section> : null}
 
       {persistenceRuntime.pendingDatabaseSync ? (
         <aside className="inline-error" role="status">
@@ -1517,14 +1214,14 @@ export default function App() {
         </aside>
       ))}
 
-      {showConfigHistory ? <Suspense fallback={<p>{t("common.loadingAdmin", "Loading...")}</p>}>
-        <ConfigHistoryModal isOpen config={config} saving={saving} t={t}
-          onClose={() => setShowConfigHistory(false)} onRestore={restoreHistoricalConfig} />
+      {showConfigHistory || (page?.id === "config" && subsection === "history") ? <Suspense fallback={<p>{t("common.loadingAdmin", "Loading...")}</p>}>
+        <ConfigHistoryModal isOpen embedded={page?.id === "config" && subsection === "history"} config={config} saving={saving} t={t}
+          onClose={() => { setShowConfigHistory(false); navigate("/config/sync"); }} onRestore={restoreHistoricalConfig} />
       </Suspense> : null}
 
-      <Modal 
-        title={t("config.save.title", "Confirm Configuration Save")} 
-        isOpen={showSaveModal} 
+      <Modal
+        title={t("config.save.title", "Confirm Configuration Save")}
+        isOpen={showSaveModal}
         onClose={() => setShowSaveModal(false)}
         onConfirm={proceedSave}
         confirmLabel={t("btn.save", "Save")}
@@ -1533,6 +1230,7 @@ export default function App() {
         disabled={saving}
       >
         <p>{t("config.save.desc", "You are about to hit Save. Please review the configuration changes below:")}</p>
+        {showSaveModal ? <Suspense fallback={<p>{t("common.loading")}</p>}><ReviewChanges before={loadedConfig} after={config || {}} t={t} /></Suspense> : null}
         {showSaveModal && [...new Set([...(loadedConfig.models || []), ...(config.models || [])]
           .filter(model => model.selectedBinding).map(model => model.id))].map(id => {
           const before = bindingLabel(loadedConfig, loadedConfig.models?.find(model => model.id === id));
@@ -1551,9 +1249,9 @@ export default function App() {
           <strong>{t("config.diff.summary", "Changed paths:")} {configDiffCount}</strong>
         </div>
         {configDiffCount > 0 ? (
-          <pre className="muted" style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '6px', whiteSpace: 'pre-wrap', maxHeight: '300px', overflowY: 'auto' }}>
-            {configDiffPreview}
-          </pre>
+          <details><summary>{t("ui.rawDiff")}</summary><pre className="muted">
+            {buildConfigDiffPreview(configDiff, t, Infinity)}
+          </pre></details>
         ) : (
           configCleanupRequired ? null : <p className="muted">{t("config.diff.none", "No local diff")}</p>
         )}
@@ -1669,76 +1367,37 @@ export default function App() {
         </div>
       </Modal>
 
-      <div className="layout-main-split">
-        <aside className="left-nav" aria-label={t("nav.primary", "Primary navigation")}>
-          <div className="mobile-nav-stack">
-            <label className="mobile-page-nav">
-              <span>{t("nav.page", "Page")}</span>
-              <select value={activeTab} onChange={(event) => setActiveTab(event.target.value)}>
-                {categories.map((category) => (
-                  <optgroup key={category.id} label={category.label}>
-                    {category.tabs.map((tab) => <option key={tab.id} value={tab.id}>{tab.label}</option>)}
-                  </optgroup>
-                ))}
-              </select>
-            </label>
-            {currentSectionLinks.length ? (
-              <label className="mobile-page-nav mobile-section-nav">
-                <span>{t("nav.details", "Section")}</span>
-                <select value={currentSectionValue} onChange={(event) => handleSectionNavClick(event.target.value)}>
-                  {currentSectionLinks.map((link) => <option key={link.id} value={link.id}>{link.label}</option>)}
-                </select>
-              </label>
-            ) : null}
-          </div>
-          <div className="primary-nav-groups">
-            {categories.map((category) => (
-              <div className="left-nav-group" key={category.id}>
-                <div className="left-nav-title">{category.label}</div>
-                {category.tabs.map((tab) => {
-                  const tabSectionLinks = sectionLinksByTab[tab.id] || [];
-                  const isActive = activeTab === tab.id;
-                  return (
-                    <div className="nav-tree-item" key={tab.id}>
-                      <button
-                        type="button"
-                        className={`nav-item ${isActive ? "active" : ""}`}
-                        aria-current={isActive ? "page" : undefined}
-                        onClick={() => setActiveTab(tab.id)}
-                      >
-                        {tab.label}
-                      </button>
-                      {isActive && tabSectionLinks.length ? (
-                        <div className="sub-nav-list" aria-label={`${tab.label} · ${t("nav.details", "Section Navigation")}`}>
-                          {tabSectionLinks.map((link) => (
-                            <a
-                              key={link.id}
-                              className={activeSectionId === link.id ? "sub-nav-link active" : "sub-nav-link"}
-                              aria-current={activeSectionId === link.id ? "location" : undefined}
-                              href={`#${link.id}`}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                handleSectionNavClick(link.id);
-                              }}
-                            >
-                              {link.label}
-                            </a>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        </aside>
-
-        <main className="tab-content">
+      {page?.id === "settings" ? <div className="table-toolbar">
+        <input type="search" value={settingsFilters.search} aria-label={t("ui.settingsSearch")} placeholder={t("ui.settingsSearch")}
+          onChange={event => setSettingsFilters(current => ({ ...current, search: event.target.value }))} />
+        <label className="inline"><input type="checkbox" checked={settingsFilters.modifiedOnly}
+          onChange={event => setSettingsFilters(current => ({ ...current, modifiedOnly: event.target.checked }))} />{t("ui.modifiedOnly")}</label>
+      </div> : null}
+      {page?.id === "usage" ? <div className="table-toolbar">
+        <nav className="section-tabs" aria-label={t("shell.page.usage")}>
+          {["models", "keys", "analytics", "signals"].map(tab => <button key={tab} className="ghost" aria-pressed={usageView.tab === tab}
+            onClick={() => setUsageView(current => ({ ...current, tab }))}>{t(`ui.usage.${tab}`)}</button>)}
+        </nav>
+        <select aria-label={t("ui.groupBy")} value={usageView.group} onChange={event => setUsageView(current => ({ ...current, group: event.target.value }))}>
+          <option value="public">{t("routing.field.proxyModelId")}</option><option value="canonical">{t("channel.canonical")}</option>
+        </select>
+      </div> : null}
+      <SettingsFieldsProvider value={page?.id === "settings" ? { ...settingsFilters, config, loadedConfig, metadata: runtime?.configuration?.fieldMetadata, t } : null}>
+      <PageSections sections={page?.id === "usage"
+        ? ["runtime-overview", `runtime-${["models", "keys", "analytics", "signals"].includes(usageView.tab) ? usageView.tab : "models"}`] : sections}>
           <Suspense fallback={<div className="loading">{t("common.loading", "Loading...")}</div>}>
+      {["overview", "usage"].includes(page?.id) ? !overviewAwaitingGlobal && stats?.analytics?.rollups?.hourly?.length
+        ? <UsageChart rollups={stats.analytics.rollups.hourly} t={t} />
+        : <p className="chart-empty">{t("ui.chartEmpty")} <Link to="/settings/persistence">{t("shell.settings.persistence")}</Link></p> : null}
+      {page?.id === "overview" ? <OverviewLists models={overviewAwaitingGlobal ? {} : modelStats} keys={overviewAwaitingGlobal ? {} : perKeyStats} validation={modelValidationResult} t={t} /> : null}
+      {page?.id === "health" ? <section className="panel">
+        <StatCard label={t("summary.caddy")} value={caddyStatus?.state || t("ui.unknown")} note={formatDateTime(caddyStatus?.lastReloadAt)} />
+        <Link to="/settings/gateway">{t("shell.settings.gateway")}</Link>
+      </section> : null}
 
-      {activeTab === "workspace" && config ? (
+      {(activeTab === "workspace" || page?.id === "catalog") && config ? (
         <WorkspaceTab
+          coreGroup={subsection}
           config={config}
           capabilities={distributionCapabilities}
           effectiveProfile={runtime?.distribution?.profile}
@@ -1766,14 +1425,15 @@ export default function App() {
           config={config}
           loadedConfig={loadedConfig}
           updateConfig={updateConfig}
-          addApiKey={addApiKey}
           onCopyApiKey={handleCopyApiKey}
+          governanceKeys={governanceKeys}
           t={t}
         />
       ) : null}
 
       {activeTab === "routing" && config ? (
         <RoutingTab
+          view={page?.id}
           key={routingGeneration}
           config={config}
           loadedConfig={loadedConfig}
@@ -1789,14 +1449,12 @@ export default function App() {
           capabilityPreview={dirty}
           capabilityFallbackModels={capabilityFallbackModels}
           updateConfig={updateConfig}
-          addUpstream={addUpstream}
           addModel={addModel}
           addBlankModel={addBlankModel}
           mappingDrafts={mappingDrafts}
           setMappingDrafts={setMappingDrafts}
           onEditKey={index => {
-            setActiveTab("keys");
-            handleSectionNavClick(`key-card-${index}`);
+            navigate(`/keys?edit=${encodeURIComponent(config.apiKeys[index].id)}&tab=access`);
           }}
           t={t}
         />
@@ -1819,6 +1477,7 @@ export default function App() {
 
       {activeTab === "runtime" ? (
         <RuntimeTab
+          grouping={page?.id === "usage" ? usageView.group === "canonical" ? "canonical" : "public" : undefined}
           config={config}
           pricingLibrary={pricingLibrary}
           onApplyCardPricing={modelIds => {
@@ -1859,6 +1518,9 @@ export default function App() {
 
       {activeTab === "ops" && config ? (
         <OpsTab
+          onEditModel={id => handleHarnessNavigate({ type: "model", id })}
+          onEditChannel={id => handleHarnessNavigate({ type: "upstream", id })}
+          LogComponent={LogExplorer}
           config={config}
           updateField={updateField}
           pricingLibraryStatus={pricingLibraryStatus}
@@ -1915,7 +1577,7 @@ export default function App() {
         />
       ) : null}
 
-      {activeTab === "advanced" ? (
+      {activeTab === "advanced" && subsection === "json" ? (
         <AdvancedTab
           advancedJsonEnabled={advancedJsonEnabled}
           advancedJson={advancedJson}
@@ -1929,23 +1591,13 @@ export default function App() {
         />
       ) : null}
           </Suspense>
-            </main>
-      </div>
-      {dirty || configCleanupRequired ? (
-        <aside className="save-dock" role="status" aria-live="polite">
-          <div className="save-dock-copy">
-            <strong>{dirty ? t("changes.unsaved", "Unsaved changes") : t("config.flagCleanupPending", "Configuration cleanup pending")}</strong>
-            <span>{dirty ? t("changes.count", "{count} changed paths", { count: configDiffCount })
-              : t("config.flagCleanupCount", "{count} deprecated configuration entries", { count: runtime?.configuration?.deprecatedFlags?.length || 0 })}</span>
-          </div>
-          <div className="toolbar save-dock-actions">
-            {dirty ? <button type="button" className="ghost" onClick={handleDiscardChanges}>{t("changes.discard", "Discard")}</button> : null}
-            <button type="button" onClick={handleSave} disabled={saving || !config}>
-              {saving ? t("hero.saving", "Saving...") : t("changes.reviewSave", "Review & Save")}
-            </button>
-          </div>
-        </aside>
-      ) : null}
-    </div>
+      </PageSections>
+      </SettingsFieldsProvider>
+      {page?.id === "config" && subsection === "sync" ? <section className="panel">
+        <h2>{t("shell.sync")}</h2><p>{persistenceRuntimeText}</p>
+        <button className="ghost" onClick={showConfigConflict}>{t("config.conflict.compare")}</button>
+        <button className="ghost" onClick={() => handleReload("reload")}>{t("hero.reloadFromStore")}</button>
+      </section> : null}
+    </AppShell>
   );
 }
