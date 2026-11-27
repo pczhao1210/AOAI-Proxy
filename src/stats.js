@@ -1,4 +1,5 @@
 import { getUsageTotals } from "./usage.js";
+import { channelIdentity, channelMetric, createMemoryChannelLedger } from "./channel-statistics.js";
 import { normalizeCacheWrite, summarizeCacheWrite, billingTierIdentity, billingTierGroupKey, mergeBillingTierIntervals } from "./statistics.js";
 export { normalizeCacheWrite, summarizeCacheWrite } from "./statistics.js";
 
@@ -42,18 +43,39 @@ const stats = {
   perKey: {}
 };
 let pendingModelStats = null;
+let channels = createMemoryChannelLedger(), pendingChannels = null;
+
+export function getMemoryChannelStats(filters) {
+  return channels.snapshot(filters);
+}
+
+function recordChannel(model, context, phase, metric = {}) {
+  const cost = context.cost;
+  const media = context.mediaUsage;
+  const identity = channelIdentity(model, context, phase, cost?.pricing?.actual, media?.costStatus ?? cost?.costStatus,
+    media ? null : cost?.currency ?? "USD");
+  const delta = channelMetric(phase, 1, metric, identity);
+  if (media) delta.knownCostAmounts = { ...media.knownCostAmounts };
+  const timestamp = context.occurredAt ? Date.parse(context.occurredAt) : Date.now();
+  channels.record(resolveKeyId(context), timestamp, identity, delta);
+  pendingChannels?.record(resolveKeyId(context), timestamp, identity, delta);
+}
 
 export function beginModelStatsReset(modelsResetAt) {
   const pending = {};
   pendingModelStats = pending;
+  pendingChannels = createMemoryChannelLedger();
   return {
     commit() {
       stats.perModel = pending;
+      channels = pendingChannels;
+      pendingChannels = null;
       stats.modelsResetAt = modelsResetAt;
       pendingModelStats = null;
     },
     rollback() {
       pendingModelStats = null;
+      pendingChannels = null;
     }
   };
 }
@@ -143,12 +165,14 @@ function resolveKeyId(context) {
 }
 
 export function recordRequest(model, context = {}) {
+  recordChannel(model, context, "request");
   stats.totals.requests += 1;
   for (const bucket of modelBuckets(model)) bucket.requests += 1;
   getKeyStats(resolveKeyId(context)).requests += 1;
 }
 
 export function recordError(model, context = {}) {
+  recordChannel(model, context, "error");
   stats.totals.errors += 1;
   for (const modelStats of modelBuckets(model)) {
     modelStats.errors += 1;
@@ -203,6 +227,12 @@ export function recordUsage(model, usage, context = {}) {
     }
   }
   const cacheWrite = normalizeCacheWrite(context.cost?.cacheWrite);
+  const writeBucket = {};
+  if (!context.mediaUsage) addCacheWrite(writeBucket, cacheWrite);
+  recordChannel(model, context, "usage", { promptTokens: prompt, completionTokens: completion,
+    totalTokens: total, cachedTokens: cached, estimatedCostAmount: context.cost?.amount ?? 0,
+    textUnknownCostRequests: context.cost?.costStatus && context.cost.costStatus !== "priced" ? 1 : 0,
+    cacheWrite: writeBucket.cacheWrite });
   for (const bucket of buckets) {
     bucket.promptTokens += prompt;
     bucket.completionTokens += completion;

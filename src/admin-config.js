@@ -42,23 +42,24 @@ function findCurrentItem(currentItems, candidateItem, index, identityKey) {
   return currentItems[index] || null;
 }
 
-function matchCurrentItems(candidateItems, currentItems, identityKey) {
+function matchCurrentUpstreams(candidateItems, currentItems) {
   const matches = new Array(candidateItems.length).fill(null);
   const usedCurrentIndexes = new Set();
 
   for (const [candidateIndex, candidateItem] of candidateItems.entries()) {
-    const identity = typeof candidateItem?.[identityKey] === "string" ? candidateItem[identityKey] : "";
+    const identity = candidateItem?.channelId || candidateItem?.name;
     if (!identity) continue;
-    const currentIndex = currentItems.findIndex((currentItem, index) => (
-      !usedCurrentIndexes.has(index) && currentItem?.[identityKey] === identity
-    ));
+    let currentIndex = candidateItem.channelId ? currentItems.findIndex((item, index) =>
+      !usedCurrentIndexes.has(index) && item?.channelId === candidateItem.channelId) : -1;
+    if (currentIndex < 0) currentIndex = currentItems.findIndex((item, index) =>
+      !usedCurrentIndexes.has(index) && !item?.channelId && item?.name === candidateItem.name);
     if (currentIndex < 0) continue;
     matches[candidateIndex] = currentItems[currentIndex];
     usedCurrentIndexes.add(currentIndex);
   }
 
   for (let index = 0; index < candidateItems.length; index += 1) {
-    if (matches[index] || !currentItems[index] || usedCurrentIndexes.has(index)) continue;
+    if (matches[index] || !currentItems[index] || usedCurrentIndexes.has(index) || candidateItems[index]?.channelId || currentItems[index].channelId) continue;
     matches[index] = currentItems[index];
     usedCurrentIndexes.add(index);
   }
@@ -66,16 +67,16 @@ function matchCurrentItems(candidateItems, currentItems, identityKey) {
 }
 
 function transformUpstreamSecrets(candidateUpstreams, currentUpstreams, transform) {
-  const currentMatches = matchCurrentItems(candidateUpstreams, currentUpstreams, "name");
+  const currentMatches = matchCurrentUpstreams(candidateUpstreams, currentUpstreams);
   for (const [index, upstream] of candidateUpstreams.entries()) {
     const current = currentMatches[index];
     if (upstream?.auth && typeof upstream.auth === "object" && !Array.isArray(upstream.auth)) {
-      upstream.auth.apiKey = transform(upstream.auth.apiKey, current?.auth?.apiKey);
+      upstream.auth.apiKey = transform(upstream.auth.apiKey, current?.auth?.apiKey, upstream);
     }
     if (!upstream?.headersTemplate || typeof upstream.headersTemplate !== "object") continue;
     for (const [headerName, headerValue] of Object.entries(upstream.headersTemplate)) {
       if (!SENSITIVE_HEADER_NAME.test(headerName)) continue;
-      upstream.headersTemplate[headerName] = transform(headerValue, current?.headersTemplate?.[headerName]);
+      upstream.headersTemplate[headerName] = transform(headerValue, current?.headersTemplate?.[headerName], upstream);
     }
   }
 }
@@ -115,7 +116,11 @@ export function restoreConfigSecrets(candidateConfig, currentConfig) {
   transformUpstreamSecrets(
     Array.isArray(restored.upstreams) ? restored.upstreams : [],
     Array.isArray(current.upstreams) ? current.upstreams : [],
-    (value, currentValue) => value === REDACTED_SECRET_VALUE ? (currentValue || "") : value
+    (value, currentValue, upstream) => {
+      if (value !== REDACTED_SECRET_VALUE) return value;
+      if (!currentValue && upstream.channelId) throw new Error("Cannot restore masked upstream credential: re-enter it for this channel");
+      return currentValue || "";
+    }
   );
   return restored;
 }
@@ -135,10 +140,16 @@ export function restoreHistorySecrets(snapshot, currentConfig) {
     key.key = preserve(key.key, current?.key, `apiKeys[${key.id}].key`);
   }
   for (const upstream of restored.upstreams || []) {
-    const current = (currentConfig.upstreams || []).find(item => item.name === upstream.name);
+    const current = (currentConfig.upstreams || []).find(item => upstream.channelId
+      ? item.channelId === upstream.channelId : item.name === upstream.name);
     if (upstream.auth || current?.auth?.apiKey) {
       upstream.auth ||= {};
       upstream.auth.apiKey = preserve(upstream.auth.apiKey, current?.auth?.apiKey, `upstreams[${upstream.name}].auth.apiKey`);
+      if (upstream.provider === "github-copilot") {
+        if (current?.provider !== "github-copilot" || current.copilot?.authProfile !== upstream.copilot?.authProfile || !current.auth?.credentialRef) {
+          missing.push(`upstreams[${upstream.name}].auth.credentialRef`);
+        } else upstream.auth.credentialRef = current.auth.credentialRef;
+      }
     }
     const names = new Map();
     for (const name of [...Object.keys(upstream.headersTemplate || {}), ...Object.keys(current?.headersTemplate || {})]) {

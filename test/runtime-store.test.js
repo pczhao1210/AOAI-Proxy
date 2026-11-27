@@ -215,8 +215,9 @@ test("media and text ledgers restore known subtotals and durable completeness fr
     tracker.observe("response:1", { type: "duration", seconds: 60 });
     tracker.observe("response:1", { type: "duration", seconds: 60 });
     for (const [requestId, usage] of [["priced", tracker.snapshot()], ["unknown", createMediaUsageTracker().snapshot()]]) {
-      recordRuntimeRequest(config, { requestId, keyId: consumer.keyId, modelId: model.id, routeKey: "responses", backendRouteKey: "audio/transcriptions" });
-      settleMediaUsage({ config, consumer, model, usage, requestContext: { requestId }, routeKey: "responses", backendRouteKey: "audio/transcriptions" });
+      const requestContext = { requestId, canonicalModelId: "speech", channelId: "speech-east", sourceModelId: "voice-deploy" };
+      recordRuntimeRequest(config, { ...requestContext, keyId: consumer.keyId, modelId: model.id, routeKey: "responses", backendRouteKey: "audio/transcriptions" });
+      settleMediaUsage({ config, consumer, model, usage, requestContext, routeKey: "responses", backendRouteKey: "audio/transcriptions" });
     }
     const pricing = { actual: { source: "model.pricing", policyDigest: "sha256:test", tier: "base" }, router: null };
     for (const cost of [
@@ -308,6 +309,11 @@ test("media and text ledgers restore known subtotals and durable completeness fr
     }
     assert.equal(stats.perModel.text.estimatedCostAmount, 0.85);
     const filtered = await getRuntimeStatsSnapshot(config, null, { keyId: consumer.keyId, timeRange: "24h" });
+    for (const snapshot of [stats, filtered]) {
+      const speech = snapshot.canonicalModels.find(row => row.canonicalModelId === "speech");
+      assert.deepEqual([speech.requests, speech.settledRequests, speech.unknownCostRequests, speech.estimatedCostAmount,
+        speech.channels[0].channelId, speech.knownCostAmounts], [2, 2, 1, null, "speech-east", { USD: 0.006 }]);
+    }
     assert.deepEqual(filtered.totals.media, stats.totals.media);
     for (const bucket of [filtered.totals, filtered.perModel.text, filtered.perKey[consumer.keyId], filtered.perModel.text.actualModels["actual-text"],
       ...Object.values(filtered.analytics.rollups).flat()]) {
@@ -451,7 +457,7 @@ test("cache-write event and rollup SQL bind every column and retain partial dime
     if (insert) {
       const columns = insert[2].split(",").map(name => name.trim());
       assert.equal(new Set(columns).size, columns.length);
-      assert.equal(columns.length, insert[1] === "events" ? 29 : 27);
+      assert.equal(columns.length, 29);
       assert.equal(values.length % columns.length, 0);
       const placeholders = [...text.matchAll(/\$(\d+)/g)].map(match => Number(match[1]));
       assert.equal(Math.max(...placeholders), values.length);

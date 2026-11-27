@@ -14,6 +14,8 @@
 - Codex -> 本代理 `/v1/responses` -> 原生 OpenAI Responses 上游。
 - 不要把 Messages、Responses、Chat Completions 之间的 shim 当作协议等价实现。shim 适合基础文本和普通函数工具的降级场景，不适合作为两个 CLI 的默认生产路径。
 
+Copilot 的授权 profile 与下游 CLI 无关；发现了某个模型并不赋予 Harness 资格。只按当前已确认绑定的文本端点重算资格，未核实的 `compact` / `count_tokens` 不随主端点开放。下文的固定版 CLI 验收不代表实际 Copilot 账号、部署、模型或配额验收。
+
 综合评级：
 
 | 客户端与路径 | 当前评级 | 结论 |

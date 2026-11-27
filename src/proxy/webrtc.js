@@ -1,7 +1,7 @@
 import multipart from "@fastify/multipart";
 import { findNodeAtLocation, modify, applyEdits, parseTree } from "jsonc-parser";
 import { getUpstreamAuthHeaders } from "../auth.js";
-import { acquireRequestGovernance, checkUnmeteredRequestAccess, resolveApiConsumer } from "../governance.js";
+import { acquireRequestGovernance, checkUnmeteredRequestAccess, hasModelRestriction, resolveApiConsumer } from "../governance.js";
 import { getModelCatalogRuntimeInfo } from "../model-catalog.js";
 import { getRequestContext } from "../request-context.js";
 import { readMediaMultipart } from "./media-body.js";
@@ -80,7 +80,7 @@ function checkDirectMediaAccess(config, consumer, secretExport = false) {
   const access = checkUnmeteredRequestAccess(config, consumer);
   if (!access.ok) throw realtimeError(access.status, access.code, access.message);
   const concurrency = consumer.apiKey?.rateLimit?.concurrency || config.access?.rateLimits?.defaultConcurrency || 0;
-  if (consumer.apiKey?.allowedModels?.length || (secretExport && concurrency > 0)) {
+  if (hasModelRestriction(consumer.apiKey) || (secretExport && concurrency > 0)) {
     throw realtimeError(403, "WEBRTC_INLINE_POLICY_REQUIRED", "Direct provider access cannot enforce this key's policy");
   }
 }

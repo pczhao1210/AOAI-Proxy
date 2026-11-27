@@ -41,6 +41,8 @@ function setClientSelection(next, modelId, clientName, selected, routeMode = "")
     if (Object.keys(flags).length) model[field] = flags;
     else delete model[field];
   }
+  if (model.selectedBinding && (model.clientNativeRoute || model.clientConversion)) model.confirmedRouteBinding = { ...model.selectedBinding };
+  else delete model.confirmedRouteBinding;
 }
 
 export default function HarnessTab({
@@ -60,7 +62,9 @@ export default function HarnessTab({
   const eligibilityById = new Map();
   for (const item of items) eligibilityById.set(item.modelId, eligibilityById.has(item.modelId) ? null : item);
   const rows = models.map((entry, index) => {
-    const model = entry && typeof entry === "object" && !Array.isArray(entry) ? entry : {};
+    const model = entry?.selectedBinding
+      ? { ...entry, upstream: config.upstreams?.find(up => up.channelId === entry.selectedBinding.channelId)?.name }
+      : entry && typeof entry === "object" && !Array.isArray(entry) ? entry : {};
     const unique = typeof model.id === "string" && Boolean(model.id.trim())
       && counts.get(model.id) === 1;
     return { model, index, unique, item: fresh && unique ? eligibilityById.get(model.id) || null : null };

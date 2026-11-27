@@ -191,7 +191,9 @@ test("WebRTC client secret export is opt-in, bounded and denied for keys requiri
     config.media.webrtc.allowClientSecrets = true;
     await save();
     assert.equal((await issue(61)).status, 400);
-    for (const guard of ["models", "concurrency", "tpm", "budget"]) {
+    for (const guard of ["models", "selected-empty", "concurrency", "tpm", "budget"]) {
+      if (guard === "selected-empty") config.apiKeys[0].modelAccessMode = "selected";
+      else if (config.apiKeys[0].modelAccessMode) config.apiKeys[0].modelAccessMode = "all";
       config.apiKeys[0].allowedModels = guard === "models" ? ["voice"] : [];
       config.apiKeys[0].rateLimit = guard === "concurrency" ? { concurrency: 1 } : guard === "tpm" ? { tpm: 1 } : {};
       config.apiKeys[0].budget = guard === "budget" ? { limitAmount: 1 } : {};

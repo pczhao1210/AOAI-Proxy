@@ -1,6 +1,7 @@
 import { getUpstreamAuthHeaders } from "./auth.js";
 import { appendStructuredLog, buildContentLogSnapshot, resolveLogContentMode } from "./logs.js";
 import { recordError, recordRequest, recordUsage } from "./stats.js";
+import { inferenceBinding } from "./inference-binding.js";
 import { recordRuntimeError, recordRuntimeRequest, recordRuntimeUsage } from "./runtime-store.js";
 import { getModelCatalogPricingContext, resolveModelDescriptor } from "./model-catalog.js";
 import {
@@ -384,7 +385,7 @@ export async function proxyRequest({
   };
   let isStream = false;
   let governanceLease = null;
-  const log = req.log.child(requestContext);
+  let log = req.log.child(requestContext);
   const finishTiming = ({ status = null, outcome = "", errorCode = "", source = "proxy" } = {}) => {
     if (!timing.enabled) {
       return;
@@ -519,6 +520,27 @@ export async function proxyRequest({
     });
     return;
   }
+  const modelAccess = checkConsumerModelAccess(consumer, model);
+  if (!modelAccess.ok) {
+    log.error({
+      source: "proxy",
+      requestId,
+      ...requestNetworkContext,
+      modelId,
+      routeKey,
+      status: modelAccess.status || 403,
+      event: "proxy.request_rejected",
+      errorCode: modelAccess.code,
+      failureReason: modelAccess.message
+    }, modelAccess.message);
+    sendProxyError(modelAccess.status || 403, {
+      code: modelAccess.code || "MODEL_ACCESS_DENIED",
+      exposedCode: modelAccess.status === 403 && consumer?.apiKey?.modelAccessMode
+        ? modelAccess.code : modelAccess.error || modelAccess.code || "ModelAccessDenied",
+      message: modelAccess.message
+    });
+    return;
+  }
   const modelDescriptor = resolveModelDescriptor(modelId);
   const pricingContext = getModelCatalogPricingContext();
 
@@ -563,26 +585,6 @@ export async function proxyRequest({
     }
   }
 
-  const modelAccess = checkConsumerModelAccess(consumer, model);
-  if (!modelAccess.ok) {
-    log.error({
-      source: "proxy",
-      requestId,
-      ...requestNetworkContext,
-      modelId,
-      routeKey,
-      status: modelAccess.status || 403,
-      event: "proxy.request_rejected",
-      errorCode: modelAccess.code,
-      failureReason: modelAccess.message
-    }, modelAccess.message);
-    sendProxyError(modelAccess.status || 403, {
-      code: modelAccess.code || "MODEL_ACCESS_DENIED",
-      exposedCode: modelAccess.error || modelAccess.code || "ModelAccessDenied",
-      message: modelAccess.message
-    });
-    return;
-  }
   if (routeKey === "responses" && modelDescriptor?.proxyAdapters?.responses) {
     const responsesAdapter = modelDescriptor.proxyAdapters.responses;
     return proxyMediaRequest({ config, routeKey: responsesAdapter === "azure-speech-synthesize" ? "audio/speech" : "audio/transcriptions", req, reply,
@@ -755,6 +757,9 @@ export async function proxyRequest({
     routeKey !== backendRouteKey
     && TEXT_PROTOCOL_ROUTE_KEYS.has(routeKey)
     && TEXT_PROTOCOL_ROUTE_KEYS.has(backendRouteKey);
+  const accounting = inferenceBinding(config, model, modelDescriptor, deployment, routeKey, backendRouteKey);
+  Object.assign(requestContext, accounting);
+  log = log.child(accounting);
   const nativeErrorPassthrough = !needsProtocolShim
     && protocolRouteKey === backendRouteKey
     && (
@@ -815,6 +820,15 @@ export async function proxyRequest({
   }
   const policy = resolveUpstreamPolicy(config, { routeKey: protocolRouteKey, model, upstream, requestOverrides });
   let upstreamAuthHeaders;
+  const noticeRejectedCredential = upstream.provider === "github-copilot" ? async () => {
+    try {
+      const { copilotRuntime } = await import("./copilot-runtime.js");
+      await copilotRuntime.rejected(upstream, upstreamAuthHeaders, requestId);
+    } catch (error) {
+      log.warn({ source: "proxy", event: "proxy.copilot_invalidation_failed", requestId, channelId: upstream.channelId,
+        errorCode: error.code || "COPILOT_STATE_UNAVAILABLE" }, "Could not persist credential invalidation");
+    }
+  } : null;
   try {
     markTiming(timing, "authStartAt");
     const usesAnthropicMessages = backendRouteKey === "messages";
@@ -822,15 +836,18 @@ export async function proxyRequest({
       usesAnthropicMessages ? "https://ai.azure.com/.default" : config.auth.scope,
       {
         auth: upstream.auth,
+        upstream, targetUrl, model, requestId,
         apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key"
       }
     );
     markTiming(timing, "authReadyAt");
   } catch (error) {
-    recordError(model.id, consumer);
+    const occurredAt = new Date().toISOString();
+    recordError(model.id, { ...accounting, occurredAt, keyId: consumer?.keyId });
     noteGovernanceError(consumer);
     recordRuntimeError(config, {
-      occurredAt: new Date().toISOString(),
+      ...accounting,
+      occurredAt,
       requestId,
       conversationId,
       sessionId,
@@ -1124,13 +1141,17 @@ export async function proxyRequest({
   if (req.raw?.aborted || reply.raw?.destroyed) abortUpstream();
 
   const recordProxyError = ({ status = null, errorCode = "", failureReason = "", source = "proxy" } = {}) => {
+    const occurredAt = new Date().toISOString();
     recordError(model.id, {
+      ...accounting,
+      occurredAt,
       keyId: consumer?.keyId,
       actualModelName: resolvedUpstreamModel
     });
     noteGovernanceError(consumer);
     recordRuntimeError(config, {
-      occurredAt: new Date().toISOString(),
+      ...accounting,
+      occurredAt,
       requestId,
       conversationId,
       sessionId,
@@ -1163,6 +1184,7 @@ export async function proxyRequest({
     usageEstimationReason = metadata.reason || "";
     noteResolvedUpstreamModel(actualModelName);
     const cost = recordGovernanceUsage(config, consumer, model, usage, Date.now(), actualModelName || resolvedUpstreamModel, {
+      accounting,
       requestId,
       routeKey,
       backendRouteKey,
@@ -1171,13 +1193,20 @@ export async function proxyRequest({
       usageEstimated,
       usageComplete: metadata.complete !== false
     });
+    const occurredAt = new Date().toISOString();
     recordUsage(model.id, usage, {
+      ...accounting,
+      occurredAt,
+      reportedModelName: resolvedUpstreamModel,
+      usageSource,
       keyId: consumer?.keyId,
       cost,
       actualModelName: cost?.actualModelName || actualModelName || resolvedUpstreamModel
     });
     recordRuntimeUsage(config, {
-      occurredAt: new Date().toISOString(),
+      ...accounting,
+      reportedModelName: resolvedUpstreamModel,
+      occurredAt,
       requestId,
       conversationId,
       sessionId,
@@ -1206,7 +1235,7 @@ export async function proxyRequest({
     emitInfoLog({
       ...requestContext,
       modelId,
-      actualModelName: cost?.actualModelName || actualModelName || resolvedUpstreamModel,
+      actualModelName: resolvedUpstreamModel || cost?.actualModelName,
       event: "proxy.usage_recorded",
       routeKey,
       backendRouteKey,
@@ -1326,9 +1355,11 @@ export async function proxyRequest({
       requestLogFields = buildContentSnapshotFields("request", requestContentSnapshot);
       markTiming(timing, "requestPreparedAt");
     }
-    recordRequest(model.id, consumer);
+    const occurredAt = new Date().toISOString();
+    recordRequest(model.id, { ...accounting, occurredAt, keyId: consumer?.keyId });
     recordRuntimeRequest(config, {
-      occurredAt: new Date().toISOString(),
+      ...accounting,
+      occurredAt,
       requestId,
       conversationId,
       sessionId,
@@ -1480,6 +1511,8 @@ export async function proxyRequest({
         }
 
         if (!upstreamResponse.ok) {
+          const credentialRejected = upstreamResponse.status === 401 && !!noticeRejectedCredential;
+          if (credentialRejected) await noticeRejectedCredential();
           let detail = "";
           let nativeErrorBodyAvailable = true;
           try {
@@ -1496,7 +1529,7 @@ export async function proxyRequest({
               finishTiming({ status: 499, outcome: "client_disconnected", errorCode: readFailure.code, source: "client" });
               return;
             }
-            if (shouldRetryUpstream(policy, attempt, { classified: readFailure })) {
+            if (!credentialRejected && shouldRetryUpstream(policy, attempt, { classified: readFailure })) {
               const backoffMs = computeBackoffMs(policy, attempt);
               log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, errorCode: readFailure.code }, "stream retry on HTTP error body read failure");
               try {
@@ -1514,7 +1547,7 @@ export async function proxyRequest({
             detail = readFailure.detail;
           }
           const classified = classifyHttpStatus(upstreamResponse.status);
-          const retryable = shouldRetryUpstream(policy, attempt, { status: upstreamResponse.status });
+          const retryable = !credentialRejected && shouldRetryUpstream(policy, attempt, { status: upstreamResponse.status });
           if (retryable) {
             const backoffMs = computeBackoffMs(policy, attempt);
             log.warn({ source: "upstream", requestId, modelId, routeKey, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "stream upstream retry on status");
@@ -1862,6 +1895,7 @@ export async function proxyRequest({
       headers,
       bodyText,
       policy,
+      onCredentialRejected: noticeRejectedCredential,
       logMeta: { source: "upstream", requestId, modelId, routeKey, backendRouteKey },
       log,
       signal: upstreamAbortController.signal

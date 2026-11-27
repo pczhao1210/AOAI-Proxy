@@ -110,6 +110,7 @@ function indexDefinitions(definitions) {
 }
 
 function findDefinition(model, indexes) {
+  if (model?.selectedBinding) return indexes.byId.get(normalizeKey(model.canonicalModelId)) || null;
   for (const candidate of [model?.pricingRef, model?.id, model?.targetModel]) {
     const key = normalizeKey(candidate);
     if (!key) continue;
@@ -188,8 +189,9 @@ function validateProxyAdapters(definition, interfaces = definition?.interfaces |
 }
 
 function compileDescriptor(model, definition, upstream, knownRouteInterfaces) {
-  const interfaces = resolveInterfaces(model, definition);
-  const routeTargets = resolveRouteTargets(definition, interfaces);
+  const copilot = upstream?.provider === "github-copilot";
+  const interfaces = copilot ? [...new Set(Object.values(model.routes || {}))] : resolveInterfaces(model, definition);
+  const routeTargets = copilot ? interfaces : resolveRouteTargets(definition, interfaces);
   const tokenLimits = freezeJson(normalizeModelTokenLimits(definition));
   const capabilities = definition?.capabilities?.length
     ? definition.capabilities
@@ -204,13 +206,13 @@ function compileDescriptor(model, definition, upstream, knownRouteInterfaces) {
     pricingRef: String(model.pricingRef || definition?.id || ""),
     catalogId: String(definition?.id || ""),
     catalogMatched: !!definition,
-    provider: String(definition?.provider || upstream?.provider || ""),
-    hostingMode: normalizeKey(model.hostingMode || definition?.defaultHostingMode),
+    provider: copilot ? upstream.provider : String(definition?.provider || upstream?.provider || ""),
+    hostingMode: copilot ? "" : normalizeKey(model.hostingMode || definition?.defaultHostingMode),
     interfaces: Object.freeze(interfaces),
     inputModalities: Object.freeze([...new Set(
       (Array.isArray(definition?.inputModalities) ? definition.inputModalities : []).map(normalizeKey).filter(Boolean)
     )]),
-    proxyAdapters: freezeJson(cloneJson(validateProxyAdapters(definition, interfaces))),
+    proxyAdapters: copilot ? Object.freeze({}) : freezeJson(cloneJson(validateProxyAdapters(definition, interfaces))),
     knownRouteInterfaces,
     routeTargets: Object.freeze(routeTargets),
     defaultInterface: resolveDefaultInterface(definition, interfaces),
@@ -245,6 +247,13 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
   const indexes = indexDefinitions(normalizedDefinitions);
   const archivedDefinitions = listArchivedPricingDefinitions().map((definition) => freezeJson(cloneJson(definition)));
   const archivedIndexes = indexDefinitions(archivedDefinitions);
+  for (const up of config?.upstreams || []) {
+    for (const row of up.modelMappings || []) {
+      if ((indexes.byId.get(normalizeKey(row.canonicalModelId)) || archivedIndexes.byId.get(normalizeKey(row.canonicalModelId)))?.id !== row.canonicalModelId) {
+        throw new Error(`Channel ${up.name}: missing Model Catalog ID ${row.canonicalModelId}`);
+      }
+    }
+  }
   const pricingContext = createPricingContext(config, [...normalizedDefinitions, ...archivedDefinitions]);
   for (const definition of normalizedDefinitions) validateProxyAdapters(definition);
   const upstreamsByName = new Map(
@@ -252,6 +261,7 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
   );
   const modelsByPublicId = new Map();
   const modelsByAlias = new Map();
+  const ambiguousAliases = new Set();
   const descriptors = [];
   const routeInterfaces = collectRouteInterfaces(normalizedDefinitions);
 
@@ -260,7 +270,13 @@ export function compileModelCatalog(config, definitions = listPricingDefinitions
     const definition = findDefinition(model, indexes) || findDefinition(model, archivedIndexes);
     const descriptor = compileDescriptor(model, definition, upstreamsByName.get(model.upstream), routeInterfaces);
     rememberUnique(modelsByPublicId, model.id, descriptor, "configured model ID");
-    for (const alias of definition?.aliases || []) rememberUnique(modelsByAlias, alias, descriptor, "configured model alias");
+    for (const alias of definition?.aliases || []) {
+      const key = normalizeKey(alias);
+      if (modelsByAlias.has(key)) {
+        modelsByAlias.delete(key);
+        ambiguousAliases.add(key);
+      } else if (!ambiguousAliases.has(key)) modelsByAlias.set(key, descriptor);
+    }
     descriptors.push(descriptor);
   }
 
@@ -364,6 +380,7 @@ export function getModelCapabilityView(config, snapshot = installedSnapshot) {
     )];
     return {
       modelId: descriptor.publicId,
+      canonicalModelId: descriptor.catalogId,
       upstream: descriptor.model.upstream || "",
       capabilities: descriptor.capabilities,
       source: descriptor.capabilitySource,

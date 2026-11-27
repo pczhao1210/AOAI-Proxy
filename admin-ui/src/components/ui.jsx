@@ -105,7 +105,7 @@ export function ListInput({ value, onChange, ...props }) {
   );
 }
 
-export function EntityCard({ id, title, subtitle, onRemove, removeLabel, expandLabel = "Edit configuration", collapseLabel = "Collapse", children, collapsible = false, defaultOpen = true, meta, group }) {
+export function EntityCard({ id, title, subtitle, onRemove, removeLabel, expandLabel = "Edit configuration", collapseLabel = "Collapse", children, collapsible = false, defaultOpen = true, meta, group, hidden = false }) {
   const detailsRef = useRef(null);
   useLayoutEffect(() => {
     if (detailsRef.current) detailsRef.current.open = defaultOpen;
@@ -113,7 +113,7 @@ export function EntityCard({ id, title, subtitle, onRemove, removeLabel, expandL
 
   if (collapsible) {
     return (
-      <details ref={detailsRef} id={id} className="entity-card entity-card-collapsible" data-accordion-group={group} onToggle={handleSingleOpenToggle}>
+      <details ref={detailsRef} id={id} hidden={hidden} className="entity-card entity-card-collapsible" data-accordion-group={group} onToggle={handleSingleOpenToggle}>
         <summary className="entity-summary">
           <div>
             <h3>{title}</h3>

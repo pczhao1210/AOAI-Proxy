@@ -13,6 +13,51 @@ const ENV_NAMES = [
   "AOAI_PROXY_CADDY_DOMAIN"
 ];
 
+test("a failed proxy stage preserves active binding and catalog; retry installs the saved revision without a second write", async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-binding-apply-"));
+  const file = path.join(dir, "config.json");
+  const previous = process.env.CONFIG_PATH;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.CONFIG_PATH; else process.env.CONFIG_PATH = previous;
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  const raw = JSON.parse(await fs.readFile("config/sample_config.json", "utf8"));
+  raw.server.host = "127.0.0.1";
+  raw.persistence.configStore.filePath = file;
+  raw.persistence.compatibilityExport.enabled = false;
+  raw.observability.runtimeStore.enabled = false;
+  raw.upstreams = [{ name: "test", baseUrl: "http://127.0.0.1:1", channelId: "test",
+    modelMappings: ["blue", "green"].map(sourceModelId => ({ sourceModelId, canonicalModelId: "gpt-5-mini", enabled: true })) }];
+  raw.models = [{ id: "team", canonicalModelId: "gpt-5-mini", selectedBinding: { channelId: "test", sourceModelId: "blue" } }];
+  await fs.writeFile(file, JSON.stringify(raw));
+  process.env.CONFIG_PATH = file;
+  const { getConfig, getEditableConfig, getPersistedConfigRevision, getConfigRuntimeInfo, reloadConfig, saveConfig, applyPreparedProxyConfig } = await import("../src/config.js");
+  const { resolveModelDescriptor } = await import("../src/model-catalog.js");
+  const original = await reloadConfig();
+  const oldRevision = getPersistedConfigRevision();
+  raw.models[0].selectedBinding.sourceModelId = "green";
+  await saveConfig(raw, { deferApplication: true });
+  const newRevision = getPersistedConfigRevision();
+  const savedText = await fs.readFile(file, "utf8");
+  assert.notEqual(newRevision, oldRevision);
+  assert.equal(getEditableConfig().models[0].selectedBinding.sourceModelId, "green");
+  const attempts = [];
+  await assert.rejects(applyPreparedProxyConfig(candidate => {
+    attempts.push(candidate.models[0].targetModel);
+    if (candidate !== original) throw new Error("stage unavailable");
+  }), /stage unavailable/);
+  assert.deepEqual(attempts, ["green", "blue"]);
+  assert.equal(getConfig(), original);
+  assert.equal(resolveModelDescriptor("team").targetModel, "blue");
+  assert.equal(getConfigRuntimeInfo().configuration.appliedRevision, oldRevision);
+  await applyPreparedProxyConfig(() => {});
+  assert.equal(getConfig().models[0].targetModel, "green");
+  assert.equal(resolveModelDescriptor("team").targetModel, "green");
+  assert.equal(original.models[0].targetModel, "blue");
+  assert.equal(getConfigRuntimeInfo().configuration.appliedRevision, newRevision);
+  assert.equal(await fs.readFile(file, "utf8"), savedText);
+});
+
 test("environment-managed config values remain memory-only across saves", async () => {
   const previousEnvironment = Object.fromEntries(ENV_NAMES.map((name) => [name, process.env[name]]));
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoai-config-env-"));

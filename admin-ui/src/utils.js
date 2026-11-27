@@ -1,4 +1,5 @@
 import { getConfiguredPricingEntry, getModelCardPricing } from "../../src/model-card.js";
+import { effectiveChannelModel, sameBinding } from "../../src/channel-bindings.js";
 import { compilePricingPolicy } from "../../src/token-pricing.js";
 
 export const REDACTED_SECRET_VALUE = "__AOAI_PROXY_REDACTED__";
@@ -126,6 +127,7 @@ export const DEFAULT_KEY_TEMPLATE = {
   owner: "",
   key: "",
   status: "active",
+  modelAccessMode: "selected",
   allowedModels: [],
   tags: [],
   rateLimit: {
@@ -143,6 +145,10 @@ export const DEFAULT_KEY_TEMPLATE = {
   },
   notes: ""
 };
+
+export function newChannelId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, "0")).join("");
+}
 
 export const DEFAULT_UPSTREAM_TEMPLATE = {
   name: "",
@@ -215,6 +221,10 @@ export const DEFAULT_LOG_FILTERS = {
   event: "",
   modelId: "",
   requestId: "",
+  recordSource: "memory",
+  operationId: "",
+  connectionId: "",
+  configRevision: "",
   keyword: "",
   limit: 100,
   autoRefresh: true,
@@ -374,6 +384,7 @@ export function findPricingTemplateByHint(definitions, ...hints) {
 export function findPricingTemplateForModel(definitions, model) {
   return findPricingTemplateByHint(
     definitions,
+    model?.canonicalModelId,
     model?.pricingRef,
     model?.id,
     model?.targetModel,
@@ -388,7 +399,14 @@ export function getModelTierPricing(config = {}, definitions = []) {
     const entry = getModelCardPricing(definition);
     const cardPolicy = compilePricingPolicy(entry, `pricing-library.${definition.id}`);
     if (!cardPolicy?.tiering) return [];
-    const override = getConfiguredPricingEntry(config, model);
+    let effective = model;
+    if (model.selectedBinding) {
+      const up = config.upstreams?.find(entry => entry.channelId === model.selectedBinding.channelId);
+      const row = up?.modelMappings?.find(entry => entry.sourceModelId === model.selectedBinding.sourceModelId && entry.canonicalModelId === model.canonicalModelId);
+      if (!row?.enabled) return [];
+      effective = effectiveChannelModel(model, up, row);
+    }
+    const override = getConfiguredPricingEntry(config, effective);
     const effectivePolicy = override ? compilePricingPolicy(override.entry, override.source) : cardPolicy;
     const bounds = policy => policy?.tiers.map(tier => [tier.promptTokensAtLeast, tier.promptTokensBelow]) || [];
     return [{
@@ -409,7 +427,12 @@ export function applyModelCardTierPricing(config, modelIds, definitions) {
     if (!review || !model) throw new Error(`Tiered model card unavailable for ${id}`);
     return { model, entry: getModelCardPricing(review.definition) };
   });
-  for (const { model, entry } of updates) model.pricing = cloneJson(entry);
+  for (const { model, entry } of updates) {
+    if (!model.selectedBinding) model.pricing = cloneJson(entry);
+    else if (!model.bindingOverride || sameBinding(model.bindingOverride, model.selectedBinding)) {
+      model.bindingOverride = { ...model.bindingOverride, ...model.selectedBinding, pricing: cloneJson(entry) };
+    } else throw new Error(`Edit pricing on the selected channel mapping for ${model.id}; an override for another deployment is retained.`);
+  }
 }
 
 export function applyPricingTemplateToModel(config, model, definition) {
@@ -597,6 +620,7 @@ export function buildLogSummaryText(entry, t, formatDateTimeFn = formatDateTime)
     entry?.ts ? `${t("logs.meta.time", "Time")}: ${formatDateTimeFn(entry.ts)}` : "",
     entry?.source ? `${t("logs.meta.source", "Source")}: ${getLocalizedLogSourceLabel(entry.source, t)}` : "",
     entry?.requestId ? `${t("logs.meta.requestId", "Request ID")}: ${entry.requestId}` : "",
+    ...["connectionId", "operationId", "configRevision", "eventUid"].filter(key => entry?.fields?.[key]).map(key => `${key}: ${entry.fields[key]}`),
     entry?.azureRequestId ? `${t("logs.meta.azureRequestId", "Azure Request ID")}: ${entry.azureRequestId}` : "",
     entry?.modelId ? `${t("logs.meta.model", "Model")}: ${entry.modelId}` : "",
     entry?.routeKey || entry?.backendRouteKey
@@ -762,7 +786,7 @@ export function inspectConfigStructure(config) {
   if (!Array.isArray(config.upstreams) || config.upstreams.length === 0) {
     issues.push("upstreams must be a non-empty array");
   }
-  if (!Array.isArray(config.models) || config.models.length === 0) {
+  if (!Array.isArray(config.models) || (!config.models.length && !config.upstreams?.some(up => up.channelId))) {
     issues.push("models must be a non-empty array");
   }
   return issues;

@@ -434,6 +434,10 @@ test("Realtime settles distinct response and transcription prices without duplic
       assert.ok(Math.abs(usage.estimatedCostAmount - 0.0062) < 1e-12);
       assert.equal(usage.fields.counters.inputTokens, 100);
       assert.equal(usage.fields.counters.durationSeconds, 30);
+      const [voice] = (await ctx.adminRequest("/admin/api/stats")).json.canonicalModels;
+      assert.deepEqual([voice.canonicalModelId, voice.channels[0].channelId, voice.requests, voice.settledRequests],
+        ["gpt-realtime-2", null, 1, 1]);
+      assert.ok(Math.abs(voice.knownCostAmount - 0.0062) < 1e-12);
     } finally { socket.terminate(); }
   }, { logLevel: "info" });
 });

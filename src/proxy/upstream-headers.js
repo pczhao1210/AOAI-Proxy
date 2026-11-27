@@ -47,6 +47,10 @@ function applyAnthropicBetaPolicy(headers, config, { upstream, targetUrl }) {
 }
 
 export function buildUpstreamHeaders({ incomingHeaders, config, backendRouteKey, upstream, targetUrl, upstreamAuthHeaders, requestContext }) {
+  if (upstream?.provider === "github-copilot") {
+    incomingHeaders = Object.fromEntries(Object.entries(incomingHeaders).filter(([key]) =>
+      ANTHROPIC_REQUEST_HEADERS.has(key.toLowerCase())));
+  }
   const forwardSdkMetadata = backendRouteKey === "messages"
     && config?.compatibility?.anthropic?.forwardSdkMetadataHeaders !== false;
   const headers = {

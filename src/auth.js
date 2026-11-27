@@ -228,6 +228,10 @@ export async function warmBearerToken(scope) {
 
 export async function getUpstreamAuthHeaders(scope, options = {}) {
   const upstreamAuth = normalizeUpstreamAuth(options.auth);
+  if (upstreamAuth?.mode === "githubCopilot") {
+    const { copilotRuntime } = await import("./copilot-runtime.js");
+    return copilotRuntime.headers(options.upstream, options.targetUrl, options.model, options.requestId);
+  }
   const apiKeyHeader = ["x-api-key", "ocp-apim-subscription-key"].includes(options.apiKeyHeader) ? options.apiKeyHeader : "api-key";
   if (upstreamAuth?.mode === "apiKey") {
     return {

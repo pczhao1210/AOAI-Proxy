@@ -1,10 +1,17 @@
 import { useState } from "react";
 import { EntityCard, Field, ListInput, Section, StatCard } from "./ui.jsx";
 
-export default function KeysTab({ config, updateConfig, addApiKey, onCopyApiKey, t }) {
+function grantedIds(config, key) {
+  if (!key || key.status === "disabled") return [];
+  const all = key.modelAccessMode === "all" || (!key.modelAccessMode && !key.allowedModels?.length);
+  return (config.models || []).filter(m => m.id && m.status !== "disabled" && (all || key.allowedModels?.includes(m.id))).map(m => m.id);
+}
+
+export default function KeysTab({ config, loadedConfig = {}, updateConfig, addApiKey, onCopyApiKey, t }) {
   const [search, setSearch] = useState("");
   const [copyingKey, setCopyingKey] = useState("");
   const items = config.apiKeys || [];
+  const exposed = (config.models || []).filter(model => model.id && model.status !== "disabled").map(model => model.id);
   const searchTerm = search.trim().toLowerCase();
   const filteredItems = items
     .map((item, index) => ({ item, index }))
@@ -47,6 +54,11 @@ export default function KeysTab({ config, updateConfig, addApiKey, onCopyApiKey,
         {filteredItems.map(({ item, index }) => {
           const copyStateKey = `${item.id || "key"}-${index}`;
           const allowedModelsCount = Array.isArray(item.allowedModels) ? item.allowedModels.length : 0;
+          const accessMode = item.modelAccessMode || (allowedModelsCount ? "selected" : "all");
+          const candidates = [...new Set([...exposed, ...(item.allowedModels || [])])];
+          const before = new Set(grantedIds(loadedConfig, loadedConfig.apiKeys?.find(key => key.id === item.id)));
+          const after = new Set(grantedIds(config, item));
+          const changes = [...[...after].filter(id => !before.has(id)).map(id => `+ ${id}`), ...[...before].filter(id => !after.has(id)).map(id => `− ${id}`)];
           const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
           const budgetText = Number(item.budget?.limitAmount || 0) > 0
             ? `${Number(item.budget.limitAmount || 0).toFixed(2)} ${item.budget?.currency || "USD"}`
@@ -57,7 +69,7 @@ export default function KeysTab({ config, updateConfig, addApiKey, onCopyApiKey,
               key={`key-${index}`}
               title={item.displayName || item.id || `key-${index + 1}`}
               subtitle={item.owner || t("status.keySubtitleFallback", "Owner not set")}
-              meta={`${t("field.status", "Status")}: ${statusLabel} · ${t("field.allowedModels", "Allowed Models")}: ${allowedModelsCount} · ${t("field.budgetLimit", "Budget Limit")}: ${budgetText}`}
+              meta={`${t("field.status", "Status")}: ${statusLabel} · ${t("field.allowedModels", "Allowed Models")}: ${accessMode === "all" ? t("keys.summary.all", "All") : allowedModelsCount} · ${t("field.budgetLimit", "Budget Limit")}: ${budgetText}`}
               removeLabel={t("entity.delete", "Delete")}
               expandLabel={t("entity.expand", "Edit configuration")}
               collapseLabel={t("entity.collapse", "Collapse")}
@@ -95,7 +107,33 @@ export default function KeysTab({ config, updateConfig, addApiKey, onCopyApiKey,
                     </button>
                   </div>
                 </Field>
-                <Field label={t("field.allowedModels", "Allowed Models")}><ListInput value={item.allowedModels} onChange={(value) => updateConfig((next) => { next.apiKeys[index].allowedModels = value; })} /></Field>
+                <Field label={t("channel.access", "Model access")}>
+                  <select value={accessMode} onChange={event => {
+                    const mode = event.target.value;
+                    if (mode === "all" && !window.confirm(t("channel.confirmAll"))) return;
+                    updateConfig(next => {
+                      next.apiKeys[index].modelAccessMode = mode;
+                      next.apiKeys[index].allowedModels = [];
+                    });
+                  }}>
+                    <option value="selected">{t("channel.selected")}</option>
+                    <option value="all">{t("channel.all")}</option>
+                  </select>
+                </Field>
+                {accessMode === "selected" && <fieldset><legend>{t("field.allowedModels", "Allowed Models")}</legend>
+                  {candidates.map(id => <label key={id}><input type="checkbox" checked={(item.allowedModels || []).includes(id)}
+                    onChange={event => {
+                      const checked = event.target.checked;
+                      updateConfig(next => {
+                        const key = next.apiKeys[index];
+                        key.modelAccessMode = "selected";
+                        key.allowedModels = checked ? [...(key.allowedModels || []), id] : key.allowedModels.filter(value => value !== id);
+                      });
+                    }} /> {id}{!exposed.includes(id) && ` (${t("channel.unavailable")})`}</label>)}
+                  {!allowedModelsCount && <small>{t("channel.noAccess")}</small>}
+                </fieldset>}
+                {config.access?.defaults?.requireApiKey === false && <small>{t("channel.anonymous")}</small>}
+                {changes.length > 0 && <p role="status">{t("channel.accessChanges")} {changes.join(", ")}</p>}
                 <Field label={t("field.rateLimitRpm", "Rate Limit RPM")}><input type="number" value={item.rateLimit?.rpm || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.rpm = Number(event.target.value || 0); })} /></Field>
                 <Field label={t("field.rateLimitTpm", "Rate Limit TPM")}><input type="number" value={item.rateLimit?.tpm || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.tpm = Number(event.target.value || 0); })} /></Field>
                 <Field label={t("field.concurrency", "Concurrency")}><input type="number" value={item.rateLimit?.concurrency || 0} onChange={(event) => updateConfig((next) => { next.apiKeys[index].rateLimit = next.apiKeys[index].rateLimit || {}; next.apiKeys[index].rateLimit.concurrency = Number(event.target.value || 0); })} /></Field>

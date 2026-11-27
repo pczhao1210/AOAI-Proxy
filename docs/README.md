@@ -12,6 +12,7 @@ This directory contains the project documentation and deployment guides.
 - Git 协作指南（中文）: [development/git-workflow.zh-CN.md](development/git-workflow.zh-CN.md)
 - Claude Code / Codex 接入要求: [development/claude-code-codex-requirements.md](development/claude-code-codex-requirements.md)
 - 管理后台 Harness 优化执行计划: [development/harness-admin-optimization-plan.zh-CN.md](development/harness-admin-optimization-plan.zh-CN.md)
+- 渠道模型映射、模型暴露、Key 授权与 GitHub Copilot 接入计划及隔离验收: [../github_copilot_channel_plan.md](../github_copilot_channel_plan.md)
 
 ## Protocols
 
@@ -24,6 +25,7 @@ This directory contains the project documentation and deployment guides.
 
 ## Deployment Guides
 
+- Channel operation history, correlation and alert runbook: [observability/channel-operations.md](observability/channel-operations.md)
 - Log Analytics through DCE (English): [observability/log-analytics-dce.en.md](observability/log-analytics-dce.en.md)
 - 通过 DCE 写入 Log Analytics（中文）: [observability/log-analytics-dce.zh-CN.md](observability/log-analytics-dce.zh-CN.md)
 - Database-first Azure deployment: [../README.md#azure-deployment](../README.md#azure-deployment)

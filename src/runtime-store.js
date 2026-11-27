@@ -3,9 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { writeFileAtomic } from "./atomic-file.js";
 import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
+import { operationFields, operationLimit } from "./channel-operation-fields.js";
 import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
 import { parsePersistenceMode } from "./persistence-mode.js";
-import { beginModelStatsReset } from "./stats.js";
+import { beginModelStatsReset, getMemoryChannelStats } from "./stats.js";
+import { accumulateChannelDetail, channelIdentity, channelMetric, channelTree, reconcileChannelHistory } from "./channel-statistics.js";
 import { normalizeCacheWrite, summarizeCacheWrite, billingTierIdentity, billingTierKey, billingTierFromKey, reconcileBillingTiers } from "./statistics.js";
 
 const DEFAULT_DATABASE_SCHEMA = "public";
@@ -301,18 +303,31 @@ async function appendLocalBufferEvents(settings, events) {
   }
   return queueLocalBufferOperation(async () => {
     if (pendingLocalAppend?.events === events) pendingLocalAppend = null;
-    const newEvents = events.map(normalizeBufferedEvent);
     const existingCount = runtimeStoreState.localBufferPath === settings.localBufferPath
       ? runtimeStoreState.persistedEventCount
       : 0;
+    let dropped = 0;
+    let freeOperationSlots = Math.max(0, settings.maxPersistedEvents - existingCount);
+    const accepted = events.length <= freeOperationSlots ? events : events.filter(event => {
+      if (event.eventType === "operation" && freeOperationSlots <= 0) { dropped++; return false; }
+      freeOperationSlots--;
+      return true;
+    });
+    const newEvents = accepted.map(normalizeBufferedEvent);
+    if (!newEvents.length) return { persistedEventCount: existingCount, dropped };
     const nextCount = existingCount + newEvents.length;
     let persistedEventCount = nextCount;
-    let dropped = 0;
     if (nextCount > settings.maxPersistedEvents) {
       const existingEvents = await readLocalBufferEventsUnsafe(settings);
-      const nextEvents = existingEvents.concat(newEvents);
-      dropped = Math.max(0, nextEvents.length - settings.maxPersistedEvents);
-      if (dropped) nextEvents.splice(0, dropped);
+      let nextEvents = existingEvents.concat(newEvents);
+      let overflow = Math.max(0, nextEvents.length - settings.maxPersistedEvents);
+      dropped += overflow;
+      if (overflow) nextEvents = nextEvents.filter(item => {
+        if (item.eventType !== "operation" || overflow === 0) return true;
+        overflow--;
+        return false;
+      });
+      if (overflow) nextEvents.splice(0, overflow);
       await writeLocalBufferEventsUnsafe(settings, nextEvents);
       persistedEventCount = nextEvents.length;
       updateLocalBufferState(settings, nextEvents);
@@ -491,8 +506,8 @@ function getRuntimeStorePool(settings) {
   return getSharedPostgresPool(settings.poolOptions);
 }
 
-async function withRuntimeReadSnapshot(settings, read) {
-  await serializeDatabaseOperation(() => ensureRuntimeTables(settings));
+async function withRuntimeReadSnapshot(settings, read, { ensureTables = true } = {}) {
+  if (ensureTables) await serializeDatabaseOperation(() => ensureRuntimeTables(settings));
   const pool = getSharedPostgresPool({
     ...settings.poolOptions, max: 2, min: 0, connectionTimeoutMillis: 3000
   }, "runtime-reader");
@@ -622,6 +637,8 @@ async function ensureRuntimeTables(settings) {
     )
   `);
   await pool.query(`ALTER TABLE ${schemaName}.${rollupsTableName} ADD COLUMN IF NOT EXISTS text_unknown_cost_requests BIGINT NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE ${schemaName}.${rollupsTableName} ADD COLUMN IF NOT EXISTS channel_detail JSONB,
+    ADD COLUMN IF NOT EXISTS channel_settlements BIGINT`);
   await pool.query(`ALTER TABLE ${schemaName}.${rollupsTableName} ${CACHE_WRITE_COLUMN_DEFINITIONS.map(([name, type]) => `ADD COLUMN IF NOT EXISTS ${name} ${type}`).join(", ")}`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${settings.rollupsTableName}_grain_scope_bucket_idx`, "runtime rollups index")}
     ON ${schemaName}.${rollupsTableName} (grain, scope_type, bucket_start DESC)`);
@@ -680,7 +697,7 @@ function buildEventRow(eventType, fields = {}) {
     signalName: String(fields.signalName || fields.eventName || fields.event || "").trim(),
     requestId: String(fields.requestId || "").trim() || null,
     occurredAt: typeof fields.occurredAt === "string" && fields.occurredAt ? fields.occurredAt : toIsoString(),
-    keyId: String(fields.keyId || "anonymous").trim() || "anonymous",
+    keyId: eventType === "operation" ? "" : String(fields.keyId || "anonymous").trim() || "anonymous",
     modelId: String(fields.modelId || "").trim(),
     actualModelId: String(fields.actualModelName || fields.actualModelId || "").trim(),
     routeKey: String(fields.routeKey || "").trim(),
@@ -707,6 +724,8 @@ function buildEventRow(eventType, fields = {}) {
     currency: String(fields.currency || "USD").trim() || "USD",
     payload: {
       ...(fields.payload && typeof fields.payload === "object" && !Array.isArray(fields.payload) ? fields.payload : {}),
+      ...Object.fromEntries(["canonicalModelId", "channelId", "sourceModelId", "configRevision", "historyId", "reportedModelName"]
+        .filter(key => typeof fields[key] === "string" && fields[key]).map(key => [key, fields[key]])),
       modelStatsRecordedAt: fields.payload?.modelStatsRecordedAt
         || toIsoString(Math.max(Date.now(), modelEventClockFloor)),
       ...(fields.conversationId ? { conversationId: String(fields.conversationId) } : {}),
@@ -717,8 +736,10 @@ function buildEventRow(eventType, fields = {}) {
 
 function enqueueMemoryFallback(settings, event) {
   if (runtimeEventQueue.length >= settings.maxQueueSize) {
-    runtimeEventQueue.shift();
     updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + 1 });
+    if (event.eventType === "operation") return;
+    const oldestOperation = runtimeEventQueue.findIndex(item => item.eventType === "operation");
+    runtimeEventQueue.splice(Math.max(0, oldestOperation), 1);
   }
   runtimeEventQueue.push(event);
   updateRuntimeStoreState({ enabled: settings.enabled, configured: settings.configured });
@@ -727,6 +748,10 @@ function enqueueMemoryFallback(settings, event) {
 
 function persistRuntimeEventLocally(settings, event) {
   if (pendingLocalAppend?.path === settings.localBufferPath && pendingLocalAppend.limit === settings.maxPersistedEvents) {
+    if (event.eventType === "operation" && pendingLocalAppend.events.length >= settings.maxPersistedEvents) {
+      updateRuntimeStoreState({ droppedEvents: runtimeStoreState.droppedEvents + 1 });
+      return;
+    }
     pendingLocalAppend.events.push(event);
     return;
   }
@@ -873,6 +898,13 @@ function createMetricDelta(event) {
   };
 }
 
+function eventChannelIdentity(event) {
+  const { payload } = event;
+  return channelIdentity(event.modelId, { ...payload, routeKey: event.routeKey, backendRouteKey: event.backendRouteKey,
+    actualModelName: event.actualModelId }, event.eventType, payload.textCost?.pricing?.actual,
+  payload.media?.costStatus ?? payload.textCost?.costStatus, payload.media ? null : event.currency);
+}
+
 function getBucketStart(grain, occurredAt) {
   const source = new Date(occurredAt);
   const date = Number.isFinite(source.getTime()) ? source : new Date();
@@ -896,6 +928,7 @@ function getRollupKey(grain, bucketStart, scopeType, scopeKey = "", scopeSubkey 
 
 function addRollupMetric(target, delta) {
   target.requests += delta.requests;
+  target.settlements += delta.settlements || 0;
   target.errors += delta.errors;
   target.blockedCount += delta.blockedCount;
   target.warningCount += delta.warningCount;
@@ -937,6 +970,7 @@ function addRollupRow(map, grain, bucketStart, scopeType, scopeKey, scopeSubkey,
       scopeKey,
       scopeSubkey,
       requests: 0,
+      settlements: 0,
       errors: 0,
       blockedCount: 0,
       warningCount: 0,
@@ -959,6 +993,7 @@ function addRollupRow(map, grain, bucketStart, scopeType, scopeKey, scopeSubkey,
 function buildRollupRows(events, modelsResetAt) {
   const rows = new Map();
   for (const event of events) {
+    if (event.eventType === "operation") continue;
     const delta = createMetricDelta(event);
     const includeModel = !modelsResetAt || Date.parse(event.payload.modelStatsRecordedAt || event.occurredAt) > Date.parse(modelsResetAt);
     for (const grain of ROLLUP_GRAINS) {
@@ -970,6 +1005,18 @@ function buildRollupRows(events, modelsResetAt) {
       }
       if (event.modelId && includeModel) {
         addRollupRow(rows, grain, bucketStart, "model", event.modelId, "", delta);
+        if (grain === "daily" && ["request", "error", "usage"].includes(event.eventType)) {
+          const identity = eventChannelIdentity(event);
+          const key = JSON.stringify([event.eventType, identity]);
+          addRollupRow(rows, grain, bucketStart, "channel_detail", event.modelId, key, { ...delta, settlements: event.eventType === "usage" ? 1 : 0 });
+          for (const [currency, amount] of Object.entries(event.payload.media?.knownCostAmounts || {})) {
+            if (Number.isFinite(amount) && amount >= 0) addRollupRow(rows, grain, bucketStart, "channel_currency",
+              event.modelId, JSON.stringify(["media_cost", identity, currency]), {
+                ...createMetricDelta({ occurredAt: event.occurredAt, cacheWrite: summarizeCacheWrite() }),
+                currency, estimatedCostAmount: amount
+              });
+          }
+        }
         if (event.eventType === "usage") {
           const identity = billingTierIdentity(event.modelId, event.actualModelId, event.payload.textCost?.pricing?.actual);
           addRollupRow(rows, grain, bucketStart, "billing_tier", event.modelId, billingTierKey(identity), { ...delta, requests: 1 });
@@ -993,6 +1040,11 @@ async function upsertRollupRows(settings, rollupRows, pool = getRuntimeStorePool
   if (!rollupRows.length) {
     return;
   }
+  // Distinct detail identities can produce more rows than the event batch.
+  if (rollupRows.length > 2000) {
+    for (let i = 0; i < rollupRows.length; i += 2000) await upsertRollupRows(settings, rollupRows.slice(i, i + 2000), pool);
+    return;
+  }
   const { schemaName, rollupsTableName } = getQualifiedTableNames(settings);
   const columns = [
     "grain",
@@ -1014,17 +1066,22 @@ async function upsertRollupRows(settings, rollupRows, pool = getRuntimeStorePool
     "model_router_cost_amount",
     "actual_model_cost_amount",
     "currency",
-    "last_occurred_at"
+    "last_occurred_at",
+    "channel_detail",
+    "channel_settlements"
   ];
   const values = [];
   const rows = rollupRows.map((item, index) => {
     const offset = index * columns.length;
+    const channelScope = item.scopeType === "channel_detail" || item.scopeType === "channel_currency";
     values.push(
       item.grain,
       item.bucketStart,
       item.scopeType,
-      item.scopeKey,
-      item.scopeSubkey,
+      channelScope ? "" : item.scopeKey,
+      // The composite identity can exceed PostgreSQL's btree tuple size. Keep it
+      // in JSONB and index a digest, not a concatenation of arbitrary provider IDs.
+      channelScope ? createHash("sha256").update(item.scopeSubkey).digest("hex") : item.scopeSubkey,
       item.requests,
       item.errors,
       item.blockedCount,
@@ -1039,7 +1096,9 @@ async function upsertRollupRows(settings, rollupRows, pool = getRuntimeStorePool
       item.modelRouterCostAmount,
       item.actualModelCostAmount,
       item.currency,
-      item.lastOccurredAt
+      item.lastOccurredAt,
+      channelScope ? item.scopeSubkey : null,
+      channelScope ? item.settlements : null
     );
     return `(${columns.map((_, columnIndex) => `$${offset + columnIndex + 1}`).join(", ")})`;
   });
@@ -1049,6 +1108,7 @@ async function upsertRollupRows(settings, rollupRows, pool = getRuntimeStorePool
      ON CONFLICT (grain, bucket_start, scope_type, scope_key, scope_subkey)
      DO UPDATE SET
        requests = ${schemaName}.${rollupsTableName}.requests + EXCLUDED.requests,
+       channel_settlements = ${schemaName}.${rollupsTableName}.channel_settlements + EXCLUDED.channel_settlements,
        errors = ${schemaName}.${rollupsTableName}.errors + EXCLUDED.errors,
        blocked_count = ${schemaName}.${rollupsTableName}.blocked_count + EXCLUDED.blocked_count,
        warning_count = ${schemaName}.${rollupsTableName}.warning_count + EXCLUDED.warning_count,
@@ -1135,6 +1195,22 @@ async function fetchUnrolledEvents(settings, afterEventId, pool = getRuntimeStor
   return result.rows.map(normalizeEventRecord);
 }
 
+async function withRollupLock(settings, operation) {
+  const client = await getRuntimeStorePool(settings).connect();
+  let transactionError;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${settings.schemaName}.${settings.metaTableName}:rollup`]);
+    const result = await operation(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    transactionError = error;
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally { client.release(transactionError); }
+}
+
 async function rollupRuntimeEvents(settings) {
   if (!settings.configured) {
     return { processed: 0 };
@@ -1144,32 +1220,17 @@ async function rollupRuntimeEvents(settings) {
   let lastEventId = 0;
   try {
     while (true) {
-      // A dedicated client is essential: pool.query cannot keep BEGIN, updates
-      // and COMMIT on the same PostgreSQL connection.
-      const client = await getRuntimeStorePool(settings).connect();
-      let batch;
-      let transactionError;
-      try {
-        await client.query("BEGIN");
-        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
-          `${settings.schemaName}.${settings.metaTableName}:rollup`
-        ]);
+      const batch = await withRollupLock(settings, async client => {
         lastEventId = resolveInt(await getMetaValue(settings, META_LAST_ROLLED_EVENT_ID, client), 0, 0);
         const modelsResetAt = await getMetaValue(settings, META_MODELS_RESET_AT, client);
-        batch = await fetchUnrolledEvents(settings, lastEventId, client);
+        const batch = await fetchUnrolledEvents(settings, lastEventId, client);
         if (batch.length) {
           await upsertRollupRows(settings, buildRollupRows(batch, modelsResetAt), client);
           lastEventId = batch[batch.length - 1].eventId;
           await setMetaValue(settings, META_LAST_ROLLED_EVENT_ID, lastEventId, client);
         }
-        await client.query("COMMIT");
-      } catch (error) {
-        transactionError = error;
-        await client.query("ROLLBACK").catch(() => {});
-        throw error;
-      } finally {
-        client.release(transactionError);
-      }
+        return batch;
+      });
       processed += batch.length;
       if (batch.length < settings.rollupBatchSize) break;
     }
@@ -1226,22 +1287,24 @@ export async function resetRuntimeModelStats(config) {
         throw Object.assign(new Error("Model statistics reset requires a configured runtime database"), { code: "RUNTIME_STORE_CONFIG_INCOMPLETE" });
       }
       if (settings.configured) await ensureRuntimeTables(settings);
-      const modelsResetAt = toIsoString(Math.max(Date.now(), modelEventClockFloor));
-      modelEventClockFloor = Date.parse(modelsResetAt) + 1;
-      memoryReset = beginModelStatsReset(modelsResetAt);
-      if (settings.configured) {
+      const reset = async client => {
+        const modelsResetAt = toIsoString(Math.max(Date.now(), modelEventClockFloor));
+        modelEventClockFloor = Date.parse(modelsResetAt) + 1;
+        memoryReset = beginModelStatsReset(modelsResetAt);
+        if (!client) return modelsResetAt;
         const { schemaName, rollupsTableName, metaTableName } = getQualifiedTableNames(settings);
-        // One statement commits the durable boundary and model-only deletion atomically.
-        await getRuntimeStorePool(settings).query(`
+        await client.query(`
           WITH reset_models AS (
             DELETE FROM ${schemaName}.${rollupsTableName}
-            WHERE scope_type IN ('model', 'actual_model', 'billing_tier')
+            WHERE scope_type IN ('model', 'actual_model', 'billing_tier', 'channel_detail', 'channel_currency')
           )
           INSERT INTO ${schemaName}.${metaTableName} (meta_key, meta_value, updated_at)
           VALUES ($1, $2, NOW())
           ON CONFLICT (meta_key) DO UPDATE SET meta_value = EXCLUDED.meta_value, updated_at = NOW()
         `, [META_MODELS_RESET_AT, modelsResetAt]);
-      }
+        return modelsResetAt;
+      };
+      const modelsResetAt = settings.configured ? await withRollupLock(settings, reset) : await reset(null);
       memoryReset.commit();
       modelStatsGeneration++;
       return { modelsResetAt };
@@ -1453,6 +1516,66 @@ export function recordRuntimeRequest(config, fields = {}) {
   }));
 }
 
+export function recordRuntimeOperation(config, fields) {
+  const payload = operationFields(fields, config);
+  if (!payload?.eventUid) return;
+  const settings = resolveRuntimeStoreSettings(config);
+  enqueueRuntimeEvent(settings, buildEventRow("operation", {
+    eventUid: payload.eventUid, occurredAt: fields.ts, event: payload.event, requestId: payload.requestId, payload
+  }));
+}
+
+export async function readRuntimeOperations(config, filters = {}) {
+  const settings = resolveRuntimeStoreSettings(config);
+  const generation = runtimeConfigGeneration;
+  const limit = operationLimit(filters.limit);
+  const capturedAt = toIsoString();
+  const retainedSince = toIsoString(Math.max(0, Date.parse(capturedAt) - settings.detailRetentionDays * 86400000));
+  const base = {
+    ok: true, view: "operations", recordSource: "database", capturedAt, retainedSince,
+    detailRetentionDays: settings.detailRetentionDays, droppedEvents: runtimeStoreState.droppedEvents,
+    limit, total: 0, items: [], hasMore: false
+  };
+  if (!settings.configured) return { ...base, retainedSince: null, persistence: settings.enabled ? "unavailable" : "disabled" };
+  const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
+  const values = [retainedSince];
+  const clauses = ["event_type = 'operation'", "occurred_at >= $1::timestamptz"];
+  for (const [field, column] of Object.entries({
+    operationId: "payload->>'operationId'", configRevision: "payload->>'configRevision'",
+    modelId: "payload->>'modelId'", event: "signal_name", requestId: "request_id"
+  })) {
+    if (filters[field]) clauses.push(`${column} = $${values.push(String(filters[field]).slice(0, 256))}`);
+  }
+  if (filters.connectionId) {
+    const ref = `$${values.push(String(filters.connectionId).slice(0, 256))}`;
+    clauses.push(`(${ref} IN (payload->>'connectionId', payload->>'channelId', payload->>'previousChannelId'))`);
+  }
+  if (filters.level) {
+    const levels = String(filters.level).split(",").filter(value => ["trace", "debug", "info", "warn", "error", "fatal"].includes(value));
+    clauses.push(`payload->>'level' = ANY($${values.push(levels)}::text[])`);
+  }
+  if (filters.since && Number.isFinite(Date.parse(filters.since))) {
+    clauses.push(`occurred_at >= $${values.push(toIsoString(Date.parse(filters.since)))}::timestamptz`);
+  }
+  try {
+    const { rows } = await withRuntimeReadSnapshot(settings, client => client.query(
+      `SELECT event_uid, occurred_at, signal_name, payload FROM ${schemaName}.${eventsTableName}
+       WHERE ${clauses.join(" AND ")} ORDER BY occurred_at DESC, event_id DESC LIMIT $${values.push(limit + 1)}`, values
+    ), { ensureTables: false });
+    if (generation !== runtimeConfigGeneration) return { ...base, persistence: "unavailable" };
+    const items = rows.slice(0, limit).flatMap(row => {
+      const payload = operationFields({ ...row.payload, event: row.signal_name, eventUid: row.event_uid }, config);
+      if (!payload?.eventUid) return [];
+      const { source, level, event, modelId, errorCode, requestId, latencyMs, ...fields } = payload;
+      return [{ id: row.event_uid, ts: toIsoString(row.occurred_at), source, level, event, modelId, errorCode, requestId, latencyMs, fields }];
+    });
+    return { ...base, persistence: "available", total: items.length, hasMore: rows.length > limit, items };
+  } catch {
+    // Missing tables, offline database and read timeouts are not an empty, successful history.
+    return { ...base, persistence: "unavailable" };
+  }
+}
+
 export function recordRuntimeBlocked(config, fields = {}) {
   const settings = resolveRuntimeStoreSettings(config);
   enqueueRuntimeEvent(settings, buildEventRow("blocked", fields));
@@ -1639,7 +1762,7 @@ function normalizeStatsFilters(options = {}) {
 
 function buildEventFilterParts(filters, startIndex = 1, alias = "") {
   const prefix = alias ? `${alias}.` : "";
-  const clauses = [];
+  const clauses = [`${prefix}event_type <> 'operation'`];
   const values = [];
   let paramIndex = startIndex;
 
@@ -1902,6 +2025,50 @@ async function queryBillingTiers(settings, filters, filtered, pool = getRuntimeS
   })).filter(row => row.identity);
 }
 
+async function queryChannelDetails(settings, filters, filtered, pool = getRuntimeStorePool(settings)) {
+  const { schemaName, eventsTableName, rollupsTableName } = getQualifiedTableNames(settings);
+  const { clauses, values } = filtered ? buildEventFilterParts(filters) : { clauses: [], values: [] };
+  const fields = filtered ? `model_id, event_type, route_key, backend_route_key, actual_model_id,
+    payload->>'reportedModelName' AS reported_model,
+    payload->>'canonicalModelId' AS canonical, payload->>'channelId' AS channel, payload->>'sourceModelId' AS source_model,
+    payload->>'usageSource' AS usage_source, payload->'textCost'->'pricing'->'actual' AS audit,
+    COALESCE(payload->'media'->>'costStatus', payload->'textCost'->>'costStatus') AS cost_status,
+    payload->'media'->'knownCostAmounts' AS media_costs, payload ? 'media' AS is_media, currency`
+    // Read-only dashboards may reach an old schema before the first writer migrates it.
+    : "to_jsonb(r)->'channel_detail' AS binding_data";
+  const result = await pool.query(`
+    SELECT ${fields}, ${filtered ? "COUNT(*)" : "SUM(requests + errors + COALESCE((to_jsonb(r)->>'channel_settlements')::bigint, 0))"} AS event_count,
+      ${["prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "text_unknown_cost_requests",
+        "estimated_cost_amount"].map(key => `SUM(${key}) AS ${key}`).join(", ")},
+      ${cacheWriteAggregateSql(filtered)}
+    FROM ${schemaName}.${filtered ? eventsTableName : rollupsTableName} AS r
+    WHERE ${filtered ? "event_type IN ('request','error','usage') AND model_id <> ''" : "grain = 'daily' AND scope_type IN ('channel_detail','channel_currency')"}
+      ${clauses.length ? `AND ${clauses.join(" AND ")}` : ""}
+    GROUP BY ${filtered ? `model_id, event_type, route_key, backend_route_key, actual_model_id, canonical, channel,
+      source_model, reported_model, usage_source, audit, cost_status, media_costs, is_media, currency` : "binding_data"}
+  `, values);
+  const details = new Map();
+  for (const row of result.rows) {
+    const [phase, identity, mediaCurrency] = filtered
+      ? [row.event_type, channelIdentity(row.model_id, {
+        canonicalModelId: row.canonical, channelId: row.channel, sourceModelId: row.source_model,
+        routeKey: row.route_key, backendRouteKey: row.backend_route_key, actualModelName: row.actual_model_id,
+        usageSource: row.usage_source, reportedModelName: row.reported_model
+      }, row.event_type, row.audit, row.cost_status, row.is_media ? null : row.currency)]
+      : row.binding_data;
+    if (phase === "media_cost") {
+      accumulateChannelDetail(details, identity, { knownCostAmounts: { [mediaCurrency]: numeric(row.estimated_cost_amount) } });
+      continue;
+    }
+    const count = integer(row.event_count);
+    const metric = channelMetric(phase, count, buildAggregateNode(row), identity);
+    if (row.is_media) metric.knownCostAmounts = Object.fromEntries(Object.entries(row.media_costs || {})
+      .map(([currency, amount]) => [currency, numeric(amount) * count]));
+    accumulateChannelDetail(details, identity, metric);
+  }
+  return [...details.values()];
+}
+
 async function queryFilteredPerKey(settings, filters, pool = getRuntimeStorePool(settings)) {
   const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
   const filterParts = buildEventFilterParts(filters);
@@ -2162,13 +2329,16 @@ export function getRuntimeStatsSnapshot(config, fallbackStats = null, options = 
   return serializeDatabaseOperation(() => getRuntimeStatsSnapshotInternal(config, fallbackStats, options));
 }
 
+function memoryStatsFallback(fallbackStats, options, snapshot) {
+  const { keyId, timeRange, since } = normalizeStatsFilters(options);
+  return { ...fallbackStats, ...getMemoryChannelStats({ keyId, since }), canonicalFilters: { keyId, timeRange }, snapshot };
+}
+
 async function readRuntimeStatsSnapshot(config, fallbackStats, options) {
   const settings = resolveRuntimeStoreSettings(config);
   const generation = modelStatsGeneration;
-  if (!settings.configured) return {
-    ...fallbackStats,
-    snapshot: { source: "memory", capturedAt: toIsoString(), partial: settings.enabled }
-  };
+  if (!settings.configured) return memoryStatsFallback(fallbackStats, options,
+    { source: "memory", capturedAt: toIsoString(), partial: settings.enabled });
   try {
     const result = await withRuntimeReadSnapshot(settings, async client => {
       const { schemaName, eventsTableName } = getQualifiedTableNames(settings);
@@ -2194,14 +2364,15 @@ async function readRuntimeStatsSnapshot(config, fallbackStats, options) {
       failureReason: error.message
     });
     if (error.code === "RUNTIME_STATS_SNAPSHOT_STALE" || generation !== modelStatsGeneration) throw error;
-    return { ...fallbackStats, snapshot: { source: "memory", capturedAt: toIsoString(), partial: true, error: snapshotError(error) } };
+    return memoryStatsFallback(fallbackStats, options,
+      { source: "memory", capturedAt: toIsoString(), partial: true, error: snapshotError(error) });
   }
 }
 
 async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
   const settings = resolveRuntimeStoreSettings(config);
   if (!settings.configured) {
-    return fallbackStats;
+    return memoryStatsFallback(fallbackStats, options, { source: "memory", capturedAt: toIsoString(), partial: settings.enabled });
   }
 
   try {
@@ -2231,7 +2402,8 @@ async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
       () => useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "blocked", 12, client) : queryRecentSignals(settings, "blocked", 12, client),
       () => useFilteredQueryPath ? queryFilteredRecentSignals(settings, filters, "warning", 12, client) : queryRecentSignals(settings, "warning", 12, client),
       () => queryMediaAggregates(settings, filters, modelsResetAt, client),
-      () => queryBillingTiers(settings, modelFilters, useFilteredQueryPath, client)
+      () => queryBillingTiers(settings, modelFilters, useFilteredQueryPath, client),
+      () => queryChannelDetails(settings, modelFilters, useFilteredQueryPath, client)
     ];
     const rows = [];
     if (client) {
@@ -2252,7 +2424,8 @@ async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
       recentBlocked,
       recentWarnings,
       mediaRows,
-      billingTierRows
+      billingTierRows,
+      channelDetails
     ] = rows;
 
     const snapshot = {
@@ -2303,6 +2476,9 @@ async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
       if (model) model.billingTiers.push({ ...buildAggregateNode(row), ...row.identity });
     }
     for (const [modelId, model] of Object.entries(snapshot.perModel)) reconcileBillingTiers(modelId, model);
+    snapshot.canonicalModels = useFilteredQueryPath ? channelTree(channelDetails) : reconcileChannelHistory(channelDetails, snapshot.perModel);
+    snapshot.canonicalFilters = snapshot.filters;
+    if (useFilteredQueryPath) snapshot.canonicalDetailRetentionDays = settings.detailRetentionDays;
 
     for (const row of perKeyRows) {
       snapshot.perKey[row.key_id] = buildAggregateNode(row);
@@ -2329,7 +2505,7 @@ async function getRuntimeStatsSnapshotInternal(config, fallbackStats, options) {
       event: "runtime_store.stats_query_failed",
       failureReason: error?.message || "Runtime stats query failed"
     });
-    return fallbackStats;
+    return memoryStatsFallback(fallbackStats, options, { source: "memory", capturedAt: toIsoString(), partial: true, error: snapshotError(error) });
   }
 }
 
@@ -2437,6 +2613,7 @@ async function queryGovernanceRuntimes(settings, targets, pool = getRuntimeStore
         FROM ${schemaName}.${eventsTableName} AS events
         JOIN targets ON targets.key_id = events.key_id
           AND events.occurred_at >= targets.rate_window_started_at
+          AND events.event_type <> 'operation'
         GROUP BY events.key_id
       ),
       key_totals AS (
@@ -2476,6 +2653,7 @@ async function queryGovernanceRuntimes(settings, targets, pool = getRuntimeStore
         FROM ${schemaName}.${eventsTableName} AS events
         JOIN targets ON targets.key_id = events.key_id
           AND events.occurred_at >= targets.budget_window_started_at
+          AND events.event_type = 'usage'
         GROUP BY events.key_id
       )
       SELECT

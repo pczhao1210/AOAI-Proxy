@@ -123,6 +123,22 @@ test("event and access views remain separate from request summaries", async () =
   assert.equal(filters.view, "access");
 });
 
+test("operation source selector labels disabled persistence and never displays stale memory as retained history", async () => {
+  let filters = { ...DEFAULT_LOG_FILTERS, view: "operations" };
+  const props = () => opsProps({}, {}, { logFilters: filters, setLogFilters: update => { filters = update(filters); },
+    logs: { view: "operations", recordSource: "memory", persistence: "disabled", capturedAt: "2026-01-02T00:00:00Z",
+      total: 1, items: [{ id: 8, event: "admin.channel_mappings_changed", fields: {}, level: "info" }] },
+    t: (key, fallback) => key === "logs.persistence.disabled" ? "Persistent operation history is disabled" : fallback
+  });
+  const { default: OpsTab } = await loadAdminModule("/admin-ui/src/components/OpsTab.jsx");
+  const view = renderElement(createElement(OpsTab, props()));
+  assert.ok(view.getByText(/Persistent operation history is disabled/));
+  assert.ok(view.getByText("admin.channel_mappings_changed"));
+  fireEvent.change(view.getByLabelText("Record source"), { target: { value: "database" } });
+  view.rerender(createElement(OpsTab, props()));
+  assert.equal(view.queryByText("admin.channel_mappings_changed"), null);
+});
+
 for (const logsLoading of [false, true]) {
   test(`request view hides stale access entries while the matching query is ${logsLoading ? "loading" : "not loaded"}`, async () => {
     const view = await renderOps({}, {}, {

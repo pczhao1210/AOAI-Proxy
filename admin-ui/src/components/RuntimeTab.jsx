@@ -32,6 +32,50 @@ function TokenCells({ stats, t }) {
   );
 }
 
+function ChannelAccounting({ models, filters, truncated, retentionDays, t }) {
+  const [expanded, setExpanded] = useState(new Set());
+  const unknown = t("runtime.bindingUnknown", "Not recorded");
+  const metricCells = row => <>
+    <td>{formatRuntimeNumber(row.requests)}</td><td>{formatRuntimeNumber(row.errors)}</td>
+    <td>{formatRuntimeNumber(row.promptTokens)}</td><td>{formatRuntimeNumber(row.cachedTokens)}</td>
+    <td>{formatRuntimeNumber(row.cacheWrite?.observedTokens)}{row.cacheWrite?.observedTokens != null && row.cacheWrite.tokens == null ? " *" : ""}</td>
+    <td>{formatRuntimeNumber(row.completionTokens)}</td><td>{formatRuntimeNumber(row.totalTokens)}</td>
+    <td>{Object.entries(row.knownCostAmounts || {}).map(([currency, value]) => `${value.toFixed(4)} ${currency}`).join(" + ") || "—"}</td>
+    <td>{formatRuntimeNumber(row.unknownCostRequests)}</td>
+  </>;
+  const metricHeaders = <>
+    <th>{t("table.requests", "Requests")}</th><th>{t("table.errors", "Errors")}</th>
+    <th>{t("table.inputTokensIncludingCache", "Input Total (Including Cache)")}</th><th>{t("table.cacheReadTokens", "Cache Read Tokens")}</th>
+    <th>{t("table.cacheWriteTokens", "Cache Write Tokens")}</th><th>{t("table.outputTokens", "Output Tokens")}</th>
+    <th>{t("table.totalTokens", "Total Tokens")}</th><th>{t("runtime.knownCost", "Known cost subtotal")}</th>
+    <th>{t("runtime.unknownCostRequests", "Unknown-cost settlements")}</th>
+  </>;
+  return <section className="runtime-channel-accounting">
+    <h3>{t("runtime.channelAccounting", "Usage by canonical model and channel")}</h3>
+    <p className="field-hint">{t("runtime.channelAccountingHelp", "Rows use the binding recorded during inference. Expand a model for channel subtotals. Cache reads and writes are included in input; * marks a partial write count. Missing cost is not zero.")}</p>
+    {filters && <p className="muted">{[filters.keyId || t("option.all", "All"), filters.timeRange].join(" · ")}</p>}
+    {retentionDays != null && <p className="field-hint">{t("runtime.channelRetention", "Filtered rows use retained events ({days} days). Older totals cannot be assigned to this selection.", { days: retentionDays })}</p>}
+    {truncated && <p role="status">{t("runtime.channelTruncated", "Partial time window: older process events are no longer retained.")}</p>}
+    <div className="table-scroll"><table><thead><tr><th>{t("runtime.bindingGroup", "Canonical model / channel")}</th>{metricHeaders}</tr></thead>
+      <tbody>{models?.length ? models.map(model => {
+        const id = model.canonicalModelId, open = expanded.has(id);
+        return <Fragment key={JSON.stringify(id)}><tr><th scope="row">
+          <button type="button" className="table-expander" aria-expanded={open} onClick={() => setExpanded(current => {
+            const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next;
+          })}>{id ?? unknown}</button></th>{metricCells(model)}</tr>
+          {open && model.channels.map(channel => <tr key={JSON.stringify(channel.channelId)}><th scope="row">
+            <details><summary>{channel.channelId ?? unknown}</summary>
+              <table><thead><tr><th>{t("runtime.bindingDetail", "Public ID / deployment / actual model / route / tier / usage source")}</th>{metricHeaders}</tr></thead>
+                <tbody>{channel.details.map((row, i) => <tr key={i}><td>{[row.modelId, row.sourceModelId, row.actualModelName,
+                  [row.routeKey, row.backendRouteKey].map(value => value ?? unknown).join(" → "),
+                  row.tier ? formatBillingTier(row.tier, t) : null, row.usageSource].map(value => value ?? unknown).join(" · ")}</td>{metricCells(row)}</tr>)}</tbody>
+              </table>
+            </details></th>{metricCells(channel)}</tr>)}</Fragment>;
+      }) : <tr><td colSpan="10">{Array.isArray(models) ? t("table.noData", "No data yet") : unknown}</td></tr>}</tbody>
+    </table></div>
+  </section>;
+}
+
 function getWarningSignalLabel(signalName, t) {
   const mapping = {
     "governance.budget_unmetered_usage": t("runtime.signal.unmetered", "Unmetered Pricing"),
@@ -158,6 +202,10 @@ export default function RuntimeTab({
   governanceKeys,
   perKeyStats,
   modelStats,
+  canonicalModels,
+  canonicalFilters,
+  canonicalWindowTruncated,
+  canonicalDetailRetentionDays,
   analytics,
   recentSignals,
   runtimeFilters,
@@ -293,7 +341,7 @@ export default function RuntimeTab({
         {statsSnapshot ? <p role="status" className={statsSnapshot.partial ? "inline-error" : "muted"}>
           {statsSnapshot.source === "database"
             ? t("runtime.snapshot.database", "Read-only database snapshot at {time}; background writes may not be included.", { time: formatDateTime(statsSnapshot.capturedAt) })
-            : t("runtime.snapshot.memory", "Current-process cumulative counters; persisted history and filters are not included.")}
+            : t("runtime.snapshot.memory", "Current-process cumulative counters; no persisted history. Only the channel table applies filters.")}
           {statsSnapshot.partial ? ` ${t("runtime.snapshot.partial", "Partial snapshot: pending events or unavailable storage. Use Sync Now to request a flush.")}` : ""}
           {statsSnapshot.error?.message ? ` ${statsSnapshot.error.message}` : ""}
         </p> : null}
@@ -327,7 +375,7 @@ export default function RuntimeTab({
           <span className="muted">
             {snapshotFilters
               ? `${runtimeKeyOptions.find(option => option.value === snapshotFilters.keyId)?.label || snapshotFilters.keyId || t("option.all", "All")} · ${t(`option.${{ "24h": "last24h", "7d": "last7d", "30d": "last30d" }[snapshotFilters.timeRange] || "all"}`, "All")}`
-              : t("runtime.filterCoverage", "Key and time filtering requires database statistics.")}
+              : t("runtime.filterCoverage", "Without database statistics, only the canonical model/channel table applies Key and time filters.")}
           </span>
         </div>
         <div className="runtime-metrics">
@@ -339,6 +387,7 @@ export default function RuntimeTab({
           <StatCard label={t("table.cacheHitRatio", "Cache Hit Ratio")} value={<span title={runtimeTokenHelp(t)}>{formatCacheHitRatio(totals)}</span>} />
         </div>
         <p className="field-hint">{`${t("runtime.modelsObserved", "Observed Models")}: ${formatRuntimeNumber(modelCount)} · ${t("runtime.observedKeys", "Observed Keys")}: ${formatRuntimeNumber(observedKeyCount)}`}</p>
+        <ChannelAccounting models={canonicalModels} filters={canonicalFilters} truncated={canonicalWindowTruncated} retentionDays={canonicalDetailRetentionDays} t={t} />
         <div className="runtime-periods">
           <h3>{t("runtime.periodStats", "Period Statistics")}</h3>
           <p className="field-hint">{t("runtime.periodHelp", "Latest recorded calendar buckets, not rolling windows. Bucket timestamps may precede the current period.")}</p>

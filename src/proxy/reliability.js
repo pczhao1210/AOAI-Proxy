@@ -409,6 +409,7 @@ export async function fetchWithRetry({
   headers,
   bodyText,
   policy,
+  onCredentialRejected,
   logMeta,
   log,
   signal
@@ -430,6 +431,8 @@ export async function fetchWithRetry({
         return { ok: true, upstreamResponse, attempt };
       }
       const classified = classifyHttpStatus(upstreamResponse.status);
+      const credentialRejected = upstreamResponse.status === 401 && !!onCredentialRejected;
+      if (credentialRejected) await onCredentialRejected();
       const upstreamContentType = upstreamResponse.headers.get("content-type") || "";
       const upstreamRetryAfter = upstreamResponse.headers.get("retry-after") || "";
       let detail = "";
@@ -437,7 +440,7 @@ export async function fetchWithRetry({
         detail = await readTextWithTimeout(upstreamResponse, policy.requestTimeoutMs, 1024 * 1024, signal);
       } catch (readError) {
         const readFailure = classifyFetchError(readError);
-        if (shouldRetryUpstream(policy, attempt, { classified: readFailure })) {
+        if (!credentialRejected && shouldRetryUpstream(policy, attempt, { classified: readFailure })) {
           const backoffMs = computeBackoffMs(policy, attempt);
           log.warn({ ...logMeta, attempt, backoffMs, errorCode: readFailure.code, detail: readFailure.detail }, "upstream retry on HTTP error body read failure");
           try {
@@ -456,7 +459,7 @@ export async function fetchWithRetry({
           attempt
         };
       }
-      const retryable = shouldRetryUpstream(policy, attempt, { status: upstreamResponse.status });
+      const retryable = !credentialRejected && shouldRetryUpstream(policy, attempt, { status: upstreamResponse.status });
       if (retryable) {
         const backoffMs = computeBackoffMs(policy, attempt);
         log.warn({ ...logMeta, attempt, backoffMs, status: upstreamResponse.status, errorCode: classified.code }, "upstream retry on HTTP status");

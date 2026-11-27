@@ -29,10 +29,12 @@ export function settleMediaUsage({ config, consumer, model, usage, requestContex
     snapshot.estimatedCostAmount = null;
   }
   const cost = recordGovernanceMediaUsage(config, consumer, snapshot);
+  const occurredAt = new Date().toISOString();
   recordMediaUsage(model.id, snapshot, consumer);
   recordUsage(model.id, { prompt_tokens: cost.promptTokens, completion_tokens: cost.completionTokens,
-    total_tokens: cost.totalTokens, cached_tokens: cost.cachedTokens }, { ...consumer, cost });
-  recordRuntimeMediaUsage(config, { ...requestContext, keyId: consumer?.keyId, modelId: model.id,
+    total_tokens: cost.totalTokens, cached_tokens: cost.cachedTokens }, { ...requestContext, routeKey, backendRouteKey,
+    occurredAt, keyId: consumer?.keyId, cost, mediaUsage: snapshot, usageSource: "upstream" });
+  recordRuntimeMediaUsage(config, { ...requestContext, occurredAt, keyId: consumer?.keyId, modelId: model.id,
     routeKey, backendRouteKey, ...cost, estimatedCostAmount: cost.amount, mediaUsage: snapshot });
   return snapshot;
 }

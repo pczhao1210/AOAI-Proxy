@@ -321,10 +321,28 @@ The admin page now exposes:
 - Caddy response header timeout
 - Caddy keepalive timeout
 - Runtime persistence summary so you can see which config mode and data directory mode are active
-- Read-only statistics snapshots with capture time and partial/fallback status. At most two dedicated reader connections keep slow dashboards off the event-writer/admission queue; cold dashboard reads never mark live budgets hydrated. Request admission still performs strict recovery. Background writes/rollups can lag; **Sync Now** requests a flush. Unavailable storage shows current-process cumulative counters without pretending that filters or persisted history were loaded.
+- Read-only statistics snapshots with capture time and partial/fallback status. At most two dedicated reader connections keep slow dashboards off the event-writer/admission queue; cold dashboard reads never mark live budgets hydrated. Request admission still performs strict recovery. Background writes/rollups can lag; **Sync Now** requests a flush. Unavailable storage shows process-local counters, never a sum of memory and database history.
 - Recent logs with level filters (`warn`, `error`, optional `info`), keyword search, request-id filtering, and copy-summary actions
 
 The log panel uses a compact always-visible toolbar plus collapsible advanced filters instead of a sticky filter bar.
+
+### Channels, exposed models and key access
+
+In **Upstream / Model**, enter each channel's actual deployment IDs and map them to exact Catalog IDs. For an existing upstream, **Enable channel mappings in draft** previews an explicit migration; loading a legacy config does not migrate it. An enabled row is available for selection, not automatically published. In **Exposed models**, select the subset to publish and, for ambiguous candidates, choose the exact channel and deployment. Changing that binding keeps the public model ID. There is no automatic failover.
+
+A saved API-key channel for `openai` at `https://api.openai.com` or `https://api.openai.com/v1` can **Fetch available IDs** through the server. Select and map exact IDs to add disabled rows to the draft; nothing is published. Enter deployment names manually for Azure and other ordinary channels.
+
+Grant access only in **Key Governance**. New keys default to **Selected public models only**, with no models selected. **All** includes future publications. Legacy keys without a mode retain their previous permissions. Anonymous access is a separate identity: require API keys for isolation. Review and save the draft once. See the [schema, migration and downgrade notes](docs/configuration/feature-flags.zh-CN.md#普通渠道映射暴露与-key-权限).
+
+**Runtime → Usage by canonical model and channel** groups recorded inference, not the current configuration. Expand a canonical model for channel subtotals and a channel for public alias, source deployment, actual model, route, usage source and pricing tier. A switch, upstream rename or tariff update does not move earlier traffic. For example, channels with 12,000/3,000 and 8,000/2,000 input/output tokens make one parent with 20,000/5,000. Do not add detail rows or cache tokens again. Known costs are subtotals by currency; missing prices, counts and unobserved cache writes are not zero.
+
+`GET /admin/api/stats` adds `canonicalModels[].channels[].details`, with nullable IDs for missing evidence, and `canonicalFilters`. Existing `perModel` remains keyed by public ID. All-time database statistics use daily rollups; Key/time filters read retained events (`canonicalDetailRetentionDays`). Writers add nullable `channel_detail` and `channel_settlements` rollup columns without rebuilding old rows; GETs do not migrate the database. Pre-upgrade model rollups without matching detail remain under **Not recorded** without backfill. Model reset clears both model views, not global/Key totals. The memory channel table supports all-time per-Key counters and exact time filtering over the last 8,192 process-local inference events; `canonicalWindowTruncated` warns when earlier events in the selected window were evicted. Other memory counters remain cumulative. Storage fallback and process restarts do not imply that durable history was loaded.
+
+`GET /admin/api/logs` accepts exact `canonicalModelId`, `channelId`, `sourceModelId` and `configRevision` filters on inference events or grouped requests. These fields come from the applied configuration selected for the request, including deferred streaming settlement. An authorization failure has no serving channel. Historical logs without these fields are not reclassified.
+
+For an authorized GitHub Copilot deployment, choose **Add GitHub Copilot channel**, select the authorized profile and sign in on GitHub's device page. **Check status** reads the cached state; **Refresh model list** requests discovery. The form never asks for a token. Only select exact discovered deployment IDs and match them to Catalog IDs. Refreshing does not change approvals; stale or failed discovery cannot approve a new mapping or binding. Save the draft using the usual review flow. Local disconnect is a separate operation: move any bound public models first. To revoke the application on GitHub, use [authorized OAuth apps](https://github.com/settings/applications).
+
+Copilot channels are off unless the deployment supplies an authorized OAuth application and external encryption keys. See [startup prerequisites and trust boundaries](docs/configuration/feature-flags.zh-CN.md#copilot-启动前提默认不启用) and [credential storage/recovery](docs/development/copilot-credential-store.md). Offline provider fixtures test the integration; they do not establish that a GitHub subscription permits consumer traffic or that a model accepts a particular native protocol.
 
 ### Admin Login
 

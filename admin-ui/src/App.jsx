@@ -26,6 +26,7 @@ import {
 } from "./api.js";
 import { StatCard, Modal } from "./components/ui.jsx";
 import { useI18n } from "./i18n.jsx";
+import { newCopilotChannel } from "./copilot.js";
 import { createRuntimeLoader } from "./runtime-loader.js";
 import toast from "react-hot-toast";
 import {
@@ -42,6 +43,7 @@ import {
   DEFAULT_LOG_FILTERS,
   DEFAULT_MODEL_TEMPLATE,
   DEFAULT_UPSTREAM_TEMPLATE,
+  newChannelId,
   TEST_ENDPOINTS,
   buildCaddyPreview,
   buildDefaultTestPayload,
@@ -119,6 +121,14 @@ function normalizeDatabaseConfigForm(value = {}) {
   };
 }
 
+function bindingLabel(config, model) {
+  if (!model) return "—";
+  const ref = model.selectedBinding;
+  if (!ref) return `${model.upstream} / ${model.targetModel || model.id}`;
+  const name = config.upstreams?.find(up => up.channelId === ref.channelId)?.name || ref.channelId;
+  return `${name} [${ref.channelId}] / ${ref.sourceModelId}`;
+}
+
 export default function App() {
   const { language, languages, setLanguage, t } = useI18n();
   const [config, setConfig] = useState(null);
@@ -150,6 +160,10 @@ export default function App() {
   const [pricingCatalogText, setPricingCatalogText] = useState("{}");
   const [pricingCatalogError, setPricingCatalogError] = useState("");
   const [jsonError, setJsonError] = useState("");
+  const [mappingDrafts, setMappingDrafts] = useState({});
+  const [routingGeneration, setRoutingGeneration] = useState(0);
+  const copilotOperations = useRef(new Map());
+  const pendingMappingJson = config?.upstreams?.some(up => up.channelId && Object.hasOwn(mappingDrafts, up.channelId));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [logsLoading, setLogsLoading] = useState(false);
@@ -186,7 +200,7 @@ export default function App() {
   const modelStatsResetRef = useRef(null);
   const sectionNavigationTargetRef = useRef(null);
 
-  const dirty = useMemo(() => JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText]);
+  const dirty = useMemo(() => !!pendingMappingJson || JSON.stringify(config ?? {}, null, 2) !== lastLoadedText, [config, lastLoadedText, pendingMappingJson]);
   const harnessEligibilityFresh = !harnessEligibilityLoading && !harnessEligibilityError
     && harnessEligibilityContextRef.current?.config === config
     && harnessEligibilityContextRef.current?.pricingLibrary === pricingLibrary
@@ -322,12 +336,22 @@ export default function App() {
         excludeEvent: filters.hideAuthRejected ? "http.auth_rejected" : "",
         modelId: filters.modelId,
         requestId: filters.requestId,
-        keyword: filters.keyword,
+        keyword: filters.view === "operations" ? "" : filters.keyword,
+        connectionId: filters.connectionId,
+        ...(filters.view === "operations" ? {
+          recordSource: filters.recordSource, operationId: filters.operationId, configRevision: filters.configRevision
+        } : {}),
         limit: filters.limit
       });
       if (requestId !== logsRequestRef.current) return;
       startTransition(() => {
         setLogs({
+          recordSource: json.recordSource,
+          persistence: json.persistence,
+          capturedAt: json.capturedAt,
+          retainedSince: json.retainedSince,
+          droppedEvents: json.droppedEvents,
+          hasMore: json.hasMore,
           total: json.total || 0,
           limit: json.limit || filters.limit,
           view: json.view || filters.view,
@@ -368,6 +392,9 @@ export default function App() {
     setPricingCatalogText(JSON.stringify(configJson?.access?.pricingCatalog || {}, null, 2));
     setPricingCatalogError("");
     setJsonError("");
+    setMappingDrafts({});
+    setRoutingGeneration(value => value + 1);
+    copilotOperations.current.clear();
     setDatabaseTestResult(null);
     setLogAnalyticsInitializationResult(null);
     closeConfigConflict();
@@ -559,7 +586,7 @@ export default function App() {
       void loadLogsAction(logFilters);
     }, 180);
     return () => clearTimeout(timer);
-  }, [activeTab, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
+  }, [activeTab, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected, logFilters.recordSource, logFilters.connectionId, logFilters.operationId, logFilters.configRevision]);
 
   useEffect(() => {
     if (activeTab !== "ops" || !logFilters.autoRefresh) return undefined;
@@ -567,7 +594,7 @@ export default function App() {
       void loadLogsAction(logFilters);
     }, 5000);
     return () => clearInterval(interval);
-  }, [activeTab, logFilters.autoRefresh, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected]);
+  }, [activeTab, logFilters.autoRefresh, logFilters.view, logFilters.outcome, logLevelKey, logFilters.event, logFilters.modelId, logFilters.requestId, logFilters.keyword, logFilters.limit, logFilters.hideAuthRejected, logFilters.recordSource, logFilters.connectionId, logFilters.operationId, logFilters.configRevision]);
 
   useEffect(() => {
     if (!["harness", "routing"].includes(activeTab) || !config) return undefined;
@@ -647,6 +674,7 @@ export default function App() {
   }
 
   async function persistConfig(nextConfig, successMessage) {
+    if (pendingMappingJson) throw new Error(t("channel.pendingJson"));
     const result = await saveConfig(nextConfig);
     acceptPersistedResult(result, successMessage);
   }
@@ -828,6 +856,10 @@ export default function App() {
 
   async function handleSave() {
     if (!config) return;
+    if (pendingMappingJson) {
+      setError(t("channel.pendingJson"));
+      return;
+    }
     if (pricingCatalogError || jsonError) {
       setError(t("messages.invalidJson", "JSON parse errors must be fixed before saving."));
       return;
@@ -888,12 +920,16 @@ export default function App() {
     });
   }
 
-  function addUpstream() {
+  function addUpstream(kind) {
+    const channelId = newChannelId();
     updateConfig((next) => {
       next.upstreams = Array.isArray(next.upstreams) ? next.upstreams : [];
-      next.upstreams.push({
+      const name = ensureUniqueName(`upstream_${next.upstreams.length + 1}`, next.upstreams.map(up => up.name));
+      next.upstreams.push(kind === "github-copilot" ? newCopilotChannel(channelId, name) : {
         ...cloneJson(DEFAULT_UPSTREAM_TEMPLATE),
-        name: `upstream_${next.upstreams.length + 1}`
+        channelId,
+        modelMappings: [],
+        name
       });
     });
   }
@@ -904,7 +940,7 @@ export default function App() {
       next.models.push({
         ...cloneJson(DEFAULT_MODEL_TEMPLATE),
         id: `model_${next.models.length + 1}`,
-        upstream: next.upstreams?.[0]?.name || ""
+        upstream: next.upstreams?.find(up => !up.channelId)?.name || ""
       });
     });
   }
@@ -918,8 +954,9 @@ export default function App() {
     const defaultTemplate = supportedPricingTemplates[0];
     setModelTemplateSearch("");
     setSelectedPricingTemplateId(defaultTemplate.id);
-    setTemplateUpstreamMode((config?.upstreams || []).length > 0 ? "existing" : "new");
-    setSelectedTemplateUpstreamName(config?.upstreams?.[0]?.name || "");
+    const firstLegacyUpstream = config?.upstreams?.find(up => !up.channelId);
+    setTemplateUpstreamMode(firstLegacyUpstream ? "existing" : "new");
+    setSelectedTemplateUpstreamName(firstLegacyUpstream?.name || "");
     setTemplateNewUpstreamName(buildSuggestedUpstreamName(defaultTemplate, config));
     setTemplateRouteOverride("");
     setTemplateImportPricing(true);
@@ -981,7 +1018,9 @@ export default function App() {
 
   function handleApplyRequestIdFilter(requestId) {
     if (!requestId) return;
-    const nextFilters = { ...logFilters, requestId };
+    const nextFilters = logFilters.view === "operations"
+      ? { ...logFilters, view: "requests", outcome: "all", event: "", modelId: "", connectionId: "", keyword: "", requestId }
+      : { ...logFilters, requestId };
     setLogFilters(nextFilters);
     setMessage(t("logs.filterApplied", "Filtered logs by request ID {requestId}.", { requestId }));
     void loadLogsAction(nextFilters);
@@ -1469,6 +1508,9 @@ export default function App() {
       {["proxy", "caddy"].filter(stage => application[stage]?.ok === false).map(stage => (
         <aside className="inline-error" role="status" key={stage}>
           {t("config.apply.failed", "{stage} settings are not fully applied.", { stage })}
+          {stage === "proxy" && runtime?.configuration?.appliedRevision && <p>
+            {t("channel.appliedRevision")} <code>{runtime.configuration.appliedRevision}</code>
+          </p>}
           {" "}<button type="button" className="ghost" disabled={Boolean(applyingStage) || saving || loading} onClick={() => retryApplication(stage)}>
             {t(`config.apply.retry.${stage}`, `Retry ${stage}`)}
           </button>
@@ -1491,6 +1533,12 @@ export default function App() {
         disabled={saving}
       >
         <p>{t("config.save.desc", "You are about to hit Save. Please review the configuration changes below:")}</p>
+        {showSaveModal && [...new Set([...(loadedConfig.models || []), ...(config.models || [])]
+          .filter(model => model.selectedBinding).map(model => model.id))].map(id => {
+          const before = bindingLabel(loadedConfig, loadedConfig.models?.find(model => model.id === id));
+          const after = bindingLabel(config, config.models?.find(model => model.id === id));
+          return before !== after && <p key={id}><strong>{id}</strong>: {before} → {after}</p>;
+        })}
         {configCleanupRequired ? (
           <div className="config-deprecations">
             <p>{t("config.flagCleanupSave", "Saving will persist the normalized flags and remove the deprecated fields listed below. Existing disabled states are retained.")}</p>
@@ -1591,7 +1639,7 @@ export default function App() {
               <label className="field">
                 <span className="field-label">{t("routing.template.selectUpstream", "Existing Upstream")}</span>
                 <select value={selectedTemplateUpstreamName} onChange={(event) => setSelectedTemplateUpstreamName(event.target.value)}>
-                  {(config?.upstreams || []).map((upstream) => (
+                  {(config?.upstreams || []).filter(up => !up.channelId).map((upstream) => (
                     <option key={upstream.name} value={upstream.name}>{upstream.name}</option>
                   ))}
                 </select>
@@ -1716,6 +1764,7 @@ export default function App() {
       {activeTab === "keys" && config ? (
         <KeysTab
           config={config}
+          loadedConfig={loadedConfig}
           updateConfig={updateConfig}
           addApiKey={addApiKey}
           onCopyApiKey={handleCopyApiKey}
@@ -1725,7 +1774,10 @@ export default function App() {
 
       {activeTab === "routing" && config ? (
         <RoutingTab
+          key={routingGeneration}
           config={config}
+          loadedConfig={loadedConfig}
+          copilotOperations={copilotOperations.current}
           pricingLibrary={pricingLibrary}
           capabilityView={
             harnessEligibilityFresh
@@ -1740,6 +1792,12 @@ export default function App() {
           addUpstream={addUpstream}
           addModel={addModel}
           addBlankModel={addBlankModel}
+          mappingDrafts={mappingDrafts}
+          setMappingDrafts={setMappingDrafts}
+          onEditKey={index => {
+            setActiveTab("keys");
+            handleSectionNavClick(`key-card-${index}`);
+          }}
           t={t}
         />
       ) : null}
@@ -1763,7 +1821,11 @@ export default function App() {
         <RuntimeTab
           config={config}
           pricingLibrary={pricingLibrary}
-          onApplyCardPricing={(modelIds) => updateConfig((next) => applyModelCardTierPricing(next, modelIds, pricingLibrary))}
+          onApplyCardPricing={modelIds => {
+            const next = cloneJson(config);
+            applyModelCardTierPricing(next, modelIds, pricingLibrary);
+            setConfig(next);
+          }}
           totals={stats?.totals}
           snapshotFilters={stats?.filters}
           statsUpdatedAt={statsUpdatedAt}
@@ -1776,6 +1838,10 @@ export default function App() {
           governanceKeys={governanceKeys}
           perKeyStats={perKeyStats}
           modelStats={modelStats}
+          canonicalModels={stats?.canonicalModels}
+          canonicalFilters={stats?.canonicalFilters}
+          canonicalWindowTruncated={stats?.canonicalWindowTruncated}
+          canonicalDetailRetentionDays={stats?.canonicalDetailRetentionDays}
           modelsResetAt={stats?.modelsResetAt}
           onResetModelStats={handleResetModelStats}
           modelStatsResetBusy={diagnosticsBusy.modelStatsReset === true}

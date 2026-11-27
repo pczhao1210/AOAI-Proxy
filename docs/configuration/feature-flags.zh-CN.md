@@ -22,7 +22,48 @@ JSON 中的所有有效布尔开关及被迁移的旧布尔别名只接受 `true
 - **热**：保存或 reload 后用于后续请求。
 - **重启**：涉及进程、容器入口或部署资源，必须重启或重新部署。
 
+## 普通渠道映射、暴露与 Key 权限
+
+以下是 v3 配置的**字段摘录**。实际端点、认证仍属于原上游；没有新增认证方式或凭据。先在上游表格填写部署的准确 ID（Azure 基础模型目录不能代替部署清单），或在该渠道的 JSON 编辑器批量编辑同一数组。JSON 需应用到草稿，最终统一审阅保存。两个部署可以映射到同一 Catalog ID，不允许重复来源、通配符、映射链或按名字猜测。
+
+```json
+{
+  "upstreams": [{
+    "name": "west",
+    "channelId": "az-west",
+    "modelMappings": [
+      {"sourceModelId": "mini-blue", "canonicalModelId": "gpt-5-mini", "enabled": true},
+      {"sourceModelId": "mini-green", "canonicalModelId": "gpt-5-mini", "enabled": false}
+    ]
+  }],
+  "models": [{
+    "id": "team-mini",
+    "canonicalModelId": "gpt-5-mini",
+    "selectedBinding": {"channelId": "az-west", "sourceModelId": "mini-blue"}
+  }],
+  "apiKeys": [{"id": "team", "modelAccessMode": "selected", "allowedModels": ["team-mini"]}]
+}
+```
+
+- `modelMappings[].enabled`（**UI / JSON，热**）只控制可选供给，不会发布模型、修改 Key 或加入 Harness。发布页从并集中批选，多个部署时必须选具体行；公开别名和顺序保存在 `models[]`。运行时先按公开 ID 鉴权，再用固定渠道及原始部署转发。禁用或删除一条正在使用的映射，必须先在同一草稿中切出或取消暴露。没有自动跨渠道重放。
+- 行可选 `routes`（协议名到协议目标，不填 URL）、`hostingMode`、`pricing`。具体 URL 仍在 `upstreams[].routes`。迁移利用后端当前 Catalog 匹配，在草稿中保留旧公开 ID、顺序及策略；别名自己的路由/价格等放入带原部署引用的 `bindingOverride`，切回才再次生效。已迁移的模型不要再并列填写旧 `upstream` / `targetModel`。显式 Harness 路由确认由 `confirmedRouteBinding` 绑定到被确认的行；切换后保留成员并重新验证。上游会话、缓存和签名状态不会迁移。
+- `channelId` 是稳定身份，改名不要改 ID。只有未迁移的上游沿用旧模型形态。读取不触发迁移；没有模型的已管理渠道可以保存，但不对外提供任何型号。
+- 使用 API Key 的 `openai` 渠道若已保存，且地址为 `https://api.openai.com` 或 `https://api.openai.com/v1`（可带末尾 `/`），可点**获取可用型号 ID**。服务端使用已保存的渠道认证获取清单；确认 Catalog ID 后将所选条目添加为停用的草稿映射，不会发布。Azure 及其他普通渠道须手填实际部署名，不能把厂商型号目录当作账号部署清单。
+- Key 的授权对象是**公开 ID**。新建 Key 默认 `selected: []`，不能调用任何模型。`all` 包含未来发布且启用的模型，不能与非空名单并用。旧 Key 省略模式时，非空名单按原 ID 限制，省略或空名单依旧不限制。删除被引用的 ID 时必须在 **Key 管理** 中显式修正名单；停用模型仍不可访问。`requireApiKey=false` 允许不带 Key 的匿名身份，不能用于强隔离。
+- 保存、重载和回滚复用现有修订及应用流程。降低版本前先转换回旧版能等价表达的配置，尤其不要把 `selected: []` 转为旧版空名单（含义相反，应停用该 Key）。
+- 若部署的服务端已配置获准的 Copilot 身份与凭据存储，可在**上游 / 模型 → 新增 GitHub Copilot 渠道**中选择 GitHub Copilot（VS Code）或 OpenCode 身份，在 GitHub 设备授权页面完成登录。查询状态只读；刷新清单是独立管理操作。草稿只接收服务端生成的 `credentialRef`，不填写 token；凭据不可用时不回落到 Azure 认证。
+- Copilot 渠道不提供手填型号或映射 JSON。新发现的条目默认不勾选，只能勾选本连接当前可选、具有文本协议证据的准确 ID；名称相似不等于 Catalog 匹配，可显式选择正确的 Catalog ID。清单过期或失败时不能新增绑定，但可以停用映射或切出。变更使用原有全局草稿审阅保存。断开前要先保存解绑或切换；本地断开不会撤销 [GitHub 的 OAuth 授权](https://github.com/settings/applications)。
+
 ## 当前有效开关
+
+### Copilot 启动前提（默认不启用）
+
+- 部署方须获得所用应用、组织、账号和用途的授权。`COPILOT_VSCODE_CLIENT_ID`、`COPILOT_OPENCODE_CLIENT_ID` 分别指定**部署方获准使用**、已开启 device flow 的两个独立应用；可只配置获准的一个。代理不自带参考项目的应用 ID，不冒用编辑器标头，不读取机器的 GitHub 登录态。`vscode` 使用 OAuth 换短期推理 token；`opencode` 使用 OAuth 本身。二者不是用户名或账号池。
+- 启用管理 Basic Auth。所有授权操作使用现有管理入口，写请求必须带 `x-aoai-admin-csrf: 1`。GitHub 密码、OAuth token、设备码不得放入配置。备份时将外部密钥和加密数据分别保护；详见[凭据存储与故障恢复](../development/copilot-credential-store.md)。
+- 启动环境设置 `COPILOT_CREDENTIAL_KEY_VERSION` 和 `COPILOT_CREDENTIAL_KEYS`（版本到 base64 编码 32 字节密钥的 JSON 对象）。文件模式使用配置文件旁的 `.copilot-credentials` 私有目录；可用 `COPILOT_CREDENTIAL_DIRECTORY` 指定本机单写目录。多实例使用配置数据库及相同密钥、schema、configKey；禁止用共享文件目录代替数据库。修改应用、存储或主密钥后重启。
+- 服务端只调用固定的 GitHub 设备授权、账号身份、token 交换和推理主机；不跟随重定向或身份返回的任意 URL。若组织需要专属端点或提供商要求代理无权使用的客户端身份，**不要上线该连接**。模型清单必须提供 `supported_endpoints` 中的已识别路径。只有 ID、显示名或模型家族，没有协议证据时不开通推理。
+- 冷启动可继续使用已签发的绑定，无需联网重新勾选；未验证的手填绑定不能取得推理凭据。新增/切入须先刷新同一凭据的清单（15 分钟），不会自动切换承接渠道。401 令当前凭据版本失效，不重放已发送请求；403、429 不换账号。未给映射行显式定价时，Copilot 费用未知，不继承 Azure 卡价。
+- 同一修订涉及多个新凭据时，`apply.proxy` 在同一个凭据存储事务中激活它们；一项冲突不会只切换部分渠道。冷启动若无法读取凭据，只停用相应运行时模型，不改写保存配置；修复密钥或存储后显式重载。渠道页区分推理凭据到期时间、后台续期能力及最早重试时间；供应商未给出的到期时间显示为未知。
 
 ### 管理、安全与 Caddy
 

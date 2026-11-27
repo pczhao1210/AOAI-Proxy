@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { STATUS_CODES } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { getUpstreamAuthHeaders } from "../auth.js";
-import { acquireRequestGovernance, checkUnmeteredRequestAccess, resolveApiConsumer } from "../governance.js";
+import { acquireRequestGovernance, checkUnmeteredRequestAccess, hasModelRestriction, resolveApiConsumer } from "../governance.js";
 import { resolveRequestContext } from "../request-context.js";
 import { buildUpstreamHeaders } from "./upstream-headers.js";
 import { DEFAULT_REALTIME, mapRealtimeEvent, realtimeError, resolveRealtimeBinding } from "./realtime-policy.js";
@@ -167,12 +167,14 @@ export function installRealtimeProxy({ server, getConfig, extractApiKey, log, ca
     };
     const connectUpstream = async () => {
       connecting = true;
+      Object.assign(context, binding.accounting);
       primaryPricing = callRecord ? callRecord.pricing : resolveMediaPricing(config, binding.model, binding.upstream,
         resolveModelDescriptor(binding.model.id), binding.targetUrl.replace(/^ws/, "http"));
       if (!callRecord && !requestRecorded) {
         usageTracker = createMediaUsageTracker({ pricing: primaryPricing });
-        recordRequest(binding.model.id, consumer);
-        recordRuntimeRequest(config, { ...context, keyId: consumer?.keyId, modelId: binding.model.id, routeKey: binding.routeKey, stream: true });
+        const event = { ...context, occurredAt: new Date().toISOString(), keyId: consumer?.keyId, stream: true };
+        recordRequest(binding.model.id, event);
+        recordRuntimeRequest(config, event);
         requestRecorded = true;
       }
       const upstream = binding.upstream;
@@ -264,7 +266,11 @@ export function installRealtimeProxy({ server, getConfig, extractApiKey, log, ca
         if ([...url.searchParams.keys()].some(name => name !== "call_id") || url.searchParams.getAll("call_id").length !== 1 || !callRegistry) {
           throw realtimeError(400, "INVALID_WEBRTC_CONTROL", "Only one owned call_id may be supplied");
         }
-        callRecord = callRegistry.get(url.searchParams.get("call_id"), consumer, routeKey);
+        const owned = callRegistry.get(url.searchParams.get("call_id"), consumer, routeKey);
+        if (hasModelRestriction(consumer.apiKey)) throw realtimeError(403, "WEBRTC_INLINE_POLICY_REQUIRED", "Direct provider access cannot enforce this key's policy");
+        const activeModel = findModel(config, owned.binding.model.id);
+        if (!activeModel || activeModel.status === "disabled") throw realtimeError(404, "MODEL_NOT_FOUND", "Model not found");
+        callRecord = owned;
         usageTracker = callRecord.usageTracker;
         if (callRecord.observers.size) throw realtimeError(429, "WEBRTC_OBSERVER_ACTIVE", "A sideband is already attached");
         config = callRecord.config;

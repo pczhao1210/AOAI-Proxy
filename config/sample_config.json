@@ -342,7 +342,8 @@
     {
       "id": "default",
       "key": "CHANGEME",
-      "status": "active"
+      "status": "active",
+      "modelAccessMode": "all"
     }
   ],
   "upstreams": [

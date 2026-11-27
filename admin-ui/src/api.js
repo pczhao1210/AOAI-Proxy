@@ -172,6 +172,26 @@ export async function fetchHarnessEligibility(config, { signal } = {}) {
   }));
 }
 
+export async function fetchCopilotStatus(channelId, { profile, credentialRef, operationId }, signal) {
+  const query = new URLSearchParams({ profile });
+  if (credentialRef) query.set("credentialRef", credentialRef);
+  if (operationId) query.set("operationId", operationId);
+  return readJson(await adminFetch(`/copilot/${encodeURIComponent(channelId)}/status?${query}`, { cache: "no-store", signal }));
+}
+
+export async function runCopilotAction(channelId, action, { profile, credentialRef, operationId }, signal) {
+  return readJson(await adminFetch(`/copilot/${encodeURIComponent(channelId)}/${action}`, {
+    method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, signal,
+    body: JSON.stringify({ profile, ...(credentialRef && { credentialRef }), ...(operationId && { operationId }) })
+  }));
+}
+
+export async function discoverOpenAIChannel(channelId, signal) {
+  return readJson(await adminFetch(`/channels/${encodeURIComponent(channelId)}/discover`, {
+    method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, signal, body: "{}"
+  }));
+}
+
 export async function syncPricingLibrary(source = {}) {
   return readJson(await adminFetch("/pricing-library/sync", {
     method: "POST",
@@ -200,7 +220,7 @@ export async function fetchLogs(params = {}) {
   if (Array.isArray(params.level) && params.level.length > 0) {
     search.set("level", params.level.join(","));
   }
-  ["event", "excludeEvent", "modelId", "requestId", "keyword", "since", "limit"].forEach((key) => {
+  ["event", "excludeEvent", "modelId", "requestId", "keyword", "since", "limit", "recordSource", "connectionId", "operationId", "configRevision"].forEach((key) => {
     const value = params[key];
     if (value != null && value !== "") {
       search.set(key, String(value));

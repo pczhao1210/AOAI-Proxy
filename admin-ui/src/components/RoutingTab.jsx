@@ -1,5 +1,8 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { EntityCard, Field, ListInput, Section } from "./ui.jsx";
+import { BindingSelect, channelCandidates, ExposurePicker, MappingEditor } from "./ChannelModels.jsx";
+import CopilotChannel from "./CopilotChannel.jsx";
+import { copilotIdentity, isCopilotChannel } from "../copilot.js";
 import {
   applyPricingTemplateToModel,
   findPricingTemplateByHint,
@@ -53,15 +56,33 @@ function syncModelUpstreams(next, modelIndex, previousUpstream) {
 }
 
 export default function RoutingTab({
-  config, pricingLibrary, capabilityView, capabilitiesLoading, capabilitiesError, capabilityPreview, capabilityFallbackModels = [],
-  updateConfig, addUpstream, addModel, addBlankModel, t
+  config, loadedConfig, copilotOperations, pricingLibrary, capabilityView, capabilitiesLoading, capabilitiesError, capabilityPreview, capabilityFallbackModels = [],
+  updateConfig, addUpstream, addModel, addBlankModel, mappingDrafts = {}, setMappingDrafts, onEditKey, t
 }) {
   const [search, setSearch] = useState("");
+  const [copilotEvidence, setCopilotEvidence] = useState(new Map());
+  const onEvidence = useCallback((identity, allowed) => setCopilotEvidence(prev => {
+    if (!allowed?.size && !prev.has(identity)) return prev;
+    const next = new Map(prev);
+    if (allowed?.size) next.set(identity, allowed);
+    else next.delete(identity);
+    return next;
+  }), []);
   const searchTerm = search.trim().toLowerCase();
   const upstreams = config.upstreams || [];
   const upstreamOptions = config.upstreams || [];
   const catalogDefinitions = pricingLibrary || [];
   const templateOptions = catalogDefinitions.filter((definition) => supportsPricingTemplate(definition));
+  const mappingDefinitions = [...catalogDefinitions];
+  const mappingIds = new Set(mappingDefinitions.map(card => card.id));
+  for (const model of capabilityView?.models || []) {
+    if (model.canonicalModelId && !mappingIds.has(model.canonicalModelId)) {
+      mappingDefinitions.push({ id: model.canonicalModelId });
+      mappingIds.add(model.canonicalModelId);
+    }
+  }
+  const groups = channelCandidates(upstreams, mappingDefinitions, copilotEvidence);
+  const hasLegacyChannels = !upstreams.length || upstreams.some(up => !up.channelId);
 
   function applyTemplateForModel(next, modelIndex, definition) {
     if (!definition || !next?.models?.[modelIndex]) return;
@@ -82,12 +103,9 @@ export default function RoutingTab({
   }
 
   const filteredUpstreams = upstreams
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => (
-      !searchTerm
-      || (item.name || "").toLowerCase().includes(searchTerm)
-      || (item.baseUrl || "").toLowerCase().includes(searchTerm)
-    ));
+    .map((item, index) => ({ item, index, copilot: isCopilotChannel(item),
+      hidden: !!searchTerm && ![item.name, item.baseUrl].some(value => value?.toLowerCase().includes(searchTerm)) }))
+    .filter(({ hidden, copilot }) => !hidden || copilot);
 
   const models = config.models || [];
   const filteredModels = models
@@ -113,8 +131,9 @@ export default function RoutingTab({
             onChange={(event) => setSearch(event.target.value)}
           />
           <button type="button" className="ghost" onClick={addUpstream}>{t("routing.addUpstream", "Add Upstream")}</button>
-          <button type="button" className="ghost" onClick={addBlankModel}>{t("routing.addBlankModel", "Add Blank Model")}</button>
-          <button type="button" onClick={addModel}>{t("routing.addModel", "Add Model")}</button>
+          <button type="button" className="ghost" onClick={() => addUpstream("github-copilot")}>{t("copilot.add")}</button>
+          {hasLegacyChannels && <button type="button" className="ghost" onClick={addBlankModel}>{t("routing.addBlankModel", "Add Blank Model")}</button>}
+          {hasLegacyChannels && <button type="button" onClick={addModel}>{t("routing.addModel", "Add Model")}</button>}
         </div>
       }
     >
@@ -132,7 +151,7 @@ export default function RoutingTab({
         <div id="routing-upstreams">
           <h3 className="subhead">{t("entity.upstreams", "Upstreams")}</h3>
           <div className="entity-grid">
-            {filteredUpstreams.map(({ item, index }) => {
+            {filteredUpstreams.map(({ item, index, copilot, hidden }) => {
               const capabilities = capabilityView?.upstreams?.find(upstream => upstream.name === item.name)?.capabilities;
               const capabilityCount = capabilities ? capabilities.length : "-";
               const statusLabel = t(`option.${item.status || "active"}`, item.status || "active");
@@ -140,7 +159,8 @@ export default function RoutingTab({
               return (
                 <EntityCard
                   id={`upstream-card-${index}`}
-                  key={`upstream-${index}`}
+                  hidden={hidden}
+                  key={item.channelId || `upstream-${index}`}
                   title={item.name || `upstream-${index + 1}`}
                   subtitle={item.baseUrl || t("status.upstreamSubtitleFallback", "Base URL not configured")}
                   meta={`${t("field.provider", "Provider")}: ${item.provider || "azure-openai"} · ${t("field.status", "Status")}: ${statusLabel} · ${t("field.capabilities", "Capabilities")}: ${capabilityCount}`}
@@ -155,13 +175,20 @@ export default function RoutingTab({
                   })}
                 >
                   <div className="form-grid compact">
-                    <Field label={t("field.name", "Name")}><input value={item.name || ""} onChange={(event) => updateConfig((next) => { next.upstreams[index].name = event.target.value; })} /></Field>
-                    <Field label={t("field.provider", "Provider")}><input value={item.provider || "azure-openai"} onChange={(event) => updateConfig((next) => { next.upstreams[index].provider = event.target.value; })} /></Field>
+                    <Field label={t("field.name", "Name")}><input value={item.name || ""} onChange={(event) => updateConfig((next) => {
+                      const oldName = next.upstreams[index].name;
+                      next.upstreams[index].name = event.target.value;
+                      for (const model of next.models || []) if (model.upstream === oldName) model.upstream = event.target.value;
+                    })} /></Field>
+                    <Field label={t("field.provider", "Provider")}><input readOnly={copilot} value={item.provider || "azure-openai"} onChange={(event) => {
+                      const provider = event.target.value;
+                      if (provider.trim().toLowerCase() !== "github-copilot") updateConfig(next => { next.upstreams[index].provider = provider; });
+                    }} /></Field>
                     <Field label={t("field.status", "Status")}><select value={item.status || "active"} onChange={(event) => updateConfig((next) => { next.upstreams[index].status = event.target.value; })}><option value="active">{t("option.active", "active")}</option><option value="disabled">{t("option.disabled", "disabled")}</option></select></Field>
                     <Field label={t("field.priority", "Priority")}><input type="number" value={item.priority || 0} onChange={(event) => updateConfig((next) => { next.upstreams[index].priority = Number(event.target.value || 0); })} /></Field>
                   </div>
-                  <Field label={t("field.baseUrl", "Base URL")}><input value={item.baseUrl || ""} onChange={(event) => updateConfig((next) => { next.upstreams[index].baseUrl = event.target.value; })} /></Field>
-                  <div className="form-grid compact">
+                  <Field label={t("field.baseUrl", "Base URL")}><input readOnly={copilot} value={item.baseUrl || ""} onChange={(event) => updateConfig((next) => { next.upstreams[index].baseUrl = event.target.value; })} /></Field>
+                  {!copilot && <div className="form-grid compact">
                     <Field label={t("field.upstreamAuthMode", "Authentication")}>
                       <select value={authMode} onChange={(event) => updateConfig((next) => {
                         next.upstreams[index].auth = next.upstreams[index].auth || {};
@@ -184,11 +211,19 @@ export default function RoutingTab({
                         })} />
                       </Field>
                     ) : null}
-                  </div>
+                  </div>}
                   <Field
                     label={t("routing.capabilities.combined", "Combined model capabilities")}
                     hint={t("routing.capabilities.unionHint", "Union of bound models' effective capabilities; not a guarantee for every model or an upstream restriction.")}
                   ><input value={formatList(capabilities)} readOnly disabled={!capabilities} /></Field>
+                  {copilot ? <CopilotChannel key={copilotIdentity(item)} up={item} definitions={mappingDefinitions} tickets={copilotOperations}
+                    saved={loadedConfig?.upstreams?.find(up => item.channelId === up.channelId)}
+                    referenced={[...new Set([...models, ...(loadedConfig?.models || [])]
+                      .filter(m => m.selectedBinding?.channelId === item.channelId).map(m => m.id))]}
+                    updateConfig={updateConfig} onEvidence={onEvidence} t={t} /> :
+                    <MappingEditor up={item} saved={loadedConfig?.upstreams?.find(up => item.channelId === up.channelId)}
+                      index={index} config={config} capabilityView={capabilityView}
+                      definitions={mappingDefinitions} updateConfig={updateConfig} drafts={mappingDrafts} setDrafts={setMappingDrafts} t={t} />}
                 </EntityCard>
               );
             })}
@@ -196,7 +231,13 @@ export default function RoutingTab({
         </div>
 
         <div id="routing-models">
-          <h3 className="subhead">{t("entity.models", "Models")}</h3>
+          <h3 className="subhead">{t("channel.exposure", "Exposed models")}</h3>
+          <ExposurePicker groups={groups} models={models} search={searchTerm} updateConfig={updateConfig} t={t} />
+          {(config.apiKeys || []).map((key, index) => {
+            const missing = (key.allowedModels || []).filter(id => !models.some(model => model.id === id));
+            return missing.length ? <p key={index} role="alert">{t("channel.referenced")} {missing.join(", ")} ·
+              <button type="button" className="ghost" onClick={() => onEditKey(index)}>{t("channel.editKey")} {key.id}</button></p> : null;
+          })}
           <div className="entity-grid">
             {filteredModels.map(({ item, index }) => {
               const capabilityModel = capabilityView?.models?.find(model => model.modelId === item.id);
@@ -210,13 +251,16 @@ export default function RoutingTab({
               const routeOptions = getSuggestedModelRouteValues(matchedDefinition, item.hostingMode);
               const hasUnavailableRoute = wildcardRoute && !routeOptions.includes(wildcardRoute);
               const allRouteOptions = hasUnavailableRoute ? [wildcardRoute, ...routeOptions] : routeOptions;
+              const choices = groups.get(item.canonicalModelId) || [];
+              const binding = item.selectedBinding;
+              const references = (config.apiKeys || []).filter(key => key.allowedModels?.includes(item.id));
               return (
                 <EntityCard
                   id={`model-card-${index}`}
                   key={`model-${index}`}
                   title={item.displayName || item.id || `model-${index + 1}`}
-                  subtitle={item.upstream || t("status.modelSubtitleFallback", "Upstream not bound")}
-                  meta={`${t("routing.field.azureDeployment", "Azure Deployment Name")}: ${item.targetModel || "-"} · ${t("field.status", "Status")}: ${statusLabel}${clientCompatibilityMeta ? ` · ${clientCompatibilityMeta}` : ""}`}
+                  subtitle={(binding ? upstreams.find(up => up.channelId === binding.channelId)?.name : item.upstream) || t("status.modelSubtitleFallback", "Upstream not bound")}
+                  meta={`${binding ? t("channel.source") : t("routing.field.azureDeployment", "Azure Deployment Name")}: ${binding?.sourceModelId || item.targetModel || "-"} · ${t("field.status", "Status")}: ${statusLabel}${clientCompatibilityMeta ? ` · ${clientCompatibilityMeta}` : ""}`}
                   removeLabel={t("entity.delete", "Delete")}
                   expandLabel={t("entity.expand", "Edit configuration")}
                   collapseLabel={t("entity.collapse", "Collapse")}
@@ -233,9 +277,15 @@ export default function RoutingTab({
                     <Field
                       label={t("routing.field.proxyModelId", "Proxy Model ID")}
                       hint={t("routing.hint.proxyModelId", "Clients send this value in the model field when calling the proxy.")}
-                    ><input value={item.id || ""} onChange={(event) => updateConfig((next) => { next.models[index].id = event.target.value; autoMatchTemplate(next, index); })} /></Field>
+                    ><input value={item.id || ""} onChange={(event) => updateConfig((next) => { next.models[index].id = event.target.value; if (!binding) autoMatchTemplate(next, index); })} /></Field>
                     <Field label={t("field.displayName", "Display Name")}><input value={item.displayName || ""} onChange={(event) => updateConfig((next) => { next.models[index].displayName = event.target.value; })} /></Field>
-                    <Field label={t("routing.template.field", "Template")}>
+                    {binding ? <BindingSelect choices={choices} value={binding} onChange={ref => updateConfig(next => {
+                      const model = next.models[index];
+                      model.selectedBinding = ref;
+                      delete model.confirmedRouteBinding;
+                      delete model.clientNativeRoute;
+                      delete model.clientConversion;
+                    })} t={t} /> : <><Field label={t("routing.template.field", "Template")}>
                       <select
                         value={matchedTemplate?.id || ""}
                         onChange={(event) => updateConfig((next) => {
@@ -261,7 +311,7 @@ export default function RoutingTab({
                         syncModelUpstreams(next, index, previousUpstream);
                       })}>
                         <option value="">-</option>
-                        {upstreamOptions.map((upstream) => <option key={upstream.name} value={upstream.name}>{upstream.name}</option>)}
+                        {upstreamOptions.filter(up => !up.channelId).map((upstream) => <option key={upstream.name} value={upstream.name}>{upstream.name}</option>)}
                       </select>
                     </Field>
                     {hostingModes.length > 1 ? (
@@ -288,12 +338,14 @@ export default function RoutingTab({
                         ))}
                       </select>
                     </Field>
-                    <Field label={t("field.status", "Status")}><select value={item.status || "active"} onChange={(event) => updateConfig((next) => { next.models[index].status = event.target.value; })}><option value="active">{t("option.active", "active")}</option><option value="disabled">{t("option.disabled", "disabled")}</option></select></Field>
                     <Field
                       label={t("routing.field.pricingTemplateId", "Pricing Template ID")}
                       hint={t("routing.hint.pricingTemplateId", "Used to match pricing library metadata and governance pricing, not the Azure deployment name.")}
-                    ><input value={item.pricingRef || ""} onChange={(event) => updateConfig((next) => { next.models[index].pricingRef = event.target.value; autoMatchTemplate(next, index); })} /></Field>
+                    ><input value={item.pricingRef || ""} onChange={(event) => updateConfig((next) => { next.models[index].pricingRef = event.target.value; autoMatchTemplate(next, index); })} /></Field></>}
+                    <Field label={t("field.status", "Status")}><select value={item.status || "active"} onChange={(event) => updateConfig((next) => { next.models[index].status = event.target.value; })}><option value="active">{t("option.active", "active")}</option><option value="disabled">{t("option.disabled", "disabled")}</option></select></Field>
                   </div>
+                  {references.length > 0 && <p>{t("channel.referenced")} {references.map(key => key.id).join(", ")}</p>}
+                  {binding && <p className="muted">{t("channel.switchHint")}</p>}
                   <Field
                     label={t("routing.capabilities.effective", "Effective capabilities")}
                     hint={capabilityModel

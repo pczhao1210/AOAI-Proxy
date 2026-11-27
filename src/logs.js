@@ -2,6 +2,7 @@ import { Writable } from "node:stream";
 import crypto from "node:crypto";
 import { DefaultAzureCredential } from "@azure/identity";
 import { LogsIngestionClient, isAggregateLogsUploadError } from "@azure/monitor-ingestion";
+import { isChannelOperation, operationFields } from "./channel-operation-fields.js";
 
 const DEFAULT_MAX_LOG_ENTRIES = 500;
 const HARD_MAX_IN_MEMORY_LOG_ENTRIES = 5000;
@@ -126,7 +127,13 @@ const SENSITIVE_FIELD_KEYS = new Set([
   "credential",
   "subscriptionkey",
   "encryptedcontent",
-  "sastoken"
+  "sastoken",
+  "oauth", "oauthresponse", "authorizationresponse", "authresponse", "deviceresponse",
+  "deviceflow", "deviceauthorization", "deviceflowresponse", "deviceauthorizationresponse", "tokenresponse", "credentials", "secrets",
+  "ciphertext", "encryptedcredential", "encryptedcredentials", "encryptedtoken",
+  "devicecode", "usercode", "authorizationcode", "verificationuricomplete", "verificationurlcomplete",
+  "idtoken", "oauthtoken", "copilottoken", "githubtoken", "githubcopilottoken", "approvalkey",
+  "authorizationheader", "authheader", "credentialenvelope", "copilotcredentialkeys"
 ]);
 
 const SENSITIVE_QUERY_KEYS = new Set([
@@ -147,6 +154,11 @@ const SENSITIVE_QUERY_KEYS = new Set([
 ]);
 
 const API_KEY_INFO_KEYS = new Set(["keyid", "apikeyid", "consumerkeyid"]);
+const sensitiveField = key => SENSITIVE_FIELD_KEYS.has(key)
+  || /(?:accesstoken|refreshtoken|copilottoken|githubtoken|oauthtoken|devicecode|usercode|credentialciphertext|authorizationheader)$/.test(key);
+// Provider errors can contain serialized JSON, headers or query strings instead of structured fields.
+const embeddedCredential = /\b(?:gh[pousr]_[a-z0-9]{12,}|github_pat_[a-z0-9_]{12,}|bearer\s+[a-z0-9_.~+/=-]{4,})|(?:\btoken|access[_-]?token|refresh[_-]?token|copilot[_-]?token|device[_-]?code|user[_-]?code|ciphertext|authorization|oauth[_-]?token)["']?\s*[:=]\s*["']?[a-z0-9_%+.~/-]+/i;
+const safeDiagnostic = value => typeof value === "string" && embeddedCredential.test(value) ? "[REDACTED]" : value;
 const USAGE_KEYS = new Set([
   "usage",
   "prompttokens",
@@ -184,6 +196,17 @@ const REQUEST_METADATA_STRING_KEYS = new Set([
   "hostname",
   "host",
   "event",
+  "eventuid",
+  "operationid",
+  "channelid",
+  "connectionid",
+  "previouschannelid",
+  "sourcemodelid",
+  "canonicalmodelid",
+  "previoussourcemodelid",
+  "previouscanonicalmodelid",
+  "configrevision",
+  "historyid",
   "route",
   "routekey",
   "path"
@@ -805,7 +828,7 @@ function truncateString(value, maxLen = 4000) {
 function sanitizeUrl(value) {
   if (typeof value !== "string") return value;
   const questionIndex = value.indexOf("?");
-  if (questionIndex < 0) return truncateString(value);
+  if (questionIndex < 0) return truncateString(safeDiagnostic(value));
 
   const hashIndex = value.indexOf("#", questionIndex);
   const base = value.slice(0, questionIndex);
@@ -816,14 +839,14 @@ function sanitizeUrl(value) {
 
   for (const key of new Set(params.keys())) {
     const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (!SENSITIVE_QUERY_KEYS.has(normalizedKey)) continue;
+    if (!SENSITIVE_QUERY_KEYS.has(normalizedKey) && !sensitiveField(normalizedKey)) continue;
     params.set(key, "[REDACTED]");
     changed = true;
   }
 
-  if (!changed) return truncateString(value);
+  if (!changed) return truncateString(safeDiagnostic(value));
   const sanitizedQuery = params.toString().replace(/%5BREDACTED%5D/gi, "[REDACTED]");
-  return truncateString(`${base}?${sanitizedQuery}${hash}`);
+  return truncateString(safeDiagnostic(`${base}?${sanitizedQuery}${hash}`));
 }
 
 function sanitizeBase64Value(value) {
@@ -861,7 +884,7 @@ function isLikelyBase64Value(value, compactKey) {
 function sanitizeValue(value, key = "", depth = 0, settings = resolveLogSettings()) {
   const normalizedKey = String(key || "").toLowerCase();
   const compactKey = normalizedKey.replace(/[^a-z0-9]/g, "");
-  if (SENSITIVE_FIELD_KEYS.has(compactKey)) {
+  if (sensitiveField(compactKey)) {
     return "[REDACTED]";
   }
   if (settings.redactApiKeyInfo && API_KEY_INFO_KEYS.has(compactKey)) {
@@ -896,7 +919,7 @@ function sanitizeValue(value, key = "", depth = 0, settings = resolveLogSettings
     if (settings.messageContentMode !== "full" && CONTENT_KEYS.has(compactKey)) {
       return "[OMITTED]";
     }
-    return truncateString(value, settings.maxStringChars || 4000);
+    return truncateString(safeDiagnostic(value), settings.maxStringChars || 4000);
   }
   if (depth >= (settings.maxDepth || 4)) {
     return "[Truncated]";
@@ -907,8 +930,8 @@ function sanitizeValue(value, key = "", depth = 0, settings = resolveLogSettings
   if (value instanceof Error) {
     return {
       name: value.name,
-      message: truncateString(value.message),
-      stack: truncateString(value.stack || "", 2000)
+      message: truncateString(safeDiagnostic(value.message)),
+      stack: truncateString(safeDiagnostic(value.stack || ""), 2000)
     };
   }
   if (value && typeof value === "object") {
@@ -1084,6 +1107,15 @@ function recordEntry(entry, options = {}) {
 }
 
 function buildEntry(payload) {
+  const operation = operationFields(payload, runtimeLogConfig);
+  if (operation) payload = { ...operation, ts: payload.ts ?? payload.time };
+  else if (payload?.source === "http.admin" && /\/api\/(?:upstreams\/)?copilot(?:[/?]|$)/i.test(payload.url || "")) {
+    // Device responses and error bodies have no safe generic diagnostic representation.
+    const { level, time, ts, source, requestId, status, latencyMs } = payload;
+    payload = { level, time, ts, source, requestId, status, latencyMs,
+      event: payload.event === "http.auth_rejected" ? payload.event : "http.request_completed",
+      method: payload.method === "GET" ? "GET" : "POST", url: "<copilot-management>" };
+  }
   const {
     level,
     time,
@@ -1150,13 +1182,15 @@ function buildEntry(payload) {
     ts: normalizeTimestamp(ts ?? time ?? timestamp),
     level: normalizeLevel(level),
     event: typeof event === "string" ? event : "",
-    message: truncateString(typeof msg === "string" ? msg : typeof message === "string" ? message : ""),
+    message: truncateString(safeDiagnostic(typeof msg === "string" ? msg : typeof message === "string" ? message : "")),
     requestId: typeof requestId === "string" ? requestId : "",
     conversationId: typeof conversationId === "string" ? conversationId : "",
     sessionId: typeof sessionId === "string" ? sessionId : "",
     azureRequestId: typeof azureRequestId === "string" ? azureRequestId : "",
     consumerKeyId: settings.redactApiKeyInfo ? "[REDACTED]" : typeof consumerKeyId === "string" ? consumerKeyId : "",
     modelId: typeof modelId === "string" ? modelId : "",
+    ...Object.fromEntries(["canonicalModelId", "channelId", "sourceModelId", "configRevision", "historyId"]
+      .filter(name => typeof rest[name] === "string").map(name => [name, rest[name]])),
     actualModelName: typeof actualModelName === "string" ? actualModelName : "",
     routeKey: typeof routeKey === "string" ? routeKey : "",
     backendRouteKey: typeof backendRouteKey === "string" ? backendRouteKey : "",
@@ -1167,7 +1201,7 @@ function buildEntry(payload) {
     source: typeof source === "string" ? source : "",
     status: Number.isFinite(status) ? status : null,
     errorCode: typeof errorCode === "string" ? errorCode : "",
-    failureReason: truncateString(typeof failureReason === "string" ? failureReason : failureReason == null ? "" : String(failureReason)),
+    failureReason: truncateString(safeDiagnostic(typeof failureReason === "string" ? failureReason : failureReason == null ? "" : String(failureReason))),
     latencyMs: Number.isFinite(latencyMs) ? latencyMs : null,
     clientIp: settings.includeClientIp && typeof clientIp === "string" ? truncateString(clientIp, 512) : "",
     userAgent: typeof userAgent === "string" ? truncateString(userAgent, 1024) : "",
@@ -1184,10 +1218,10 @@ function buildEntry(payload) {
     modelRouterCostAmount: settings.includeUsage && Number.isFinite(modelRouterCostAmount) ? modelRouterCostAmount : null,
     actualModelCostAmount: settings.includeUsage && Number.isFinite(actualModelCostAmount) ? actualModelCostAmount : null,
     currency: settings.includeUsage && typeof currency === "string" ? currency : "",
-    requestPreview: typeof requestPreview === "string" ? truncateString(requestPreview, 4096) : "",
-    responsePreview: typeof responsePreview === "string" ? truncateString(responsePreview, 4096) : "",
-    requestBodyJson: typeof requestBodyJson === "string" ? requestBodyJson : "",
-    responseBodyJson: typeof responseBodyJson === "string" ? responseBodyJson : "",
+    requestPreview: typeof requestPreview === "string" ? truncateString(safeDiagnostic(requestPreview), 4096) : "",
+    responsePreview: typeof responsePreview === "string" ? truncateString(safeDiagnostic(responsePreview), 4096) : "",
+    requestBodyJson: typeof requestBodyJson === "string" ? safeDiagnostic(requestBodyJson) : "",
+    responseBodyJson: typeof responseBodyJson === "string" ? safeDiagnostic(responseBodyJson) : "",
     requestBytes: Number.isInteger(requestBytes) ? requestBytes : null,
     responseBytes: Number.isInteger(responseBytes) ? responseBytes : null,
     requestSha256: typeof requestSha256 === "string" ? requestSha256 : "",
@@ -1201,7 +1235,7 @@ function buildEntry(payload) {
     responseToolCount: Number.isInteger(responseToolCount) ? responseToolCount : 0,
     responseItemCount: Number.isInteger(responseItemCount) ? responseItemCount : 0,
     fields: {
-      ...sanitizeValue(rest, "", 0, { ...settings, requestMetadata: true }),
+      ...(operation ? rest : sanitizeValue(rest, "", 0, { ...settings, requestMetadata: true })),
       ...(typeof sourceProtocol === "string" ? { sourceProtocol } : {}),
       ...(typeof targetProtocol === "string" ? { targetProtocol } : {})
     }
@@ -1271,7 +1305,7 @@ function normalizeListParam(value) {
 }
 
 function getLogRequestGroupKey(entry) {
-  if (!entry.requestId || entry.event === "governance.text_cost_incomplete") return "";
+  if (!entry.requestId || isChannelOperation(entry.event) || entry.fields?.url === "<copilot-management>" || entry.event === "governance.text_cost_incomplete") return "";
   const instanceId = typeof entry.fields?.requestInstanceId === "string" ? entry.fields.requestInstanceId : "";
   return instanceId || (entry.event.startsWith("http.") || entry.event.startsWith("proxy.") ? entry.requestId : "");
 }
@@ -1282,12 +1316,16 @@ function isRequestRetryEvent(entry) {
 }
 
 export function queryLogs(filters = {}) {
+  const dimensionFilters = ["canonicalModelId", "channelId", "sourceModelId", "configRevision"]
+    .filter(name => typeof filters[name] === "string" && filters[name]);
+  const matchesDimensions = entry => dimensionFilters.every(name => entry[name] === filters[name]);
   const levels = new Set(normalizeListParam(filters.level).map((item) => normalizeLevel(item)));
   const event = typeof filters.event === "string" ? filters.event.trim().toLowerCase() : "";
   const excludedEvents = new Set(normalizeListParam(filters.excludeEvent).map((item) => item.toLowerCase()));
   const modelId = typeof filters.modelId === "string" ? filters.modelId.trim().toLowerCase() : "";
   const requestId = typeof filters.requestId === "string" ? filters.requestId.trim().toLowerCase() : "";
   const keyword = typeof filters.keyword === "string" ? filters.keyword.trim().toLowerCase() : "";
+  const matchesConnection = entry => !filters.connectionId || [entry.fields?.connectionId, entry.fields?.channelId, entry.fields?.previousChannelId].includes(filters.connectionId);
   const since = typeof filters.since === "string" && !Number.isNaN(Date.parse(filters.since))
     ? new Date(filters.since).toISOString()
     : "";
@@ -1339,6 +1377,7 @@ export function queryLogs(filters = {}) {
       const outcome = hasFailure ? "failed" : !hasCompletion ? "unknown" : hasWarning ? "warning" : "success";
       const primary = failureEvent || terminalEvent || httpCompletion || events.at(-1);
       const modelEntry = latestEvents.find((entry) => entry.modelId);
+      const bindingEntry = latestEvents.find(entry => entry.configRevision || entry.channelId || entry.canonicalModelId);
       const routeEntry = latestEvents.find((entry) => entry.routeKey || entry.backendRouteKey);
       const usageEntry = latestEvents.find((entry) =>
         entry.usageAvailable && entry.event === "proxy.usage_recorded"
@@ -1368,6 +1407,8 @@ export function queryLogs(filters = {}) {
         method: httpCompletion?.fields?.method || "",
         url: httpCompletion?.fields?.url || "",
         modelId: modelEntry?.modelId || "",
+        ...(bindingEntry && { canonicalModelId: bindingEntry.canonicalModelId, channelId: bindingEntry.channelId,
+          sourceModelId: bindingEntry.sourceModelId, configRevision: bindingEntry.configRevision, historyId: bindingEntry.historyId }),
         routeKey: routeEntry?.routeKey || "",
         backendRouteKey: routeEntry?.backendRouteKey || "",
         latencyMs: httpCompletion?.latencyMs ?? primary.latencyMs ?? null,
@@ -1379,8 +1420,10 @@ export function queryLogs(filters = {}) {
       };
 
       if (filters.outcome && filters.outcome !== "all" && filters.outcome !== outcome) continue;
+      if (!events.some(matchesConnection)) continue;
       if (event && !events.some((entry) => entry.event.toLowerCase() === event)) continue;
       if (modelId && request.modelId.toLowerCase() !== modelId) continue;
+      if (!matchesDimensions(request)) continue;
       if (requestId && request.requestId.toLowerCase() !== requestId) continue;
       if (since && request.ts < since) continue;
       if (keyword && !JSON.stringify(request).toLowerCase().includes(keyword)) continue;
@@ -1399,12 +1442,17 @@ export function queryLogs(filters = {}) {
   }
 
   const filtered = logBuffer.filter((entry) => {
+    if (!matchesConnection(entry)) return false;
+    if (filters.operationId && entry.fields?.operationId !== filters.operationId) return false;
+    if (filters.configRevision && entry.fields?.configRevision !== filters.configRevision) return false;
+    if (filters.view === "operations" && !isChannelOperation(entry.event)) return false;
     if (levels.size > 0 && !levels.has(entry.level)) return false;
     if (filters.view === "access" && !entry.event.startsWith("http.") && !entry.source.startsWith("http")) return false;
     if (filters.view === "events" && getLogRequestGroupKey(entry)) return false;
     if (event && entry.event.toLowerCase() !== event) return false;
     if (excludedEvents.has(entry.event.toLowerCase())) return false;
     if (modelId && entry.modelId.toLowerCase() !== modelId) return false;
+    if (!matchesDimensions(entry)) return false;
     if (requestId && entry.requestId.toLowerCase() !== requestId) return false;
     if (since && entry.ts < since) return false;
     if (keyword) {
@@ -1440,7 +1488,7 @@ export function queryLogs(filters = {}) {
 
   return {
     ok: true,
-    view: filters.view === "access" ? "access" : "events",
+    view: filters.view === "operations" ? "operations" : filters.view === "access" ? "access" : "events",
     total: visibleEntries.length,
     limit,
     retainedEvents: logBuffer.length,

@@ -65,9 +65,10 @@ export default function OpsTab({
     { key: "trace", label: t("logs.level.trace", "Trace") }
   ];
   const memoryBufferSize = Math.max(1, Number(loggingRuntime?.memoryBufferSize) || 100);
-  const requestView = logFilters.view !== "events" && logFilters.view !== "access";
+  const operations = logFilters.view === "operations";
+  const requestView = !operations && logFilters.view !== "events" && logFilters.view !== "access";
   const logView = requestView ? "requests" : logFilters.view;
-  const logsMatchView = logs.view === logView;
+  const logsMatchView = logs.view === logView && (!operations || logs.recordSource === logFilters.recordSource);
   const logItems = logsMatchView ? logs.items : [];
   const logTotal = logsMatchView ? logs.total : 0;
   const emptyLogsMessage = logsLoading
@@ -75,7 +76,7 @@ export default function OpsTab({
     : !logsMatchView
       ? t("logs.viewNotLoaded", "This log view has not loaded. Refresh to retry.")
       : t("ops.noLogs", "No logs yet. Adjust filters and refresh.");
-  const advancedFiltersOpen = Boolean(logFilters.event || logFilters.modelId || logFilters.requestId || logFilters.keyword || Number(logFilters.limit || 100) !== 100);
+  const advancedFiltersOpen = operations || Boolean(logFilters.connectionId || logFilters.event || logFilters.modelId || logFilters.requestId || logFilters.keyword || Number(logFilters.limit || 100) !== 100);
   const pricingRepoLabel = pricingLibraryStatus?.githubOwner && pricingLibraryStatus?.githubRepo
     ? `${pricingLibraryStatus.githubOwner}/${pricingLibraryStatus.githubRepo}`
     : "-";
@@ -299,6 +300,10 @@ export default function OpsTab({
                 onClick={() => setLogFilters((current) => ({ ...current, view: "access" }))}>
                 {t("logs.view.access", "Access & Auth")}
               </button>
+              <button type="button" role="tab" aria-selected={operations} className={operations ? "selected" : "ghost"}
+                onClick={() => setLogFilters(current => ({ ...current, view: "operations", limit: Math.min(current.limit, 100) }))}>
+                {t("logs.view.operations", "Channel operations")}
+              </button>
             </div>
             {requestView ? (
               <div className="log-view-tabs" role="group" aria-label={t("logs.outcomeLabel", "Request outcome")}>
@@ -320,7 +325,7 @@ export default function OpsTab({
               <input type="checkbox" checked={logFilters.autoRefresh} onChange={(event) => setLogFilters((current) => ({ ...current, autoRefresh: event.target.checked }))} />
               <span>{t("ops.autoRefresh", "Auto Refresh")}</span>
             </label>
-            {logFilters.view !== "events" ? (
+            {logFilters.view !== "events" && !operations ? (
               <label className="inline">
                 <input type="checkbox" checked={logFilters.hideAuthRejected !== false} onChange={(event) => setLogFilters((current) => ({ ...current, hideAuthRejected: event.target.checked }))} />
                 <span>{t("ops.hideAuthRejected", "Hide auth rejections")}</span>
@@ -336,32 +341,50 @@ export default function OpsTab({
             <summary>{t("logs.advancedFilters", "More Filters")}</summary>
             <div className="log-advanced-body-react">
               <div className="form-grid compact">
+                {operations && <Field label={t("logs.recordSource", "Record source")}>
+                  <select value={logFilters.recordSource} onChange={event => setLogFilters(current => ({ ...current, recordSource: event.target.value }))}>
+                    <option value="memory">{t("logs.source.memory", "Instance memory")}</option>
+                    <option value="database">{t("logs.source.database", "Runtime database")}</option>
+                  </select>
+                </Field>}
+                <Field label={t("logs.connectionId", "Connection or channel ID")}><input value={logFilters.connectionId || ""} onChange={event => setLogFilters(current => ({ ...current, connectionId: event.target.value }))} /></Field>
+                {operations && <>
+                  <Field label={t("logs.operationId", "Operation ID")}><input value={logFilters.operationId || ""} onChange={event => setLogFilters(current => ({ ...current, operationId: event.target.value }))} /></Field>
+                  <Field label={t("logs.configRevision", "Configuration revision")}><input value={logFilters.configRevision || ""} onChange={event => setLogFilters(current => ({ ...current, configRevision: event.target.value }))} /></Field>
+                </>}
                 <Field label={t("field.event", "Event")}><input value={logFilters.event} onChange={(event) => setLogFilters((current) => ({ ...current, event: event.target.value }))} placeholder={t("field.eventPlaceholder", "proxy.request_rejected")} /></Field>
                 <Field label={t("field.model", "Model")}><input value={logFilters.modelId} onChange={(event) => setLogFilters((current) => ({ ...current, modelId: event.target.value }))} placeholder={t("field.modelPlaceholder", "gpt-5.4")} /></Field>
                 <Field label={t("field.requestId", "Request ID")}><input value={logFilters.requestId} onChange={(event) => setLogFilters((current) => ({ ...current, requestId: event.target.value }))} placeholder={t("field.requestIdPlaceholder", "req-123")} /></Field>
-                <Field label={t("field.keyword", "Keyword")}><input value={logFilters.keyword} onChange={(event) => setLogFilters((current) => ({ ...current, keyword: event.target.value }))} placeholder={t("field.keywordPlaceholder", "timeout")} /></Field>
+                {!operations && <Field label={t("field.keyword", "Keyword")}><input value={logFilters.keyword} onChange={(event) => setLogFilters((current) => ({ ...current, keyword: event.target.value }))} placeholder={t("field.keywordPlaceholder", "timeout")} /></Field>}
                 <Field label={t("field.limit", "Limit")}>
                   <select value={logFilters.limit} onChange={(event) => setLogFilters((current) => ({ ...current, limit: Number(event.target.value || 100) }))}>
                     <option value={50}>50</option>
                     <option value={100}>100</option>
-                    <option value={200} disabled={memoryBufferSize < 200}>200</option>
-                    <option value={500} disabled={memoryBufferSize < 500}>500</option>
+                    {!operations && <option value={200} disabled={memoryBufferSize < 200}>200</option>}
+                    {!operations && <option value={500} disabled={memoryBufferSize < 500}>500</option>}
                   </select>
                 </Field>
               </div>
             </div>
           </details>
-          <div className="muted">{t("field.logBufferSize", "Log Buffer Size")}: {memoryBufferSize}</div>
-          <div className="muted">
+          {operations && logsMatchView ? <div className="muted" role="status">
+            {t(`logs.persistence.${logs.persistence}`, logs.persistence)} · {t("logs.capture", "Captured")}: {formatDateTime(logs.capturedAt)}
+            {logs.retainedSince && ` · ${t("logs.retentionStart", "Retention cutoff")}: ${formatDateTime(logs.retainedSince)}`}
+            {logs.recordSource === "memory" && ` · ${t("field.logBufferSize", "Log Buffer Size")}: ${memoryBufferSize}`}
+            {" · "}{t("logs.dropped", "Sink drops")}: {logs.droppedEvents || 0}
+            {" · "}{t("logs.shown", "Rows shown")}: {logItems.length}{logs.hasMore ? "+" : ""}
+          </div> : null}
+          {!operations && <div className="muted">{t("field.logBufferSize", "Log Buffer Size")}: {memoryBufferSize}</div>}
+          {!operations && <div className="muted">
             {t(requestView ? "logs.requestCount" : "ops.logCount", requestView ? "Showing {count} requests from the retained event buffer." : "Matched {count} log entries.", { count: logTotal || 0 })}
             {" "}{t("logs.retainedEvents", "Retained events: {count}", { count: logs.retainedEvents ?? 0 })}
             {logFilters.autoRefresh ? t("ops.logAutoRefreshSuffix", ", auto refresh enabled") : ""}
-          </div>
+          </div>}
         </div>
 
         <LogTable
           key={logView}
-          view={logView}
+          view={operations ? "events" : logView}
           items={logItems}
           emptyMessage={emptyLogsMessage}
           t={t}

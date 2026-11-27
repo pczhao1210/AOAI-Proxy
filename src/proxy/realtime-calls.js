@@ -46,9 +46,12 @@ export function createRealtimeCallRegistry({ log }) {
           record.pricing = resolveMediaPricing(record.config, record.binding.model, record.binding.upstream, null,
             record.binding.targetUrl?.replace(/^ws/, "http"));
           record.usageTracker = createMediaUsageTracker({ pricing: record.pricing });
-          recordRequest(record.binding.model.id, { keyId: record.keyId });
-          recordRuntimeRequest(record.config, { ...record.context, keyId: record.keyId, modelId: record.binding.model.id,
-            routeKey: `${record.publicRouteKey}/calls`, stream: true });
+          record.context = { ...record.context, ...record.binding.accounting, routeKey: `${record.publicRouteKey}/calls`,
+            backendRouteKey: record.binding.routeKey };
+          const event = { ...record.context, occurredAt: new Date().toISOString(), keyId: record.keyId,
+            modelId: record.binding.model.id, stream: true };
+          recordRequest(record.binding.model.id, event);
+          recordRuntimeRequest(record.config, event);
           record.timer = setTimeout(async () => {
             for (const close of record.observers) close("WEBRTC_CALL_EXPIRED", 408, 1000);
             try {

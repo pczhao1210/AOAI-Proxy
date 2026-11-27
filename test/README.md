@@ -24,11 +24,13 @@ node --test test/admin-runtime-loader.test.js
 node --test test/config-feature-flags.test.js test/config-environment.test.js test/config-v2-upgrade.test.js
 node --test test/admin-media-form.test.js
 node --test test/admin-routing-form.test.js
+node --test test/channel-bindings.test.js test/admin-channel-form.test.js test/admin-copilot-channel-form.test.js test/webrtc.test.js
+node --test test/channel-discovery.test.js test/copilot-credentials.test.js test/copilot-provider.test.js
 node --test test/admin-capabilities.test.js test/capability-routing.test.js
 node --test test/admin-harness-form.test.js test/harness-client-config.test.js test/codex-models.test.js
 node --test --test-name-pattern='App Harness|App capability' test/admin-runtime-stats.test.js
 node --test test/admin-log-content.test.js
-node --test test/logs.test.js test/admin-auth-logs.test.js
+node --test test/logs.test.js test/admin-auth-logs.test.js test/channel-operations.test.js
 node --test test/response-reader.test.js
 node --test test/usage-accounting.test.js
 node --test test/upstream-headers.test.js
@@ -54,6 +56,8 @@ preserving literal text, tool data and JSON Schema enum/default/const values.
 Runtime recovery tests inject failed checkpoints, lost insert/commit acknowledgements,
 legacy spool replay/restart, and failed budget hydration. They assert transactional
 rollups, stable event identities and preservation of settlements during recovery.
+
+For canonical model/channel accounting, run `node --test test/channel-accounting.test.js test/channel-bindings.test.js test/admin-runtime-stats.test.js`. The PostgreSQL case uses the disposable loopback `RUNTIME_MEDIA_TEST_DATABASE_URL` described below; without it, only that case skips. It compares Key/time-filtered database and memory totals, duplicate event UIDs, retained rollups without events, and model-only reset. The local HTTP fixture holds an inference open across a binding change and checks its final log revision and usage against its original channel.
 These mocks complement, rather than replace, the disposable PostgreSQL gate below.
 The CI workflow runs patched Node 24 (at least 24.22.1) unit/routes/card/build/security
 checks and that database gate; it never runs real providers, modifies a deployment,
@@ -223,6 +227,12 @@ Caddy/container chain separately; do not edit a running Caddyfile to make mock t
 specialized transcription/translation control needs its own evidence, not inference from general realtime.
 The text `test:real:matrix`, CLI tests and synthetic latency checks do not replace this media matrix.
 Current milestones and unrun gates are tracked in the [MAI/voice plan](../docs/development/mai-voice-realtime-plan.md).
+
+Channel integration tests (`test/copilot-provider.test.js`, `test/copilot-credentials.test.js`,
+`test/channel-discovery.test.js`, `test/channel-operations.test.js`, `test/channel-accounting.test.js`)
+use synthetic identities and private fixtures. The preloaded GitHub transport in the disposable proxy
+never contacts GitHub. Include `RUNTIME_MEDIA_TEST_DATABASE_URL` and `REALTIME_CADDY_TEST_IMAGE` for
+the database and generated-Caddy gates. Do not supply a real subscription token.
 
 Optional synthetic image CPU/RSS and preparation-latency baseline:
 

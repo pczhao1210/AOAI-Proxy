@@ -603,7 +603,7 @@ function buildStaticResultItem(config, model) {
   return base;
 }
 
-async function fetchValidationResponse({ targetUrl, headers, bodyText, requestTimeoutMs }) {
+async function fetchValidationResponse({ targetUrl, headers, bodyText, requestTimeoutMs, redirect }) {
   const controller = new AbortController();
   const requestTimer = setTimeout(() => {
     controller.abort("request-timeout");
@@ -614,6 +614,7 @@ async function fetchValidationResponse({ targetUrl, headers, bodyText, requestTi
       method: "POST",
       headers,
       body: bodyText,
+      redirect,
       signal: controller.signal
     });
   } catch (error) {
@@ -686,6 +687,7 @@ async function probeConfiguredModel(config, item) {
       usesAnthropicMessages ? "https://ai.azure.com/.default" : config?.auth?.scope,
       {
         auth: upstream.auth,
+        upstream, targetUrl: target.targetUrl, model,
         apiKeyHeader: usesAnthropicMessages ? "x-api-key" : "api-key"
       }
     ),
@@ -697,6 +699,7 @@ async function probeConfiguredModel(config, item) {
       targetUrl: target.targetUrl,
       headers,
       bodyText: JSON.stringify(payload),
+      redirect: upstream.provider === "github-copilot" ? "error" : undefined,
       requestTimeoutMs: policy.requestTimeoutMs
     });
 

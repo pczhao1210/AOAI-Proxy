@@ -1,4 +1,5 @@
 import { checkConsumerModelAccess } from "../governance.js";
+import { inferenceBinding } from "../inference-binding.js";
 import { applyEdits, parseTree } from "jsonc-parser";
 import { resolveModelDescriptor } from "../model-catalog.js";
 import { findModel, findUpstream, isPublicRouteEnabled, resolveRoutePlan } from "./routing.js";
@@ -29,7 +30,8 @@ export function resolveRealtimeBinding(config, consumer, modelId, routeKey, tran
   const upstream = findUpstream(config, model.upstream);
   if (!upstream || upstream.status === "disabled") throw realtimeError(503, "UPSTREAM_UNAVAILABLE", "Upstream unavailable");
   let plan;
-  try { plan = resolveRoutePlan({ routeKey, model, upstream, descriptor: resolveModelDescriptor(model.id) }); } catch {
+  const descriptor = resolveModelDescriptor(model.id);
+  try { plan = resolveRoutePlan({ routeKey, model, upstream, descriptor }); } catch {
     throw realtimeError(400, "UNSUPPORTED_PROTOCOL_ROUTE", "Model has no usable native realtime route");
   }
   const target = new URL(plan.targetUrl);
@@ -42,7 +44,8 @@ export function resolveRealtimeBinding(config, consumer, modelId, routeKey, tran
     target.searchParams.delete("model");
     target.searchParams.set("intent", "transcription");
   } else target.searchParams.set("model", model.targetModel || model.id);
-  return { model, upstream, targetUrl: target.toString(), routeKey, transcription, modelNames: new Map([[model.targetModel || model.id, model.id]]) };
+  return { model, upstream, accounting: inferenceBinding(config, model, descriptor, plan.deployment, routeKey, plan.backendRouteKey),
+    targetUrl: target.toString(), routeKey, transcription, modelNames: new Map([[model.targetModel || model.id, model.id]]) };
 }
 
 export function mapRealtimeEvent(data, binding, config, consumer, fromClient, configuration = false) {

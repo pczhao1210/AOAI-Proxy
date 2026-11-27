@@ -277,6 +277,7 @@ export function buildUpstreamUrl(upstream, routeKey, deployment, model = null, d
 }
 
 export function buildMessagesCountTokensUrl(upstream, messagesUrl, deployment, model = null, descriptor = null) {
+  if (upstream.provider === "github-copilot") throw new Error("Copilot token counting endpoint is not verified");
   const configuredRoute = resolveRouteTemplate(upstream, "messages/count_tokens");
   if (configuredRoute) {
     const configuredUrl = buildUpstreamUrl(upstream, "messages/count_tokens", deployment, model, descriptor);
@@ -297,6 +298,7 @@ export function buildMessagesCountTokensUrl(upstream, messagesUrl, deployment, m
 }
 
 export function buildResponsesCompactUrl(upstream, responsesUrl, deployment, model = null, descriptor = null) {
+  if (upstream.provider === "github-copilot") throw new Error("Copilot compaction endpoint is not verified");
   const configuredRoute = resolveRouteTemplate(upstream, "responses/compact");
   if (configuredRoute) {
     const configuredUrl = buildUpstreamUrl(upstream, "responses/compact", deployment, model, descriptor);
@@ -387,6 +389,10 @@ export function resolveRoutePlan({
     : override === undefined
       ? resolveModelRoute(model, routeKey)
       : override;
+  if (upstream?.provider === "github-copilot" && (!TEXT_ROUTE_KEYS.has(routeKey)
+    || !Object.values(model.routes || {}).includes(resolvedOverride?.value || routeKey))) {
+    throw new Error("Copilot model has no approved endpoint for this route");
+  }
   const allowedRouteTargets = new Set(getDescriptorRouteTargets(descriptor));
   if (
     !harnessNativeRoute

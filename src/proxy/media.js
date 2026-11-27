@@ -13,6 +13,7 @@ import { createRawSseParser } from "./stream.js";
 import { getAzureSpeechOperation, prepareAzureSpeechRequest, mapAzureTranscriptionResult } from "./azure-speech.js";
 import { createMediaUsageTracker } from "./media-usage.js";
 import { recordError, recordRequest } from "../stats.js";
+import { inferenceBinding } from "../inference-binding.js";
 import { recordRuntimeError, recordRuntimeRequest } from "../runtime-store.js";
 import { resolveMediaPricing, settleMediaUsage } from "./media-accounting.js";
 import { prepareResponsesSpeechRequest } from "./responses-media.js";
@@ -76,6 +77,7 @@ export async function proxyMediaRequest({ config, routeKey, req, reply, nativeSp
       throw mediaError(400, "UNSUPPORTED_PROTOCOL_ROUTE", "The model does not support the requested media route");
     }
     backendRouteKey = plan.backendRouteKey;
+    Object.assign(requestContext, inferenceBinding(config, model, descriptor, plan.deployment, clientRouteKey, backendRouteKey));
     usageTracker = createMediaUsageTracker({ pricing: resolveMediaPricing(config, model, upstream, descriptor, plan.targetUrl) });
     let nextBody = { ...(responsesAdapter ? {} : model.defaultParams), ...body, model: model.targetModel || model.id };
     if (responsesAdapter) {
@@ -95,8 +97,9 @@ export async function proxyMediaRequest({ config, routeKey, req, reply, nativeSp
     const admission = await acquireRequestGovernance(config, consumer, model, Date.now(), { ...requestContext, routeKey: clientRouteKey, backendRouteKey: plan.backendRouteKey });
     if (!admission.ok) throw mediaError(admission.status || 429, admission.code, admission.message);
     lease = admission.lease;
-    recordRequest(model.id, consumer);
-    recordRuntimeRequest(config, { ...requestContext, keyId: consumer?.keyId, modelId: model.id, routeKey: clientRouteKey, backendRouteKey });
+    const requestEvent = { ...requestContext, occurredAt: new Date().toISOString(), keyId: consumer?.keyId };
+    recordRequest(model.id, requestEvent);
+    recordRuntimeRequest(config, requestEvent);
     const policy = resolveUpstreamPolicy(config, { routeKey: clientRouteKey, model, upstream, requestOverrides });
     requestTimer = setTimeout(() => controller.abort(mediaError(504, "UPSTREAM_REQUEST_TIMEOUT", "Media request timed out")), positiveInteger(policy.requestTimeoutMs, 600000));
     const auth = await getUpstreamAuthHeaders(upstream.auth?.scope || config.auth.scope, {
@@ -224,9 +227,11 @@ export async function proxyMediaRequest({ config, routeKey, req, reply, nativeSp
     reply.raw.removeListener("close", abort);
     try {
       if (lease && !completed) {
-        recordError(model.id, consumer);
+        const occurredAt = new Date().toISOString();
+        recordError(model.id, { ...requestContext, occurredAt, keyId: consumer?.keyId });
         recordRuntimeError(config, {
           ...requestContext,
+          occurredAt,
           keyId: consumer?.keyId,
           modelId: model.id,
           routeKey: clientRouteKey,

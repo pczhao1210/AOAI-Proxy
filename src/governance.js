@@ -3,7 +3,7 @@ import { resolveModelDescriptor } from "./model-catalog.js";
 import { findPricingDefinitionForModel } from "./pricing-library.js";
 import { hydrateGovernanceRuntime, hydrateGovernanceRuntimes, readGovernanceRuntimes, recordRuntimeBlocked, recordRuntimeWarning } from "./runtime-store.js";
 import { getUsageTotals } from "./usage.js";
-import { compileDefinitionPricing, resolveConfiguredPricing } from "./pricing-policy.js";
+import { compileDefinitionPricing, compilePricingResolution, resolveConfiguredPricing } from "./pricing-policy.js";
 import { calculateTokenCost } from "./token-pricing.js";
 
 const governanceState = {
@@ -325,7 +325,8 @@ function estimateUsageCost(config, model, usage, actualModelName, metadata = {})
   const context = metadata.pricingContext;
   const pricingConfig = context?.config || config;
   const capturedModel = pricingConfig.models?.find((item) => item.id === model?.id) || model;
-  const modelRouterRequest = isModelRouterRequest(model);
+  const copilot = metadata.modelDescriptor?.provider === "github-copilot";
+  const modelRouterRequest = !copilot && isModelRouterRequest(model);
   const pricingModelResolution = resolvePricingModel(pricingConfig, capturedModel, actualModelName);
   const actualModelResolved = pricingModelResolution.actualModelName
     && !matchesPricingCandidate(model, pricingModelResolution.actualModelName);
@@ -341,7 +342,9 @@ function estimateUsageCost(config, model, usage, actualModelName, metadata = {})
     const pricingDescriptor = pricingModelResolution.model === capturedModel
       ? metadata.modelDescriptor
       : resolveModelDescriptor(pricingModelResolution.model?.id);
-    const resolution = resolvePricing(pricingConfig, pricingModelResolution.model, pricingDescriptor, context);
+    const resolution = copilot
+      ? compilePricingResolution(model.pricing, `channel.${model.selectedBinding.channelId}`)
+      : resolvePricing(pricingConfig, pricingModelResolution.model, pricingDescriptor, context);
     actualCost = calculateTokenCost(resolution.pricing, usage, options);
     actualSource = resolution.pricing ? resolution.source : "";
     actualAudit = { source: resolution.source, policyDigest: resolution.policyDigest, tier: actualCost.tier,
@@ -406,6 +409,8 @@ function emitBudgetWarning(config, event, fields = {}) {
     ...fields
   });
   recordRuntimeWarning(config, {
+    canonicalModelId: fields.canonicalModelId, channelId: fields.channelId,
+    sourceModelId: fields.sourceModelId, configRevision: fields.configRevision,
     occurredAt: String(fields.occurredAt || "") || toIsoString(),
     requestId: String(fields.requestId || ""),
     keyId: String(fields.keyId || ""),
@@ -474,12 +479,11 @@ export function resolveApiConsumer(config, presentedKey) {
 
 export function filterModelsForConsumer(models, consumer) {
   const source = Array.isArray(models) ? models : [];
-  const allowedModels = normalizeStringArray(consumer?.apiKey?.allowedModels);
-  return source.filter((model) => {
-    if (String(model?.status || "").trim().toLowerCase() === "disabled") return false;
-    if (!allowedModels.length) return true;
-    return allowedModels.includes(model.id);
-  });
+  return source.filter(model => checkConsumerModelAccess(consumer, model).ok);
+}
+
+export function hasModelRestriction(apiKey) {
+  return apiKey?.modelAccessMode === "selected" || !!apiKey?.allowedModels?.length;
 }
 
 export function checkConsumerModelAccess(consumer, model) {
@@ -493,7 +497,7 @@ export function checkConsumerModelAccess(consumer, model) {
     };
   }
   const allowedModels = normalizeStringArray(consumer?.apiKey?.allowedModels);
-  if (!allowedModels.length) {
+  if (!hasModelRestriction(consumer?.apiKey)) {
     return { ok: true };
   }
   if (allowedModels.includes(model?.id)) {
@@ -701,6 +705,7 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
     appendStructuredLog("warn", {
       source: "governance",
       event: "governance.text_cost_incomplete",
+      ...metadata.accounting,
       requestId: String(metadata.requestId || ""),
       modelId: model?.id || "",
       costStatus: usageCost.costStatus,
@@ -711,6 +716,7 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
   if (budgetSettings.enabled && budgetSettings.limitAmount > 0 && !usageCost.configured && !runtime.budgetWindow.unmeteredWarningAt) {
     runtime.budgetWindow.unmeteredWarningAt = toIsoString(now);
     emitBudgetWarning(config, "governance.budget_unmetered_usage", {
+      ...metadata.accounting,
       occurredAt: toIsoString(now),
       requestId: String(metadata.requestId || ""),
       keyId: consumer.keyId,
@@ -729,6 +735,7 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
     runtime.budgetWindow.softLimitReached = true;
     runtime.budgetWindow.softLimitReachedAt = toIsoString(now);
     emitBudgetWarning(config, "governance.budget_soft_limit_reached", {
+      ...metadata.accounting,
       occurredAt: toIsoString(now),
       requestId: String(metadata.requestId || ""),
       keyId: consumer.keyId,
@@ -752,6 +759,7 @@ export function recordGovernanceUsage(config, consumer, model, usage, now = Date
   ) {
     runtime.budgetWindow.hardLimitWarningAt = toIsoString(now);
     emitBudgetWarning(config, "governance.budget_hard_limit_warning", {
+      ...metadata.accounting,
       occurredAt: toIsoString(now),
       requestId: String(metadata.requestId || ""),
       keyId: consumer.keyId,
@@ -851,6 +859,7 @@ export async function getGovernanceSnapshot(config, { readOnly = false } = {}) {
       displayName: consumer.displayName,
       owner: apiKey?.owner || "",
       status: apiKey?.status || "active",
+      modelAccessMode: hasModelRestriction(apiKey) ? "selected" : "all",
       allowedModels: normalizeStringArray(apiKey?.allowedModels),
       rateLimit,
       budget,

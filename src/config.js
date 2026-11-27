@@ -1,4 +1,5 @@
 import { configurationRevision } from "./config-history.js";
+import { registerInferenceRevision } from "./inference-binding.js";
 import { getLogRuntimeInfo } from "./logs.js";
 import {
   compileModelCatalog,
@@ -9,7 +10,10 @@ import {
 import { getConfiguredModelBindingIssues } from "./model-validation.js";
 import { readConfigHistory, readPersistedConfigText, writePersistedConfigText, getPersistenceSummary, setPersistenceConfig } from "./persistence.js";
 import { restoreHistorySecrets } from "./admin-config.js";
-import { findPricingDefinitionForModel, resolveNativeModelCapabilities } from "./pricing-library.js";
+import { findPricingDefinitionForModel, listArchivedPricingDefinitions, listPricingDefinitions, resolveNativeModelCapabilities } from "./pricing-library.js";
+import { derivedBindingFields, resolveChannelModels, sameBinding } from "./channel-bindings.js";
+import { copilotRuntime } from "./copilot-runtime.js";
+import { isCopilotOrigin } from "./copilot-provider.js";
 import { compilePricingPolicy } from "./token-pricing.js";
 import { getRuntimeStoreInfo, setRuntimeStoreConfig, validateRuntimeStoreTransition } from "./runtime-store.js";
 import { isSupportedPersistenceMode } from "./persistence-mode.js";
@@ -393,6 +397,8 @@ const DEFAULTS = {
 
 let currentConfig = null;
 let persistedConfig = null;
+let pendingApplication = null;
+let appliedRevision = "";
 let currentDistributionProfile = null;
 let configDeprecations = [];
 let configCleanupRequired = false;
@@ -834,11 +840,11 @@ function pickBoolean(...values) {
   return undefined;
 }
 
-function collectCapabilitiesForUpstream(models, upstreamName) {
+function collectCapabilitiesForUpstream(models, upstreamName, channelId) {
   if (!upstreamName) return [];
   const unique = new Set();
   for (const model of Array.isArray(models) ? models : []) {
-    if (model?.upstream !== upstreamName) continue;
+    if (model.selectedBinding ? model.selectedBinding.channelId !== channelId : model.upstream !== upstreamName) continue;
     for (const capability of normalizeStringArray(model.capabilities)) {
       unique.add(capability);
     }
@@ -1136,6 +1142,12 @@ function applySchemaCompatibility(rawConfig, merged) {
       next.hostingMode = String(next.hostingMode || "").trim().toLowerCase();
       next.fallbackModels = normalizeStringArray(next.fallbackModels);
       next.accessTags = normalizeStringArray(next.accessTags);
+      if (Object.hasOwn(model || {}, "selectedBinding")) {
+        for (const field of derivedBindingFields) {
+          if (Object.hasOwn(model, field)) throw new Error(`model ${model.id}: ${field} conflicts with selectedBinding`);
+          delete next[field];
+        }
+      }
       next.requestPolicy.allowedParams = normalizeStringArray(next.requestPolicy.allowedParams);
       next.requestPolicy.blockedParams = normalizeStringArray(next.requestPolicy.blockedParams);
       return next;
@@ -1182,11 +1194,14 @@ function applySchemaCompatibility(rawConfig, merged) {
         },
         headersTemplate: {}
       }, upstream || {});
+      if (upstream?.provider === "github-copilot") {
+        next.routes = configuredRoutes ?? {};
+      }
       if (configuredRoutes != null && (typeof configuredRoutes !== "object" || Array.isArray(configuredRoutes))) {
         next.routes = configuredRoutes;
       }
       next.tags = normalizeStringArray(next.tags);
-      next.capabilities = collectCapabilitiesForUpstream(merged.models, next.name);
+      next.capabilities = collectCapabilitiesForUpstream(merged.models, next.name, next.channelId);
       next.requestPolicy.allowedParams = normalizeStringArray(next.requestPolicy.allowedParams);
       next.requestPolicy.blockedParams = normalizeStringArray(next.requestPolicy.blockedParams);
       return next;
@@ -1215,6 +1230,16 @@ function applySchemaCompatibility(rawConfig, merged) {
         },
         notes: ""
       }, apiKey || {});
+      if (apiKey?.allowedModels != null && (!Array.isArray(apiKey.allowedModels)
+        || apiKey.allowedModels.some(id => typeof id !== "string"))) throw new Error(`key ${apiKey.id}: allowedModels must be an array of public IDs`);
+      if (Object.hasOwn(apiKey || {}, "modelAccessMode")) {
+        if (!["selected", "all"].includes(apiKey.modelAccessMode)) throw new Error(`key ${apiKey.id}: invalid modelAccessMode`);
+        if (apiKey.allowedModels !== undefined && (!Array.isArray(apiKey.allowedModels)
+          || apiKey.allowedModels.some(id => typeof id !== "string" || !id || id !== id.trim()))) {
+          throw new Error(`key ${apiKey.id}: allowedModels must contain exact public IDs`);
+        }
+        if (apiKey.modelAccessMode === "all" && apiKey.allowedModels?.length) throw new Error(`key ${apiKey.id}: all conflicts with allowedModels`);
+      }
       next.allowedModels = normalizeStringArray(next.allowedModels);
       next.tags = normalizeStringArray(next.tags);
       return next;
@@ -1240,7 +1265,16 @@ function normalizeConfig(raw, options = {}) {
 }
 
 // Validate config structure and types
+function resolveConfiguredChannels(cfg) {
+  if (!cfg.upstreams.some(up => "modelMappings" in up || "channelId" in up || up.provider === "github-copilot" || up.copilot != null || up.auth?.mode === "githubCopilot")
+    && !cfg.models.some(model => "selectedBinding" in model || "canonicalModelId" in model || "bindingOverride" in model)) return cfg;
+  const ids = new Set([...listPricingDefinitions(), ...listArchivedPricingDefinitions()].map(card => card.id));
+  cfg.models = resolveChannelModels(cfg, ids);
+  return cfg;
+}
+
 function validateConfig(cfg) {
+  resolveConfiguredChannels(cfg);
   const distributionProfile = resolveDistributionProfile(cfg);
   if (!DISTRIBUTION_PROFILES.has(distributionProfile)) {
     throw new Error("distribution.profile must be minimum or nextgen");
@@ -1802,7 +1836,7 @@ function validateConfig(cfg) {
   if (!Array.isArray(cfg.upstreams) || cfg.upstreams.length === 0) {
     throw new Error("upstreams must be a non-empty array");
   }
-  if (!Array.isArray(cfg.models) || cfg.models.length === 0) {
+  if (!Array.isArray(cfg.models) || (!cfg.models.length && !cfg.upstreams.some(up => up.channelId))) {
     throw new Error("models must be a non-empty array");
   }
 
@@ -1954,7 +1988,13 @@ function validateConfig(cfg) {
     }
   }
 
+  const managedChannels = cfg.upstreams.some(up => up.channelId);
   for (const [idx, apiKey] of cfg.apiKeys.entries()) {
+    for (const id of apiKey.allowedModels || []) {
+      if (!modelIds.has(id) && (managedChannels || apiKey.modelAccessMode === "selected" || currentConfig?.models.some(model => model.id === id))) {
+        throw new Error(`apiKeys[${idx}] (${apiKey.id}): allowedModels references unpublished model ${id}`);
+      }
+    }
     if (apiKey.id != null && typeof apiKey.id !== "string") {
       throw new Error(`apiKeys[${idx}].id must be a string`);
     }
@@ -2012,6 +2052,10 @@ function validateConfig(cfg) {
       throw new Error(`upstreams[${idx}].name duplicates upstream name "${upstreamName}"`);
     }
     upstreamNames.add(upstreamName);
+    if (upstream.provider !== "github-copilot" && (String(upstream.provider || "").trim().toLowerCase() === "github-copilot"
+      || isCopilotOrigin(upstream.baseUrl) || Object.values(upstream.routes || {}).some(route => {
+        try { return isCopilotOrigin(new URL(route, upstream.baseUrl || "https://example.invalid")); } catch { return false; }
+      }))) throw new Error(`upstreams[${idx}]: GitHub Copilot endpoints require an authorized github-copilot channel`);
     const hasBaseUrl = typeof upstream?.baseUrl === "string" && upstream.baseUrl.trim();
     const hasResourceName = typeof upstream?.resourceName === "string" && upstream.resourceName.trim();
     if (!hasBaseUrl && !hasResourceName) {
@@ -2039,8 +2083,8 @@ function validateConfig(cfg) {
       if (upstream.auth.mode != null && typeof upstream.auth.mode !== "string") {
         throw new Error(`upstreams[${idx}].auth.mode must be a string`);
       }
-      if (upstreamAuthMode && !["managedIdentity", "apiKey"].includes(upstreamAuthMode)) {
-        throw new Error(`upstreams[${idx}].auth.mode must be managedIdentity or apiKey`);
+      if (upstreamAuthMode && !["managedIdentity", "apiKey", "githubCopilot"].includes(upstreamAuthMode)) {
+        throw new Error(`upstreams[${idx}].auth.mode must be managedIdentity, apiKey or githubCopilot`);
       }
       if (upstream.auth.apiKey != null && typeof upstream.auth.apiKey !== "string") {
         throw new Error(`upstreams[${idx}].auth.apiKey must be a string`);
@@ -2088,6 +2132,22 @@ function validateConfig(cfg) {
     }
   }
   const modelCatalogSnapshot = compileModelCatalog(cfg);
+  for (const descriptor of modelCatalogSnapshot.descriptors) {
+    const model = descriptor.model;
+    const previous = currentConfig?.models.find(entry => entry.id === model.id);
+    if (!model.selectedBinding && !previous?.selectedBinding) continue;
+    if (previous && (previous.canonicalModelId || findPricingDefinitionForModel(previous)?.id) !== descriptor.catalogId) {
+      throw new Error(`model ${model.id}: publish a new public ID to change its canonicalModelId`);
+    }
+    if (model.selectedBinding && descriptor.catalogId !== model.canonicalModelId) throw new Error(`model ${model.id}: Catalog binding does not match canonicalModelId`);
+    if (model.selectedBinding && cfg.upstreams.find(up => up.channelId === model.selectedBinding.channelId)?.status === "disabled"
+      && !sameBinding(previous?.selectedBinding, model.selectedBinding) && currentConfig) {
+      throw new Error(`model ${model.id}: cannot switch to a disabled channel`);
+    }
+  }
+  if (cfg.media?.generation?.defaultModel && managedChannels && !modelIds.has(cfg.media.generation.defaultModel)) {
+    throw new Error("media.generation.defaultModel must reference an exposed model");
+  }
   const bindingIssues = getConfiguredModelBindingIssues(cfg, modelCatalogSnapshot);
   if (bindingIssues.length) {
     const preview = bindingIssues.slice(0, 3).map((issue) => issue.message).join("; ");
@@ -2100,11 +2160,56 @@ export function getConfigPath() {
   return getPersistenceSummary(currentConfig).configPath;
 }
 
-async function loadConfig({ discardPending = false } = {}) {
+async function installPreparedConfig(prepared) {
+  const { config, modelCatalogSnapshot, refreshLocalBuffer } = prepared;
+  validateRuntimeStoreTransition(config);
+  await copilotRuntime.activateChanges(config);
+  setRuntimeStoreConfig(config, { refreshLocalBuffer });
+  installModelCatalogSnapshot(modelCatalogSnapshot);
+  copilotRuntime.apply(config);
+  currentConfig = config;
+  currentDistributionProfile = resolveDistributionProfile(config);
+  appliedRevision = getPersistedConfigRevision();
+  registerInferenceRevision(config, appliedRevision, prepared.historyId, modelCatalogSnapshot.descriptors);
+  pendingApplication = null;
+}
+
+async function prepareApplication(config, modelCatalogSnapshot, refreshLocalBuffer, deferApplication, historyId = null) {
+  setPersistenceConfig(config);
+  pendingApplication = { config, modelCatalogSnapshot, refreshLocalBuffer, historyId };
+  if (!deferApplication) await installPreparedConfig(pendingApplication);
+}
+
+export function getConfigForApplication() {
+  return pendingApplication?.config || getConfig();
+}
+
+export function applyPreparedProxyConfig(configure) {
+  return withModelCatalogUpdateLock(async () => {
+    const prepared = pendingApplication;
+    if (!prepared) return configure(getConfig());
+    // A card sync may have completed while a failed stage was awaiting retry.
+    if (prepared.modelCatalogSnapshot.generation !== getModelCatalogRuntimeInfo().generation + 1) {
+      const snapshot = compileModelCatalog(prepared.config);
+      const issues = getConfiguredModelBindingIssues(prepared.config, snapshot);
+      if (issues.length) throw new Error(issues[0].message);
+      prepared.modelCatalogSnapshot = snapshot;
+    }
+    try {
+      configure(prepared.config);
+      await installPreparedConfig(prepared);
+    } catch (error) {
+      configure(getConfig());
+      throw error;
+    }
+  });
+}
+
+async function loadConfig({ discardPending = false, deferApplication = false } = {}) {
   let prepared;
   await readPersistedConfigText({
     discardPending,
-    validate(rawText) {
+    async validate(rawText) {
       const raw = JSON.parse(rawText);
       validateRawBooleanFlags(raw);
       const optimized = optimizeV2Config(raw);
@@ -2113,6 +2218,9 @@ async function loadConfig({ discardPending = false } = {}) {
         applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalizedPersistedConfig)))
       );
       validateRuntimeStoreTransition(validated.config);
+      if (await copilotRuntime.restore(validated.config, !currentConfig)) {
+        validated.modelCatalogSnapshot = compileModelCatalog(validated.config);
+      }
       prepared = { raw, optimized, normalizedPersistedConfig, ...validated };
     }
   });
@@ -2123,11 +2231,7 @@ async function loadConfig({ discardPending = false } = {}) {
   persistedConfig = normalizedPersistedConfig;
   configDeprecations = collectConfigDeprecations(raw);
   configCleanupRequired = configDeprecations.length > 0 && !optimized.upgraded;
-  currentConfig = cfg;
-  currentDistributionProfile = resolveDistributionProfile(cfg);
-  installModelCatalogSnapshot(modelCatalogSnapshot);
-  setPersistenceConfig(cfg);
-  setRuntimeStoreConfig(cfg);
+  await prepareApplication(cfg, modelCatalogSnapshot, true, deferApplication);
   return cfg;
 }
 
@@ -2152,7 +2256,11 @@ export function getPersistedConfigRevision() {
   return configurationRevision(persistedConfig);
 }
 
-export function prepareConfigPreview(nextConfig) {
+export function getEditableConfig() {
+  return { ...getConfigForApplication(), models: persistedConfig.models };
+}
+
+export function prepareConfigPreview(nextConfig, { resolveBindings = true } = {}) {
   const normalized = preserveDistributionManagedFields(
     preserveEnvironmentManagedFields(
       normalizeConfig(nextConfig, { applyEnvironment: false }),
@@ -2160,19 +2268,28 @@ export function prepareConfigPreview(nextConfig) {
     ),
     persistedConfig
   );
-  return applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)));
+  const preview = applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)));
+  return resolveBindings ? resolveConfiguredChannels(preview) : preview;
 }
 
 export function saveConfig(nextConfig, options = {}) {
   return withModelCatalogUpdateLock(() => saveConfigInternal(nextConfig, options));
 }
 
-async function saveConfigInternal(nextConfig, { expectedRevision, actor, action, restoredFrom } = {}) {
+async function saveConfigInternal(nextConfig, { expectedRevision, actor, action, restoredFrom, deferApplication = false } = {}) {
     if (expectedRevision && expectedRevision !== getPersistedConfigRevision()) {
       throw Object.assign(new Error("Configuration changed since it was loaded. Reload the latest version before saving."), {
         code: "CONFIG_REVISION_CONFLICT",
         status: 409
       });
+    }
+    if (action !== "rollback" && Array.isArray(nextConfig?.apiKeys)) {
+      nextConfig = { ...nextConfig, apiKeys: nextConfig.apiKeys.map(key => {
+        if (key?.modelAccessMode !== undefined) return key;
+        const previous = persistedConfig?.apiKeys.find(item => key?.id ? item.id === key.id : item.key === key?.key);
+        if (previous?.modelAccessMode) return { ...key, modelAccessMode: previous.modelAccessMode };
+        return previous ? key : { ...key, modelAccessMode: "selected" };
+      }) };
     }
     const normalized = preserveDistributionManagedFields(
       preserveEnvironmentManagedFields(
@@ -2185,15 +2302,15 @@ async function saveConfigInternal(nextConfig, { expectedRevision, actor, action,
       applyDistributionProfile(applyConfigEnvironmentOverrides(cloneConfig(normalized)))
     );
     validateRuntimeStoreTransition(validated);
+    await copilotRuntime.prepare(validated, persistedConfig, { rollback: action === "rollback" });
+    for (const up of validated.upstreams.filter(up => up.provider === "github-copilot")) {
+      normalized.upstreams.find(item => item.channelId === up.channelId).copilot.approval = up.copilot.approval;
+    }
     await writePersistedConfigText(JSON.stringify(normalized, null, 2), validated, { actor, action, restoredFrom });
     persistedConfig = normalized;
     configDeprecations = collectConfigDeprecations(nextConfig);
     configCleanupRequired = false;
-    currentConfig = validated;
-    currentDistributionProfile = resolveDistributionProfile(validated);
-    installModelCatalogSnapshot(modelCatalogSnapshot);
-    setPersistenceConfig(validated);
-    setRuntimeStoreConfig(validated, { refreshLocalBuffer: false });
+    await prepareApplication(validated, modelCatalogSnapshot, false, deferApplication, getPersistenceSummary(validated).historyEntryId);
     return validated;
 }
 
@@ -2211,7 +2328,7 @@ export function rollbackConfig(historyId, options = {}) {
   });
 }
 
-export async function reloadConfig({ discardPendingDatabaseSync: discardPending = false, expectedRevision } = {}) {
+export async function reloadConfig({ discardPendingDatabaseSync: discardPending = false, expectedRevision, deferApplication = false } = {}) {
   return withModelCatalogUpdateLock(async () => {
     if (discardPending && (!expectedRevision || expectedRevision !== getPersistedConfigRevision())) {
       throw Object.assign(new Error("Reload the current configuration before discarding pending changes."), {
@@ -2219,13 +2336,13 @@ export async function reloadConfig({ discardPendingDatabaseSync: discardPending 
         code: expectedRevision ? "CONFIG_REVISION_CONFLICT" : "CONFIG_REVISION_REQUIRED"
       });
     }
-    return loadConfig({ discardPending });
+    return loadConfig({ discardPending, deferApplication });
   });
 }
 
 export function getConfigRuntimeInfo() {
   return {
-    configuration: { deprecatedFlags: cloneConfig(configDeprecations), cleanupRequired: configCleanupRequired },
+    configuration: { deprecatedFlags: cloneConfig(configDeprecations), cleanupRequired: configCleanupRequired, appliedRevision },
     distribution: {
       profile: resolveDistributionProfile(currentConfig),
       capabilities: getDistributionCapabilities(currentConfig)

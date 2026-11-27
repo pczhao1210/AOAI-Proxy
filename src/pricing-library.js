@@ -779,6 +779,7 @@ function getPricingDefinition(definitionId) {
 
 export function findPricingDefinitionForModel(model) {
   const candidates = [
+    model?.canonicalModelId,
     model?.pricingRef,
     model?.id,
     model?.targetModel,

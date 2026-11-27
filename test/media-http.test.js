@@ -457,6 +457,10 @@ test("media native duration usage settles known cost without changing response b
     assert.match(logs.text, /"costStatus":"priced"/);
     assert.match(logs.text, /"estimatedCostAmount":0.006/);
     assert.equal(logs.text.includes("private-transcript"), false);
+    const snapshot = (await ctx.adminRequest("/admin/api/stats")).json;
+    const [speech] = snapshot.canonicalModels;
+    assert.deepEqual([speech.canonicalModelId, speech.requests, speech.knownCostAmount, speech.channels[0].channelId],
+      ["whisper-1", 1, 0.006, null]); // A legacy upstream name is not a stable channel ID.
   }, { logLevel: "info", upstreamHandler: ({ req, res }) => {
     if (req.url !== "/v1/audio/transcriptions") return false;
     res.writeHead(200, { "content-type": "application/json" }).end(wire);

@@ -91,6 +91,32 @@ function renderRuntime(overrides = {}) {
   return view;
 }
 
+test("canonical model expansion shows recorded channel subtotals and unknown history without repricing it", () => {
+  const amounts = { requests: 2, errors: 0, promptTokens: 20000, cachedTokens: 10, completionTokens: 5000,
+    totalTokens: 25000, knownCostAmounts: { USD: 1.25 }, unknownCostRequests: 1 };
+  const view = renderRuntime({ canonicalModels: [
+    { canonicalModelId: "canonical-name", ...amounts, channels: [
+      { channelId: "retired-east", ...amounts, promptTokens: 12000, details: [{ ...amounts, modelId: "old-public", sourceModelId: "old-deployment" }] },
+      { channelId: "west", ...amounts, promptTokens: 8000, details: [] }
+    ] }, { canonicalModelId: null, channels: [], knownCostAmounts: {}, unknownCostRequests: null }
+  ], canonicalWindowTruncated: true, canonicalFilters: { keyId: "team", timeRange: "24h" } });
+  const panel = testing.within(view.container.querySelector(".runtime-channel-accounting"));
+  const button = panel.getByRole("button", { name: "canonical-name" });
+  assert.equal(button.getAttribute("aria-expanded"), "false");
+  assert.ok(panel.getByText("20,000"));
+  assert.ok(panel.getByText("Not recorded"));
+  assert.ok(panel.getByRole("status").textContent.includes("Partial time window"));
+  assert.equal(panel.queryByText("retired-east"), null);
+  testing.fireEvent.click(button);
+  assert.equal(button.getAttribute("aria-expanded"), "true");
+  assert.ok(panel.getByText("12,000"));
+  assert.ok(panel.getByText("8,000"));
+  assert.ok(panel.getByText(/old-public · old-deployment/));
+  assert.ok(panel.getByText("team · 24h"));
+  testing.fireEvent.click(button);
+  assert.equal(panel.queryByText("west"), null);
+});
+
 test("overview separates scoped metrics, dated buckets and unfiltered system health", () => {
   const view = renderRuntime({
     totals: { ...tokens, requests: 12, errors: 2 },

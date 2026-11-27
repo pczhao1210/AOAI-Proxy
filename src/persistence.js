@@ -563,7 +563,7 @@ async function readPersistedConfigTextInternal({ validate, discardPending = fals
       const pending = await readDatabasePendingSyncMarker(settings);
       const localText = pending?.text ?? await readLocalCacheText(settings);
       if (localText != null) {
-        validate?.(localText);
+        await validate?.(localText);
         databaseBaseline = pending.baseline;
         updatePersistenceState({ historyEntryId: pending.history?.at(-1)?.id || null });
         markDatabaseDegraded(settings, null, { pendingDatabaseSync: true });
@@ -588,7 +588,7 @@ async function readPersistedConfigTextInternal({ validate, discardPending = fals
       if (!discardPending && settings.database.readFallbackMode === "lastKnownGood") {
         const localText = await readLocalCacheText(settings);
         if (localText != null) {
-          validate?.(localText);
+          await validate?.(localText);
           if (databaseBaseline?.target !== databaseTargetId(settings)) {
             databaseBaseline = { target: databaseTargetId(settings), known: false };
           }
@@ -610,7 +610,7 @@ async function readPersistedConfigTextInternal({ validate, discardPending = fals
       throw new Error("Cannot discard pending configuration: no configuration exists in the database.");
     }
     const text = record.text ?? await readPrimaryLocalConfigText(settings);
-    validate?.(text);
+    await validate?.(text);
     if (record.text != null) {
       await writeLocalCacheText(settings, text);
       await writeLocalHistory(settings, record.history);
@@ -623,7 +623,7 @@ async function readPersistedConfigTextInternal({ validate, discardPending = fals
   }
 
   const text = await readPrimaryLocalConfigText(settings);
-  validate?.(text);
+  await validate?.(text);
   return text;
 }
 
@@ -778,6 +778,14 @@ export async function syncPersistenceState(config = runtimeConfig) {
   }
 
   return getPersistenceSummary(config);
+}
+
+export function getChannelCredentialStorage(config = runtimeConfig) {
+  const settings = resolvePersistenceSettings(config);
+  return settings.configStoreMode === "database" ? {
+    pool: getSharedPostgresPool(buildPostgresPoolOptions(settings.database)),
+    schema: settings.database.schemaName, namespace: settings.database.configKey
+  } : { path: `${settings.configPath}.copilot-credentials` };
 }
 
 export function getDatabaseConnectionDefaults(config = runtimeConfig) {
