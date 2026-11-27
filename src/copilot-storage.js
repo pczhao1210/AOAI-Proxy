@@ -1,4 +1,4 @@
-import { credentialKeyringFromEnv, openFileCredentialStore, openPostgresCredentialStore } from "./copilot-credentials.js";
+import { openFileCredentialStore, openPostgresCredentialStore } from "./copilot-credentials.js";
 import { copilotError } from "./copilot-provider.js";
 import { getChannelCredentialStorage } from "./persistence.js";
 
@@ -8,15 +8,16 @@ function providerError(error) {
   if (unavailable.includes(error?.code)) return copilotError("COPILOT_AUTH_REQUIRED", 409);
   if (error?.code === "CREDENTIAL_BINDING_MISMATCH") return copilotError("COPILOT_CREDENTIAL_MISMATCH", 409);
   if (error?.code === "CREDENTIAL_PREPARED_EXISTS") return copilotError("COPILOT_CANDIDATE_EXISTS", 409);
-  if (error?.code === "CREDENTIAL_KEY_UNAVAILABLE") return copilotError("COPILOT_KEY_UNAVAILABLE", 503);
+  if (error?.code === "CREDENTIAL_LEGACY_ENCRYPTION_UNSUPPORTED") return copilotError("COPILOT_LEGACY_ENCRYPTION_UNSUPPORTED", 409);
   return copilotError("COPILOT_STATE_UNAVAILABLE", 503);
 }
 
 export function credentialAdapter(raw) {
   const binding = ref => raw.resolveBinding({ ...ref, authProfile: ref.profile });
+  const identity = ref => raw.resolveIdentity({ ...ref, authProfile: ref.profile });
   const methods = {
     async identity(ref) {
-      return { subject: (await binding(ref)).principalId };
+      return { subject: (await identity(ref)).principalId };
     },
     async prepare(ref, secrets) {
       const b = { ...ref, principalId: ref.subject };
@@ -59,12 +60,15 @@ export function credentialAdapter(raw) {
       }), { expectedCredentialVersion: row.credentialVersion });
     },
     async discard(ref) {
-      return raw.discardPrepared(await binding(ref), ref.credentialRef, ref.generation);
+      return raw.discardPrepared(await identity(ref), ref.credentialRef, ref.generation);
     },
     async disconnect(ref) {
-      const b = await binding(ref);
-      const row = await raw.inspect(b, ref.credentialRef);
-      return row.state === "prepared" ? raw.discardPrepared(b, ref.credentialRef, row.generation)
+      const b = await identity(ref);
+      const row = await raw.status(b);
+      if (row.credentialRef !== ref.credentialRef && row.preparedRef !== ref.credentialRef) {
+        throw copilotError("COPILOT_AUTH_REQUIRED", 409);
+      }
+      return row.preparedRef === ref.credentialRef ? raw.discardPrepared(b, ref.credentialRef, row.generation)
         : raw.revoke(b, row.generation, row.credentialVersion);
     },
     close: () => raw.close()
@@ -79,9 +83,8 @@ export async function channelCredentialStore(config) {
   if (!opening) {
     opening = (async () => {
       const settings = getChannelCredentialStorage(config);
-      const keyring = credentialKeyringFromEnv();
-      const raw = settings.pool ? await openPostgresCredentialStore({ ...settings, keyring })
-        : await openFileCredentialStore({ directory: process.env.COPILOT_CREDENTIAL_DIRECTORY || settings.path, keyring });
+      const raw = settings.pool ? await openPostgresCredentialStore(settings)
+        : await openFileCredentialStore({ directory: process.env.COPILOT_CREDENTIAL_DIRECTORY || settings.path });
       return credentialAdapter(raw);
     })().catch(error => { opening = null; throw providerError(error); });
   }

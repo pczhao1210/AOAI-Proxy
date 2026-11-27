@@ -280,6 +280,10 @@ Channel integration tests (`test/copilot-provider.test.js`, `test/copilot-creden
 use synthetic identities and private fixtures. The preloaded GitHub transport in the disposable proxy
 never contacts GitHub. Include `RUNTIME_MEDIA_TEST_DATABASE_URL` and `REALTIME_CADDY_TEST_IMAGE` for
 the database and generated-Caddy gates. Do not supply a real subscription token.
+Credential tests now cover plaintext private storage without Copilot-specific encryption keys,
+explicit legacy-ciphertext refusal and same-identity reauthorization, publication/revocation
+fences, and redaction of browser/config/log output. They do not claim at-rest encryption;
+the [global encryption design](../encrypt_design.md) is pending implementation.
 
 Optional synthetic image CPU/RSS and preparation-latency baseline:
 

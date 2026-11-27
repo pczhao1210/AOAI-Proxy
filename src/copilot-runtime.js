@@ -15,7 +15,7 @@ const due = (c, now, jitter = 0) => c?.expiresAt != null && (!Number.isFinite(c.
     - Math.min(jitter, (c.expiresAt - c.issuedAt) * 0.02));
 const usable = (c, now) => !!c?.token && (c.expiresAt == null || c.expiresAt > now + 5000);
 const safeCode = error => /^COPILOT_[A-Z0-9_]+$/.test(error?.code || "") ? error.code : "COPILOT_STATE_UNAVAILABLE";
-const isAuthError = code => ["COPILOT_AUTH_REQUIRED", "COPILOT_HTTP_401"].includes(code);
+const isAuthError = code => ["COPILOT_AUTH_REQUIRED", "COPILOT_HTTP_401", "COPILOT_LEGACY_ENCRYPTION_UNSUPPORTED"].includes(code);
 
 export class CopilotRuntime {
   constructor({ storage, transport = createCopilotTransport(), emit, reclaim, now = Date.now, wait = sleep }) {

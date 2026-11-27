@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { quoteIdentifier } from "./postgres.js";
-import { fail, identifier, sanitize } from "./copilot-credential-crypto.js";
+import { fail, identifier, sanitize } from "./copilot-credential-record.js";
 
 const table = "copilot_credentials_v1";
 

@@ -6,27 +6,27 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import pg from "pg";
-import { credentialKeyringFromEnv, openFileCredentialStore, openPostgresCredentialStore } from "../src/copilot-credentials.js";
+import { openFileCredentialStore, openPostgresCredentialStore } from "../src/copilot-credentials.js";
+import { credentialAdapter } from "../src/copilot-storage.js";
 
 const binding = { channelId: "test-channel", profile: "opencode", principalId: "test-subject" };
 const configured = (credentialRef, b = binding) => ({ channelId: b.channelId, authProfile: b.profile, credentialRef });
-const keyring = () => ({ activeVersion: "key-1", keys: { "key-1": randomBytes(32) } });
 const initial = { oauth: "synthetic-oauth-marker", refresh: "synthetic-refresh-marker" };
 const inactive = { code: "CREDENTIAL_NOT_ACTIVE" };
 
 async function fixture(t) {
   const directory = path.resolve(`.test-copilot-credentials-${randomUUID()}`);
-  const keys = keyring(), stores = [];
+  const stores = [];
   t.after(async () => {
     for (const store of stores) await store.close();
     await fs.rm(directory, { recursive: true, force: true });
   });
-  async function open(keyring = keys) {
-    const store = await openFileCredentialStore({ directory, keyring });
+  async function open() {
+    const store = await openFileCredentialStore({ directory });
     stores.push(store);
     return store;
   }
-  return { directory, filename: path.join(directory, "copilot-credentials.sqlite"), open, keys };
+  return { directory, filename: path.join(directory, "copilot-credentials.sqlite"), open };
 }
 
 async function login(store, b = binding) {
@@ -47,9 +47,11 @@ test("prepare is durable, not admission, and re-login publishes only the exact p
   assert.equal(JSON.stringify(management).includes(initial.oauth), false);
   await assert.rejects(first.admit(binding, oldRef), inactive);
   await first.close();
+  const db = new DatabaseSync(f.filename);
+  const record = db.prepare("SELECT record FROM copilot_credentials_v1").get().record;
+  db.close();
+  for (const value of Object.values(initial)) assert.equal(record.includes(value), true);
   for (const name of await fs.readdir(f.directory)) {
-    const bytes = await fs.readFile(path.join(f.directory, name));
-    for (const value of Object.values(initial)) assert.equal(bytes.includes(value), false);
     assert.equal((await fs.stat(path.join(f.directory, name))).mode & 0o077, 0);
   }
   const store = await f.open();
@@ -91,12 +93,11 @@ test("committed credentials survive unclean process exit without a stale writer 
   const first = await f.open(), { credentialRef } = await first.prepare(binding, initial, 0);
   await first.close();
   const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
-    import { credentialKeyringFromEnv, openFileCredentialStore } from './src/copilot-credentials.js';
-    const store = await openFileCredentialStore({ directory: process.env.DIRECTORY, keyring: credentialKeyringFromEnv() });
+    import { openFileCredentialStore } from './src/copilot-credentials.js';
+    const store = await openFileCredentialStore({ directory: process.env.DIRECTORY });
     await store.activate(${JSON.stringify(binding)}, process.env.TEST_REF, 0);
     process.exit(0);
-  `], { timeout: 10_000, env: { DIRECTORY: f.directory, TEST_REF: credentialRef, COPILOT_CREDENTIAL_KEY_VERSION: "key-1",
-    COPILOT_CREDENTIAL_KEYS: JSON.stringify({ "key-1": f.keys.keys["key-1"].toString("base64") }) } });
+  `], { timeout: 10_000, env: { DIRECTORY: f.directory, TEST_REF: credentialRef } });
   assert.equal(child.status, 0);
   const store = await f.open();
   const admitted = await store.admit(binding, credentialRef);
@@ -104,31 +105,64 @@ test("committed credentials survive unclean process exit without a stale writer 
   assert.equal(JSON.stringify(admitted).includes(initial.refresh), false);
 });
 
-test("missing and wrong keys fail closed; retained keys allow refresh onto new external key", async t => {
+test("legacy ciphertext is retained and refused until a new login candidate is published", async t => {
   const f = await fixture(t);
-  assert.throws(() => credentialKeyringFromEnv({}), { code: "CREDENTIAL_KEY_UNAVAILABLE" });
-  assert.throws(() => credentialKeyringFromEnv({ COPILOT_CREDENTIAL_KEY_VERSION: "bad",
-    COPILOT_CREDENTIAL_KEYS: JSON.stringify({ bad: initial.oauth }) }), { code: "CREDENTIAL_KEY_UNAVAILABLE" });
   const store = await f.open();
   const ref = await login(store);
   await store.close();
-  const wrong = await f.open(keyring());
-  await assert.rejects(wrong.admit(binding, ref), { code: "CREDENTIAL_DECRYPT_FAILED" });
-  await wrong.close();
-  const newKey = randomBytes(32);
-  const latest = credentialKeyringFromEnv({ COPILOT_CREDENTIAL_KEY_VERSION: "key-2",
-    COPILOT_CREDENTIAL_KEYS: JSON.stringify({ "key-2": newKey.toString("base64") }) });
-  const missing = await f.open(latest);
-  await assert.rejects(missing.resolveBinding(configured(ref)), { code: "CREDENTIAL_KEY_UNAVAILABLE" });
-  await missing.close();
-  const migration = await f.open({ activeVersion: "key-2", keys: { ...latest.keys, ...f.keys.keys } });
-  await migration.refresh(binding, ref, secrets => secrets);
-  await migration.close();
-  const migrated = await f.open(latest);
-  assert.deepEqual((await migrated.admit(binding, ref)).secrets, initial);
+  const db = new DatabaseSync(f.filename);
+  const row = JSON.parse(db.prepare("SELECT record FROM copilot_credentials_v1").get().record);
+  row.active = { ref, envelope: { version: "old-key", nonce: "synthetic-nonce",
+    tag: "synthetic-tag", ciphertext: "synthetic-legacy-ciphertext" } };
+  const original = JSON.stringify(row);
+  db.prepare("UPDATE copilot_credentials_v1 SET record=?").run(original);
+  db.close();
+  const reopened = await f.open();
+  const legacy = { code: "CREDENTIAL_LEGACY_ENCRYPTION_UNSUPPORTED" };
+  await assert.rejects(reopened.admit(binding, ref), legacy);
+  await assert.rejects(reopened.resolveBinding(configured(ref)), legacy);
+  await assert.rejects(reopened.refresh(binding, ref, () => assert.fail()), legacy);
+  assert.deepEqual(await reopened.resolveIdentity(configured(ref)), binding);
+  await assert.rejects(reopened.resolveIdentity({ ...configured(ref), authProfile: "vscode" }),
+    { code: "CREDENTIAL_BINDING_MISMATCH" });
+  const adapter = credentialAdapter(reopened);
+  const scoped = { channelId: binding.channelId, profile: binding.profile, credentialRef: ref };
+  assert.equal((await adapter.identity(scoped)).subject, binding.principalId);
+  await assert.rejects(adapter.read(scoped), { code: "COPILOT_LEGACY_ENCRYPTION_UNSUPPORTED" });
+  await reopened.close();
+  const unchanged = new DatabaseSync(f.filename);
+  assert.equal(unchanged.prepare("SELECT record FROM copilot_credentials_v1").get().record, original);
+  unchanged.close();
+  const replacement = await f.open();
+  const candidate = await replacement.prepare(binding, { oauth: "replacement" }, row.generation);
+  await replacement.close();
+  const pending = new DatabaseSync(f.filename);
+  assert.deepEqual(JSON.parse(pending.prepare("SELECT record FROM copilot_credentials_v1").get().record).active, row.active);
+  pending.close();
+  const published = await f.open();
+  await published.activate(binding, candidate.credentialRef, candidate.generation);
+  await assert.rejects(published.admit(binding, ref), inactive);
+  assert.deepEqual((await published.admit(binding, candidate.credentialRef)).secrets, { oauth: "replacement" });
 });
 
-test("sidecar rejects unsafe permissions and concurrent writer, and GCM authenticates binding and version", async t => {
+test("legacy pending ciphertext requires explicit discard and never blocks local revocation", async t => {
+  const f = await fixture(t), store = await f.open();
+  const candidate = await store.prepare(binding, initial, 0);
+  await store.close();
+  const db = new DatabaseSync(f.filename);
+  const row = JSON.parse(db.prepare("SELECT record FROM copilot_credentials_v1").get().record);
+  row.prepared = { ref: candidate.credentialRef, envelope: { version: "old-key", ciphertext: "legacy" } };
+  db.prepare("UPDATE copilot_credentials_v1 SET record=?").run(JSON.stringify(row));
+  db.close();
+  const reopened = await f.open();
+  await assert.rejects(reopened.prepare(binding, initial, 0), { code: "CREDENTIAL_PREPARED_EXISTS" });
+  const adapter = credentialAdapter(reopened);
+  await adapter.disconnect({ ...binding, credentialRef: candidate.credentialRef });
+  assert.equal((await reopened.status(binding)).preparedRef, null);
+  await login(reopened);
+});
+
+test("sidecar still rejects unsafe permissions and concurrent writers without encryption", async t => {
   const f = await fixture(t);
   await fs.mkdir(f.directory, { mode: 0o700 });
   await fs.chmod(f.directory, 0o755);
@@ -137,20 +171,36 @@ test("sidecar rejects unsafe permissions and concurrent writer, and GCM authenti
   const store = await f.open();
   await login(store);
   await assert.rejects(f.open(), { code: "CREDENTIAL_WRITER_BUSY" });
+});
+
+test("disconnect cannot revoke a replacement published after resolving the old identity", async t => {
+  const f = await fixture(t), store = await f.open(), oldRef = await login(store);
+  let newRef;
+  const adapter = credentialAdapter({ ...store, status: async b => {
+    newRef = await login(store, b);
+    return store.status(b);
+  } });
+  await assert.rejects(adapter.disconnect({ ...binding, credentialRef: oldRef }), { code: "COPILOT_AUTH_REQUIRED" });
+  assert.deepEqual((await store.admit(binding, newRef)).secrets, initial);
+});
+
+test("plaintext storage rejects malformed payloads and unknown formats without replacing credentials", async t => {
+  const f = await fixture(t), store = await f.open(), ref = await login(store);
+  const cycle = { oauth: "synthetic" };
+  cycle.self = cycle;
+  for (const payload of [cycle, { oauth: "x".repeat(32769) }]) {
+    await assert.rejects(store.prepare(binding, payload, 1), { code: "CREDENTIAL_PAYLOAD_INVALID" });
+    assert.equal((await store.status(binding)).preparedRef, null);
+    assert.deepEqual((await store.admit(binding, ref)).secrets, initial);
+  }
   await store.close();
   const db = new DatabaseSync(f.filename);
   const row = JSON.parse(db.prepare("SELECT record FROM copilot_credentials_v1").get().record);
+  row.active.format = "unknown-future-format";
+  db.prepare("UPDATE copilot_credentials_v1 SET record=?").run(JSON.stringify(row));
   db.close();
-  for (const patch of [{ principalId: "other" }, { profile: "vscode" }, { credentialVersion: row.credentialVersion + 1 },
-    { generation: row.generation + 1 }, { active: { ...row.active, ref: randomBytes(32).toString("base64url") } }]) {
-    const record = { ...row, ...patch };
-    const update = new DatabaseSync(f.filename);
-    update.prepare("UPDATE copilot_credentials_v1 SET record=?").run(JSON.stringify(record));
-    update.close();
-    const reopened = await f.open();
-    await assert.rejects(reopened.resolveBinding(configured(record.active.ref, { ...binding, profile: record.profile })), { code: "CREDENTIAL_DECRYPT_FAILED" });
-    await reopened.close();
-  }
+  const reopened = await f.open();
+  await assert.rejects(reopened.admit(binding, ref), { code: "CREDENTIAL_STORE_UNAVAILABLE" });
 });
 
 test("thirty requests share one refresh; late failures, rotations and revocations cannot un-fence a channel", async t => {
@@ -229,14 +279,14 @@ test("PostgreSQL: independent instances fence expired workers, observe revocatio
   const connectionString = process.env.RUNTIME_MEDIA_TEST_DATABASE_URL;
   assert.ok(["localhost", "127.0.0.1", "[::1]"].includes(new URL(connectionString).hostname));
   const pool = new pg.Pool({ connectionString }), pool2 = new pg.Pool({ connectionString });
-  const schema = `credential_test_${randomBytes(8).toString("hex")}`, keys = keyring(), stores = [];
+  const schema = `credential_test_${randomBytes(8).toString("hex")}`, stores = [];
   await pool.query(`CREATE SCHEMA "${schema}"`);
   t.after(async () => {
     for (const store of stores) await store.close();
     await pool.query(`DROP SCHEMA "${schema}" CASCADE`);
     await Promise.all([pool.end(), pool2.end()]);
   });
-  const [a, b] = await Promise.all([pool, pool2].map(pool => openPostgresCredentialStore({ pool, schema, keyring: keys })));
+  const [a, b] = await Promise.all([pool, pool2].map(pool => openPostgresCredentialStore({ pool, schema })));
   stores.push(a, b);
   const candidates = await Promise.allSettled([a, b].map(s => s.prepare(binding, initial, 0)));
   assert.deepEqual(candidates.map(c => c.status).sort(), ["fulfilled", "rejected"]);
@@ -282,5 +332,6 @@ test("PostgreSQL: independent instances fence expired workers, observe revocatio
   unavailable.mock.restore();
   await assert.rejects(b.admit(binding, newRef), { code: "CREDENTIAL_ROTATION_PENDING" });
   const record = (await pool.query(`SELECT record::text AS data FROM "${schema}".copilot_credentials_v1`)).rows[0].data;
-  for (const value of [...Object.values(initial), "remote-rotated-once"]) assert.equal(record.includes(value), false);
+  for (const value of Object.values(initial)) assert.equal(record.includes(value), true);
+  assert.equal(record.includes("remote-rotated-once"), false);
 });

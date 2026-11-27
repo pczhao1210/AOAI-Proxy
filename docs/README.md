@@ -13,6 +13,7 @@ This directory contains the project documentation and deployment guides.
 - Claude Code / Codex 接入要求: [development/claude-code-codex-requirements.md](development/claude-code-codex-requirements.md)
 - 管理后台 Harness 优化执行计划: [development/harness-admin-optimization-plan.zh-CN.md](development/harness-admin-optimization-plan.zh-CN.md)
 - 渠道模型映射、模型暴露、Key 授权与 GitHub Copilot 接入计划及隔离验收: [../github_copilot_channel_plan.md](../github_copilot_channel_plan.md)
+- 全局配置与凭据加密设计（待后续 session 实施）: [../encrypt_design.md](../encrypt_design.md)
 - 管理后台 UI 改造方案与渐进实施状态: [../UI_enhance.md](../UI_enhance.md)
 
 ## Protocols

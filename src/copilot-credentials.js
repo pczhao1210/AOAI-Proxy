@@ -1,8 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { makeCipher, fail, identifier, sanitize } from "./copilot-credential-crypto.js";
+import { makeCredentialRecord, readCredentialRecord, fail, identifier, sanitize } from "./copilot-credential-record.js";
 import { fileBackend, postgresBackend } from "./copilot-credential-backends.js";
-
-export { credentialKeyringFromEnv } from "./copilot-credential-crypto.js";
 
 const counter = n => Number.isSafeInteger(n) && n >= 0;
 const increment = n => {
@@ -22,7 +20,9 @@ function bound(binding, row) {
     generation: 0, credentialVersion: 0, fence: 0, active: null, prepared: null, lease: null };
   if (row.principalId !== binding.principalId || row.profile !== binding.profile) fail("CREDENTIAL_BINDING_MISMATCH");
   if (![row.generation, row.credentialVersion, row.fence].every(counter)
-    || ![row.active, row.prepared].every(item => item === null || (isRef(item?.ref) && item.envelope))
+    || ![row.active, row.prepared].every(item => item === null || (isRef(item?.ref)
+      && ((item.format === "plaintext-v1" && Object.hasOwn(item, "secrets"))
+        || (item.format === undefined && item.envelope && typeof item.envelope === "object"))))
     || !(row.lease === null || (typeof row.lease?.rotating === "boolean" && counter(row.lease.until)
       && row.active && row.lease.fence === row.fence))) fail("CREDENTIAL_STORE_UNAVAILABLE");
   return row;
@@ -55,13 +55,9 @@ function candidateOrActive(row, ref) {
 }
 
 async function open(options, backend) {
-  let cipher;
   try {
-    const namespace = backend === fileBackend ? "file" : options?.namespace ?? "default";
-    cipher = makeCipher(options?.keyring, namespace);
-    return store(await backend(options), cipher);
+    return store(await backend(options));
   } catch (error) {
-    cipher?.destroy();
     sanitize(error);
   }
 }
@@ -69,7 +65,7 @@ async function open(options, backend) {
 export const openFileCredentialStore = options => open(options, fileBackend);
 export const openPostgresCredentialStore = options => open(options, postgresBackend);
 
-function store(db, cipher) {
+function store(db) {
   const pending = new Set(), flights = new Map(), controllers = new Set();
   let closing = false, closePromise;
   function checkOpen() { if (closing) fail("CREDENTIAL_STORE_CLOSED"); }
@@ -88,9 +84,18 @@ function store(db, cipher) {
       return transform(bound(binding, record), now);
     });
   }
-  function decrypt(binding, row, kind) {
-    const { ref, envelope } = row[kind];
-    return cipher.unseal(binding, ref, kind, row.generation, kind === "active" ? row.credentialVersion : 0, envelope);
+  function read(row, kind) {
+    return readCredentialRecord(row[kind]);
+  }
+  async function resolve(config, checkPayload) {
+    const { channelId, authProfile, credentialRef } = config ?? {};
+    if (!identifier(channelId) || !isRef(credentialRef)) fail("CREDENTIAL_INPUT_INVALID");
+    const row = await db.get(channelId);
+    if (!row || row.profile !== authProfile) fail("CREDENTIAL_BINDING_MISMATCH");
+    const binding = bindingOf({ channelId, profile: authProfile, principalId: row.principalId });
+    const kind = candidateOrActive(bound(binding, row), credentialRef);
+    if (checkPayload) read(row, kind);
+    return binding;
   }
   function marked(row) { return { next: row, result: meta(row) }; }
 
@@ -100,7 +105,7 @@ function store(db, cipher) {
       match(row, observed.generation, observed.credentialVersion);
       if (row.lease?.rotating) fail("CREDENTIAL_ROTATION_PENDING");
       if (row.lease && row.lease.until > now) fail("CREDENTIAL_LEASE_BUSY");
-      const secrets = decrypt(binding, row, "active");
+      const secrets = read(row, "active");
       row.fence = increment(row.fence);
       row.lease = { fence: row.fence, until: now + leaseMs, rotating };
       return { next: row, result: { fence: row.fence, secrets } };
@@ -125,7 +130,7 @@ function store(db, cipher) {
         if (row.lease?.fence !== claim.fence || row.lease.until <= now) fail("CREDENTIAL_CONFLICT");
         const deadline = row.lease.until;
         row.credentialVersion = increment(row.credentialVersion);
-        row.active.envelope = cipher.seal(binding, ref, "active", row.generation, row.credentialVersion, updated);
+        row.active = makeCredentialRecord(ref, updated);
         row.lease = null;
         return { ...marked(row), deadline };
       });
@@ -159,12 +164,12 @@ function store(db, cipher) {
           checkOpen();
           const row = bound(binding, record);
           const kind = candidateOrActive(row, ref);
-          const secrets = decrypt(binding, row, kind);
+          const secrets = read(row, kind);
           if (kind === "active") return { result: meta(row) };
           match(row, generation);
           row.generation = increment(row.generation);
           row.credentialVersion = increment(row.credentialVersion);
-          row.active = { ref, envelope: cipher.seal(binding, ref, "active", row.generation, row.credentialVersion, secrets) };
+          row.active = makeCredentialRecord(ref, secrets);
           row.prepared = row.lease = null;
           return marked(row);
         } };
@@ -184,7 +189,7 @@ function store(db, cipher) {
           match(row, expectedGeneration);
           if (row.prepared) fail("CREDENTIAL_PREPARED_EXISTS");
           const ref = randomBytes(32).toString("base64url");
-          row.prepared = { ref, envelope: cipher.seal(binding, ref, "prepared", row.generation, 0, secrets) };
+          row.prepared = makeCredentialRecord(ref, secrets);
           return { next: row, result: { credentialRef: ref, generation: row.generation } };
         });
       });
@@ -193,7 +198,7 @@ function store(db, cipher) {
       return run(async () => {
         const binding = bindingOf(input), row = await get(binding);
         const kind = candidateOrActive(row, ref);
-        decrypt(binding, row, kind);
+        read(row, kind);
         return { ...meta(row), state: kind, credentialRef: ref };
       });
     },
@@ -202,20 +207,14 @@ function store(db, cipher) {
         const binding = bindingOf(input), row = await get(binding);
         const kind = candidateOrActive(row, ref);
         if (kind === "active" && row.lease?.rotating) fail("CREDENTIAL_ROTATION_PENDING");
-        return withSecrets({ ...meta(row), state: kind, credentialRef: ref }, decrypt(binding, row, kind));
+        return withSecrets({ ...meta(row), state: kind, credentialRef: ref }, read(row, kind));
       });
     },
     resolveBinding(config) {
-      return run(async () => {
-        const { channelId, authProfile, credentialRef } = config ?? {};
-        if (!identifier(channelId) || !isRef(credentialRef)) fail("CREDENTIAL_INPUT_INVALID");
-        const row = await db.get(channelId);
-        if (!row || row.profile !== authProfile) fail("CREDENTIAL_BINDING_MISMATCH");
-        const binding = bindingOf({ channelId, profile: authProfile, principalId: row.principalId });
-        const kind = candidateOrActive(bound(binding, row), credentialRef);
-        decrypt(binding, row, kind);
-        return binding;
-      });
+      return run(() => resolve(config, true));
+    },
+    resolveIdentity(config) {
+      return run(() => resolve(config, false));
     },
     activateMany,
     async activate(binding, credentialRef, generation) {
@@ -234,7 +233,7 @@ function store(db, cipher) {
         const binding = bindingOf(input), row = await get(binding);
         active(row, ref);
         if (row.lease?.rotating) fail("CREDENTIAL_ROTATION_PENDING");
-        return withSecrets(meta(row), decrypt(binding, row, "active"));
+        return withSecrets(meta(row), read(row, "active"));
       });
     },
     refresh(input, ref, renew, options) {
@@ -269,7 +268,7 @@ function store(db, cipher) {
         for (const controller of controllers) controller.abort();
         closePromise = (async () => {
           await Promise.allSettled([...pending]);
-          try { await db.close(); } catch (error) { sanitize(error); } finally { cipher.destroy(); }
+          try { await db.close(); } catch (error) { sanitize(error); }
         })();
       }
       return closePromise;

@@ -123,7 +123,7 @@ test("30 concurrent admissions share one refresh and do not invent expiry for di
   } finally { await rt.close(); }
 });
 
-test("cold restore requires signed grants and isolates a channel whose credential key is unavailable", async () => {
+test("cold restore requires signed grants and isolates legacy encrypted credentials", async () => {
   const routes = { messages: "messages", responses: "messages", "chat/completions": "messages" };
   const row = { enabled: true, sourceModelId: "deployment", canonicalModelId: "canonical", routes };
   const up = { channelId: "one", provider: "github-copilot", auth: { credentialRef: "ref" },
@@ -137,7 +137,7 @@ test("cold restore requires signed grants and isolates a channel whose credentia
   let available = true;
   const rt = new CopilotRuntime({ transport: { application: () => "own" }, storage: async () => ({
     read: async () => {
-      if (!available) throw Object.assign(new Error(), { code: "COPILOT_KEY_UNAVAILABLE" });
+      if (!available) throw Object.assign(new Error(), { code: "COPILOT_LEGACY_ENCRYPTION_UNSUPPORTED" });
       return { secrets: { approvalKey: key, applicationId: "own" } };
     }
   }) });
@@ -149,7 +149,7 @@ test("cold restore requires signed grants and isolates a channel whose credentia
       await assert.rejects(rt.restore(forged, true), { code: /^COPILOT_(GRANT_INVALID|DISCOVERY_STALE)$/ });
     }
     available = false;
-    await assert.rejects(rt.restore(structuredClone(config), false), { code: "COPILOT_KEY_UNAVAILABLE" });
+    await assert.rejects(rt.restore(structuredClone(config), false), { code: "COPILOT_LEGACY_ENCRYPTION_UNSUPPORTED" });
     const cold = structuredClone(config);
     assert.equal(await rt.restore(cold, true), true);
     assert.deepEqual(cold.models.map(m => m.status), ["active", "disabled"]);
@@ -157,6 +157,9 @@ test("cold restore requires signed grants and isolates a channel whose credentia
     await rt.activateChanges(cold);
     rt.apply(cold);
     assert.equal(rt.active.size, 0);
+    const status = await rt.status({ channelId: up.channelId, profile: up.copilot.authProfile, credentialRef: up.auth.credentialRef });
+    assert.equal(status.state, "reauth-required");
+    assert.equal(status.errorCode, "COPILOT_LEGACY_ENCRYPTION_UNSUPPORTED");
   } finally { await rt.close(); }
 });
 
@@ -249,6 +252,5 @@ for (const profile of ["vscode", "opencode"]) test(`offline ${profile}: durable 
     const diagnostics = JSON.stringify([await ctx.readConfigFile(), (await ctx.adminRequest("/admin/api/logs")).json]);
     assert.doesNotMatch(diagnostics, /fixture-user-code|device-fixture-private|fixture-oauth-private|fixture-exchanged-private/);
   }, { proxyArgs: ["--import", "./test/lib/copilot-fixture.js", "src/server.js"],
-    proxyEnv: { COPILOT_FIXTURE_PROFILE: profile, COPILOT_VSCODE_CLIENT_ID: "", COPILOT_OPENCODE_CLIENT_ID: "",
-      COPILOT_CREDENTIAL_KEY_VERSION: "v1", COPILOT_CREDENTIAL_KEYS: JSON.stringify({ v1: randomBytes(32).toString("base64") }) } });
+    proxyEnv: { COPILOT_FIXTURE_PROFILE: profile, COPILOT_VSCODE_CLIENT_ID: "", COPILOT_OPENCODE_CLIENT_ID: "" } });
 });
