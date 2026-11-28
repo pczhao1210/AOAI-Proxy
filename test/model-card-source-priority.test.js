@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import test from "node:test";
+import { newCopilotChannel } from "../admin-ui/src/copilot.js";
+import { resolveChannelModels } from "../src/channel-bindings.js";
+import { discoveryModels } from "../src/copilot-provider.js";
 import { listPricingDefinitions } from "../src/pricing-library.js";
 import { compileModelCatalog, getDescriptorProtocolProfile, installModelCatalogSnapshot, resolveModelDescriptor } from "../src/model-catalog.js";
 import { buildModelFromPricingTemplate, buildUpstreamFromPricingTemplate, upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
@@ -22,6 +25,85 @@ const azureMedia = [
 async function rawCard(file) {
   return JSON.parse(await fs.readFile(new URL(`../pricing/${file}.json`, import.meta.url), "utf8"));
 }
+
+test("Gemini and MAI Copilot discoveries bind exact Catalog IDs without inheriting Azure routes or prices", async () => {
+  const chat = "chat/completions";
+  const threeLevels = ["low", "medium", "high"];
+  const maiLevels = [...threeLevels, "xhigh", "max"];
+  const visionTools = ["code-optimized", "reasoning", "vision", "function-calling"];
+  const geminiTools = [...visionTools, "parallel-tool-calling", "streaming"];
+  const toolUse = ["code-optimized", "function-calling"];
+  const cases = [
+    ["gemini-3.8-flash", [0.75, 0.075, 3.75], threeLevels, geminiTools],
+    ["gemini-4-argon", [2, 0.1, 10], undefined, ["code-optimized", "reasoning"]],
+    ["gemini-4-carbon", [2, 0.1, 10], threeLevels, geminiTools],
+    ["gemini-4-hydrogen", [1.5, 0.075, 7.5], undefined, toolUse],
+    ["gemini-4-neon", [3, 0.15, 15], undefined, toolUse],
+    ["mai-code-2", [0.5, 0.025, 2.5], maiLevels, [...visionTools, "structured-outputs"]],
+    ["mai-code-2-flash", [0.05, 0.005, 0.25], maiLevels, visionTools]
+  ];
+  const definitions = listPricingDefinitions();
+  const up = newCopilotChannel("copilot", "Copilot");
+  up.auth.credentialRef = "test-ref";
+  const discovered = discoveryModels({ data: cases.map(([id]) => ({ id, supported_endpoints: ["/chat/completions"] })) });
+  up.modelMappings = discovered.map(({ id, routes }) => ({ sourceModelId: id, canonicalModelId: id, routes, enabled: true }));
+  const config = { upstreams: [up], models: cases.map(([id]) => ({
+    id, canonicalModelId: id, selectedBinding: { channelId: up.channelId, sourceModelId: id }
+  })) };
+  config.models = resolveChannelModels(config, new Set(definitions.map(card => card.id)));
+  const snapshot = compileModelCatalog(config, definitions);
+  for (const [id, rates, levels, capabilities] of cases) {
+    const raw = await rawCard(id);
+    const descriptor = resolveModelDescriptor(id, snapshot);
+    assert.equal(descriptor.catalogId, id);
+    assert.deepEqual(descriptor.interfaces, [chat], id);
+    assert.equal(descriptor.defaultInterface, chat, id);
+    assert.deepEqual(raw.capabilities, capabilities, id);
+    assert.deepEqual(descriptor.capabilities, capabilities, id);
+    assert.deepEqual(raw.protocolProfiles[chat].reasoning, {
+      parameter: "reasoning_effort", ...(levels ? { levels } : {}), validation: "passthrough"
+    }, id);
+    const profile = getDescriptorProtocolProfile(descriptor, chat).reasoning;
+    assert.deepEqual(profile.levels, levels ?? [], id);
+    assert.equal(profile.default, "", id);
+    assert.deepEqual([raw.pricing.inputPer1mTokens, raw.pricing.cachedInputPer1mTokens, raw.pricing.outputPer1mTokens], rates, id);
+    assert.equal(descriptor.model.pricing, undefined, id);
+    assert.equal(descriptor.definition.pricingCatalogEntry, null, id);
+    if (id !== "mai-code-2-flash") {
+      assert.equal(raw.pricing.sourceType, "github-copilot-official", id);
+      assert.equal(new URL(raw.sources.pricing).hostname, "docs.github.com", id);
+      assert.equal(descriptor.definition.supportsProxyTemplate, false, id);
+    }
+  }
+});
+
+test("MAI Code 2 Flash's Foundry template keeps its own limits, reasoning profiles and price source", async () => {
+  const definitions = listPricingDefinitions();
+  const id = "mai-code-2-flash";
+  const raw = await rawCard(id);
+  const card = definitions.find(card => card.id === id);
+  const up = buildUpstreamFromPricingTemplate(card, "foundry");
+  const model = buildModelFromPricingTemplate(card, up.name, { models: [] });
+  const descriptor = resolveModelDescriptor(id, compileModelCatalog({ upstreams: [up], models: [model] }, definitions));
+  assert.equal(card.supportsProxyTemplate, true);
+  assert.equal(model.targetModel, id);
+  assert.equal(model.hostingMode, "azure");
+  assert.deepEqual(model.capabilities, raw.capabilities);
+  assert.deepEqual(descriptor.interfaces, ["chat/completions", "responses"]);
+  assert.equal(descriptor.defaultInterface, "responses");
+  assert.deepEqual(raw.protocolProfiles.responses.reasoning, {
+    parameter: "reasoning.effort", levels: ["low", "medium", "high", "xhigh", "max"], validation: "passthrough"
+  });
+  assert.deepEqual(getDescriptorProtocolProfile(descriptor, "responses").reasoning.levels, raw.protocolProfiles.responses.reasoning.levels);
+  assert.equal(getDescriptorProtocolProfile(descriptor, "responses").reasoning.default, "");
+  assert.deepEqual([raw.modelVersion, raw.status, raw.contextWindow, raw.maxInputTokens, raw.maxOutputTokens],
+    ["2026-11-17", "preview", 1000000, undefined, 128000]);
+  const flagship = await rawCard("mai-code-2");
+  assert.deepEqual([flagship.status, flagship.contextWindow, flagship.maxInputTokens, flagship.maxOutputTokens],
+    ["ga", 1050000, 922000, 128000]);
+  assert.equal(raw.pricing.sourceType, "azure-retail-prices-api");
+  assert.equal(raw.sources.pricing, retailUrl);
+});
 
 test("Azure source priority records exact direct and Fireworks Global rates without enabling opt-outs", async () => {
   const expected = [

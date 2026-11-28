@@ -724,6 +724,9 @@ test("Azure Grok reasoning profiles pass through protocol fields without inventi
 test("all active cards with unresolved token limits are explicitly reviewed", () => {
   const expectedUnresolvedIds = [
     "DeepSeek-V4.1-Flash-1017",
+    "gemini-4-argon",
+    "gemini-4-hydrogen",
+    "gemini-4-neon",
     "gpt-4o-mini-transcribe",
     "gpt-4o-mini-tts",
     "gpt-4o-transcribe-diarize",

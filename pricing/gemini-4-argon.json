@@ -1,0 +1,47 @@
+{
+  "id": "gemini-4-argon",
+  "displayName": "Gemini 4 Argon",
+  "provider": "google",
+  "family": "gemini-4",
+  "status": "ga",
+  "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
+  "inputModalities": ["text"],
+  "outputModalities": ["text"],
+  "capabilities": ["code-optimized", "reasoning"],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "github-copilot-official",
+    "status": "published",
+    "deploymentType": "github-copilot",
+    "inputPer1mTokens": 2,
+    "cachedInputPer1mTokens": 0.1,
+    "outputPer1mTokens": 10
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": null,
+  "sources": {
+    "lifecycle": "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
+    "deprecation": "https://github.blog/changelog/2026-11-13-upcoming-deprecation-of-selected-github-copilot-models-in-december/",
+    "hosting": "https://docs.github.com/en/copilot/reference/ai-models/model-hosting#google-models",
+    "capabilities": "https://github.blog/changelog/2026-10-13-gemini-4-argon-in-github-copilot/",
+    "discovery": "https://api.githubcopilot.com/models",
+    "reasoning": "https://github.com/microsoft/vscode/blob/ded5178913e5f578645a8013f5b723095c9b6a8c/extensions/copilot/src/platform/endpoint/node/chatEndpoint.ts",
+    "pricing": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#google"
+  },
+  "notes": [
+    "GA as of 2026-11-28. GitHub has announced Copilot deprecation on 2026-12-14 and recommends Gemini 4 Carbon.",
+    "GitHub documents agentic coding and reasoning. The supplied Copilot discovery maps all three public text protocols to Chat but does not report modelVersion, protocolProfiles.chat/completions.reasoning.levels or protocolProfiles.chat/completions.reasoning.default. Carbon's supports flags and effort list are not substituted for an Argon record.",
+    "contextWindow, maxInputTokens and maxOutputTokens are not independently established for this Copilot deployment. Additional input modalities are undeclared, not proven unsupported.",
+    "GitHub's AI-credit rates are promotional until 2026-12-01; GitHub does not state Argon's replacement prices or a cache-write rate. Carbon's announced increase does not establish Argon's. This card is for an authorized channel mapping, not a direct-provider template or automatic pricing."
+  ]
+}

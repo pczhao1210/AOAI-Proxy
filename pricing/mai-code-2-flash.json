@@ -1,0 +1,60 @@
+{
+  "id": "mai-code-2-flash",
+  "displayName": "MAI Code 2 Flash",
+  "provider": "microsoft",
+  "family": "mai-code-2",
+  "modelVersion": "2026-11-17",
+  "status": "preview",
+  "contextWindow": 1000000,
+  "maxOutputTokens": 128000,
+  "hostingModes": ["azure"],
+  "defaultHostingMode": "azure",
+  "interfaces": ["chat/completions", "responses"],
+  "defaultInterface": "responses",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["code-optimized", "reasoning", "vision", "function-calling"],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "validation": "passthrough"
+      }
+    },
+    "responses": {
+      "reasoning": {
+        "parameter": "reasoning.effort",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "azure-retail-prices-api",
+    "status": "published",
+    "deploymentType": "global-standard",
+    "inputPer1mTokens": 0.05,
+    "cachedInputPer1mTokens": 0.005,
+    "outputPer1mTokens": 0.25
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": {},
+  "sources": {
+    "capabilities": "https://ai.azure.com/catalog/models/mai-code-2-flash",
+    "limits": "https://ai.azure.com/catalog/models/mai-code-2-flash",
+    "publisher": "https://microsoft.ai/pdf/MAI-Code-2-And-MAI-Code-2-Flash-Model-Card.pdf?v=3",
+    "pricing": "https://prices.azure.com/api/retail/prices",
+    "copilot": "https://github.blog/changelog/2026-11-17-mai-code-2-and-mai-code-2-flash-in-github-copilot/",
+    "copilotPricing": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#microsoft"
+  },
+  "notes": [
+    "Azure-direct Foundry lists version 2026-11-17 in Preview with Chat and Responses; Microsoft's model card directs Foundry developers to Responses. Set the actual deployment name and endpoint on the Azure upstream. The same canonical ID also matches the separately GA Copilot offering; its supplied discovery maps all three text routes to Chat, not to the Foundry default.",
+    "The Foundry catalog gives a 1000000-token context and 128000 output tokens but leaves maxInputTokens unset. The publisher separately gives 1050000 context, 922000 input and 128000 output for the model; those figures are not silently substituted for the Azure deployment.",
+    "Foundry lists five model-wide effort levels but does not publish protocolProfiles.chat/completions.reasoning.default, protocolProfiles.responses.reasoning.default or a per-protocol restriction. Do not equate an omitted effort with the max used for evaluation.",
+    "Commercial Azure Global Standard consumption: MAI Models / MAI-Code-2-Flash Inp, Cd Inp and Opt glbl 1M Tokens, checked 2026-11-28. Government-region meters differ and no separate cache-write meter was found. Automatic pricing is disabled; these are not Copilot charges.",
+    "GitHub independently lists the same three numeric launch rates for Copilot until 2027-05-17 and then USD 0.10 input, 0.01 cached input and 0.50 output per 1M tokens. That promotion is not evidence of an Azure tariff change."
+  ]
+}

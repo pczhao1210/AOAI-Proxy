@@ -1,0 +1,54 @@
+{
+  "id": "gemini-3.8-flash",
+  "displayName": "Gemini 3.8 Flash",
+  "provider": "google",
+  "family": "gemini-3.8",
+  "status": "ga",
+  "contextWindow": 1048576,
+  "maxInputTokens": 983040,
+  "maxOutputTokens": 65536,
+  "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["code-optimized", "reasoning", "vision", "function-calling", "parallel-tool-calling", "streaming"],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["low", "medium", "high"],
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "github-copilot-official",
+    "status": "published",
+    "deploymentType": "github-copilot",
+    "inputPer1mTokens": 0.75,
+    "cachedInputPer1mTokens": 0.075,
+    "outputPer1mTokens": 3.75
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": null,
+  "sources": {
+    "lifecycle": "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
+    "deprecation": "https://github.blog/changelog/2026-11-13-upcoming-deprecation-of-selected-github-copilot-models-in-december/",
+    "hosting": "https://docs.github.com/en/copilot/reference/ai-models/model-hosting#google-models",
+    "capabilities": "https://api.githubcopilot.com/models",
+    "announcement": "https://github.blog/changelog/2026-09-03-gemini-3-8-flash-is-now-available-in-github-copilot/",
+    "limits": "https://api.githubcopilot.com/models",
+    "discoverySnapshot": "https://github.com/reliant-labs/reliant/blob/cd7c740e3f5c210419fbc7abf4bd4d5fb21bda2b/internal/llm/drivers/copilot/testdata/copilot_models.json",
+    "apiVersionComparison": "https://github.com/archestra-ai/archestra/issues/10783",
+    "reasoning": "https://github.com/microsoft/vscode/blob/ded5178913e5f578645a8013f5b723095c9b6a8c/extensions/copilot/src/platform/endpoint/node/chatEndpoint.ts",
+    "pricing": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#google"
+  },
+  "notes": [
+    "GA as of 2026-11-28. GitHub has announced Copilot deprecation on 2026-12-14 and recommends Gemini 4 Hydrogen. The later end date in the price footnote does not extend model availability.",
+    "GitHub Copilot serves Google's model via GCP. The Chat endpoint, supports flags and three independent token limits are from the Copilot /models record reproduced in discoverySnapshot, not the Google Gemini API. With older discovery API versions Copilot has also reported a 265536-token window and 200000-token prompt limit; these maxima are not an entitlement.",
+    "modelVersion and protocolProfiles.chat/completions.reasoning.default are not established by this record. The effort list is descriptive; no Google thinkingLevel default or Chat output-token parameter is inferred.",
+    "GitHub's AI-credit token prices are promotional through 2026-12-31. GitHub does not specify the subsequent rates or a cache-write price. Use an authorized Copilot mapping, not a generic upstream template or an automatic cross-provider price."
+  ]
+}

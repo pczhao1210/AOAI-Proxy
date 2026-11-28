@@ -62,6 +62,17 @@ JSON 中的所有有效布尔开关及被迁移的旧布尔别名只接受 `true
 - 若部署的服务端已配置 Copilot 凭据存储，可在**上游 / 模型 → 新增 GitHub Copilot 渠道**中选择 GitHub Copilot（VS Code）或 OpenCode 身份，在 GitHub 设备授权页面完成登录。查询状态只读；刷新清单是独立管理操作。草稿只接收服务端生成的 `credentialRef`，不填写 token；凭据不可用时不回落到 Azure 认证。
 - Copilot 渠道不提供手填型号或映射 JSON。新发现的条目默认不勾选，只能勾选本连接当前可选、具有文本协议证据的准确 ID；名称相似不等于 Catalog 匹配，可显式选择正确的 Catalog ID。清单过期或失败时不能新增绑定，但可以停用映射或切出。变更使用原有全局草稿审阅保存。断开前要先保存解绑或切换；本地断开不会撤销 [GitHub 的 OAuth 授权](https://github.com/settings/applications)。
 
+### Copilot 型号为什么不能勾选
+
+| 行内提示 | 含义与处理 |
+| --- | --- |
+| **请选择正确的 Catalog ID；若不存在，请先补齐 Catalog。** | 本渠道已有可选资格和文本路由。若右边有 `responses → chat/completions` 等箭头，但目标 ID 是 `—`，先部署含该卡的版本或从含该卡的分支同步模型库，然后回到映射页选择准确的同名 ID。不要用相似型号代替。 |
+| **尚无此型号有效的可选资格与文本协议信息。** | 即使目标 ID 已匹配，也没有可用于**新增映射**的当前发现证据。先确认本渠道启用、状态为**已授权**，点击 **刷新型号清单**（不是只读的 **查询状态**），等发现状态变为**有效**。清单有效期为 15 分钟。 |
+
+若同一张有效清单里其他行有路由，只有个别 GPT 行在 `OpenAI ·` 后没有箭头，优先检查这些 ID，而不是重建 Catalog。代理只识别 GitHub `/models` 的 `supported_endpoints` 数组中的 `/chat/completions`、`/v1/responses`、`/v1/messages`；例如只有 `/responses` 时，当前版本不会把它当作 `/v1/responses`。`model_picker_enabled` 只能为 `true` 或未提供；明确为 `false` 时即使有路由也不能新增映射。仅凭页面不能断定是哪项 GitHub 策略导致的。
+
+确认[套餐、客户端及组织/企业的模型访问策略](https://docs.github.com/en/copilot/how-tos/copilot-on-github/set-up-copilot/configure-access-to-ai-models)，必要时用有权的账号重新授权并刷新。排查时只需脱敏的型号 `id`、`model_picker_enabled` 和 `supported_endpoints`，无需 token。若仍没有可识别的端点，没有本地开关能强制放行。可勾选后，还须在**暴露模型**中选择要发布的公开 ID、审阅保存，并按需授予 Key 权限。
+
 ## 当前有效开关
 
 ### AOAI-Proxy 启用 Copilot 渠道的部署前提

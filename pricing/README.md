@@ -259,6 +259,34 @@ Run the focused source, import and safety contracts with:
 node --test test/model-card-source-priority.test.js test/model-card-format.test.js test/model-catalog.test.js test/pricing-sync.test.js test/media-policy.test.js test/usage-accounting.test.js
 ```
 
+#### GitHub Copilot Gemini and MAI Code 2 (2026-11-28)
+
+The Copilot mapping picker can now match [Gemini 3.8 Flash](gemini-3.8-flash.json),
+Gemini 4 [Argon](gemini-4-argon.json), [Carbon](gemini-4-carbon.json),
+[Hydrogen](gemini-4-hydrogen.json), [Neon](gemini-4-neon.json),
+[MAI Code 2](mai-code-2.json) and [MAI Code 2 Flash](mai-code-2-flash.json)
+by their exact upstream IDs. In the supplied discovery all seven route to Chat
+Completions. This is not a permanent route or a grant: refresh discovery on
+the authorized channel, select the mapping, then separately publish and save.
+See the [picker troubleshooting guide](../docs/configuration/feature-flags.zh-CN.md#copilot-型号为什么不能勾选).
+
+The Gemini cards describe **GitHub Copilot**, not Google's direct API. Limits
+and effort choices are included only where corroborated by exact-model
+Copilot evidence; a different account or discovery API version can report
+different limits. The five Gemini cards and the MAI flagship have no ordinary
+upstream template. Their [GitHub AI-credit prices](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)
+are reference rates, not automatic charges. Check the dated promotions before
+setting a channel price; missing cache-write rates do not mean zero.
+GitHub has [announced deprecation on 2026-12-14](https://github.blog/changelog/2026-11-13-upcoming-deprecation-of-selected-github-copilot-models-in-december/)
+for Gemini 3.8 Flash (replacement: Hydrogen) and Argon (replacement: Carbon).
+The cards do not automatically rebind either model.
+
+MAI Code 2 Flash also has an [Azure-direct offering](https://ai.azure.com/catalog/models/mai-code-2-flash).
+Its ordinary template uses the Foundry card's Preview version, limits and
+native interfaces; its prices are commercial Azure Global Standard meters.
+On a Copilot binding, only that channel's discovered routes and explicit
+mapping price apply, not the Foundry default or rate.
+
 #### 2026-11-18 catalog additions
 
 - [MAI Image 2.7](mai-image-2.7.json) and
@@ -337,10 +365,10 @@ matching must not treat either pair as covered.
 
 The limit audit now records Azure-published input/output limits for
 `DeepSeek-V4-Flash`, `grok-4`, and `Kimi-K2.5`, without inferring total context.
-The remaining active cards without any `contextWindow`/input/output limits are
-image, audio, speech, or realtime-only cards whose corresponding limits have not
-been verified. The reviewed exception set is enforced by the Model Catalog unit
-test so a newly added card cannot silently introduce another missing limit.
+Cards without any verified `contextWindow`/input/output limits, including
+Copilot deployments without a sourced numeric ceiling, are explicitly
+reviewed. The exception set is enforced by the Model Catalog unit test so a
+newly added card cannot silently introduce another missing limit.
 The exception list permits newly verified limits to be filled; it does not
 require reviewed cards to remain incomplete forever.
 

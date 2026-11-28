@@ -1,0 +1,45 @@
+{
+  "id": "gemini-4-hydrogen",
+  "displayName": "Gemini 4 Hydrogen",
+  "provider": "google",
+  "family": "gemini-4",
+  "status": "ga",
+  "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
+  "inputModalities": ["text"],
+  "outputModalities": ["text"],
+  "capabilities": ["code-optimized", "function-calling"],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "github-copilot-official",
+    "status": "published",
+    "deploymentType": "github-copilot",
+    "inputPer1mTokens": 1.5,
+    "cachedInputPer1mTokens": 0.075,
+    "outputPer1mTokens": 7.5
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": null,
+  "sources": {
+    "lifecycle": "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
+    "hosting": "https://docs.github.com/en/copilot/reference/ai-models/model-hosting#google-models",
+    "capabilities": "https://github.blog/changelog/2026-11-13-gemini-4-hydrogen-in-github-copilot/",
+    "discovery": "https://api.githubcopilot.com/models",
+    "reasoning": "https://github.com/microsoft/vscode/blob/ded5178913e5f578645a8013f5b723095c9b6a8c/extensions/copilot/src/platform/endpoint/node/chatEndpoint.ts",
+    "pricing": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#google"
+  },
+  "notes": [
+    "The supplied Copilot discovery shows Chat as the upstream protocol. GitHub documents coding and tool use on this GCP-hosted model. Other modalities or capabilities are undeclared, not rejected; Google API features are not evidence about the Copilot channel.",
+    "modelVersion, contextWindow, maxInputTokens and maxOutputTokens are not established by the available Copilot discovery or public documentation. Neither protocolProfiles.chat/completions.reasoning.levels nor protocolProfiles.chat/completions.reasoning.default is independently established here; only the Copilot Chat parameter path is recorded.",
+    "GitHub publishes a single AI-credit token rate table and no separate cache-write price for Hydrogen. It is not a Google API tariff; the model is selected through authorized Copilot discovery, not a generic template."
+  ]
+}

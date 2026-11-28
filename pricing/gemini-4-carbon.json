@@ -1,0 +1,50 @@
+{
+  "id": "gemini-4-carbon",
+  "displayName": "Gemini 4 Carbon",
+  "provider": "google",
+  "family": "gemini-4",
+  "status": "ga",
+  "contextWindow": 1000000,
+  "maxInputTokens": 936000,
+  "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["code-optimized", "reasoning", "vision", "function-calling", "parallel-tool-calling", "streaming"],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["low", "medium", "high"],
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "github-copilot-official",
+    "status": "published",
+    "deploymentType": "github-copilot",
+    "inputPer1mTokens": 2,
+    "cachedInputPer1mTokens": 0.1,
+    "outputPer1mTokens": 10
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": null,
+  "sources": {
+    "lifecycle": "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
+    "hosting": "https://docs.github.com/en/copilot/reference/ai-models/model-hosting#google-models",
+    "capabilities": "https://api.githubcopilot.com/models",
+    "discoveryObservation": "https://github.com/NousResearch/hermes-labs-plugins/issues/73",
+    "limits": "https://api.githubcopilot.com/models",
+    "limitObservation": "https://github.com/Electivus/pi-github-copilot-compat/issues/5",
+    "announcement": "https://github.blog/changelog/2026-11-10-gemini-4-carbon-in-github-copilot/",
+    "pricing": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#google"
+  },
+  "notes": [
+    "GitHub Copilot serves Google's model via GCP. discoveryObservation quotes the Copilot Chat supports record and the server's reasoning_effort choices. modelVersion and protocolProfiles.chat/completions.reasoning.default are not reported.",
+    "The 2026-11-25 Copilot Business /models observation independently reports the window and prompt ceiling. maxOutputTokens was not reported; do not subtract the two values. These are service observations, not guaranteed limits for every client or account.",
+    "GitHub's introductory AI-credit rates end on 2026-12-01. From that date GitHub lists USD 4 input, 0.20 cached input and 20 output per 1M tokens. No cache-write rate is published. The snapshot is reference-only, not a time-aware price policy or a generic upstream template."
+  ]
+}

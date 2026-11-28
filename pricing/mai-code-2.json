@@ -1,0 +1,51 @@
+{
+  "id": "mai-code-2",
+  "displayName": "MAI Code 2",
+  "provider": "microsoft",
+  "family": "mai-code-2",
+  "status": "ga",
+  "contextWindow": 1050000,
+  "maxInputTokens": 922000,
+  "maxOutputTokens": 128000,
+  "interfaces": ["chat/completions"],
+  "defaultInterface": "chat/completions",
+  "inputModalities": ["text", "image"],
+  "outputModalities": ["text"],
+  "capabilities": ["code-optimized", "reasoning", "vision", "function-calling", "structured-outputs"],
+  "protocolProfiles": {
+    "chat/completions": {
+      "reasoning": {
+        "parameter": "reasoning_effort",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "validation": "passthrough"
+      }
+    }
+  },
+  "pricing": {
+    "currency": "USD",
+    "billingUnit": "1M tokens",
+    "sourceType": "github-copilot-official",
+    "status": "published",
+    "deploymentType": "github-copilot",
+    "inputPer1mTokens": 0.5,
+    "cachedInputPer1mTokens": 0.025,
+    "outputPer1mTokens": 2.5
+  },
+  "pricingCatalogEntry": null,
+  "proxyTemplate": null,
+  "sources": {
+    "lifecycle": "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
+    "hosting": "https://docs.github.com/en/copilot/reference/ai-models/model-hosting#microsoft-models",
+    "capabilities": "https://microsoft.ai/pdf/MAI-Code-2-And-MAI-Code-2-Flash-Model-Card.pdf?v=3",
+    "limits": "https://microsoft.ai/pdf/MAI-Code-2-And-MAI-Code-2-Flash-Model-Card.pdf?v=3",
+    "discovery": "https://api.githubcopilot.com/models",
+    "discoveryObservation": "https://github.com/anomalyco/models.dev/pull/13952",
+    "pricing": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#microsoft"
+  },
+  "notes": [
+    "This is the GitHub Copilot offering in GitHub's Azure tenant, not a customer-deployable Foundry SKU. Microsoft's model card identifies Flash, not the flagship, for Foundry deployment. GitHub describes MAI models as rolling checkpoints; modelVersion is not a pinned release date.",
+    "Microsoft publishes separate context, input and output limits; the cited 2026-11-18 Copilot /models observation corroborates them and reports structured output and effort choices. The supplied channel recognizes Chat as the native target. Another client's discovery is not authorization for a Responses route here.",
+    "protocolProfiles.chat/completions.reasoning.default is not published for an omitted request parameter. The five effort levels are descriptive; a benchmark run at max is not a default.",
+    "The Copilot promotion ends 2027-05-17; the announced subsequent USD rates per 1M tokens are 1 input, 0.05 cached input and 5 output. GitHub does not list a cache-write price. No generic template or automatic cross-channel pricing is enabled."
+  ]
+}
