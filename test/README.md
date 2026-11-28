@@ -280,6 +280,16 @@ Channel integration tests (`test/copilot-provider.test.js`, `test/copilot-creden
 use synthetic identities and private fixtures. The preloaded GitHub transport in the disposable proxy
 never contacts GitHub. Include `RUNTIME_MEDIA_TEST_DATABASE_URL` and `REALTIME_CADDY_TEST_IMAGE` for
 the database and generated-Caddy gates. Do not supply a real subscription token.
+To reproduce the Copilot GPT picker and mapping offline, run:
+
+```bash
+node --test --test-name-pattern='offline Copilot: map HTTP Responses|Copilot picker enables the existing GPT card' test/copilot-provider.test.js test/admin-copilot-channel-form.test.js
+```
+
+These cases use the existing `gpt-6-luna` card: adding `/responses` alongside
+`ws:/responses` enables the picker, and a saved public alias reaches the mock
+upstream. A WebSocket-only discovery or an explicit picker denial is not a grant.
+
 Credential tests now cover plaintext private storage without Copilot-specific encryption keys,
 explicit legacy-ciphertext refusal and same-identity reauthorization, publication/revocation
 fences, and redaction of browser/config/log output. They do not claim at-rest encryption;

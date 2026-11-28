@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { withTestContext } from "./lib/harness.js";
 import { CopilotRuntime } from "../src/copilot-runtime.js";
 import { approveCopilotSelection } from "../src/copilot-approval.js";
+import { newCopilotChannel } from "../admin-ui/src/copilot.js";
 
 test("direct OAuth never exchanges a token; exchange profile requires real lifetime evidence", async () => {
   const calls = [];
@@ -60,10 +61,12 @@ test("discovery cannot substitute a name, duplicate, or unsupported endpoint for
   const models = discoveryModels({ data: [
     { id: "A", supported_endpoints: ["/v1/messages"] },
     { id: "B", model_picker_enabled: false, supported_endpoints: ["/v1/messages"] },
-    { id: "C", supported_endpoints: ["https://untrusted.invalid/messages"] }
+    { id: "C", supported_endpoints: ["https://untrusted.invalid/messages", "https://untrusted.invalid/responses", "/responses/compact"] },
+    { id: "D", supported_endpoints: ["/v1/responses"] }
   ] });
-  assert.deepEqual(models.map(m => m.selectable), [true, false, false]);
+  assert.deepEqual(models.map(m => m.selectable), [true, false, false, true]);
   assert.equal(models[0].routes.responses, "messages");
+  assert.equal(models[3].routes.responses, "responses");
   assert.throws(() => discoveryModels({ data: [{ id: "x" }, { id: "x" }] }), { code: "COPILOT_DISCOVERY_INVALID" });
 });
 
@@ -190,7 +193,7 @@ test("status distinguishes expired, rejected, renewed and revoked direct credent
   } finally { await rt.close(); }
 });
 
-for (const profile of ["vscode", "opencode"]) test(`offline ${profile}: durable login → approval → public inference → switch out → disconnect`, async () => {
+async function withOfflineCopilot(profile, run) {
   await withTestContext(async ctx => {
     const endpoint = "/admin/api/copilot/test-channel";
     const post = (action, other = {}) => ctx.adminRequest(`${endpoint}/${action}`, {
@@ -207,6 +210,42 @@ for (const profile of ["vscode", "opencode"]) test(`offline ${profile}: durable 
       await sleep(100);
     }
     assert.equal(status.discovery?.state, "fresh", JSON.stringify(status));
+    await run(ctx, { status, post, save });
+  }, { proxyArgs: ["--import", "./test/lib/copilot-fixture.js", "src/server.js"],
+    proxyEnv: { COPILOT_FIXTURE_PROFILE: profile, COPILOT_VSCODE_CLIENT_ID: "", COPILOT_OPENCODE_CLIENT_ID: "" } });
+}
+
+test("offline Copilot: map HTTP Responses discovery to an existing GPT card and call the published alias", async () => {
+  await withOfflineCopilot("vscode", async (ctx, { status, save }) => {
+    const cfg = (await ctx.adminRequest("/admin/api/config")).json;
+    const up = newCopilotChannel("test-channel", "test-copilot");
+    up.auth.credentialRef = status.credentialRef;
+    cfg.upstreams.push(up);
+    const routes = { "chat/completions": "responses", responses: "responses", messages: "responses" };
+    const mapping = id => ({ sourceModelId: id, canonicalModelId: id, enabled: true, routes });
+    up.modelMappings = [mapping("gpt-6-sol")];
+    const denied = await save(cfg);
+    assert.deepEqual([denied.status, denied.json.code], [409, "COPILOT_MODEL_NOT_ENABLED"]);
+
+    up.modelMappings = [mapping("gpt-6-luna")];
+    cfg.models.push({ id: "public-luna", canonicalModelId: "gpt-6-luna",
+      selectedBinding: { channelId: up.channelId, sourceModelId: "gpt-6-luna" } });
+    const saved = await save(cfg);
+    assert.equal(saved.status, 200, saved.text);
+    for (const id of ["gpt-6-luna", "gpt-6-sol"]) {
+      const evidence = status.discovery.models.find(model => model.id === id);
+      assert.deepEqual(evidence.routes, routes);
+      assert.equal(evidence.selectable, id === "gpt-6-luna");
+    }
+    const response = await ctx.publicRequest("/v1/responses", { method: "POST", json: { model: "public-luna", input: "ping" } });
+    assert.equal(response.status, 200, response.text);
+    assert.deepEqual([response.json.id, response.json.model, response.json.output[0].content[0].text],
+      ["resp-offline-luna", "public-luna", "pong"]);
+  });
+});
+
+for (const profile of ["vscode", "opencode"]) test(`offline ${profile}: durable login → approval → public inference → switch out → disconnect`, async () => {
+  await withOfflineCopilot(profile, async (ctx, { status, post, save }) => {
     const { credentialRef } = status;
     const cfg = (await ctx.adminRequest("/admin/api/config")).json;
     const up = { name: "test-copilot", channelId: "test-channel", provider: "github-copilot", copilot: { authProfile: profile },
@@ -251,6 +290,5 @@ for (const profile of ["vscode", "opencode"]) test(`offline ${profile}: durable 
     assert.equal((await post("disconnect", { credentialRef })).status, 200);
     const diagnostics = JSON.stringify([await ctx.readConfigFile(), (await ctx.adminRequest("/admin/api/logs")).json]);
     assert.doesNotMatch(diagnostics, /fixture-user-code|device-fixture-private|fixture-oauth-private|fixture-exchanged-private/);
-  }, { proxyArgs: ["--import", "./test/lib/copilot-fixture.js", "src/server.js"],
-    proxyEnv: { COPILOT_FIXTURE_PROFILE: profile, COPILOT_VSCODE_CLIENT_ID: "", COPILOT_OPENCODE_CLIENT_ID: "" } });
+  });
 });

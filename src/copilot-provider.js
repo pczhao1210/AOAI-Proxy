@@ -43,8 +43,10 @@ export function discoveryModels(body) {
       throw copilotError("COPILOT_DISCOVERY_INVALID", 502);
     }
     seen.add(item.id);
-    const native = Object.entries(COPILOT_ROUTES).filter(([, path]) =>
-      Array.isArray(item.supported_endpoints) && item.supported_endpoints.includes(path)).map(([key]) => key);
+    const endpoints = new Set(Array.isArray(item.supported_endpoints) ? item.supported_endpoints : []);
+    // Copilot advertises HTTP Responses as /responses; discovery never overrides the pinned inference URL.
+    if (endpoints.has("/responses")) endpoints.add(COPILOT_ROUTES.responses);
+    const native = Object.entries(COPILOT_ROUTES).filter(([, path]) => endpoints.has(path)).map(([key]) => key);
     const routes = native.length ? Object.fromEntries(Object.keys(COPILOT_ROUTES).map(key =>
       [key, native.includes(key) ? key : native[0]])) : {};
     return { id: item.id, name: typeof item.name === "string" ? item.name.slice(0, 256) : item.id,

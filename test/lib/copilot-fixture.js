@@ -52,11 +52,19 @@ globalThis.fetch = async (target, options) => {
     if (url.pathname === "/models") {
       expectHeaders(options, identity.models);
       return Response.json({ data: [
-        { id: "original", supported_endpoints: ["/chat/completions"] }, { id: "not-approved", model_picker_enabled: false }
+        { id: "original", supported_endpoints: ["/chat/completions"] }, { id: "not-approved", model_picker_enabled: false },
+        { id: "gpt-6-luna", vendor: "OpenAI", model_picker_enabled: true, supported_endpoints: ["/responses", "ws:/responses"] },
+        { id: "gpt-6-sol", vendor: "OpenAI", model_picker_enabled: false, supported_endpoints: ["/responses", "ws:/responses"] }
       ] });
     }
     expectHeaders(options, identity.inference);
     const body = JSON.parse(options.body);
+    if (options.method === "POST" && url.pathname === "/v1/responses" && !url.search
+      && body.model === "gpt-6-luna" && body.input === "ping" && bearer === identity.bearer) {
+      return Response.json({ id: "resp-offline-luna", object: "response", model: body.model, status: "completed",
+        output: [{ id: "msg-luna", type: "message", role: "assistant", status: "completed",
+          content: [{ type: "output_text", text: "pong", annotations: [] }] }] });
+    }
     if (body.messages?.at(-1)?.content === "reject-once") {
       if (rejectedRequests.has(body.stream === true)) throw new Error("Rejected credential replay");
       rejectedRequests.add(body.stream === true);

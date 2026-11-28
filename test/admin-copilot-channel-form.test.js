@@ -3,6 +3,8 @@ import test from "node:test";
 import { createElement, useState } from "react";
 import { waitFor, within } from "@testing-library/dom";
 import { newCopilotChannel } from "../admin-ui/src/copilot.js";
+import { discoveryModels } from "../src/copilot-provider.js";
+import { listPricingDefinitions } from "../src/pricing-library.js";
 import { fireEvent, loadAdminModule, renderElement, setupWorkspaceFormTests } from "./lib/admin-workspace-form.js";
 
 setupWorkspaceFormTests();
@@ -49,7 +51,7 @@ function fakeApi(ctx, handle) {
   return calls;
 }
 
-async function form(upstreams, models = []) {
+async function form(upstreams, models = [], pricingLibrary = ["exact", "canonical", "blocked", "no-routes"].map(id => ({ id }))) {
   const { default: RoutingTab } = await loadAdminModule("/admin-ui/src/components/RoutingTab.jsx");
   let latest;
   const initial = { upstreams, models, apiKeys: [] };
@@ -57,8 +59,7 @@ async function form(upstreams, models = []) {
     const [config, setConfig] = useState(initial);
     const [drafts, setDrafts] = useState({});
     latest = config;
-    return createElement(RoutingTab, { config,
-      pricingLibrary: ["exact", "canonical", "blocked", "no-routes"].map(id => ({ id })),
+    return createElement(RoutingTab, { config, pricingLibrary,
       updateConfig: change => setConfig(prev => { const next = structuredClone(prev); change(next); return next; }),
       mappingDrafts: drafts, setMappingDrafts: setDrafts, t: key => key });
   }
@@ -70,6 +71,33 @@ async function form(upstreams, models = []) {
   };
   return { ui, card, config: () => latest };
 }
+
+test("Copilot picker enables the existing GPT card only after discovery advertises HTTP Responses", async ctx => {
+  const id = "gpt-6-luna";
+  const endpoints = ["ws:/responses"];
+  fakeApi(ctx, action => action === "discover" ? { ok: true } : {
+    ...authorized, discovery: { state: "fresh", updatedAt: new Date().toISOString(), models: discoveryModels({
+      data: [{ id, vendor: "OpenAI", model_picker_enabled: true, supported_endpoints: endpoints }]
+    }) }
+  });
+  const up = newCopilotChannel("test-channel", "Copilot");
+  up.auth.credentialRef = authorized.credentialRef;
+  const { card, config } = await form([up], [], listPricingDefinitions().filter(def => def.id === id));
+  const fields = card(0);
+  const check = await fields.findByRole("checkbox", { name: id });
+  const row = within(check.closest("tr"));
+  assert.equal(row.getByRole("combobox").value, id);
+  assert.ok(row.getByText(/copilot.unavailable/));
+  assert.equal(check.disabled, true);
+
+  endpoints.unshift("/responses");
+  fireEvent.click(fields.getByRole("button", { name: "copilot.discover" }));
+  await waitFor(() => assert.equal(check.disabled, false));
+  assert.equal(row.queryByText(/copilot.unavailable/), null);
+  fireEvent.click(check);
+  assert.deepEqual(config().upstreams[0].modelMappings, [{ sourceModelId: id, canonicalModelId: id, enabled: true,
+    routes: { "chat/completions": "responses", responses: "responses", messages: "responses" } }]);
+});
 
 test("only fresh selectable Copilot discoveries with exact or explicit Catalog IDs enable mappings and exposure", async ctx => {
   const expiry = Date.now() + 600000;
