@@ -250,3 +250,31 @@ test("saved direct OpenAI discovery imports exact IDs only as disabled draft row
   assert.equal(ui.queryByRole("group", { name: "channel.availableIds" }), null);
   assert.deepEqual(latest.upstreams[0].modelMappings, expected);
 });
+
+test("deleting an unused legacy channel does not list models bound to another legacy channel", async () => {
+  const { MemoryRouter } = await import("react-router");
+  const { default: RoutingPage } = await loadAdminModule("/admin-ui/src/features/channels/RoutingPage.jsx");
+  const { ConfigDraftProvider } = await loadAdminModule("/admin-ui/src/lib/config-draft.jsx");
+  const initial = { upstreams: [{ name: "east" }, { name: "unused-west" }], models: [{ id: "public", upstream: "east", targetModel: "mini" }] };
+  let latest;
+  function Form() {
+    const [config, setConfig] = useState(initial);
+    latest = config;
+    return createElement(RoutingPage, { config, loadedConfig: initial, view: "channels", t: (key, fallback) => fallback || key,
+      updateConfig: change => setConfig(prev => { const next = structuredClone(prev); change(next); return next; }) });
+  }
+  const prompt = globalThis.window.prompt;
+  globalThis.window.prompt = () => "unused-west";
+  try {
+    const ui = renderElement(createElement(MemoryRouter, { initialEntries: ["/channels"] },
+      createElement(ConfigDraftProvider, null, createElement(Form))));
+    const rowFor = name => ui.getAllByRole("row").find(row => within(row).queryByRole("button", { name }));
+    fireEvent.click(within(rowFor("east")).getByRole("button", { name: "entity.delete" }));
+    assert.match(ui.getByText(/ui\.references/).textContent, /public/, "a bound channel still reports its model");
+    fireEvent.click(within(rowFor("unused-west")).getByRole("button", { name: "entity.delete" }));
+    await waitFor(() => assert.deepEqual(latest.upstreams, [{ name: "east" }]));
+    assert.deepEqual(latest.models, initial.models);
+  } finally {
+    globalThis.window.prompt = prompt;
+  }
+});

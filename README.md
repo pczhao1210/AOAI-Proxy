@@ -387,6 +387,7 @@ Admin endpoints (under the configured admin path):
 - `GET /api/config/history` and `GET /api/config/history/:id`: metadata list and redacted snapshot.
 - `POST /api/config/history/:id/rollback`: restore with the current `If-Match`.
 - `POST /api/config/apply`, body `{"stage":"proxy"}` or `{"stage":"caddy"}`: retry with the current `If-Match`.
+- `POST /api/reload` accepts an optional `If-Match`; a supplied revision that is no longer current returns `409 CONFIG_REVISION_CONFLICT` without reloading. Without `If-Match`, reload is unconditional.
 - Discarding pending database configuration on `/api/reload` requires the active revision returned by `X-AOAI-Active-Config-Revision` when comparing `/api/config/latest`.
 
 These mutations retain the existing administrator authentication and CSRF requirements.
@@ -404,7 +405,7 @@ The admin page now exposes:
 - Caddy response header timeout
 - Caddy keepalive timeout
 - Runtime persistence summary so you can see which config mode and data directory mode are active
-- Read-only statistics snapshots with capture time and partial/fallback status. At most two dedicated reader connections keep slow dashboards off the event-writer/admission queue; cold dashboard reads never mark live budgets hydrated. Request admission still performs strict recovery. Background writes/rollups can lag; **Sync Now** requests a flush. Unavailable storage shows process-local counters, never a sum of memory and database history.
+- Read-only statistics snapshots with capture time and partial/fallback status. At most two dedicated reader connections keep slow dashboards off the event-writer/admission queue; cold dashboard reads never mark live budgets hydrated. Request admission still performs strict recovery. Background writes/rollups can lag; **Sync Now** requests a flush. Event inserts take a shared PostgreSQL advisory lock that excludes an in-flight rollup batch, so instances sharing a schema cannot commit events behind the rollup cursor; upgrade every instance that shares the schema, because older writers do not take the lock. Events skipped by earlier versions are not backfilled. Unavailable storage shows process-local counters, never a sum of memory and database history.
 - Recent logs with level filters (`warn`, `error`, optional `info`), keyword search, request-id filtering, and copy-summary actions
 
 The log panel uses a compact always-visible toolbar plus collapsible advanced filters instead of a sticky filter bar.

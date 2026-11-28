@@ -644,3 +644,42 @@ test("Chat top_p reaches the Responses upstream while unsupported stop stays a C
     assert.equal("stop" in bestEffort.upstream.body, false);
   });
 });
+
+test("Responses-to-Chat JSON rejects a body without a Responses output list instead of fabricating success", async () => {
+  await withFidelityContext(async ({ ctx, setUpstream, setProtocolShim }) => {
+    for (const rejectLossyResponses of [false, true]) {
+      await setProtocolShim({ rejectLossyResponses });
+      const label = `rejectLossyResponses=${rejectLossyResponses}`;
+      setUpstream(() => ({ json: {
+        id: "chatcmpl-wrong-protocol",
+        object: "chat.completion",
+        model: "fidelity-responses-deployment",
+        choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "real text" } }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }
+      } }));
+      const wrong = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: { model: "fidelity-responses", messages: [{ role: "user", content: "hello" }] }
+      });
+      assert.equal(wrong.status, 502, `${label}: ${wrong.text}`);
+      assert.equal(wrong.json?.error?.code, "UnsupportedProtocolShimResponse", label);
+      assert.equal(wrong.json?.error?.param, "output", label);
+
+      setUpstream(() => ({ json: {
+        id: "resp_empty",
+        object: "response",
+        status: "completed",
+        model: "fidelity-responses-deployment",
+        output: [],
+        usage: { input_tokens: 3, output_tokens: 0, total_tokens: 3 }
+      } }));
+      const empty = await ctx.publicRequest("/v1/chat/completions", {
+        method: "POST",
+        json: { model: "fidelity-responses", messages: [{ role: "user", content: "hello" }] }
+      });
+      assert.equal(empty.status, 200, `${label}: ${empty.text}`);
+      assert.equal(empty.json.choices[0].finish_reason, "stop", label);
+      assert.equal(empty.json.choices[0].message.content, "", label);
+    }
+  });
+});

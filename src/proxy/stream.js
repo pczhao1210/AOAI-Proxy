@@ -1,11 +1,12 @@
 import { markErrorWithCode, toAnthropicErrorType } from "./reliability.js";
+import { getUsageTotals } from "../usage.js";
 import { chatFinishReasonToResponsesTermination, getProtocolShimStreamCompatibilityIssue } from "./shim.js";
 
 const MAX_SSE_EVENT_BYTES = 8 * 1024 * 1024;
 
 function sseDataFromBlock(block) {
   const dataLines = [];
-  for (const line of block.split(/\r?\n/)) {
+  for (const line of block.split(/\r\n|\r|\n/)) {
     if (line === "data") {
       dataLines.push("");
     } else if (line.startsWith("data:")) {
@@ -30,31 +31,6 @@ function createSseDataParser() {
 const LF = 0x0a;
 const CR = 0x0d;
 const EMPTY_BUFFER = Buffer.alloc(0);
-
-// First event delimiter in `buf`: "\n\n" or "\r\n\r\n", whichever starts first.
-// Walking newlines keeps the scan linear in the bytes consumed.
-function findEventDelimiter(buf) {
-  for (let lf = buf.indexOf(LF); lf !== -1; lf = buf.indexOf(LF, lf + 1)) {
-    const next = buf[lf + 1];
-    if (next === LF) return { index: lf, length: 2 };
-    if (next === CR && buf[lf + 2] === LF && lf > 0 && buf[lf - 1] === CR) return { index: lf - 1, length: 4 };
-  }
-  return null;
-}
-
-function findBoundaryDelimiter(pending, pendingLength, buf) {
-  // A delimiter can start up to three bytes before this chunk, giving a negative index.
-  let suffix = 0;
-  for (let i = Math.max(0, pendingLength - 3); i < pendingLength; i++) {
-    suffix = (suffix << 8) | pending[i];
-  }
-  for (let i = 0; i < Math.min(3, buf.length); i++) {
-    suffix = ((suffix << 8) | buf[i]) >>> 0;
-    if ((suffix & 0xffff) === 0x0a0a) return { index: i - 1, length: 2 };
-    if (suffix === 0x0d0a0d0a) return { index: i - 3, length: 4 };
-  }
-  return null;
-}
 
 export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {}) {
   let pending = EMPTY_BUFFER;
@@ -87,21 +63,75 @@ export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {})
     return raw;
   };
 
+  // Event boundaries follow WHATWG SSE: lines end in LF, CR or CRLF, and an empty line ends the event.
+  // Scanner state survives chunk boundaries, so framing never depends on network chunking. A blank-line CR
+  // at the end of the available bytes waits for the next byte so a split CRLF stays inside its frame.
+  let lineStart = false;
+  let afterCR = false;
+  let boundaryCR = false;
+  // Cached search results for queue[0]: null = unknown, -1 = absent. Keeps scanning linear per chunk.
+  let nextLF = null;
+  let nextCR = null;
+  const shiftSearchCache = consumed => {
+    if (nextLF !== null && nextLF !== -1) nextLF = nextLF >= consumed ? nextLF - consumed : null;
+    if (nextCR !== null && nextCR !== -1) nextCR = nextCR >= consumed ? nextCR - consumed : null;
+  };
+  const findTerminator = (buf, pos) => {
+    if (nextLF !== -1 && (nextLF === null || nextLF < pos)) nextLF = buf.indexOf(LF, pos);
+    if (nextCR !== -1 && (nextCR === null || nextCR < pos)) nextCR = buf.indexOf(CR, pos);
+    if (nextLF === -1) return nextCR;
+    if (nextCR === -1) return nextLF;
+    return Math.min(nextLF, nextCR);
+  };
+  // Exclusive end offset in `buf` of the event in progress, or -1 when `buf` does not complete it.
+  const findEventEnd = buf => {
+    if (boundaryCR) {
+      boundaryCR = false;
+      return buf[0] === LF ? 1 : 0;
+    }
+    for (let pos = 0; ;) {
+      const terminator = findTerminator(buf, pos);
+      if (terminator === -1) {
+        if (pos < buf.length) lineStart = afterCR = false;
+        return -1;
+      }
+      if (terminator > pos) lineStart = afterCR = false;
+      pos = terminator + 1;
+      if (buf[terminator] === LF) {
+        if (afterCR) {
+          afterCR = false;
+        } else if (lineStart) {
+          lineStart = false;
+          return pos;
+        } else {
+          lineStart = true;
+        }
+        continue;
+      }
+      if (lineStart) {
+        lineStart = afterCR = false;
+        if (pos < buf.length) return buf[pos] === LF ? pos + 1 : pos;
+        boundaryCR = true;
+        return -1;
+      }
+      lineStart = afterCR = true;
+    }
+  };
+
   // Parse lazily so terminal evidence stops interpretation of trailing bytes.
   // Enforce the complete raw frame size before UTF-8 or JSON decoding; checking
   // only the remaining buffer misses oversized events ending in this chunk.
   function* drain(final = false) {
     while (queue.length) {
       const buf = queue[0];
-      const hit = (pendingLength ? findBoundaryDelimiter(pending, pendingLength, buf) : null)
-        || findEventDelimiter(buf);
-      if (!hit) {
+      const consumed = findEventEnd(buf);
+      if (consumed === -1) {
         appendPending(buf);
         queuedLength -= buf.length;
         queue.shift();
+        nextLF = nextCR = null;
         continue;
       }
-      const consumed = hit.index + hit.length;
       checkSize(pendingLength + consumed);
       let raw;
       if (pendingLength) {
@@ -111,9 +141,17 @@ export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {})
         raw = buf.subarray(0, consumed);
       }
       queuedLength -= consumed;
-      if (consumed < buf.length) queue[0] = buf.subarray(consumed);
-      else queue.shift();
-      yield { raw, payload: sseDataFromBlock(raw.subarray(0, raw.length - hit.length).toString("utf8")) };
+      if (consumed < buf.length) {
+        queue[0] = buf.subarray(consumed);
+        shiftSearchCache(consumed);
+      } else {
+        queue.shift();
+        nextLF = nextCR = null;
+      }
+      yield { raw, payload: sseDataFromBlock(raw.toString("utf8")) };
+    }
+    if (final) {
+      boundaryCR = lineStart = afterCR = false;
     }
     if (final && pendingLength) {
       const raw = takePending();
@@ -137,12 +175,11 @@ export function createRawSseParser({ maxEventBytes = MAX_SSE_EVENT_BYTES } = {})
 
 function replaceSseEventPayload(event, payload) {
   const rawText = event.raw.toString("utf8");
-  const delimiterMatch = rawText.match(/(\r\n\r\n|\n\n)$/);
-  const delimiter = delimiterMatch?.[0] || "";
+  const delimiter = rawText.match(/(?:\r\n|\r|\n)+$/)?.[0] || "";
   const block = delimiter ? rawText.slice(0, -delimiter.length) : rawText;
-  const lineEnding = block.includes("\r\n") ? "\r\n" : "\n";
+  const lineEnding = block.match(/\r\n|\r|\n/)?.[0] || "\n";
   let dataWritten = false;
-  const lines = block.split(/\r?\n/).flatMap((line) => {
+  const lines = block.split(/\r\n|\r|\n/).flatMap((line) => {
     if (line !== "data" && !line.startsWith("data:")) return [line];
     if (dataWritten) return [];
     dataWritten = true;
@@ -387,13 +424,13 @@ function emitOutputDeltas(json, onContent) {
 
 function normalizeAnthropicUsage(usage) {
   if (!usage || typeof usage !== "object") return null;
-  const inputTokens = Number(usage.input_tokens || 0);
-  const outputTokens = Number(usage.output_tokens || 0);
   const cacheReadTokens = Number(usage.cached_tokens ?? usage.cache_read_input_tokens ?? 0);
-  const cacheCreationTokens = Number(usage.cache_creation_input_tokens ?? 0);
+  // Messages usage has no native total; derive it from the current counters (including cache-write TTL
+  // breakdowns) so a previously synthesized total never goes stale and JSON/SSE accounting agree.
+  const { total_tokens: _staleTotal, ...counters } = usage;
   return {
     ...usage,
-    total_tokens: Number(usage.total_tokens ?? inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens),
+    total_tokens: getUsageTotals(counters).totalTokens,
     cached_tokens: cacheReadTokens
   };
 }
@@ -683,7 +720,7 @@ export async function streamPassthrough({
       }
     }
   } catch (error) {
-    if (clientDisconnected) flushSseUsage(usageState, onUsage, { complete: false });
+    flushSseUsage(usageState, onUsage, { complete: false });
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
   } finally {
     watchdog.dispose();
@@ -699,6 +736,9 @@ export async function streamPassthrough({
     };
   }
   const timeoutFailure = watchdog.timeoutFailure();
+  const sourceCompleted = terminalMarkerSeen || (backendRouteKey === "chat/completions" && chatFinishReasonSeen);
+  // Counters observed before a failure are real; settle them as incomplete instead of estimating.
+  if (timeoutFailure || providerError || !sourceCompleted) flushSseUsage(usageState, onUsage, { complete: false });
   if (timeoutFailure) return timeoutFailure;
   if (providerError) {
     return {
@@ -712,10 +752,7 @@ export async function streamPassthrough({
   if (backendRouteKey === "chat/completions" && chatFinishReasonSeen) {
     flushSseUsage(usageState, onUsage);
   }
-  if (
-    !terminalMarkerSeen
-    && !(backendRouteKey === "chat/completions" && chatFinishReasonSeen)
-  ) {
+  if (!sourceCompleted) {
     return {
       ok: false,
       beforeFirstChunk: !firstChunkSeen,
@@ -1448,6 +1485,7 @@ export async function streamShim({
             }
             if (evt?.message?.usage) {
               anthropicSourceUsage = { ...evt.message.usage };
+              maybeRecordUsage(normalizeAnthropicUsage(anthropicSourceUsage));
             }
             continue;
           }
@@ -1894,7 +1932,7 @@ export async function streamShim({
       if (sourceTerminalSeen || reachedEof) break;
     }
   } catch (error) {
-    if (clientDisconnected) flushUsage({ complete: false });
+    flushUsage({ complete: false });
     return { ok: false, beforeFirstChunk: !firstChunkSeen, error, clientDisconnected };
   } finally {
     watchdog.dispose();
@@ -1910,6 +1948,8 @@ export async function streamShim({
     };
   }
   const timeoutFailure = watchdog.timeoutFailure();
+  // Counters observed before a failure are real; settle them as incomplete instead of estimating.
+  if (timeoutFailure || providerError || !sourceTerminalSeen) flushUsage({ complete: false });
   if (timeoutFailure) return timeoutFailure;
   if (providerError) {
     return {

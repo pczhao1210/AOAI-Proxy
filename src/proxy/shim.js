@@ -1123,7 +1123,20 @@ export function getProtocolShimCompatibilityIssue(payload, {
     return null;
   }
   const context = { phase, sourceProtocol, targetProtocol };
-  if (sourceProtocol === "responses") return validateResponsesPayload(payload, context);
+  if (sourceProtocol === "responses") {
+    // A final Responses object must carry its output list; otherwise the body is not a Responses result
+    // and converting it would fabricate an empty successful completion.
+    if (phase === "response" && !Array.isArray(payload.output)) {
+      return createShimCompatibilityIssue({
+        ...context,
+        path: "output",
+        type: payload.output === undefined ? "missing" : typeof payload.output,
+        reason: "upstream response is not a Responses object with an output array",
+        requiredRejection: true
+      });
+    }
+    return validateResponsesPayload(payload, context);
+  }
   if (sourceProtocol === "messages") return validateMessagesPayload(payload, context);
   return validateChatPayload(payload, context);
 }

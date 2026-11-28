@@ -844,11 +844,27 @@ async function insertRuntimeEvents(settings, batchItems) {
     return `(${columns.map((_, columnIndex) => `$${offset + columnIndex + 1}`).join(", ")})`;
   });
 
-  await pool.query(
-    `INSERT INTO ${schemaName}.${eventsTableName} (${columns.join(", ")}) VALUES ${rows.join(", ")}
-     ON CONFLICT (event_uid) DO NOTHING`,
-    values
-  );
+  // The shared lock excludes an in-flight rollup batch, so event IDs never commit behind the rollup cursor.
+  const client = await pool.connect();
+  let transactionError;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock_shared(hashtext($1))", [rollupLockKey(settings)]);
+    await client.query(
+      `INSERT INTO ${schemaName}.${eventsTableName} (${columns.join(", ")}) VALUES ${rows.join(", ")}
+       ON CONFLICT (event_uid) DO NOTHING`,
+      values
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    transactionError = error;
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally { client.release(transactionError); }
+}
+
+function rollupLockKey(settings) {
+  return `${settings.schemaName}.${settings.metaTableName}:rollup`;
 }
 
 function normalizeEventRecord(row) {
@@ -1200,7 +1216,7 @@ async function withRollupLock(settings, operation) {
   let transactionError;
   try {
     await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${settings.schemaName}.${settings.metaTableName}:rollup`]);
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [rollupLockKey(settings)]);
     const result = await operation(client);
     await client.query("COMMIT");
     return result;

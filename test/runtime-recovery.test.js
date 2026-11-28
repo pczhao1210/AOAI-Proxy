@@ -481,12 +481,15 @@ test("PostgreSQL rolls back a failed checkpoint and deduplicates committed event
     assert.equal((await store.flushRuntimeEvents()).flushed, 1);
     assert.deepEqual(await totals(), { events: 2, cost: 2 });
 
-    const originalQuery = pg.Pool.prototype.query;
+    const originalQuery = pg.Client.prototype.query;
+    let insertPending = false;
     let loseInsertAck = true;
-    const queryMock = t.mock.method(pg.Pool.prototype, "query", async function (sql, ...args) {
+    const queryMock = t.mock.method(pg.Client.prototype, "query", async function (sql, ...args) {
       const result = await originalQuery.call(this, sql, ...args);
-      if (loseInsertAck && typeof sql === "string" && sql.startsWith(`INSERT INTO ${schema}."runtime_events"`)) {
+      if (loseInsertAck && typeof sql === "string" && sql.trimStart().startsWith(`INSERT INTO ${schema}."runtime_events"`)) insertPending = true;
+      else if (insertPending && sql === "COMMIT") {
         loseInsertAck = false;
+        insertPending = false;
         throw new Error("Simulated lost acknowledgement after real PostgreSQL commit");
       }
       return result;

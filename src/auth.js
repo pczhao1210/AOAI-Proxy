@@ -233,10 +233,11 @@ export async function getUpstreamAuthHeaders(scope, options = {}) {
     return copilotRuntime.headers(options.upstream, options.targetUrl, options.model, options.requestId);
   }
   const apiKeyHeader = ["x-api-key", "ocp-apim-subscription-key"].includes(options.apiKeyHeader) ? options.apiKeyHeader : "api-key";
+  // OpenAI's public API accepts API keys only as Bearer tokens.
+  const bearerApiKey = apiKeyHeader === "api-key" && ["openai", "openai-api"].includes(options.upstream?.provider);
+  const apiKeyHeaders = (key) => bearerApiKey ? { authorization: `Bearer ${key}` } : { [apiKeyHeader]: key };
   if (upstreamAuth?.mode === "apiKey") {
-    return {
-      [apiKeyHeader]: requireApiKey(upstreamAuth, "upstream.auth.apiKey")
-    };
+    return apiKeyHeaders(requireApiKey(upstreamAuth, "upstream.auth.apiKey"));
   }
   if (upstreamAuth?.mode === "managedIdentity") {
     return {
@@ -246,9 +247,7 @@ export async function getUpstreamAuthHeaders(scope, options = {}) {
 
   const auth = getActiveAuth();
   if (isApiKeyMode(auth)) {
-    return {
-      [apiKeyHeader]: requireApiKey(auth)
-    };
+    return apiKeyHeaders(requireApiKey(auth));
   }
   return {
     authorization: `Bearer ${await getBearerToken(scope)}`

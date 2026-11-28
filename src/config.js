@@ -2336,6 +2336,11 @@ export async function reloadConfig({ discardPendingDatabaseSync: discardPending 
         code: expectedRevision ? "CONFIG_REVISION_CONFLICT" : "CONFIG_REVISION_REQUIRED"
       });
     }
+    if (expectedRevision && expectedRevision !== getPersistedConfigRevision()) {
+      throw Object.assign(new Error("Configuration changed since the supplied revision."), {
+        status: 409, code: "CONFIG_REVISION_CONFLICT"
+      });
+    }
     return loadConfig({ discardPending, deferApplication });
   });
 }

@@ -38,3 +38,24 @@ test("upstreams without an auth override inherit the global API key", async () =
     { "api-key": "global-key" }
   );
 });
+test("OpenAI upstream API keys are sent as Bearer tokens for text routes", async () => {
+  initAuth({ auth: { mode: "apiKey", apiKey: "global-key" } });
+  const openai = { provider: "openai" };
+
+  assert.deepEqual(
+    await getUpstreamAuthHeaders("unused", { auth: { mode: "apiKey", apiKey: "sk-upstream" }, upstream: openai, apiKeyHeader: "api-key" }),
+    { authorization: "Bearer sk-upstream" }
+  );
+  assert.deepEqual(
+    await getUpstreamAuthHeaders("unused", { upstream: openai, apiKeyHeader: "api-key" }),
+    { authorization: "Bearer global-key" }
+  );
+  assert.deepEqual(
+    await getUpstreamAuthHeaders("unused", { auth: { mode: "apiKey", apiKey: "azure-key" }, upstream: { provider: "azure-openai" }, apiKeyHeader: "api-key" }),
+    { "api-key": "azure-key" }
+  );
+  assert.deepEqual(
+    await getUpstreamAuthHeaders("unused", { auth: { mode: "apiKey", apiKey: "msg-key" }, upstream: openai, apiKeyHeader: "x-api-key" }),
+    { "x-api-key": "msg-key" }
+  );
+});

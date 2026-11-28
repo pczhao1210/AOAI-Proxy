@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import test, { mock } from "node:test";
 import { createRawSseParser, streamPassthrough, streamShim } from "../src/proxy/stream.js";
+import { getUsageTotals } from "../src/usage.js";
 
 const LIMIT = 8 * 1024 * 1024;
 const encode = value => `data: ${typeof value === "string" ? value : JSON.stringify(value)}\n\n`;
@@ -18,7 +19,7 @@ const terminals = {
     + encode({ type: "message_stop" })
 };
 
-async function runStream(routeKey, backendRouteKey, chunks, { writeError = false } = {}) {
+async function runStream(routeKey, backendRouteKey, chunks, { writeError = false, onUsage = () => {} } = {}) {
   const cancellations = [];
   const raw = new EventEmitter();
   raw.bytes = 0;
@@ -36,7 +37,7 @@ async function runStream(routeKey, backendRouteKey, chunks, { writeError = false
     const result = await (routeKey === backendRouteKey ? streamPassthrough : streamShim)({
       upstreamResponse: { body }, reply: { raw }, modelId: "test", model: {}, routeKey, backendRouteKey,
       policy: { firstByteTimeoutMs: 1000, idleTimeoutMs: 1000, maxStreamDurationMs: 0 },
-      onFirstChunk() {}, onUsage() {}
+      onFirstChunk() {}, onUsage
     });
     return { result, cancellations, raw, locked: body.locked };
   } finally { if (!cancellations.length) source.close(); }
@@ -77,20 +78,28 @@ test("SSE parser enforces raw event bytes including delimiters before decoding",
   assert.throws(() => [...parser.feed(Buffer.from("x".repeat(17)))], { code: "UPSTREAM_STREAM_EVENT_TOO_LARGE" });
 });
 
-// Reference framing: the earliest "\n\n" or "\r\n\r\n" ends an event; trailing bytes are the final partial event.
+// Reference framing (WHATWG SSE): lines end in LF, CR or CRLF and the first empty line ends an event;
+// trailing bytes are the final partial event.
 function referenceSseFrames(data) {
   const frames = [];
-  let rest = data;
-  for (;;) {
-    const lf = rest.indexOf("\n\n");
-    const crlf = rest.indexOf("\r\n\r\n");
-    if (lf < 0 && crlf < 0) break;
-    const useCrlf = crlf >= 0 && (lf < 0 || crlf < lf);
-    const length = (useCrlf ? crlf + 4 : lf + 2);
-    frames.push(rest.subarray(0, length).toString("hex"));
-    rest = rest.subarray(length);
+  let start = 0;
+  let lineStart = false;
+  for (let index = 0; index < data.length; index += 1) {
+    if (data[index] !== 0x0a && data[index] !== 0x0d) {
+      lineStart = false;
+      continue;
+    }
+    const end = data[index] === 0x0d && data[index + 1] === 0x0a ? index + 2 : index + 1;
+    if (lineStart) {
+      frames.push(data.subarray(start, end).toString("hex"));
+      start = end;
+      lineStart = false;
+    } else {
+      lineStart = true;
+    }
+    index = end - 1;
   }
-  if (rest.length) frames.push(rest.toString("hex"));
+  if (start < data.length) frames.push(data.subarray(start).toString("hex"));
   return frames;
 }
 
@@ -104,7 +113,7 @@ function parseInChunks(chunks, options) {
 
 test("SSE parser frames events identically for every delimiter split and random chunking", () => {
   const stream = Buffer.from(
-    "data: one\n\ndata: 中文\r\n\r\n\n\n\r\n\r\n: comment\n\ndata: a\r\ndata: b\n\r\n\r\n\ndata: tail"
+    "data: one\n\ndata: 中文\r\n\r\n\n\n\r\n\r\n: comment\n\ndata: a\r\ndata: b\n\r\n\r\n\ndata: cr\r\rdata: x\r\r\ndata: tail"
   );
   const expected = referenceSseFrames(stream);
   for (let size = 1; size <= stream.length; size += 1) {
@@ -133,6 +142,23 @@ test("SSE parser frames events identically for every delimiter split and random 
     assert.deepEqual(frames, referenceSseFrames(data), JSON.stringify(text));
     assert.equal(buffered, 0);
   }
+});
+
+test("SSE parser ends events at blank lines for CR-only and mixed line endings", () => {
+  const stream = "data: {\"a\":1}\r\rdata: {\"b\":2}\n\r\ndata: {\"c\":3}\r\n\ndata: {\"d\":4}\r\r";
+  const expected = ['{"a":1}', '{"b":2}', '{"c":3}', '{"d":4}'];
+  const bytes = Buffer.from(stream);
+  for (let split = 0; split <= bytes.length; split += 1) {
+    const parser = createRawSseParser();
+    const payloads = [...parser.feed(bytes.subarray(0, split)), ...parser.feed(bytes.subarray(split)), ...parser.finish()]
+      .map(event => event.payload);
+    assert.deepEqual(payloads, expected, `split ${split}`);
+  }
+  const live = createRawSseParser();
+  assert.deepEqual([...live.feed(Buffer.from("data: 1\r\rdata: 2\r"))].map(event => event.payload), ["1"]);
+  assert.deepEqual([...live.feed(Buffer.from("\r"))].map(event => event.payload), [], "a blank-line CR waits for a possible LF");
+  assert.deepEqual([...live.feed(Buffer.from("data: 3\n\n"))].map(event => [event.payload, event.raw.toString()]),
+    [["2", "data: 2\r\r"], ["3", "data: 3\n\n"]]);
 });
 
 test("SSE parser reports unfinished bytes and resumes after an abandoned iterator", () => {
@@ -263,4 +289,38 @@ test("terminal evidence discards oversized trailing bytes in the same chunk", as
     assert.equal(result.ok, true);
     assert.equal(cancellations.length, 1);
   }
+});
+
+const messagesStart = usage => encode({ type: "message_start", message: { id: "msg_1", role: "assistant", model: "test", content: [], usage } });
+
+test("Messages streams settle observed usage as incomplete when the provider errors mid-stream", async t => {
+  for (const routeKey of ["messages", "chat/completions", "responses"]) await t.test(`messages -> ${routeKey}`, async () => {
+    const recorded = [];
+    const { result } = await runStream(routeKey, "messages", [
+      messagesStart({ input_tokens: 10000, output_tokens: 1 }),
+      encode({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })
+    ], { onUsage: (usage, _model, metadata) => recorded.push({ usage, metadata }) });
+    assert.equal(result.ok, false);
+    assert.equal(recorded.length, 1, "observed counters must be recorded instead of a local estimate");
+    assert.equal(getUsageTotals(recorded[0].usage).promptTokens, 10000);
+    assert.equal(recorded[0].metadata?.complete, false);
+  });
+});
+
+test("Messages stream usage totals match JSON accounting for cache-write TTL breakdowns", async t => {
+  const usage = { input_tokens: 3, output_tokens: 2, cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 50 } };
+  const jsonTotals = getUsageTotals(usage);
+  assert.equal(jsonTotals.totalTokens, 155);
+  for (const routeKey of ["messages", "chat/completions", "responses"]) await t.test(`messages -> ${routeKey}`, async () => {
+    const recorded = [];
+    const { result } = await runStream(routeKey, "messages", [
+      messagesStart({ input_tokens: 3, output_tokens: 0, cache_creation: usage.cache_creation }),
+      encode({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }),
+      encode({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } }),
+      encode({ type: "message_stop" })
+    ], { onUsage: (observed) => recorded.push(observed) });
+    assert.equal(result.ok, true);
+    assert.equal(recorded.length, 1);
+    assert.deepEqual(getUsageTotals(recorded[0]), jsonTotals);
+  });
 });

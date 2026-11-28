@@ -438,6 +438,60 @@ test("media and text ledgers restore known subtotals and durable completeness fr
   }
 });
 
+test("event inserts wait for an in-flight rollup batch so the cursor never passes a late commit", {
+  timeout: 30000,
+  skip: !process.env.RUNTIME_MEDIA_TEST_DATABASE_URL
+}, async () => {
+  const connectionString = process.env.RUNTIME_MEDIA_TEST_DATABASE_URL;
+  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(new URL(connectionString).hostname), "Use an isolated loopback database");
+  const previousConnectionString = process.env.RUNTIME_DB_CONNECTION_STRING;
+  process.env.RUNTIME_DB_CONNECTION_STRING = connectionString;
+  const tempDir = path.resolve(`.rollup-gap-test-${process.pid}-${Date.now()}`);
+  await fs.mkdir(tempDir);
+  const schema = `rollup_gap_${process.pid}_${Date.now()}`;
+  const quotedSchema = quoteIdentifier(schema, "test schema");
+  const pool = new pg.Pool({ connectionString });
+  const rollupHolder = await pool.connect();
+  const config = { persistence: { configStore: { mode: "database", filePath: path.join(tempDir, "config.json"), database: {} } },
+    observability: { runtimeStore: { enabled: true, schema, localBufferPath: path.join(tempDir, "pending.ndjson") } } };
+  const count = async table => Number((await pool.query(`SELECT COUNT(*) AS count FROM ${quotedSchema}.${table}`)).rows[0].count);
+  const rolledRequests = async () => Number((await pool.query(`SELECT COALESCE(SUM(requests), 0) AS requests
+    FROM ${quotedSchema}.runtime_rollups WHERE grain = 'daily' AND scope_type = 'global'`)).rows[0].requests);
+  try {
+    setRuntimeStoreConfig(config);
+    recordRuntimeRequest(config, { requestId: "before", keyId: "gap-key", modelId: "text", routeKey: "responses" });
+    await waitFor(async () => {
+      await flushRuntimeEvents();
+      const exists = await pool.query("SELECT to_regclass($1) AS table_name", [`${schema}.runtime_rollups`]);
+      return Boolean(exists.rows[0].table_name) && await rolledRequests() === 1 && !getRuntimeStoreInfo(config).flushing;
+    }, 8000);
+
+    await rollupHolder.query("BEGIN");
+    await rollupHolder.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${schema}.runtime_store_meta:rollup`]);
+    recordRuntimeRequest(config, { requestId: "during", keyId: "gap-key", modelId: "text", routeKey: "responses" });
+    const flushing = flushRuntimeEvents();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(await count("runtime_events"), 1, "an insert must not commit while a rollup batch holds the cursor");
+    await rollupHolder.query("COMMIT");
+    await flushing;
+    await waitFor(async () => {
+      await flushRuntimeEvents();
+      return await rolledRequests() === 2 && !getRuntimeStoreInfo(config).flushing;
+    }, 8000);
+    assert.equal(await count("runtime_events"), 2);
+  } finally {
+    await rollupHolder.query("ROLLBACK").catch(() => {});
+    rollupHolder.release();
+    setRuntimeStoreConfig(null);
+    await closeSharedPostgresPools();
+    await pool.query(`DROP SCHEMA IF EXISTS ${quotedSchema} CASCADE`);
+    await pool.end();
+    await fs.rm(tempDir, { recursive: true, force: true });
+    if (previousConnectionString === undefined) delete process.env.RUNTIME_DB_CONNECTION_STRING;
+    else process.env.RUNTIME_DB_CONNECTION_STRING = previousConnectionString;
+  }
+});
+
 test("cache-write event and rollup SQL bind every column and retain partial dimensions", async (t) => {
   t.mock.method(pg.Pool.prototype, "connect", async function () {
     return { query: (...args) => this.query(...args), release() {} };

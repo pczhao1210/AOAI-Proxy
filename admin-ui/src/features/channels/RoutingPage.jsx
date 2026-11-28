@@ -89,7 +89,7 @@ export default function RoutingPage(props) {
     && (!channels || !provider || (item.provider || "azure-openai") === provider)
     && [identity(item), item.displayName, item.name, item.provider, item.canonicalModelId].some(value => String(value || "").toLowerCase().includes(q.toLowerCase())));
   const references = row => channels
-    ? (config.models || []).filter(model => model.upstream === row.name || model.selectedBinding?.channelId === row.channelId).map(model => model.id)
+    ? boundModels(row).map(model => model.id)
     : [
       ...(config.apiKeys || []).filter(key => key.allowedModels?.includes(row.id)).map(key => `Key: ${key.id}`),
       ...Object.entries(row.clientCompatibility || {}).filter(([, value]) => value).map(([client]) => client),

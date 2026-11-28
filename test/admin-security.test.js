@@ -41,6 +41,20 @@ test("configuration ETags reject stale drafts without exposing configuration sec
     assert.equal(latest.json.server.gracefulShutdownMs, firstDraft.server.gracefulShutdownMs);
     assert.doesNotMatch(latest.text, /test-upstream-key|test-client-key|"password":"admin"/);
     assert.equal((await context.adminRequest("/admin/api/config")).headers.get("etag"), updatedEtag);
+
+    const staleReload = await context.adminRequest("/admin/api/reload", {
+      method: "POST", headers: { "x-aoai-admin-csrf": "1", "if-match": originalEtag }
+    });
+    assert.equal(staleReload.status, 409, staleReload.text);
+    assert.equal(staleReload.json?.code, "CONFIG_REVISION_CONFLICT");
+    const currentReload = await context.adminRequest("/admin/api/reload", {
+      method: "POST", headers: { "x-aoai-admin-csrf": "1", "if-match": updatedEtag }
+    });
+    assert.equal(currentReload.status, 200, currentReload.text);
+    const unconditionalReload = await context.adminRequest("/admin/api/reload", {
+      method: "POST", headers: { "x-aoai-admin-csrf": "1" }
+    });
+    assert.equal(unconditionalReload.status, 200, unconditionalReload.text);
   } finally {
     await context.cleanup();
   }
