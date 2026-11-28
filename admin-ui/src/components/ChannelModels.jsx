@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { deploymentFields, hasHarnessRouteConfirmation, sameBinding, validateMappingRows } from "../../../src/channel-bindings.js";
+import { bindingsBrokenBy, deploymentFields, hasHarnessRouteConfirmation, sameBinding, unresolvedBindings, validateMappingRows } from "../../../src/channel-bindings.js";
 import { Field } from "./ui.jsx";
 import { newChannelId, parseList } from "../utils.js";
 import { copilotIdentity, isCopilotChannel, matchesDiscoveredRoutes } from "../copilot.js";
@@ -33,6 +33,10 @@ export function migrateChannel(config, index, channelId, capabilityView) {
   Object.assign(up, { channelId, modelMappings: [...mappings.values()] });
 }
 
+export function bindingInUseMessage(models, t) {
+  return t("channel.bindingInUse", undefined, { models: models.map(model => model.id).join(", ") });
+}
+
 function ChannelModelList({ up, models, definitions, updateRows, blocked, t }) {
   const optionsId = useId();
   const [text, setText] = useState("");
@@ -45,6 +49,8 @@ function ChannelModelList({ up, models, definitions, updateRows, blocked, t }) {
     try {
       mutate(next);
       validateMappingRows(next, "modelMappings", catalogIds);
+      const broken = bindingsBrokenBy(models, up.channelId, rows, next);
+      if (broken.length) throw new Error(bindingInUseMessage(broken, t));
       updateRows(next);
       setError("");
       return true;
@@ -59,9 +65,6 @@ function ChannelModelList({ up, models, definitions, updateRows, blocked, t }) {
     <div className="multi-chips">{activeIds.length ? activeIds.map(id => <span className="multi-chip" key={id}>
       {id}<button type="button" aria-label={`${t("entity.delete")} ${id}`} disabled={blocked}
         onClick={() => change(next => {
-          const sources = new Set(next.filter(row => row.canonicalModelId === id).map(row => row.sourceModelId));
-          const refs = models.filter(model => model.selectedBinding?.channelId === up.channelId && sources.has(model.selectedBinding.sourceModelId));
-          if (refs.length) throw new Error(`${t("channel.referenced")}: ${refs.map(model => model.id).join(", ")}`);
           next.forEach(row => { if (row.canonicalModelId === id) row.enabled = false; });
         })}>×</button>
     </span>) : <span className="muted">{t("channel.noModelIds")}</span>}</div>
@@ -91,14 +94,23 @@ function ChannelModelList({ up, models, definitions, updateRows, blocked, t }) {
 
 export function MappingEditor({ up, saved, index, config, capabilityView, definitions, updateConfig, drafts, setDrafts, t }) {
   const [migrationError, setMigrationError] = useState("");
+  const [rowError, setRowError] = useState("");
   const [migrationId] = useState(newChannelId);
   const optionsId = useId();
   const id = up.channelId;
   const draft = Object.hasOwn(drafts, id) ? drafts[id] : null;
   const rows = up.modelMappings || [];
+  const models = config.models || [];
   const tableEditable = Array.isArray(rows) && rows.every(row => row && typeof row === "object" && !Array.isArray(row));
   const ids = new Set(definitions.map(card => card.id));
-  const writeRows = change => updateConfig(next => change(next.upstreams[index].modelMappings));
+  // Published bindings must change through the model's binding selector, which also resets Harness confirmation.
+  const writeRows = change => {
+    const next = structuredClone(rows);
+    change(next);
+    const broken = bindingsBrokenBy(models, id, rows, next);
+    setRowError(broken.length ? bindingInUseMessage(broken, t) : "");
+    if (!broken.length) updateConfig(draftConfig => { draftConfig.upstreams[index].modelMappings = next; });
+  };
   const clearDraft = () => setDrafts(previous => {
     const next = { ...previous };
     delete next[id];
@@ -155,13 +167,17 @@ export function MappingEditor({ up, saved, index, config, capabilityView, defini
   try {
     parsed = draft ? JSON.parse(draft.text) : rows;
     validateMappingRows(parsed, "modelMappings", ids);
-    if (draft && draft.base !== JSON.stringify(rows)) issue = t("channel.stale");
+    const broken = draft ? bindingsBrokenBy(models, id, rows, parsed) : [];
+    if (broken.length) issue = bindingInUseMessage(broken, t);
+    else if (draft && draft.base !== JSON.stringify(rows)) issue = t("channel.stale");
   } catch (error) { issue = error.message; }
+  const unresolved = unresolvedBindings(models, id, rows);
   return <div>
     {tableEditable ? <ChannelModelList up={up} models={config.models || []} definitions={definitions} blocked={Boolean(draft)}
       updateRows={rows => updateConfig(next => { next.upstreams[index].modelMappings = rows; })} t={t} /> : null}
     <fieldset className="mapping-editor"><legend>{t("channel.mappings")}</legend>
     <p>{t("channel.mappingDirection")} <code>{id}</code></p>
+    {unresolved.length ? <p role="alert">{t("channel.bindingUnresolved", undefined, { models: unresolved.map(model => model.id).join(", ") })}</p> : null}
     <datalist id={optionsId}>{definitions.map(card => <option key={card.id} value={card.id} />)}</datalist>
     {draft ? <>
       <Field label={t("channel.json")}><textarea rows={9} value={draft.text} onChange={event => {
@@ -204,6 +220,7 @@ export function MappingEditor({ up, saved, index, config, capabilityView, defini
         }))}>{t("channel.json")}</button>
       </div>
     </>}
+    {rowError && <p role="alert">{rowError}</p>}
     {issue && <p role="alert">{issue}</p>}
   </fieldset></div>;
 }
@@ -231,10 +248,12 @@ export function channelCandidates(upstreams, definitions, evidence) {
 
 export function BindingSelect({ choices, value, onChange, t }) {
   const key = ref => JSON.stringify([ref.channelId, ref.sourceModelId]);
+  const missing = value && !choices.some(choice => key(choice.ref) === key(value));
   return <Field label={t("channel.binding")}><select value={value ? key(value) : ""} onChange={e => {
     const choice = choices.find(c => key(c.ref) === e.target.value);
     if (choice?.available) onChange(choice.ref);
   }}><option value="">—</option>
+    {missing ? <option value={key(value)} disabled>{`${value.channelId} → ${value.sourceModelId} (${t("channel.unavailable")})`}</option> : null}
     {choices.map((choice, i) => <option key={i} value={key(choice.ref)} disabled={!choice.available}>
       {choice.label}{!choice.available && ` (${choice.issue || t("channel.unavailable")})`}
     </option>)}

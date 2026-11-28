@@ -64,6 +64,85 @@ test("channel model IDs create identity bindings or enable deployment mappings w
   assert.equal(latest.upstreams[0].modelMappings.find(row => row.sourceModelId === "direct").enabled, false);
 });
 
+test("mapping rows bound by an exposed model stay unchanged until the model switches rows", async () => {
+  const { act } = await import("@testing-library/react/pure.js");
+  const { MappingEditor } = await loadAdminModule("/admin-ui/src/components/ChannelModels.jsx");
+  const channelId = "ds";
+  const bound = { sourceModelId: "DeepSeek-V4.1-Flash", canonicalModelId: "DeepSeek-V4.1-Flash", enabled: true };
+  const replacement = { ...bound, sourceModelId: "DeepSeek-V4.1-Flash-1017" };
+  const initial = { upstreams: [{ name: "DS", channelId, modelMappings: [bound] }],
+    models: [{ id: "DeepSeek-V4.1-Flash", canonicalModelId: bound.canonicalModelId, selectedBinding: { channelId, sourceModelId: bound.sourceModelId } }] };
+  let latest;
+  let setConfigFromTest;
+  function Form() {
+    const [config, setConfig] = useState(initial);
+    const [drafts, setDrafts] = useState({});
+    latest = config;
+    setConfigFromTest = setConfig;
+    return createElement(MappingEditor, { config, up: config.upstreams[0], index: 0,
+      definitions: [{ id: "DeepSeek-V4.1-Flash" }, { id: "DeepSeek-V4.1-Flash-1017" }], drafts, setDrafts, t: key => key,
+      updateConfig: mutate => setConfig(current => { const next = structuredClone(current); mutate(next); return next; }) });
+  }
+  const ui = renderElement(createElement(Form));
+  for (const attempt of [
+    () => fireEvent.change(ui.getByRole("combobox", { name: "channel.source 1" }), { target: { value: replacement.sourceModelId } }),
+    () => fireEvent.change(ui.getByRole("combobox", { name: "channel.canonical 1" }), { target: { value: "DeepSeek-V4.1-Flash-1017" } }),
+    () => fireEvent.click(ui.getByRole("checkbox", { name: "channel.enabled 1" })),
+    () => fireEvent.click(ui.getByRole("button", { name: "entity.delete", exact: true })),
+    () => fireEvent.click(ui.getByRole("button", { name: "channel.disableAll" })),
+    () => fireEvent.click(ui.getByRole("button", { name: "entity.delete DeepSeek-V4.1-Flash" }))
+  ]) {
+    attempt();
+    assert.deepEqual(latest, initial);
+    assert.ok(ui.getAllByRole("alert").some(alert => alert.textContent === "channel.bindingInUse"));
+  }
+  fireEvent.click(ui.getByRole("button", { name: "channel.json" }));
+  fireEvent.change(ui.container.querySelector("textarea"), { target: { value: JSON.stringify([replacement]) } });
+  assert.equal(ui.getByRole("button", { name: "channel.useJson" }).disabled, true);
+  fireEvent.click(ui.getByRole("button", { name: "channel.cancelJson" }));
+
+  fireEvent.click(ui.getByRole("button", { name: "channel.addRow" }));
+  fireEvent.change(ui.getByRole("combobox", { name: "channel.source 2" }), { target: { value: replacement.sourceModelId } });
+  fireEvent.change(ui.getByRole("combobox", { name: "channel.canonical 2" }), { target: { value: replacement.canonicalModelId } });
+  fireEvent.click(ui.getByRole("checkbox", { name: "channel.enabled 2" }));
+  await act(async () => setConfigFromTest(current => ({ ...current,
+    models: [{ ...current.models[0], selectedBinding: { channelId, sourceModelId: replacement.sourceModelId } }] })));
+  fireEvent.click(ui.getAllByRole("button", { name: "entity.delete", exact: true })[0]);
+  assert.deepEqual(latest.upstreams[0].modelMappings, [replacement]);
+  assert.equal(ui.queryByText("channel.bindingUnresolved"), null);
+});
+
+test("an already stale binding is flagged in the channel and model editors without blocking repairs", async () => {
+  const { BindingSelect, MappingEditor } = await loadAdminModule("/admin-ui/src/components/ChannelModels.jsx");
+  const channelId = "ds";
+  const stale = { channelId, sourceModelId: "DeepSeek-V4.1-Flash" };
+  const initial = { upstreams: [{ name: "DS", channelId, modelMappings: [
+    { sourceModelId: "DeepSeek-V4.1-Flash-1017", canonicalModelId: "DeepSeek-V4.1-Flash", enabled: true }] }],
+  models: [{ id: "DeepSeek-V4.1-Flash", canonicalModelId: "DeepSeek-V4.1-Flash", selectedBinding: stale }] };
+  let latest;
+  function Form() {
+    const [config, setConfig] = useState(initial);
+    const [drafts, setDrafts] = useState({});
+    latest = config;
+    return createElement(MappingEditor, { config, up: config.upstreams[0], index: 0,
+      definitions: [{ id: "DeepSeek-V4.1-Flash" }], drafts, setDrafts, t: key => key,
+      updateConfig: mutate => setConfig(current => { const next = structuredClone(current); mutate(next); return next; }) });
+  }
+  const ui = renderElement(createElement(Form));
+  assert.ok(ui.getByText("channel.bindingUnresolved"));
+  fireEvent.change(ui.getByRole("combobox", { name: "channel.source 1" }), { target: { value: stale.sourceModelId } });
+  assert.equal(latest.upstreams[0].modelMappings[0].sourceModelId, stale.sourceModelId);
+  assert.equal(ui.queryByText("channel.bindingUnresolved"), null);
+  ui.unmount();
+
+  const select = renderElement(createElement(BindingSelect, { value: stale, onChange() {}, t: key => key, choices: [
+    { ref: { channelId, sourceModelId: "DeepSeek-V4.1-Flash-1017" }, label: "DS → DeepSeek-V4.1-Flash-1017", available: true }] }));
+  const combobox = select.getByRole("combobox", { name: "channel.binding" });
+  assert.equal(combobox.value, JSON.stringify([channelId, stale.sourceModelId]));
+  assert.equal(combobox.selectedOptions[0].disabled, true);
+  assert.match(combobox.selectedOptions[0].textContent, /DeepSeek-V4\.1-Flash \(channel\.unavailable\)/);
+});
+
 test("legacy channels show the same model list and only migrate bindings when edited", async () => {
   const { MappingEditor } = await loadAdminModule("/admin-ui/src/components/ChannelModels.jsx");
   const initial = { upstreams: [{ name: "Legacy" }], apiKeys: [{ allowedModels: ["public"] }],
@@ -177,6 +256,9 @@ test("key form removes orphaned permissions without widening a legacy restricted
   fireEvent.click(ui.getByRole("button", { name: "ui.applyDraft" }));
   assert.equal(latest.apiKeys[0].modelAccessMode, "selected");
   assert.deepEqual(latest.apiKeys[0].allowedModels, []);
+  assert.equal(ui.queryByRole("button", { name: "ui.applyDraft" }), null, "applying closes the sheet");
+  fireEvent.click(ui.getByRole("button", { name: "team", exact: true }));
+  fireEvent.click(await ui.findByRole("tab", { name: "ui.access" }));
   const picker = ui.getByRole("combobox", { name: "field.allowedModels" });
   picker.focus();
   fireEvent.click(picker);

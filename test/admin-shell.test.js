@@ -164,9 +164,12 @@ test("Key sheets retain unapplied edits across history navigation and preserve c
   assert.equal((await ui.findByRole("textbox", { name: "field.owner" })).value, "draft-owner");
   fireEvent.click(ui.getByRole("button", { name: "ui.applyDraft" }));
   assert.deepEqual(latest, { ...initial, apiKeys: [{ ...initial.apiKeys[0], owner: "draft-owner" }] });
-  fireEvent.change(ui.getByRole("textbox", { name: "field.id" }), { target: { value: "renamed" } });
+  assert.doesNotMatch(ui.container.querySelector("output").textContent, /edit=/, "applying closes the sheet");
+  fireEvent.click(ui.getByRole("button", { name: "team", exact: true }));
+  fireEvent.change(await ui.findByRole("textbox", { name: "field.id" }), { target: { value: "renamed" } });
   fireEvent.click(ui.getByRole("button", { name: "ui.applyDraft" }));
-  assert.match(ui.container.querySelector("output").textContent, /edit=renamed/);
+  assert.equal(latest.apiKeys[0].id, "renamed");
+  assert.doesNotMatch(ui.container.querySelector("output").textContent, /edit=/);
   assert.equal(latest.apiKeys[0].rateLimit.windowSeconds, 0);
 });
 
@@ -303,6 +306,7 @@ test("one channel creation entry selects five providers and opens conditional Co
   assert.deepEqual(latest, initial);
   assert.equal(calls.some(call => call.method === "PUT"), false);
   fireEvent.click(editor.getByRole("button", { name: "ui.applyDraft" }));
+  assert.equal(ui.queryByRole("button", { name: "ui.applyDraft" }), null, "applying closes the channel sheet");
   assert.equal(latest.upstreams.length, 1);
   assert.equal(latest.upstreams[0].provider, "github-copilot");
   assert.equal(latest.upstreams[0].auth.mode, "githubCopilot");

@@ -79,8 +79,9 @@ export default function RoutingPage(props) {
       }
     });
     clear();
-    query({ edit: identity(item) });
+    query({ edit: "", tab: "" });
     setError("");
+    toast(t("ui.appliedToDraft"));
   };
   const open = (item, section = channels ? "connection" : "basic") => { setError(""); query({ edit: identity(item), tab: section }); };
   const boundModels = channel => (config.models || []).filter(model => model.upstream === channel.name

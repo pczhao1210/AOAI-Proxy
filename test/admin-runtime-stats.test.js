@@ -954,7 +954,7 @@ test("App capability previews fence stale responses and preserve legacy labels, 
   assert.equal(view.getByRole("textbox", { name: /Effective capabilities/ }).value, "function-calling");
   assert.ok(view.getByText("Draft preview (not saved)"));
   testing.fireEvent.click(view.getByRole("button", { name: "Apply to draft" }));
-  testing.fireEvent.click(view.getByRole("button", { name: "Close", exact: true }));
+  assert.equal(view.queryByRole("button", { name: "Apply to draft" }), null);
   testing.fireEvent.click(view.getByRole("button", { name: "Review & Save" }));
   await testing.act(async () => testing.fireEvent.click(testing.within(view.getByRole("dialog")).getByRole("button", { name: "Save", exact: true })));
   await testing.waitFor(() => assert.ok(saved));

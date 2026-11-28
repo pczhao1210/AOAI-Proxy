@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { fetchCopilotStatus, runCopilotAction } from "../api.js";
 import { copilotIdentity, discoveredRoutes, discoveryDeadline, matchesDiscoveredRoutes, selectableModels } from "../copilot.js";
+import { bindingsBrokenBy } from "../../../src/channel-bindings.js";
+import { bindingInUseMessage } from "./ChannelModels.jsx";
 import { Field } from "./ui.jsx";
 
 const verificationUri = "https://github.com/login/device";
@@ -34,10 +36,11 @@ function safeErrorCode(value) {
   return typeof value === "string" && /^[A-Z][A-Z_0-9]{0,80}$/.test(value) ? value : "";
 }
 
-function DiscoveryPicker({ up, definitions, snapshot, allowed, edit, t }) {
+function DiscoveryPicker({ up, definitions, snapshot, allowed, boundModels, edit, t }) {
   const [search, setSearch] = useState("");
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [choices, setChoices] = useState(new Map());
+  const [rowError, setRowError] = useState("");
   const catalogIds = new Set(definitions.map(card => card.id));
   const mappings = Array.isArray(up.modelMappings) ? up.modelMappings : [];
   const rows = new Map(mappings.filter(row => typeof row?.sourceModelId === "string").map(row => [row.sourceModelId, row]));
@@ -67,6 +70,10 @@ function DiscoveryPicker({ up, definitions, snapshot, allowed, edit, t }) {
           onChange={event => {
             const enabled = event.target.checked;
             if (enabled && (!routes || !catalogIds.has(canonical))) return;
+            const broken = enabled ? [] : bindingsBrokenBy(boundModels, up.channelId, mappings,
+              mappings.map(entry => entry?.sourceModelId === id ? { ...entry, enabled: false } : entry));
+            setRowError(broken.length ? bindingInUseMessage(broken, t) : "");
+            if (broken.length) return;
             edit(channel => {
               const current = channel.modelMappings?.find(entry => entry?.sourceModelId === id);
               if (!enabled) { if (current) current.enabled = false; return; }
@@ -90,10 +97,11 @@ function DiscoveryPicker({ up, definitions, snapshot, allowed, edit, t }) {
         })}>{t("entity.delete")}</button>}</td>
       </tr>;
     })}</tbody></table></div>}
+    {rowError ? <p role="alert">{rowError}</p> : null}
   </fieldset>;
 }
 
-export default function CopilotChannel({ up, saved, tickets, definitions, referenced, updateConfig, onEvidence, section, t }) {
+export default function CopilotChannel({ up, saved, tickets, definitions, referenced, models = [], updateConfig, onEvidence, section, t }) {
   const identity = copilotIdentity(up);
   const profile = up.copilot?.authProfile;
   const credentialRef = up.auth?.credentialRef;
@@ -260,7 +268,7 @@ export default function CopilotChannel({ up, saved, tickets, definitions, refere
         onClick={() => void run("discover")}>{t("copilot.discover")}</button>
       {error && !adminAuthRequired ? <p role="alert">{t("copilot.requestError")}</p> : null}
     </div> : null}
-    <DiscoveryPicker up={up} definitions={definitions} snapshot={snapshot} allowed={allowed} edit={edit} t={t} />
+    <DiscoveryPicker up={up} definitions={definitions} snapshot={snapshot} allowed={allowed} boundModels={models} edit={edit} t={t} />
     </div>
   </fieldset>;
 }

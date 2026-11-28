@@ -49,7 +49,9 @@ export default function KeysTab({ config, loadedConfig = {}, updateConfig, onCop
       else next.apiKeys[next.apiKeys.findIndex(key => key.id === edit)] = cloneJson(item);
     });
     clear();
-    query({ edit: item.id });
+    query({ edit: "", tab: "" });
+    setError("");
+    toast(t("ui.appliedToDraft"));
   };
   const setStatus = (rows, value) => updateConfig(next => {
     const ids = new Set(rows.map(row => row.id));

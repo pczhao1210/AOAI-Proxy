@@ -61,6 +61,24 @@ export function sameBinding(left, right) {
   return !!left && !!right && left.channelId === right.channelId && left.sourceModelId === right.sourceModelId;
 }
 
+export function bindsEnabledMapping(model, row) {
+  return row?.enabled === true && row.canonicalModelId === model.canonicalModelId;
+}
+
+function selectsEnabledRow(model, channelId, rows) {
+  const ref = model?.selectedBinding;
+  if (ref?.channelId !== channelId || !Array.isArray(rows)) return false;
+  return bindsEnabledMapping(model, rows.find(row => row?.sourceModelId === ref.sourceModelId));
+}
+
+export function unresolvedBindings(models, channelId, rows) {
+  return models.filter(model => model?.selectedBinding?.channelId === channelId && !selectsEnabledRow(model, channelId, rows));
+}
+
+export function bindingsBrokenBy(models, channelId, before, after) {
+  return models.filter(model => selectsEnabledRow(model, channelId, before) && !selectsEnabledRow(model, channelId, after));
+}
+
 export function hasHarnessRouteConfirmation(model) {
   return ["clientNativeRoute", "clientConversion"].some(field => Object.values(model[field] || {}).includes(true));
 }
@@ -97,7 +115,7 @@ export function resolveChannelModels(config, catalogIds) {
     onlyFields(ref, ["channelId", "sourceModelId"], `models[${i}].selectedBinding`);
     const channel = channels.get(ref.channelId);
     const row = channel?.rows.get(ref.sourceModelId);
-    if (!row?.enabled || row.canonicalModelId !== model.canonicalModelId) {
+    if (!bindsEnabledMapping(model, row)) {
       throw new Error(`model ${model.id}: selectedBinding must reference an enabled mapping for ${model.canonicalModelId}`);
     }
     if (hasHarnessRouteConfirmation(model) && !sameBinding(ref, model.confirmedRouteBinding)) {

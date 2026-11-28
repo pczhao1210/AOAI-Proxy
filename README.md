@@ -249,7 +249,8 @@ redirect to the configured path. Unknown API paths still return API errors.
   Mapping/enablement does not publish a model or grant Key access: publish under
   **Exposed models**, then grant permissions under **API Keys**.
 - Key/channel/model Sheets edit complete local copies. **Apply to draft** merges
-  the copy into the global configuration draft, not the running service.
+  the copy into the global configuration draft, not the running service, and
+  closes the Sheet.
   **Cancel** discards that copy; closing or browser Back retains it in memory.
   Pending copies are accessible from the configuration status menu. Apply or
   cancel them before **Review & Save**.
@@ -416,7 +417,7 @@ The log panel uses a compact always-visible toolbar plus collapsible advanced fi
 
 ### Channels, exposed models and key access
 
-In **Upstream / Model**, enter each channel's actual deployment IDs and map them to exact Catalog IDs. For an existing upstream, **Enable channel mappings in draft** previews an explicit migration; loading a legacy config does not migrate it. An enabled row is available for selection, not automatically published. In **Exposed models**, select the subset to publish and, for ambiguous candidates, choose the exact channel and deployment. Changing that binding keeps the public model ID. There is no automatic failover.
+In **Upstream / Model**, enter each channel's actual deployment IDs and map them to exact Catalog IDs. For an existing upstream, **Enable channel mappings in draft** previews an explicit migration; loading a legacy config does not migrate it. An enabled row is available for selection, not automatically published. In **Exposed models**, select the subset to publish and, for ambiguous candidates, choose the exact channel and deployment. Changing that binding keeps the public model ID. A row that an exposed model is bound to cannot be renamed, retargeted, disabled or deleted until that model is switched to another row (add the replacement row first); the editor lists the referencing models and flags bindings that no longer resolve. There is no automatic failover.
 
 A saved API-key channel for `openai` at `https://api.openai.com` or `https://api.openai.com/v1` can **Fetch available IDs** through the server. Select and map exact IDs to add disabled rows to the draft; nothing is published. Enter deployment names manually for Azure and other ordinary channels.
 

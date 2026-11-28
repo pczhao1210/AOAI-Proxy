@@ -49,10 +49,10 @@ function fakeApi(ctx, handle) {
   return calls;
 }
 
-async function form(upstreams) {
+async function form(upstreams, models = []) {
   const { default: RoutingTab } = await loadAdminModule("/admin-ui/src/components/RoutingTab.jsx");
   let latest;
-  const initial = { upstreams, models: [], apiKeys: [] };
+  const initial = { upstreams, models, apiKeys: [] };
   function Form() {
     const [config, setConfig] = useState(initial);
     const [drafts, setDrafts] = useState({});
@@ -119,6 +119,19 @@ test("only fresh selectable Copilot discoveries with exact or explicit Catalog I
   assert.equal(calls[0].url.searchParams.get("credentialRef"), "ref-a");
   assert.equal(calls[1].options.headers["x-aoai-admin-csrf"], "1");
   assert.deepEqual(calls[1].body, { profile: "vscode", credentialRef: "ref-a" });
+});
+
+test("Copilot discovery keeps a mapping enabled while an exposed model is bound to it", async ctx => {
+  fakeApi(ctx, () => authorized);
+  const copilot = newCopilotChannel("bound", "GitHub");
+  copilot.auth.credentialRef = "ref-a";
+  copilot.modelMappings = [{ sourceModelId: "exact", canonicalModelId: "exact", routes, enabled: true }];
+  const { card, config } = await form([copilot], [{ id: "public-exact", canonicalModelId: "exact",
+    selectedBinding: { channelId: "bound", sourceModelId: "exact" } }]);
+  const fields = card(0);
+  fireEvent.click(await fields.findByRole("checkbox", { name: /exact · Exact/ }));
+  assert.ok(fields.getByText("channel.bindingInUse"));
+  assert.equal(config().upstreams[0].modelMappings[0].enabled, true);
 });
 
 test("Copilot login, scoped status and disconnect pass only an opaque credential reference into the draft", async ctx => {

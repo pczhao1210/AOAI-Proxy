@@ -235,7 +235,7 @@ export default function RoutingTab({
                     saved={loadedConfig?.upstreams?.find(up => item.channelId === up.channelId)}
                     referenced={[...new Set([...models, ...(loadedConfig?.models || [])]
                       .filter(m => m.selectedBinding?.channelId === item.channelId).map(m => m.id))]}
-                    updateConfig={updateConfig} onEvidence={onEvidence} t={t} /> :
+                    models={models} updateConfig={updateConfig} onEvidence={onEvidence} t={t} /> :
                     <MappingEditor up={item} saved={loadedConfig?.upstreams?.find(up => item.channelId === up.channelId)}
                       index={index} config={config} capabilityView={capabilityView}
                       definitions={mappingDefinitions} updateConfig={updateConfig} drafts={mappingDrafts} setDrafts={setMappingDrafts} t={t} />}
