@@ -30,6 +30,13 @@ The Deploy to Azure button targets the ARM JSON template because the portal butt
 The standard raw-template Deploy to Azure button does not automatically use `createUiDefinition.json`; that file is intended for portal packaging flows that support a custom create experience.
 The deployment templates now distinguish between `new` and `existing` storage/database resources so policy-restricted environments can reuse pre-provisioned Azure Files or PostgreSQL resources instead of forcing resource creation.
 
+## Repository Hygiene
+
+- Keep long-lived designs and implementation records in [docs/development/](docs/development/), not the repository root.
+- Commit source, tests, documentation, reusable [infra/](infra/) templates, CI workflows, [config/sample_config.json](config/sample_config.json), and [.env.example](.env.example). Keep bundled admin assets versioned with intentional admin changes.
+- Keep real environment files, all other local configuration files, credential directories, runtime data, and local agents/editor settings out of Git and Docker build contexts. Custom configuration or credential paths outside the default ignored locations need their own ignore rules or should live outside this repository.
+- The machine-specific ACI export is retained locally in the ignored temporary directory; reusable deployment assets remain in [infra/](infra/). Ignore rules do not remove files or secrets from existing Git history.
+
 ## Distribution Profiles
 
 New media transports are disabled by default in both profiles. WebRTC media/data channels go directly to the provider; call ownership is in-process and requires a single instance or affinity. Client-secret export is a separate administrator opt-in. Complete observed media usage with supported rates is priced and recorded; missing usage/rates or incomplete sessions retain unknown/partial totals, not zero. See [media pricing](pricing/README.md#media-usage-pricing) for units, provider isolation and persistence limits. Post-hoc accounting is not a hard cap: TPM/budget-constrained keys remain rejected before upstream work. Local acceptance does not establish live provider, browser audio, billing or deployment acceptance.
@@ -273,7 +280,7 @@ redirect to the configured path. Unknown API paths still return API errors.
   server validation, revision checks, normalization, masked-secret restoration,
   environment-managed settings and restart requirements still apply.
 
-See the [UI implementation status](UI_enhance.md#15-实施状态与验收记录)
+See the [UI implementation status](docs/development/admin-ui-enhancement-plan.zh-CN.md#15-实施状态与验收记录)
 for the progressive migration boundaries and remaining work.
 
 ## Environment Variables
@@ -418,7 +425,7 @@ Grant access only in **Key Governance**. New keys default to **Selected public m
 
 For an authorized GitHub Copilot deployment, choose **Add GitHub Copilot channel**, select the authorized profile and sign in on GitHub's device page. **Check status** reads the cached state; **Refresh model list** requests discovery. The form never asks for a token. Only select exact discovered deployment IDs and match them to Catalog IDs. Refreshing does not change approvals; stale or failed discovery cannot approve a new mapping or binding. Save the draft using the usual review flow. Local disconnect is a separate operation: move any bound public models first. To revoke the application on GitHub, use [authorized OAuth apps](https://github.com/settings/applications).
 
-Selecting a Copilot identity supplies its reference OAuth application; optional environment overrides remain available. Admin Basic Auth and private credential storage are required, but there is no Copilot-specific encryption key requirement. Credentials currently use plaintext private storage, like secrets stored in ordinary configuration; they are never returned to the browser or included in configuration/history/logs. Legacy encrypted credentials report `COPILOT_LEGACY_ENCRYPTION_UNSUPPORTED` and require reauthorization rather than automatic decryption or deletion. See [deployment prerequisites and trust boundaries](docs/configuration/feature-flags.zh-CN.md#aoai-proxy-启用-copilot-渠道的部署前提), [credential storage/recovery](docs/development/copilot-credential-store.md), and the [future global encryption design](encrypt_design.md). Offline provider fixtures test the integration; they do not establish that a GitHub subscription permits consumer traffic or that a model accepts a particular native protocol.
+Selecting a Copilot identity supplies its reference OAuth application; optional environment overrides remain available. Admin Basic Auth and private credential storage are required, but there is no Copilot-specific encryption key requirement. Credentials currently use plaintext private storage, like secrets stored in ordinary configuration; they are never returned to the browser or included in configuration/history/logs. Legacy encrypted credentials report `COPILOT_LEGACY_ENCRYPTION_UNSUPPORTED` and require reauthorization rather than automatic decryption or deletion. See [deployment prerequisites and trust boundaries](docs/configuration/feature-flags.zh-CN.md#aoai-proxy-启用-copilot-渠道的部署前提), [credential storage/recovery](docs/development/copilot-credential-store.md), and the [deferred global encryption design](docs/development/encryption-design.zh-CN.md). Offline provider fixtures test the integration; they do not establish that a GitHub subscription permits consumer traffic or that a model accepts a particular native protocol.
 
 ### Admin Login
 

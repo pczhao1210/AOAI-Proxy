@@ -11,9 +11,9 @@
 - 上游、模型和 Key 都以卡片网格展示，并在卡片内展开编辑，没有表格、排序、批量操作或详情抽屉。
 - 引用型字段仍是自由文本，例如 Key 的 Allowed Models。
 - 没有 URL 路由。刷新后回到默认页，也不能链接到某个 Key、渠道或日志。
-- [App.jsx](admin-ui/src/App.jsx) 管理几乎全部页面状态，维护成本高。
+- [App.jsx](../../admin-ui/src/App.jsx) 管理几乎全部页面状态，维护成本高。
 
-渠道映射、暴露模型、Key 模型授权和按统一型号统计（见 [渠道计划](github_copilot_channel_plan.md)）本来就要重做“上游与模型”“Key”和“运行时统计”页。因此，UI 重构应与渠道计划合并排期：**先做新外壳和基础组件，再直接用新组件实现这些功能**，避免在旧卡片界面上先实现一遍再重写。
+渠道映射、暴露模型、Key 模型授权和按统一型号统计（见 [渠道计划](github-copilot-channel-plan.zh-CN.md)）本来就要重做“上游与模型”“Key”和“运行时统计”页。因此，UI 重构应与渠道计划合并排期：**先做新外壳和基础组件，再直接用新组件实现这些功能**，避免在旧卡片界面上先实现一遍再重写。
 
 推荐路线：
 
@@ -57,16 +57,16 @@ ops {"scrollHeight":1673,"visibleControls":18,"visibleButtons":28,"tables":1,"st
 
 | 项目 | 数值 | 来源 |
 | --- | --- | --- |
-| 前端依赖 | React 19.2、Vite 8、react-hot-toast；无组件库、图标库、路由或图表库 | [package.json](package.json) |
-| `App.jsx` | 1,885 行，57 个 `useState`、12 个 `useEffect` | [App.jsx](admin-ui/src/App.jsx) |
-| 页面 props | `OpsTab` 52 个，`RuntimeTab` 27 个 | [App.jsx](admin-ui/src/App.jsx#L1794) |
-| 样式 | `styles.css` 2,138 行，约 407 条类规则；22 处 `font-weight` ≥ 600；JSX 中有 30 处内联 `style={{}}` | [styles.css](admin-ui/src/styles.css) |
-| 主题 | 只有 `color-scheme: dark`；字体栈首选 IBM Plex Sans，但未打包字体文件（无 `@font-face`） | [styles.css](admin-ui/src/styles.css#L1) |
-| i18n | 单文件 2,352 行 | [i18n.jsx](admin-ui/src/i18n.jsx) |
+| 前端依赖 | React 19.2、Vite 8、react-hot-toast；无组件库、图标库、路由或图表库 | [../../package.json](../../package.json) |
+| `App.jsx` | 1,885 行，57 个 `useState`、12 个 `useEffect` | [App.jsx](../../admin-ui/src/App.jsx) |
+| 页面 props | `OpsTab` 52 个，`RuntimeTab` 27 个 | [App.jsx](../../admin-ui/src/App.jsx#L1794) |
+| 样式 | `styles.css` 2,138 行，约 407 条类规则；22 处 `font-weight` ≥ 600；JSX 中有 30 处内联 `style={{}}` | [styles.css](../../admin-ui/src/styles.css) |
+| 主题 | 只有 `color-scheme: dark`；字体栈首选 IBM Plex Sans，但未打包字体文件（无 `@font-face`） | [styles.css](../../admin-ui/src/styles.css#L1) |
+| i18n | 单文件 2,352 行 | [i18n.jsx](../../admin-ui/src/i18n.jsx) |
 | 入口包体 | JS 406,214 B（gzip 127,331 B）；CSS 28,678 B（gzip 6,394 B）；价格库懒加载块 261,329 B | `public/admin-app/assets/` |
 | 管理端测试查询 | `getByRole` 162、`getByLabelText` 53、`getByText` 68、`querySelector` 79（含 `.left-nav`、`.status-strip`、`.save-dock`、`.model-breakdown`、`.harness-candidate` 等类名） | `test/admin-*.test.js` |
-| 路由 | `activeTab` 只存在于内存，默认值为 `"workspace"` | [App.jsx](admin-ui/src/App.jsx#L148) |
-| 服务端深链 | 已构建管理端时，`/admin/*`（`/admin/api/` 除外）回退到 `index.html`；自定义 `server.adminPath` 由 `rewriteAdminUrl` 改写为 `/admin` | [server.js](src/server.js#L82)、[server.js](src/server.js#L1217) |
+| 路由 | `activeTab` 只存在于内存，默认值为 `"workspace"` | [App.jsx](../../admin-ui/src/App.jsx#L148) |
+| 服务端深链 | 已构建管理端时，`/admin/*`（`/admin/api/` 除外）回退到 `index.html`；自定义 `server.adminPath` 由 `rewriteAdminUrl` 改写为 `/admin` | [server.js](../../src/server.js#L82)、[server.js](../../src/server.js#L1217) |
 | CSP | 管理端响应没有 `Content-Security-Policy` 头（本地 `curl -D -` 只看到 `cache-control: public, max-age=0`） | 本地观测 |
 
 `curl` 对 `/admin/channels` 和 `/admin/keys/team-a` 都返回 `200 text/html; charset=utf-8`。因此引入 history 模式路由不需要修改部署。自定义 `server.adminPath` 下的 basename 需要少量服务端配合，见 5.3 节。
@@ -104,7 +104,7 @@ ops {"scrollHeight":1673,"visibleControls":18,"visibleButtons":28,"tables":1,"st
 
 参照值：
 - `react` + `react-dom` 19.3.1 生产构建（不设外部依赖）为 68,897 B。
-- 当前 [i18n.jsx](admin-ui/src/i18n.jsx) 同时包含中英文字典，单独打包为 40,928 B，现在全部计入入口。
+- 当前 [i18n.jsx](../../admin-ui/src/i18n.jsx) 同时包含中英文字典，单独打包为 40,928 B，现在全部计入入口。
 - 当前入口为 127,331 B。
 
 Base UI 的固定开销较大，但增加组件的边际开销较小：外壳组再加 5 个原语只增加约 21 KB。
@@ -155,7 +155,7 @@ PASS combobox multi filter+choose
 
 结论：
 
-- 现有测试 helper 只向全局暴露 7 个 jsdom 对象（[admin-workspace-form.js](test/lib/admin-workspace-form.js#L24)），两个库在这种环境下都无法渲染。
+- 现有测试 helper 只向全局暴露 7 个 jsdom 对象（[admin-workspace-form.js](../../test/lib/admin-workspace-form.js#L24)），两个库在这种环境下都无法渲染。
 - **Base UI** 只需要 `visual,all`。在 jsdom 中只触发输入不会打开组合框弹层（`FAIL combobox multi filter+choose: Unable to find role="option"`），先点击输入框再输入即可通过。本次没有在真实浏览器中验证这一行为。
 - **Radix** 还需要 `events`、`ro`、`pointer`。cmdk 输入框同时带有 `aria-label` 和指向 cmdk 内部标签的 `aria-labelledby`，可访问名称取自后者，所以按 `{ name: "Allowed models" }` 查询失败；去掉名称条件后测试通过。这是样例写法问题，不是库缺陷。
 
@@ -166,9 +166,9 @@ PASS combobox multi filter+choose
 | 编号 | 问题 | 证据 | 影响 |
 | --- | --- | --- | --- |
 | D1 | 信息架构按实现划分 | Workspace 同时包含监听地址、管理路径、Key 请求头、超时、默认限额、预算开关、JSON 编辑开关、价格覆盖、持久化、日志、媒体和路由域；Ops 同时包含价格库同步、模型验证、Caddy/AAD/重启、日志和代理测试 | 模型相关操作分散在 4 页（上游与模型、Harness、Ops 的价格/验证、Workspace 的价格覆盖），用户难以找到入口 |
-| D2 | 实体以卡片网格展示，并在卡片内编辑 | [EntityCard](admin-ui/src/components/ui.jsx#L108) 基于 `<details>`，同组只展开一张卡（`handleSingleOpenToggle`）；展开区的 “Delete” 直接修改草稿，Keys 和上游/模型页都没有确认 | 没有排序、列、批量操作或行内状态；双列网格展开后高度不一致；实体多时难以扫描 |
-| D3 | 引用型字段是自由文本 | Key 的 `allowedModels` 用 [ListInput](admin-ui/src/components/KeysTab.jsx#L98)；上游 `provider` 和模型 `pricingRef` 也是自由文本输入（[RoutingTab.jsx](admin-ui/src/components/RoutingTab.jsx#L159)） | 模型 ID 打错时，Key 无法访问该模型，而 UI 不会提示 |
-| D4 | 授权语义显示错误 | 后端空列表表示不限制（[governance.js](src/governance.js#L480)），但卡片显示 “Allowed Models: 0”（[KeysTab.jsx](admin-ui/src/components/KeysTab.jsx#L60)）；统计卡说明写 “budget or model restrictions”，计数却只统计预算（[KeysTab.jsx](admin-ui/src/components/KeysTab.jsx#L19)） | 管理员可能把“不限制”误读成“无权限”。渠道计划需要明确区分全部、指定和指定为空 |
+| D2 | 实体以卡片网格展示，并在卡片内编辑 | [EntityCard](../../admin-ui/src/components/ui.jsx#L108) 基于 `<details>`，同组只展开一张卡（`handleSingleOpenToggle`）；展开区的 “Delete” 直接修改草稿，Keys 和上游/模型页都没有确认 | 没有排序、列、批量操作或行内状态；双列网格展开后高度不一致；实体多时难以扫描 |
+| D3 | 引用型字段是自由文本 | Key 的 `allowedModels` 用 [ListInput](../../admin-ui/src/components/KeysTab.jsx#L98)；上游 `provider` 和模型 `pricingRef` 也是自由文本输入（[RoutingTab.jsx](../../admin-ui/src/components/RoutingTab.jsx#L159)） | 模型 ID 打错时，Key 无法访问该模型，而 UI 不会提示 |
+| D4 | 授权语义显示错误 | 后端空列表表示不限制（[governance.js](../../src/governance.js#L480)），但卡片显示 “Allowed Models: 0”（[KeysTab.jsx](../../admin-ui/src/components/KeysTab.jsx#L60)）；统计卡说明写 “budget or model restrictions”，计数却只统计预算（[KeysTab.jsx](../../admin-ui/src/components/KeysTab.jsx#L19)） | 管理员可能把“不限制”误读成“无权限”。渠道计划需要明确区分全部、指定和指定为空 |
 | D5 | 全局框架占用空间，且操作含义含糊 | 每页顶部都有 4 张状态卡（约 85 px 高）；顶栏 “Refresh Data” 与 “Reload Stored Config” 的区别不清楚；Key 页在列表前还有 4 张统计卡，整页共 8 张 | 1440×900 下 Key 卡片从约 575 px 处开始，首屏只放得下 2 行（约 4 个 Key） |
 | D6 | 视觉密度和层级失衡 | 所有按钮字重 600；输入框 `padding: 0.8rem 0.9rem`；Ops 页共 22 张统计卡（含全局 4 张）；代理测试卡把 `/v1/chat/completions` 断成 `/v1/chat/compl` + `etions` | 信息密度低，重点不突出，不像现代管理控制台 |
 | D7 | 页面结构不一致 | Harness 页没有页面级标题，内容区首行直接是 “Saved configuration” 和 “Refresh eligibility” 按钮 | 用户在各页之间切换时难以定位 |
@@ -330,10 +330,10 @@ PASS combobox multi filter+choose
 /admin/config/history
 ```
 
-- **basename 不能写死为 `/admin`**，因为管理员可以配置 `server.adminPath`，服务端再把它改写为 `/admin`（[server.js](src/server.js#L82)）。
-  - 现有 [getAdminBasePath](admin-ui/src/api.js#L29) 在路径不以 `/admin` 开头时，把整个页面路径当作管理端根路径。没有深链时这没有问题。引入路由后，在 `/console/keys/team-a` 这样的地址，API 会被拼成 `/console/keys/team-a/api/...`。
+- **basename 不能写死为 `/admin`**，因为管理员可以配置 `server.adminPath`，服务端再把它改写为 `/admin`（[server.js](../../src/server.js#L82)）。
+  - 现有 [getAdminBasePath](../../admin-ui/src/api.js#L29) 在路径不以 `/admin` 开头时，把整个页面路径当作管理端根路径。没有深链时这没有问题。引入路由后，在 `/console/keys/team-a` 这样的地址，API 会被拼成 `/console/keys/team-a/api/...`。
   - 只靠客户端推导也有歧义。例如 `adminPath` 为 `/ops/logs` 时，`/ops/logs` 既可能是管理端根路径，也可能是 `/ops` 下的日志页。
-  - **U1 方案：** 服务端在返回 `index.html` 时（[server.js](src/server.js#L1214) 和 [server.js](src/server.js#L1225) 的两处 `sendFile`）注入生效的管理路径，例如 `<meta name="aoai-admin-base" content="/console">`。路由 basename 和 `adminApiUrl` 都读取这个值；没有该值时回退到现有逻辑。
+  - **U1 方案：** 服务端在返回 `index.html` 时（[server.js](../../src/server.js#L1214) 和 [server.js](../../src/server.js#L1225) 的两处 `sendFile`）注入生效的管理路径，例如 `<meta name="aoai-admin-base" content="/console">`。路由 basename 和 `adminApiUrl` 都读取这个值；没有该值时回退到现有逻辑。
   - 新路由不能使用 `legacy` 段，因为服务端会把 `/admin/legacy/*` 重定向到管理端根路径。
 - `edit` 参数使用实体的稳定标识。草稿中重命名实体时，同步更新 URL。指向不存在的实体时，显示“未找到”并保留列表。
 - 切换页面不丢失未保存草稿；只有离开整个应用时提示（`beforeunload`）。
@@ -467,7 +467,7 @@ PASS combobox multi filter+choose
 
 - 统一页面头；“Saved configuration”和“Refresh eligibility”移到页面头操作区。
 - 两个客户端改为并列摘要卡，包含成员数、发布状态和资格新鲜度，各自配有“选择模型”入口。
-- 保留可折叠的连接指南和现有复制按钮（[HarnessSetup.jsx](admin-ui/src/components/HarnessSetup.jsx)）。
+- 保留可折叠的连接指南和现有复制按钮（[HarnessSetup.jsx](../../admin-ui/src/components/HarnessSetup.jsx)）。
 
 ### 8.5 API Keys
 
@@ -544,7 +544,7 @@ admin-ui/src/
 
 | 阶段 | 内容 | 依赖 | 退出门槛 |
 | --- | --- | --- | --- |
-| **U0 基线与验证** | 记录截图基线（1440×900 和 390×844）和包体基线；`react`/`react-dom` 补丁升级到 `^19.2.9`；在分支中安装 Tailwind 4、`@base-ui/react`、`react-router` 8，用真实 Vite 构建测量入口；把 jsdom 初始化抽成共享 helper（`pretendToBeVisual` + 补齐 `window` 全局对象，见 1.3 节），供 [admin-workspace-form.js](test/lib/admin-workspace-form.js)、[admin-runtime-stats.test.js](test/admin-runtime-stats.test.js) 和 [text-cost-observability.test.js](test/text-cost-observability.test.js) 共用；定稿 tokens 和 5.2 节映射表 | 无 | 管理端测试在新初始化下全部通过；在临时目录中的 Vite 构建通过，入口 ≤ 200 KB gzip，否则按 7.3 节改用 Radix 并记录原因 |
+| **U0 基线与验证** | 记录截图基线（1440×900 和 390×844）和包体基线；`react`/`react-dom` 补丁升级到 `^19.2.9`；在分支中安装 Tailwind 4、`@base-ui/react`、`react-router` 8，用真实 Vite 构建测量入口；把 jsdom 初始化抽成共享 helper（`pretendToBeVisual` + 补齐 `window` 全局对象，见 1.3 节），供 [admin-workspace-form.js](../../test/lib/admin-workspace-form.js)、[admin-runtime-stats.test.js](../../test/admin-runtime-stats.test.js) 和 [text-cost-observability.test.js](../../test/text-cost-observability.test.js) 共用；定稿 tokens 和 5.2 节映射表 | 无 | 管理端测试在新初始化下全部通过；在临时目录中的 Vite 构建通过，入口 ≤ 200 KB gzip，否则按 7.3 节改用 Radix 并记录原因 |
 | **U1 外壳与路由** | AppShell、侧栏、顶栏状态、告警区、主题（默认跟随系统）、URL 路由和 basename 注入（5.3 节）；旧样式颜色改为 tokens（7.4 节）；旧页面在 `.legacy-page` 中原样挂到新路由；保存坞和分组审阅；抽出 `config-draft` | U0 | 所有旧功能都能从新导航到达；刷新保持页面；自定义 `server.adminPath` 下深链和 API 都可用；旧页面在浅色和深色主题下都可读；保存、冲突和重试测试通过；更新依赖类名的测试选择器 |
 | **U2 基础组件 + API Keys** | DataTable、Sheet、MultiSelect、SecretField、StatusPill；Key 表格与 Sheet；模型权限改为多选；旧 Key 显示“全部（旧版未限制）” | U1；“指定为空”依赖渠道计划 P3 | Key 往返无损（隐藏字段、0、脱敏密钥）；失效引用可见、可删；不会把“指定为空”保存为全部授权 |
 | **U3 渠道与暴露模型** | 渠道表格与 Sheet；可视/JSON 映射；获取模型预览；暴露模型分组表与批量选择器；Catalog 未匹配清单；Copilot 登录区块 | U2；映射和暴露随渠道计划 P2/P3；Copilot 随 P1 | 与渠道计划 14 节对应用例合并验收 |
@@ -606,7 +606,7 @@ U2/U3 的前端工作可以与渠道计划 P1–P3 的后端工作并行。语�
   - 日志：`src/components/logs/detail/LogDetailsDrawer.tsx`、`src/components/logs/detail/RoutingDecisionCard.tsx`
   - 文档：<https://docs.litellm.ai/docs/proxy/model_management>、<https://docs.litellm.ai/docs/proxy/ui_logs>
 - 选型文档：Base UI Combobox <https://base-ui.com/react/components/combobox>；React Router 模式对比 <https://reactrouter.com/start/modes> 和 `useBlocker` 的模式支持 <https://reactrouter.com/api/hooks/useBlocker>；Tailwind 4 Vite 安装 <https://tailwindcss.com/docs/installation/using-vite>；shadcn `components.json` <https://ui.shadcn.com/docs/components-json>
-- 本项目：[渠道计划](github_copilot_channel_plan.md)、[配置指南](docs/configuration/feature-flags.zh-CN.md)、[测试指南](test/README.md)、[App.jsx](admin-ui/src/App.jsx)、[ui.jsx](admin-ui/src/components/ui.jsx)、[styles.css](admin-ui/src/styles.css)
+- 本项目：[渠道计划](github-copilot-channel-plan.zh-CN.md)、[配置指南](../configuration/feature-flags.zh-CN.md)、[测试指南](../../test/README.md)、[App.jsx](../../admin-ui/src/App.jsx)、[ui.jsx](../../admin-ui/src/components/ui.jsx)、[styles.css](../../admin-ui/src/styles.css)
 
 ## 15. 实施状态与验收记录
 

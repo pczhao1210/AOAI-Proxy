@@ -87,7 +87,7 @@ current language chunk against 200,000 bytes; a single entry chunk is not that
 budget. Lazy route/chart/Catalog chunks are additional downloads. Semantic token
 contrast measurements alone do not establish a complete WCAG audit.
 The one-off browser evidence and remaining migration work are recorded in
-[UI_enhance.md](../UI_enhance.md#15-实施状态与验收记录).
+[admin-ui-enhancement-plan.zh-CN.md](../docs/development/admin-ui-enhancement-plan.zh-CN.md#15-实施状态与验收记录).
 
 Security regressions cover percent-encoded matched admin routes, custom admin paths,
 CSRF/IP policy and header authentication before body parsing. Redirect tests freeze all
@@ -283,7 +283,7 @@ the database and generated-Caddy gates. Do not supply a real subscription token.
 Credential tests now cover plaintext private storage without Copilot-specific encryption keys,
 explicit legacy-ciphertext refusal and same-identity reauthorization, publication/revocation
 fences, and redaction of browser/config/log output. They do not claim at-rest encryption;
-the [global encryption design](../encrypt_design.md) is pending implementation.
+the [global encryption design](../docs/development/encryption-design.zh-CN.md) is deferred and not implemented.
 
 Optional synthetic image CPU/RSS and preparation-latency baseline:
 

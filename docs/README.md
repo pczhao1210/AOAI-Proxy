@@ -12,9 +12,9 @@ This directory contains the project documentation and deployment guides.
 - Git 协作指南（中文）: [development/git-workflow.zh-CN.md](development/git-workflow.zh-CN.md)
 - Claude Code / Codex 接入要求: [development/claude-code-codex-requirements.md](development/claude-code-codex-requirements.md)
 - 管理后台 Harness 优化执行计划: [development/harness-admin-optimization-plan.zh-CN.md](development/harness-admin-optimization-plan.zh-CN.md)
-- 渠道模型映射、模型暴露、Key 授权与 GitHub Copilot 接入计划及隔离验收: [../github_copilot_channel_plan.md](../github_copilot_channel_plan.md)
-- 全局配置与凭据加密设计（待后续 session 实施）: [../encrypt_design.md](../encrypt_design.md)
-- 管理后台 UI 改造方案与渐进实施状态: [../UI_enhance.md](../UI_enhance.md)
+- 渠道模型映射、模型暴露、Key 授权与 GitHub Copilot 接入计划及隔离验收: [development/github-copilot-channel-plan.zh-CN.md](development/github-copilot-channel-plan.zh-CN.md)
+- 全局配置与凭据加密设计（暂停实施，仅供参考）: [development/encryption-design.zh-CN.md](development/encryption-design.zh-CN.md)
+- 管理后台 UI 改造方案与渐进实施状态: [development/admin-ui-enhancement-plan.zh-CN.md](development/admin-ui-enhancement-plan.zh-CN.md)
 
 ## Protocols
 
@@ -49,4 +49,4 @@ This directory contains the project documentation and deployment guides.
 
 - The root [../README.md](../README.md) is the primary English entry point.
 - Azure deployment defaults are now database-first and support both new and existing storage/database resource paths. The ACI persistence guides explain when to choose PostgreSQL, Azure Files, or the combined database+azureFile mode.
-- Process and scratch documents are intentionally excluded from version control and are not part of the public docs set.
+- Long-lived design and implementation records are versioned under [development/](development/); one-off scratch files remain local-only.

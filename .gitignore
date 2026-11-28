@@ -11,6 +11,7 @@ pnpm-debug.log*
 # Env files
 .env
 .env.*
+!/.env.example
 
 # OS / editor
 .DS_Store
@@ -27,15 +28,15 @@ tmp/
 data/
 Caddyfile
 test/output/
+*.copilot-credentials/
+/aci.yaml
 
 # Local config (use config/sample_config.json instead)
-config/config.json
-config/config.local.json
+/config/*
+!/config/sample_config.json
 
-# custom agents and skills
+# Local agents and skills; keep CI workflows versioned
 .agents/
 .github/*
 !.github/workflows/
-.github/workflows/*
-!.github/workflows/ci.yml
 

@@ -1,7 +1,7 @@
 # 渠道模型映射、模型暴露与 GitHub Copilot 接入计划
 
-> 修订：2026-11-27。工作区已包含普通渠道映射与可信发现、固定绑定、批量暴露、Key 权限、两种 Copilot 凭据流程、发现与批准、运维记录和渠道历史统计。实施及部署边界见[配置指南](docs/configuration/feature-flags.zh-CN.md#aoai-proxy-启用-copilot-渠道的部署前提)。
-> 加密设计变更：所有者要求移除 Copilot 单点加密及专用密钥配置，新凭据过渡为受限权限的明文存储。旧密文明确报错并保留，通过同一身份重新授权和配置发布替换，不自动解密/删除。下文原有“加密凭据/主密钥”内容是历史方案，已被此决定及[全局加密设计](encrypt_design.md)取代；版本/CAS、lease、隔离与发布边界不变。
+> 修订：2026-11-27。工作区已包含普通渠道映射与可信发现、固定绑定、批量暴露、Key 权限、两种 Copilot 凭据流程、发现与批准、运维记录和渠道历史统计。实施及部署边界见[配置指南](../configuration/feature-flags.zh-CN.md#aoai-proxy-启用-copilot-渠道的部署前提)。
+> 加密设计变更：所有者要求移除 Copilot 单点加密及专用密钥配置，新凭据过渡为受限权限的明文存储。旧密文明确报错并保留，通过同一身份重新授权和配置发布替换，不自动解密/删除。下文原有“加密凭据/主密钥”内容是历史方案，已被此移除决定取代；[全局加密设计](encryption-design.zh-CN.md)已暂停实施，版本/CAS、lease、隔离与发布边界不变。
 > 真实授权、供应商验收和灰度未执行，也未读取本机登录态或迁移线上配置。双 profile 用固定版本参考项目核对流程，以离线替身验证；按所有者决定，选择身份即带出参考项目的公开应用 ID 与客户端标头（可用环境变量覆盖），不宣称这些应用或私有上游接口对本部署已获批准。下列矩阵是上线门槛，不是实网测试报告。
 
 ## 1. 目标、已确认需求与边界
@@ -37,18 +37,18 @@
 
 | 现有能力 | 代码依据 | 本功能如何接入 |
 | --- | --- | --- |
-| 上游/模型编辑、统一草稿与审阅保存 | [RoutingTab](admin-ui/src/components/RoutingTab.jsx)、[App](admin-ui/src/App.jsx)、[Harness 多选](admin-ui/src/components/HarnessTab.jsx) | 上游编辑清单和映射，模型页批量勾选公开条目，不新增独立保存按钮 |
-| 每 Key 发现过滤与请求准入 | [治理](src/governance.js)、[KeysTab](admin-ui/src/components/KeysTab.jsx)、[公开目录](src/server.js) | 复用 `apiKeys[].allowedModels`，把自由文本改为从公开 ID 多选；发现和实际请求共用权限判定 |
-| 管理认证、CSRF、自定义管理路径 | [server](src/server.js)、[api](admin-ui/src/api.js) | 新接口沿用相同保护和 URL 构造，不另开管理端口 |
-| 配置默认值与校验 | [config](src/config.js) | 增加渠道和绑定字段校验，保留 v3 配置及旧模型形态的兼容入口 |
-| 修订冲突、离线待同步、配置恢复 | [persistence](src/persistence.js)、[config-history](src/config-history.js) | 渠道勾选和切换继续走现有 CAS、历史与回滚 |
-| 配置应用阶段 | [config-application](src/config-application.js)、[server](src/server.js) | 渠道运行时挂入 `apply.proxy`，不新增平行的 `apply.copilot` |
-| 上游认证与 HTTP 调度 | [auth](src/auth.js)、[http](src/http.js)、[proxy](src/proxy.js) | 补充明确的 Copilot 认证分支和 provider 边界，不误用 AAD 或静态 API Key |
-| 路由、协议及流式处理 | [routing](src/proxy/routing.js)、[upstream-headers](src/proxy/upstream-headers.js)、[shim](src/proxy/shim.js)、[stream](src/proxy/stream.js)、[reliability](src/proxy/reliability.js) | 解析有效渠道后复用原链路，保留原生透传及错误/终止语义 |
-| Catalog、模型验证和 Harness | [model-catalog](src/model-catalog.js)、[model-validation](src/model-validation.js)、[codex-models](src/codex-models.js) | 统一消费有效渠道描述符，不能只改请求转发而留下错误的发现/验证元数据 |
-| 运维诊断、日志与代理测试 | [OpsTab](admin-ui/src/components/OpsTab.jsx)、[LogTable](admin-ui/src/components/LogTable.jsx) | 加入渠道状态、筛选及修复入口，复用已有模型验证和请求测试 |
-| 运行状态、统计及治理 | [RuntimeTab](admin-ui/src/components/RuntimeTab.jsx)、[stats](src/stats.js)、[runtime-store](src/runtime-store.js)、[governance](src/governance.js) | 增加渠道维度，继续使用同一套请求/用量结算和只读快照 |
-| 结构化日志与 Log Analytics | [logs](src/logs.js)、[Log Analytics 指南](docs/observability/log-analytics-dce.zh-CN.md) | 复用 memory/console/Log Analytics sinks、脱敏、队列和保留策略 |
+| 上游/模型编辑、统一草稿与审阅保存 | [RoutingTab](../../admin-ui/src/components/RoutingTab.jsx)、[App](../../admin-ui/src/App.jsx)、[Harness 多选](../../admin-ui/src/components/HarnessTab.jsx) | 上游编辑清单和映射，模型页批量勾选公开条目，不新增独立保存按钮 |
+| 每 Key 发现过滤与请求准入 | [治理](../../src/governance.js)、[KeysTab](../../admin-ui/src/components/KeysTab.jsx)、[公开目录](../../src/server.js) | 复用 `apiKeys[].allowedModels`，把自由文本改为从公开 ID 多选；发现和实际请求共用权限判定 |
+| 管理认证、CSRF、自定义管理路径 | [server](../../src/server.js)、[api](../../admin-ui/src/api.js) | 新接口沿用相同保护和 URL 构造，不另开管理端口 |
+| 配置默认值与校验 | [config](../../src/config.js) | 增加渠道和绑定字段校验，保留 v3 配置及旧模型形态的兼容入口 |
+| 修订冲突、离线待同步、配置恢复 | [persistence](../../src/persistence.js)、[config-history](../../src/config-history.js) | 渠道勾选和切换继续走现有 CAS、历史与回滚 |
+| 配置应用阶段 | [config-application](../../src/config-application.js)、[server](../../src/server.js) | 渠道运行时挂入 `apply.proxy`，不新增平行的 `apply.copilot` |
+| 上游认证与 HTTP 调度 | [auth](../../src/auth.js)、[http](../../src/http.js)、[proxy](../../src/proxy.js) | 补充明确的 Copilot 认证分支和 provider 边界，不误用 AAD 或静态 API Key |
+| 路由、协议及流式处理 | [routing](../../src/proxy/routing.js)、[upstream-headers](../../src/proxy/upstream-headers.js)、[shim](../../src/proxy/shim.js)、[stream](../../src/proxy/stream.js)、[reliability](../../src/proxy/reliability.js) | 解析有效渠道后复用原链路，保留原生透传及错误/终止语义 |
+| Catalog、模型验证和 Harness | [model-catalog](../../src/model-catalog.js)、[model-validation](../../src/model-validation.js)、[codex-models](../../src/codex-models.js) | 统一消费有效渠道描述符，不能只改请求转发而留下错误的发现/验证元数据 |
+| 运维诊断、日志与代理测试 | [OpsTab](../../admin-ui/src/components/OpsTab.jsx)、[LogTable](../../admin-ui/src/components/LogTable.jsx) | 加入渠道状态、筛选及修复入口，复用已有模型验证和请求测试 |
+| 运行状态、统计及治理 | [RuntimeTab](../../admin-ui/src/components/RuntimeTab.jsx)、[stats](../../src/stats.js)、[runtime-store](../../src/runtime-store.js)、[governance](../../src/governance.js) | 增加渠道维度，继续使用同一套请求/用量结算和只读快照 |
+| 结构化日志与 Log Analytics | [logs](../../src/logs.js)、[Log Analytics 指南](../observability/log-analytics-dce.zh-CN.md) | 复用 memory/console/Log Analytics sinks、脱敏、队列和保留策略 |
 
 当前上游认证不是通用 OAuth 凭据服务；配置历史也不是凭据库。本功能仍需增加加密凭据、版本隔离及刷新协调能力，但它们是现有后端和持久化设施的扩展，不是第二套产品或运维系统。
 
@@ -222,7 +222,7 @@ allowed =
 
 ### 5.4 Key → 公开模型列表：发现与执行必须一致
 
-**现状**：[模型发现过滤和请求校验](src/governance.js)已按 `model.id` 匹配 `apiKeys[].allowedModels`；[文本代理](src/proxy.js)在选路前调用准入校验，[各格式目录](src/server.js)使用消费者过滤。[Key 页](admin-ui/src/components/KeysTab.jsx)目前是列表输入，且旧配置空数组/省略都表示不限制。不能只加下拉框，也不能直接反转空数组的含义。
+**现状**：[模型发现过滤和请求校验](../../src/governance.js)已按 `model.id` 匹配 `apiKeys[].allowedModels`；[文本代理](../../src/proxy.js)在选路前调用准入校验，[各格式目录](../../src/server.js)使用消费者过滤。[Key 页](../../admin-ui/src/components/KeysTab.jsx)目前是列表输入，且旧配置空数组/省略都表示不限制。不能只加下拉框，也不能直接反转空数组的含义。
 
 | 配置状态（拟议） | 发现与调用的有效集合 |
 | --- | --- |
@@ -549,8 +549,8 @@ P0–P4 的通用渠道、连接、绑定门禁和可观测性实现纳入离线
 
 - 后端：配置、认证、provider 生命周期、共享有效绑定、Catalog、现有协议链路、模型验证、持久化、脱敏、日志及统计。
 - 新增 provider/credential 模块只承载不可复用的新逻辑；公共校验、HTTP、CAS、atomic-file 和日志设施继续复用。
-- UI：[RoutingTab](admin-ui/src/components/RoutingTab.jsx)、[KeysTab](admin-ui/src/components/KeysTab.jsx)、[HarnessTab](admin-ui/src/components/HarnessTab.jsx)、[App](admin-ui/src/App.jsx)、[OpsTab](admin-ui/src/components/OpsTab.jsx)、[RuntimeTab](admin-ui/src/components/RuntimeTab.jsx)、[LogTable](admin-ui/src/components/LogTable.jsx)、[api](admin-ui/src/api.js)、[i18n](admin-ui/src/i18n.jsx)。
-- 文档：实施时同步 [README](README.md)、[配置指南](docs/configuration/feature-flags.zh-CN.md)、[协议说明](docs/protocols/protocol-support.md)、[测试指南](test/README.md)、[Harness 要求](docs/development/claude-code-codex-requirements.md)和相关部署/日志指南。
+- UI：[RoutingTab](../../admin-ui/src/components/RoutingTab.jsx)、[KeysTab](../../admin-ui/src/components/KeysTab.jsx)、[HarnessTab](../../admin-ui/src/components/HarnessTab.jsx)、[App](../../admin-ui/src/App.jsx)、[OpsTab](../../admin-ui/src/components/OpsTab.jsx)、[RuntimeTab](../../admin-ui/src/components/RuntimeTab.jsx)、[LogTable](../../admin-ui/src/components/LogTable.jsx)、[api](../../admin-ui/src/api.js)、[i18n](../../admin-ui/src/i18n.jsx)。
+- 文档：实施时同步 [README](../../README.md)、[配置指南](../configuration/feature-flags.zh-CN.md)、[协议说明](../protocols/protocol-support.md)、[测试指南](../../test/README.md)、[Harness 要求](claude-code-codex-requirements.md)和相关部署/日志指南。
 - 运行状态不手工写进本地生产配置、spool 或生成资产；本计划不修改这些文件。
 
 ## 14. 验收矩阵
@@ -593,7 +593,7 @@ P0–P4 的通用渠道、连接、绑定门禁和可观测性实现纳入离线
 
 ### 14.1 执行方式
 
-- 使用 [现有测试指南](test/README.md) 的 Node runner、临时代理、mock 上游和 [管理表单 harness](test/lib/admin-workspace-form.js)，不新增测试框架。
+- 使用 [现有测试指南](../../test/README.md) 的 Node runner、临时代理、mock 上游和 [管理表单 harness](../../test/lib/admin-workspace-form.js)，不新增测试框架。
 - 新行为先补失败回归；认证/缓存用可控时钟和 mock 响应，避免为计时测试等待真实 token 过期。
 - 共享认证/路由/错误/统计改动必须覆盖旧 Azure 等上游，不能只测试 Copilot happy path。
 - 数据库 gate 仅在显式 disposable loopback PostgreSQL 上运行；严禁连接生产或修改运行服务状态。
@@ -601,7 +601,7 @@ P0–P4 的通用渠道、连接、绑定门禁和可观测性实现纳入离线
 - UI 编译先使用现有 Vite 临时 outDir 检查；仅在有意发布 admin 实现时更新受版本控制的构建资产。
 - 卡片若需补齐，另执行 `cards:check`、`cards:validate` 及相关 Catalog/导入/同步测试，不能用账户发现替代证据。
 - 真实授权、原生协议、CLI 及计费/部署验收单独记录；mocks 不证明真实账号资格、供应商价格或延迟。
-- 渠道相关离线测试入口见[测试指南](test/README.md)；临时 PostgreSQL 验证凭据、配置冲突和历史用量，不能替代真实上游或账号授权验收。
+- 渠道相关离线测试入口见[测试指南](../../test/README.md)；临时 PostgreSQL 验证凭据、配置冲突和历史用量，不能替代真实上游或账号授权验收。
 
 ## 15. 上线、运维交接与退出路径
 
@@ -626,7 +626,7 @@ P0–P4 的通用渠道、连接、绑定门禁和可观测性实现纳入离线
 
 ## 16. 参考依据
 
-- 当前仓库：[README](README.md)、[项目约束](AGENTS.md)、[配置指南](docs/configuration/feature-flags.zh-CN.md)、[协议支持](docs/protocols/protocol-support.md)、[测试指南](test/README.md)。
+- 当前仓库：[README](../../README.md)、[项目约束](../../AGENTS.md)、[配置指南](../configuration/feature-flags.zh-CN.md)、[协议支持](../protocols/protocol-support.md)、[测试指南](../../test/README.md)。
 - 参考仓库固定版本：[`pczhao1210/ghcp-pool-proxy-codebase@401a3dce4ed0992aa6bd0da5b7d832550af7616d`](https://github.com/pczhao1210/ghcp-pool-proxy-codebase/tree/401a3dce4ed0992aa6bd0da5b7d832550af7616d)。
 - 参考[认证/Profile/模型发现](https://github.com/pczhao1210/ghcp-pool-proxy-codebase/blob/401a3dce4ed0992aa6bd0da5b7d832550af7616d/internal/provider/copilot/auth.go)、[token 刷新与并发协调](https://github.com/pczhao1210/ghcp-pool-proxy-codebase/blob/401a3dce4ed0992aa6bd0da5b7d832550af7616d/internal/provider/copilot/token_source.go)、[推理端点](https://github.com/pczhao1210/ghcp-pool-proxy-codebase/blob/401a3dce4ed0992aa6bd0da5b7d832550af7616d/internal/provider/copilot/provider.go)。
 - [官方 Copilot SDK 认证说明](https://github.com/github/copilot-sdk/blob/main/docs/auth/README.md)用于区分身份与服务端授权方式；不据此声称参考仓库的内部 HTTP 接口具有同样支持保证。

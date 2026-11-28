@@ -1,7 +1,7 @@
 # AOAI-Proxy 全局加密设计
 
-> 日期：2026-11-27。状态：设计交接，统一加密尚未实现。
-> 本轮已按所有者决定移除 Copilot 单点加密，新凭据过渡为私有明文存储；实际全局加密由后续 session 实施。
+> 日期：2026-11-27。状态：暂停实施，统一加密尚未实现；本文仅保留为设计参考，不是当前开发任务。
+> 本轮已按所有者决定移除 Copilot 单点加密，新凭据过渡为私有明文存储；全局加密暂不实施，重新启动前需另行确认范围、密钥保管与迁移方案。
 > 本文不是 GitHub Device Flow 的要求，不代表当前配置、数据库或凭据已经加密。文中的新环境变量、模块和 CLI 均为拟定接口。
 
 ## 1. 目标与已确定的边界
@@ -25,22 +25,22 @@
 - 老 prepared 凭据不能被第二次登录覆盖：先解除活动/保存/待同步配置的引用，再显式断开/丢弃后重新授权。
 - 任何能读取当前私有凭据存储的账号都能读取明文 token；不能宣称现有 HMAC 批准证明能抵御存储管理员修改 approval key。
 
-此处的格式与行为以 [凭据存储说明](docs/development/copilot-credential-store.md) 和测试为准。下一轮不要恢复 provider 专用密钥或旧专用解密实现。
+此处的格式与行为以 [凭据存储说明](copilot-credential-store.md) 和测试为准。下一轮不要恢复 provider 专用密钥或旧专用解密实现。
 
 ## 2. 现有代码入口
 
 | 领域 | 实施入口与必须保留的行为 |
 | --- | --- |
-| 配置加载/保存 | [src/config.js](src/config.js)：先解码再 normalize/validate；环境和 profile 管理值不能被保存覆盖 |
-| 文件/数据库/缓存/待同步 | [src/persistence.js](src/persistence.js)：原 CAS baseline、离线 pending、数据库恢复和权威来源规则 |
-| 文件替换 | [src/atomic-file.js](src/atomic-file.js)：私有文件、原子替换；迁移还要验证父目录同步和崩溃恢复 |
-| 历史及 revision | [src/config-history.js](src/config-history.js)：12 份脱敏历史；revision 来自逻辑配置，而非随机密文 |
-| 管理秘密 | [src/admin-config.js](src/admin-config.js)、[src/server.js](src/server.js)：脱敏、恢复 masked 字段、Basic Auth、CSRF、If-Match |
-| Copilot 生命周期 | [src/copilot-credentials.js](src/copilot-credentials.js)：prepared/active、generation、credentialVersion、fence、rotating barrier |
-| 凭据后端 | [src/copilot-credential-backends.js](src/copilot-credential-backends.js)：本机 SQLite 单写/主库权威读/事务 |
-| 凭据记录 | [src/copilot-credential-record.js](src/copilot-credential-record.js)：有界数据与格式校验，不再承担专用加密 |
-| 运行态接入 | [src/copilot-storage.js](src/copilot-storage.js)、[src/copilot-runtime.js](src/copilot-runtime.js)：不向浏览器返回 token，不提前激活候选 |
-| 部署/文档 | [README.md](README.md)、[Dockerfile](Dockerfile)、[infra/](infra/)、[配置指南](docs/configuration/feature-flags.zh-CN.md) |
+| 配置加载/保存 | [../../src/config.js](../../src/config.js)：先解码再 normalize/validate；环境和 profile 管理值不能被保存覆盖 |
+| 文件/数据库/缓存/待同步 | [../../src/persistence.js](../../src/persistence.js)：原 CAS baseline、离线 pending、数据库恢复和权威来源规则 |
+| 文件替换 | [../../src/atomic-file.js](../../src/atomic-file.js)：私有文件、原子替换；迁移还要验证父目录同步和崩溃恢复 |
+| 历史及 revision | [../../src/config-history.js](../../src/config-history.js)：12 份脱敏历史；revision 来自逻辑配置，而非随机密文 |
+| 管理秘密 | [../../src/admin-config.js](../../src/admin-config.js)、[../../src/server.js](../../src/server.js)：脱敏、恢复 masked 字段、Basic Auth、CSRF、If-Match |
+| Copilot 生命周期 | [../../src/copilot-credentials.js](../../src/copilot-credentials.js)：prepared/active、generation、credentialVersion、fence、rotating barrier |
+| 凭据后端 | [../../src/copilot-credential-backends.js](../../src/copilot-credential-backends.js)：本机 SQLite 单写/主库权威读/事务 |
+| 凭据记录 | [../../src/copilot-credential-record.js](../../src/copilot-credential-record.js)：有界数据与格式校验，不再承担专用加密 |
+| 运行态接入 | [../../src/copilot-storage.js](../../src/copilot-storage.js)、[../../src/copilot-runtime.js](../../src/copilot-runtime.js)：不向浏览器返回 token，不提前激活候选 |
+| 部署/文档 | [../../README.md](../../README.md)、[../../Dockerfile](../../Dockerfile)、[../../infra/](../../infra/)、[配置指南](../configuration/feature-flags.zh-CN.md) |
 
 先阅读这些入口及对应测试，不根据旧计划中已废止的加密段落恢复实现。
 

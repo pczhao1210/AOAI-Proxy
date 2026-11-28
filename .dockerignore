@@ -3,6 +3,8 @@ npm-debug.log*
 *.log
 .git
 .gitignore
+.agents
+.github
 .vscode
 .idea
 .env
@@ -11,6 +13,12 @@ coverage
 dist
 data
 test
+.tmp
+tmp
+Caddyfile
+aci.yaml
+**/*.copilot-credentials
 
 # Don’t bake local config into image
-config/config.json
+config/*
+!config/sample_config.json
