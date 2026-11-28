@@ -69,7 +69,9 @@ JSON 中的所有有效布尔开关及被迁移的旧布尔别名只接受 `true
 | **请选择正确的 Catalog ID；若不存在，请先补齐 Catalog。** | 本渠道已有可选资格和文本路由。若右边有 `responses → chat/completions` 等箭头，但目标 ID 是 `—`，先部署含该卡的版本或从含该卡的分支同步模型库，然后回到映射页选择准确的同名 ID。不要用相似型号代替。 |
 | **尚无此型号有效的可选资格与文本协议信息。** | 即使目标 ID 已匹配，也没有可用于**新增映射**的当前发现证据。先确认本渠道启用、状态为**已授权**，点击 **刷新型号清单**（不是只读的 **查询状态**），等发现状态变为**有效**。清单有效期为 15 分钟。 |
 
-若同一张有效清单里其他行有路由，只有个别 GPT 行在 `OpenAI ·` 后没有箭头，优先检查这些 ID，而不是重建 Catalog。代理只识别 GitHub `/models` 的 `supported_endpoints` 数组中的 `/chat/completions`、`/v1/responses`、`/v1/messages`；例如只有 `/responses` 时，当前版本不会把它当作 `/v1/responses`。`model_picker_enabled` 只能为 `true` 或未提供；明确为 `false` 时即使有路由也不能新增映射。仅凭页面不能断定是哪项 GitHub 策略导致的。
+若同一张有效清单里只有个别 GPT 行在 `OpenAI ·` 后没有箭头，先检查这些 ID 的 `supported_endpoints`，不用重建 Catalog。GitHub Copilot [将 HTTP Responses 标为 `/responses`，WebSocket 标为 `ws:/responses`](https://github.com/microsoft/vscode/blob/adf84acb33e978b8c78cb4c9d2f7343766b1d315/extensions/copilot/src/platform/endpoint/common/endpointProvider.ts#L80-L85)。旧版代理漏认 `/responses`；若清单含此项却没有箭头，请更新**代理后端**并刷新型号清单。新版识别 `/chat/completions`、`/responses`、`/v1/responses` 和 `/v1/messages`；两种 HTTP Responses 写法均映射到已有的固定出站路由 `/v1/responses`，不会把清单中的字符串当作请求地址。
+
+例如，已有 `gpt-6-luna` 卡且 `model_picker_enabled: true` 时，`["/responses", "ws:/responses"]` 足以启用 Responses 映射，只有 `["ws:/responses"]` 则不行。`model_picker_enabled` 明确为 `false` 时，即使有路由也不能新增映射；未提供该字段不会单独导致拒绝。
 
 确认[套餐、客户端及组织/企业的模型访问策略](https://docs.github.com/en/copilot/how-tos/copilot-on-github/set-up-copilot/configure-access-to-ai-models)，必要时用有权的账号重新授权并刷新。排查时只需脱敏的型号 `id`、`model_picker_enabled` 和 `supported_endpoints`，无需 token。若仍没有可识别的端点，没有本地开关能强制放行。可勾选后，还须在**暴露模型**中选择要发布的公开 ID、审阅保存，并按需授予 Key 权限。
 
@@ -318,8 +320,11 @@ Grok 4.3/4.6 使用 `short <200K / long >=200K`。数值区间负责选档，不
 Key/时间筛选与同步按钮。「Log Analytics 上传」只表示 Azure 日志上传，不是日志文件导出；
 未启用时只显示「未启用」，隐藏上传队列、丢弃、失败计数。后端历史计数和诊断详情保留，
 管理台内存日志、控制台日志不受该展示控制；独立的统计数据库「事件队列」仍显示。
-输入/输出在概览、周期表、趋势和模型/Key/档位表中统一以 K
+输入/输出在统计汇总卡片、周期表、趋势和模型/Key/档位表中统一以 K
 显示，`1 K = 1,000 Token`，最多三位小数保留单 Token 精度，悬停可查看原始计数；
+「概览」页状态卡片改用紧凑单位：不足 1,000 显示原始计数，不足 1,000 K 显示 K，
+更大显示 M（四舍五入后达到 1,000 K 时进位为 M），换算后最多保留两位小数并去掉末尾 0，
+悬停可查看原始计数；
 缓存读取/写入仍使用原始 Token 单位。表格数字使用千位分隔和右对齐，后端原始统计不变。
 
 模型统计区的「清空模型统计」按钮经确认后重置所有模型及其实际模型/计费档位统计，

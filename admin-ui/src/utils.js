@@ -35,6 +35,25 @@ export function formatTokenCountK(value) {
   return `${formatRuntimeNumber(Math.floor(value / 1000))}${fraction ? `.${fraction}` : ""} K`;
 }
 
+function roundedHundredths(value, unitSize) {
+  const step = unitSize / 100;
+  const remainder = value % step;
+  return (value - remainder) / step + (remainder * 2 >= step ? 1 : 0);
+}
+
+function formatHundredths(hundredths, unit) {
+  const fraction = String(hundredths % 100).padStart(2, "0").replace(/0+$/, "");
+  return `${formatRuntimeNumber(Math.floor(hundredths / 100))}${fraction ? `.${fraction}` : ""} ${unit}`;
+}
+
+export function formatTokenCountCompact(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return "—";
+  if (value < 1_000) return formatRuntimeNumber(value);
+  const thousands = roundedHundredths(value, 1_000);
+  // Counts that round up to 1,000 K are promoted to M.
+  return thousands < 100_000 ? formatHundredths(thousands, "K") : formatHundredths(roundedHundredths(value, 1_000_000), "M");
+}
+
 export function formatCacheWriteTokens(cacheWrite, t = (_key, fallback) => fallback) {
   if (!cacheWrite || cacheWrite.requests === 0) return t("runtime.notReported", "Not reported");
   if (Number.isInteger(cacheWrite.tokens) && cacheWrite.tokens >= 0) return formatRuntimeNumber(cacheWrite.tokens);

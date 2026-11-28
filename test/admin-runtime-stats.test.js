@@ -8,7 +8,7 @@ import { installAdminDom } from "./lib/admin-dom.js";
 import { createServer } from "vite";
 import toast from "react-hot-toast";
 import { resetModelStats } from "../admin-ui/src/api.js";
-import { formatBillingTier, formatCacheHitRatio, formatDateTime, formatRuntimeNumber, formatTokenCountK, formatTokenSummary, getModelBillingRows } from "../admin-ui/src/utils.js";
+import { formatBillingTier, formatCacheHitRatio, formatDateTime, formatRuntimeNumber, formatTokenCountCompact, formatTokenCountK, formatTokenSummary, getModelBillingRows } from "../admin-ui/src/utils.js";
 
 let dom;
 let vite;
@@ -256,6 +256,17 @@ test("input and output K formatting preserves single-token precision and never r
   ]) assert.equal(formatTokenCountK(value), expected);
   for (const value of [undefined, null, NaN, Infinity, -1, 0.5, "1000", Number.MAX_SAFE_INTEGER + 1]) {
     assert.equal(formatTokenCountK(value), "—");
+  }
+});
+
+test("overview token counts switch to K and M with at most two rounded decimals", () => {
+  for (const [value, expected] of [
+    [0, "0"], [999, "999"], [1000, "1 K"], [1004, "1 K"], [1005, "1.01 K"], [1234, "1.23 K"], [1500, "1.5 K"],
+    [272001, "272 K"], [999994, "999.99 K"], [999995, "1 M"], [1234500, "1.23 M"], [1235000, "1.24 M"],
+    [12458632, "12.46 M"], [123456789012, "123,456.79 M"], [Number.MAX_SAFE_INTEGER, "9,007,199,254.74 M"]
+  ]) assert.equal(formatTokenCountCompact(value), expected, String(value));
+  for (const value of [undefined, null, NaN, Infinity, -1, 0.5, "1000", Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(formatTokenCountCompact(value), "—");
   }
 });
 
@@ -644,6 +655,8 @@ test("App reset refreshes with latest filters and fences pre-reset responses whi
   await testing.waitFor(() => assert.ok(view.container.querySelector(".status-strip")));
   const summary = view.container.querySelector(".status-strip");
   assert.ok(testing.within(summary).getByText("99"));
+  assert.equal(testing.within(summary).getByText("1 K").title, "1,000 tokens");
+  assert.equal(testing.within(summary).getByText("100").title, "");
   assert.match(summary.textContent, /Cost estimates may be incomplete\./);
   assert.equal(summary.textContent.includes("Azure"), false);
   assert.equal(summary.textContent.includes("Input Total (Including Cache)"), false);

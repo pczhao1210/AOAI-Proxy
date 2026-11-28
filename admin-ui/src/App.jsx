@@ -54,6 +54,7 @@ import {
   formatBytes,
   formatEstimatedCost,
   formatRuntimeNumber,
+  formatTokenCountCompact,
   getSuggestedModelRouteValues,
   getPayloadEditorNote,
   getLogDetails,
@@ -91,6 +92,12 @@ function loadBundledPricingLibrary() {
       .then((moduleValue) => moduleValue.bundledPricingLibrary);
   }
   return bundledPricingLibraryPromise;
+}
+
+function CompactTokenCount({ value, t }) {
+  const formatted = formatTokenCountCompact(value);
+  const exact = formatRuntimeNumber(value);
+  return <span title={formatted === exact || formatted === "—" ? undefined : `${exact} ${t("runtime.tokenUnit", "tokens")}`}>{formatted}</span>;
 }
 
 function statusLabel(configured, enabled) {
@@ -1209,8 +1216,8 @@ function AdminConsole() {
       {page?.id === "overview" ? <section className="summary-grid status-strip" aria-label={t("summary.title", "System status") }>
         <StatCard label={t("summary.requests", "Requests")} value={formatRuntimeNumber(summary.requests)} note={`${t("summary.errors", "Errors")} ${formatRuntimeNumber(summary.errors)}`} />
         <StatCard label={t("ui.errorRate")} value={summary.errorRate} />
-        <StatCard label={t("ui.inputTokens")} value={formatRuntimeNumber(summary.promptTokens)} />
-        <StatCard label={t("ui.outputTokens")} value={formatRuntimeNumber(summary.completionTokens)} />
+        <StatCard label={t("ui.inputTokens")} value={<CompactTokenCount value={summary.promptTokens} t={t} />} />
+        <StatCard label={t("ui.outputTokens")} value={<CompactTokenCount value={summary.completionTokens} t={t} />} />
         <StatCard label={t("summary.cost", "Reference Cost")} value={summary.cost} note={t("runtime.costHint", "Cost estimates may be incomplete.")} />
         <StatCard label={t("summary.persistence", "Persistence")} value={t(`option.${summary.persistence}`, summary.persistence)} note={`${t("summary.logging", "Logging")} ${t(`status.${summary.logging}`, summary.logging)}`} />
         <StatCard label={t("summary.caddy", "Caddy")} value={t(`caddy.state.${summary.caddy}`, summary.caddy)} note={dirty ? t("summary.dirty", "Unsaved changes") : configCleanupRequired ? t("config.flagCleanupPending", "Configuration cleanup pending") : t("summary.synced", "Synced")} />
