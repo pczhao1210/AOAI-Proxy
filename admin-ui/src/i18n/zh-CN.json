@@ -13,6 +13,7 @@
   "ui.configureChannel": "配置渠道",
   "ui.channelSetupHint": "先配置端点与认证，再到“模型与映射”添加已部署的模型。",
   "ui.copilotSetupHint": "下一步打开 GitHub Copilot 授权配置。登录后获取可用模型，并明确选择对应的 Catalog 映射。",
+  "ui.azureSpeechSetupHint": "每个 Speech 主机使用一个渠道：MAI Voice 使用区域端点 https://REGION.tts.speech.microsoft.com，MAI Transcribe 使用 Speech 资源端点。使用 Speech 资源密钥认证，再到“模型与映射”添加模型。",
   "ui.channelDraftHint": "修改先保留在本面板，点击“应用到草稿”后仍需全局“审阅并保存”才会生效。",
   "ui.mappingWorkflow": "① 在此将部署型号映射到 Catalog 模型；② 在“暴露的模型”发布选中的映射；③ 在“API Keys”授权访问。",
   "ui.manageExposure": "管理暴露的模型 →",

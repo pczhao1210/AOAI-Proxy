@@ -265,7 +265,7 @@ test("selected settings sections remain expanded after switching away and return
   }
 });
 
-test("one channel creation entry selects four providers and opens conditional Copilot authorization without saving", async context => {
+test("one channel creation entry selects five providers and opens conditional Copilot authorization without saving", async context => {
   const { MemoryRouter } = await import("react-router");
   const { ConfigDraftProvider } = await loadAdminModule("/admin-ui/src/lib/config-draft.jsx");
   const { default: RoutingPage } = await loadAdminModule("/admin-ui/src/features/channels/RoutingPage.jsx");
@@ -292,7 +292,9 @@ test("one channel creation entry selects four providers and opens conditional Co
   fireEvent.click(ui.getByRole("button", { name: "routing.addUpstream" }));
   const chooser = within(await ui.findByRole("dialog"));
   const provider = chooser.getByRole("combobox", { name: "field.provider" });
-  assert.deepEqual([...provider.options].map(option => option.value), ["azure-openai", "github-copilot", "openai", "anthropic"]);
+  assert.deepEqual([...provider.options].map(option => option.value), ["azure-openai", "azure-speech", "github-copilot", "openai", "anthropic"]);
+  fireEvent.change(provider, { target: { value: "azure-speech" } });
+  assert.ok(chooser.getByText("ui.azureSpeechSetupHint"));
   fireEvent.change(provider, { target: { value: "github-copilot" } });
   fireEvent.click(chooser.getByRole("button", { name: "ui.configureChannel" }));
   const editor = within(await ui.findByRole("dialog"));

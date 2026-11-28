@@ -13,6 +13,7 @@
   "ui.configureChannel": "Configure channel",
   "ui.channelSetupHint": "Configure the endpoint and authentication, then add the deployed models under Models & mappings.",
   "ui.copilotSetupHint": "The next panel opens GitHub Copilot authorization. Sign in, fetch available models, then explicitly select their Catalog mappings.",
+  "ui.azureSpeechSetupHint": "Use one Speech channel per host: MAI Voice uses the regional endpoint https://REGION.tts.speech.microsoft.com, while MAI Transcribe uses the Speech resource endpoint. Authenticate with the Speech resource key, then add the models under Models & mappings.",
   "ui.channelDraftHint": "Edits stay in this panel until Apply to draft. Review & Save activates the global draft.",
   "ui.mappingWorkflow": "1. Map deployed model IDs to Catalog models here. 2. Publish the selected mappings under Exposed models. 3. Grant access under API Keys.",
   "ui.manageExposure": "Manage exposed models →",

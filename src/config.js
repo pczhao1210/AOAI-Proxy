@@ -1194,7 +1194,7 @@ function applySchemaCompatibility(rawConfig, merged) {
         },
         headersTemplate: {}
       }, upstream || {});
-      if (upstream?.provider === "github-copilot") {
+      if (upstream?.provider === "github-copilot" || upstream?.provider === "azure-speech") {
         next.routes = configuredRoutes ?? {};
       }
       if (configuredRoutes != null && (typeof configuredRoutes !== "object" || Array.isArray(configuredRoutes))) {

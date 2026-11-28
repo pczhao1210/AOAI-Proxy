@@ -6,6 +6,8 @@ import { mapAzureTranscriptionResult } from "../src/proxy/azure-speech.js";
 import { prepareResponsesSpeechRequest } from "../src/proxy/responses-media.js";
 import { findPricingDefinitionForModel } from "../src/pricing-library.js";
 import { upsertPricingCatalogEntry } from "../admin-ui/src/utils.js";
+import { createChannel } from "../admin-ui/src/features/channels/providers.js";
+import { prepareConfigPreview } from "../src/config.js";
 
 test("Azure Speech native and compatible TTS preserve bytes and enforce SSML model ownership", async () => {
   const audio = Buffer.from([0x49, 0x44, 0x33, 0xff, 0x00, 0xfe]);
@@ -192,6 +194,55 @@ test("Azure Speech transcription binds the native model and maps only documented
     }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(result));
+    return true;
+  } });
+});
+
+test("an Azure Speech channel keeps only Speech routes and reaches both Speech operations with the resource key", async () => {
+  const { provider, routes } = createChannel("azure-speech", "speech-channel", "speech");
+  const preview = prepareConfigPreview({ upstreams: [{ name: "speech", provider, baseUrl: "https://eastus.tts.speech.microsoft.com", routes }] });
+  assert.deepEqual(preview.upstreams[0].routes, routes, "Azure OpenAI text and image defaults must not be merged into a Speech channel");
+  const audio = Buffer.from([0x49, 0x44, 0x33]);
+  await withTestContext(async ctx => {
+    const config = await ctx.readConfigFile();
+    config.media = { http: { enabled: true } };
+    ctx.allowUpstreamApiKey("speech-resource-key");
+    config.upstreams.push({ name: "speech", provider, baseUrl: config.upstreams[0].baseUrl,
+      auth: { mode: "apiKey", apiKey: "speech-resource-key" }, routes });
+    config.models.push(
+      { id: "legacy-voice", targetModel: "MAI-Voice-2-Flash", pricingRef: "mai-voice-2-flash", upstream: "speech" },
+      { id: "voice", targetModel: "MAI-Voice-2.1-Flash", pricingRef: "mai-voice-2.1-flash", upstream: "speech" },
+      { id: "transcribe", targetModel: "MAI-Transcribe-2", pricingRef: "mai-transcribe-2", upstream: "speech" });
+    const saved = await ctx.adminRequest("/admin/api/config", { method: "PUT", headers: { "x-aoai-admin-csrf": "1" }, json: config });
+    assert.equal(saved.status, 200, saved.text);
+
+    for (const [model, target] of [["legacy-voice", "MAI-Voice-2-Flash"], ["voice", "MAI-Voice-2.1-Flash"]]) {
+      ctx.clearUpstreamRequests();
+      const speech = await ctx.publicRequest("/v1/audio/speech", { method: "POST",
+        json: { model, voice: `en-US-Harper:${target}`, input: "Hello" } });
+      assert.equal(speech.status, 200, speech.text);
+      assert.deepEqual(speech.bytes, audio);
+      assert.equal(ctx.getUpstreamRequest().url, "/cognitiveservices/v1");
+      assert.equal(ctx.getUpstreamRequest().headers["ocp-apim-subscription-key"], "speech-resource-key");
+    }
+
+    ctx.clearUpstreamRequests();
+    const form = new FormData();
+    form.append("file", new Blob(["audio"], { type: "audio/wav" }), "clip.wav");
+    form.append("model", "transcribe");
+    const transcription = await ctx.publicRequest("/v1/audio/transcriptions", { method: "POST", body: form });
+    assert.equal(transcription.status, 200, transcription.text);
+    assert.deepEqual(transcription.json, { text: "Weather" });
+    assert.equal(ctx.getUpstreamRequest().url, "/speechtotext/transcriptions:transcribe?api-version=2025-10-15");
+    assert.equal(ctx.getUpstreamRequest().headers["ocp-apim-subscription-key"], "speech-resource-key");
+    assert.equal(ctx.getUpstreamRequest().headers["api-key"], undefined);
+  }, { upstreamHandler: ({ req, res }) => {
+    if (req.url === "/cognitiveservices/v1") {
+      res.writeHead(200, { "content-type": "audio/mpeg" }).end(audio);
+      return true;
+    }
+    if (!req.url.startsWith("/speechtotext/transcriptions:transcribe")) return false;
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ combinedPhrases: [{ text: "Weather" }], phrases: [] }));
     return true;
   } });
 });

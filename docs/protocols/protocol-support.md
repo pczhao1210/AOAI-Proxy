@@ -137,13 +137,13 @@ MAI Voice 兼容入口把 `input` 当纯文本安全编码成 SSML；不把 `all
 
 MAI-Transcribe-2、MAI-Voice-2 和 MAI-Voice-2-Flash 可通过 `POST /v1/responses` 调用。模型卡的 `proxyAdapters.responses` 显式选择转写或合成操作；原生 `interfaces` 不增加 Responses。不是按 `mai-*` 名字猜测，也不调用第二个 LLM、MCP 或通用 Agent。Foundry Tools 中的 Speech 能力不会自动变成 OpenAI 内置工具，代理直接调用已配置的 Speech REST endpoint。Thinking、Image 和原生音频入口保持不变。
 
-配置示例是合并到现有配置的片段；真实区域、资源 endpoint 和订阅密钥须来自自己的 Speech 资源，入站 key 另行授权公开模型。不要将上游密钥放入客户端或 headersTemplate：
+配置示例是合并到现有配置的片段；真实区域、资源 endpoint 和订阅密钥须来自自己的 Speech 资源，入站 key 另行授权公开模型。不要将上游密钥放入客户端或 headersTemplate。管理界面“新增上游”选择 Azure Speech 会生成同样只含 Speech 路由的渠道（`audio/speech`、`audio/transcriptions`），后端不会再合并 Azure OpenAI 的文本/图片默认路由；既有 `provider: "microsoft"` 等自定义值继续按最终 URL 工作：
 
 ```json
 {
     "media": { "http": { "enabled": true } },
     "upstreams": [{
-        "name": "mai-speech", "provider": "microsoft",
+        "name": "mai-speech", "provider": "azure-speech",
         "baseUrl": "https://RESOURCE.cognitiveservices.azure.com",
         "auth": { "mode": "apiKey", "apiKey": "SPEECH_RESOURCE_KEY" },
         "routes": {
@@ -158,7 +158,7 @@ MAI-Transcribe-2、MAI-Voice-2 和 MAI-Voice-2-Flash 可通过 `POST /v1/respons
 }
 ```
 
-Voice 从 `mai-voice-2` 或 `mai-voice-2-flash` 模板建立独立绑定，设置实际 TTS endpoint（例如资源提供的 `https://REGION.tts.speech.microsoft.com`）、Speech 认证及 `audio/speech -> azure-speech-tts`，目标路径为 `/cognitiveservices/v1`。可在模型 `defaultParams.voice` 设置完整 voice 名称，例如 `en-US-Harper:MAI-Voice-2`；请求覆盖仍需匹配同一个授权模型。缺少真实 MAI 单价时保留未知费用，不填假价格。
+Voice 通常需要另一个 Azure Speech 渠道，设置实际 TTS endpoint（例如资源所在区域的 `https://REGION.tts.speech.microsoft.com`）、Speech 认证及 `audio/speech: /cognitiveservices/v1`。`mai-voice-2.1`、`mai-voice-2.1-flash` 模板的 Catalog 路由是 `audio/speech -> azure-speech-tts`；旧 `mai-voice-2`、`mai-voice-2-flash` 卡没有代理模板，只允许 `audio/speech` 目标，因此依赖渠道上的 `audio/speech` 路径。可在模型 `defaultParams.voice` 设置完整 voice 名称，例如 `en-US-Harper:MAI-Voice-2`；请求覆盖仍需匹配同一个授权模型。缺少真实 MAI 单价时保留未知费用，不填假价格。
 
 转写请求包含一个 user 消息及一个 `input_file`。下面的 `BASE64_AUDIO` 必须替换为真实文件的标准 base64；也可直接使用不带 data URL 前缀的 base64。仅接受 WAV、MP3、FLAC 文件名，不下载 `file_url`、不解析 `file_id`、不读客户端本地路径：
 

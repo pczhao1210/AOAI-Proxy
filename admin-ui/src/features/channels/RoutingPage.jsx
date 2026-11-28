@@ -182,7 +182,7 @@ export default function RoutingPage(props) {
       <Field label={t("field.provider")}><select value={newProvider} onChange={event => setNewProvider(event.target.value)}>
         {channelProviders.map(provider => <option key={provider.value} value={provider.value}>{provider.label}</option>)}
       </select></Field>
-      <p className="muted">{t(newProvider === "github-copilot" ? "ui.copilotSetupHint" : "ui.channelSetupHint")}</p>
+      <p className="muted">{t(newProvider === "github-copilot" ? "ui.copilotSetupHint" : newProvider === "azure-speech" ? "ui.azureSpeechSetupHint" : "ui.channelSetupHint")}</p>
     </Modal>
     <Sheet open={Boolean(edit && item)} title={item?.name || item?.id || ""} t={t} onApply={apply}
       onClose={() => { if (cached && !window.confirm(t("ui.closeRetain"))) return; query({ edit: "", tab: "" }); if (cached) toast(t("ui.retained")); }}

@@ -222,7 +222,11 @@ redirect to the configured path. Unknown API paths still return API errors.
   keep horizontal scrolling inside tables; complex editing is intended for a
   wider screen.
 - **Channels → Add Upstream** is the single creation entry. Choose Azure,
-  GitHub Copilot, OpenAI Compatible, or Anthropic, then configure the channel.
+  Azure Speech, GitHub Copilot, OpenAI Compatible, or Anthropic, then configure
+  the channel. Azure Speech channels carry only the `audio/speech` and
+  `audio/transcriptions` Speech routes and use the Speech resource key; MAI Voice
+  (regional `https://REGION.tts.speech.microsoft.com`) and MAI Transcribe (the
+  Speech resource endpoint) normally need one channel each.
   Copilot opens its device-login controls instead of API-key authentication;
   use **Models & mappings** to fetch and explicitly approve discovered models.
   The choices are UI templates, not a new backend provider allowlist, and do not
