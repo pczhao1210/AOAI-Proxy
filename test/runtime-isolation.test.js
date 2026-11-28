@@ -70,7 +70,9 @@ test("slow read-only statistics do not block writers, reset fencing or cold-key 
         }
         return client.query(sql, ...args);
       },
-      release: error => client.release(error)
+      release: error => client.release(error),
+      on: (...args) => client.on(...args),
+      removeListener: (...args) => client.removeListener(...args)
     };
   });
   const hold = matches => {

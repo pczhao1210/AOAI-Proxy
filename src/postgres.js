@@ -237,6 +237,27 @@ export function getSharedPostgresPool(poolOptions, scope = "shared") {
   return sharedPools.get(poolKey);
 }
 
+// pg-pool removes its idle error listener on checkout; without one, a backend terminated while the
+// client is checked out emits an unhandled "error" event and crashes the process.
+export async function withPooledClient(pool, operation, { discard = failure => Boolean(failure) } = {}) {
+  const client = await pool.connect();
+  let connectionError = null;
+  const onError = (error) => { connectionError ||= error; };
+  client.on("error", onError);
+  let failure = null;
+  try {
+    return await operation(client);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    const releaseError = connectionError || (discard(failure) ? failure || true : null);
+    // A discarded socket can still report errors while it closes, so it stays guarded.
+    if (!releaseError) client.removeListener("error", onError);
+    client.release(releaseError || undefined);
+  }
+}
+
 export async function closeSharedPostgresPools() {
   const pools = [...sharedPools.values()];
   sharedPools.clear();

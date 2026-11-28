@@ -52,7 +52,7 @@ async function setup(t, store, query) {
   process.env.RUNTIME_DB_CONNECTION_STRING = "postgresql://mock@127.0.0.1:1/test";
   t.mock.method(pg.Pool.prototype, "query", query);
   t.mock.method(pg.Pool.prototype, "connect", async function () {
-    return { query: (...args) => query(...args), release() {} };
+    return { query: (...args) => query(...args), release() {}, on() {}, removeListener() {} };
   });
   const config = { persistence: { configStore: { mode: "database", filePath: path.join(dir, "config.json") } },
     observability: { runtimeStore: { schema: `recovery_${path.basename(dir).replaceAll("-", "_")}`, flushIntervalMs: 60000,

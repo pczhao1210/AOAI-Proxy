@@ -492,9 +492,70 @@ test("event inserts wait for an in-flight rollup batch so the cursor never passe
   }
 });
 
+test("a backend terminated during a checked-out event insert fails the flush instead of crashing the process", {
+  timeout: 30000,
+  skip: !process.env.RUNTIME_MEDIA_TEST_DATABASE_URL
+}, async () => {
+  const connectionString = process.env.RUNTIME_MEDIA_TEST_DATABASE_URL;
+  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(new URL(connectionString).hostname), "Use an isolated loopback database");
+  const previousConnectionString = process.env.RUNTIME_DB_CONNECTION_STRING;
+  process.env.RUNTIME_DB_CONNECTION_STRING = connectionString;
+  const tempDir = path.resolve(`.insert-terminated-test-${process.pid}-${Date.now()}`);
+  await fs.mkdir(tempDir);
+  const schema = `insert_terminated_${process.pid}_${Date.now()}`;
+  const quotedSchema = quoteIdentifier(schema, "test schema");
+  const pool = new pg.Pool({ connectionString });
+  const rollupHolder = await pool.connect();
+  const config = { persistence: { configStore: { mode: "database", filePath: path.join(tempDir, "config.json"), database: {} } },
+    observability: { runtimeStore: { enabled: true, schema, localBufferPath: path.join(tempDir, "pending.ndjson") } } };
+  const requestCount = async requestId => Number((await pool.query(
+    `SELECT COUNT(*) AS count FROM ${quotedSchema}.runtime_events WHERE request_id = $1`, [requestId])).rows[0].count);
+  try {
+    setRuntimeStoreConfig(config);
+    recordRuntimeRequest(config, { requestId: "before", keyId: "terminated-key", modelId: "text", routeKey: "responses" });
+    await waitFor(async () => {
+      await flushRuntimeEvents();
+      const exists = await pool.query("SELECT to_regclass($1) AS table_name", [`${schema}.runtime_events`]);
+      return Boolean(exists.rows[0].table_name) && await requestCount("before") === 1 && !getRuntimeStoreInfo(config).flushing;
+    }, 8000);
+
+    const holderPid = (await rollupHolder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    await rollupHolder.query("BEGIN");
+    await rollupHolder.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${schema}.runtime_store_meta:rollup`]);
+    recordRuntimeRequest(config, { requestId: "terminated", keyId: "terminated-key", modelId: "text", routeKey: "responses" });
+    const flushing = flushRuntimeEvents();
+    let insertPid;
+    await waitFor(async () => {
+      insertPid = (await pool.query("SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", [holderPid])).rows[0]?.pid;
+      return Boolean(insertPid);
+    }, 8000);
+    await pool.query("SELECT pg_terminate_backend($1)", [insertPid]);
+    const failed = await flushing;
+    assert.equal(failed.flushed, 0);
+    assert.ok(failed.error, "the terminated insert must fail its flush");
+    await rollupHolder.query("COMMIT");
+
+    await waitFor(async () => {
+      await flushRuntimeEvents();
+      return await requestCount("terminated") === 1 && !getRuntimeStoreInfo(config).flushing;
+    }, 8000);
+    assert.equal(await requestCount("terminated"), 1, "the retried event is stored exactly once");
+  } finally {
+    await rollupHolder.query("ROLLBACK").catch(() => {});
+    rollupHolder.release();
+    setRuntimeStoreConfig(null);
+    await closeSharedPostgresPools();
+    await pool.query(`DROP SCHEMA IF EXISTS ${quotedSchema} CASCADE`);
+    await pool.end();
+    await fs.rm(tempDir, { recursive: true, force: true });
+    if (previousConnectionString === undefined) delete process.env.RUNTIME_DB_CONNECTION_STRING;
+    else process.env.RUNTIME_DB_CONNECTION_STRING = previousConnectionString;
+  }
+});
+
 test("cache-write event and rollup SQL bind every column and retain partial dimensions", async (t) => {
   t.mock.method(pg.Pool.prototype, "connect", async function () {
-    return { query: (...args) => this.query(...args), release() {} };
+    return { query: (...args) => this.query(...args), release() {}, on() {}, removeListener() {} };
   });
   const fixtureDir = path.resolve(`.cache-write-sql-test-${process.pid}-${Date.now()}`);
   await fs.mkdir(fixtureDir);
@@ -697,7 +758,7 @@ function mockStatisticsDatabase() {
 
     test("billing scopes survive restart and reset excludes pending/replayed history without changing global scopes", async (t) => {
       t.mock.method(pg.Pool.prototype, "connect", async function () {
-        return { query: (...args) => this.query(...args), release() {} };
+        return { query: (...args) => this.query(...args), release() {}, on() {}, removeListener() {} };
       });
       const fixtureDir = path.resolve(`.model-stats-test-${process.pid}-${Date.now()}`);
       await fs.mkdir(fixtureDir);

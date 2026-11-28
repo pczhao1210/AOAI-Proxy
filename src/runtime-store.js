@@ -4,7 +4,7 @@ import { writeFileAtomic } from "./atomic-file.js";
 import path from "node:path";
 import { appendStructuredLog } from "./logs.js";
 import { operationFields, operationLimit } from "./channel-operation-fields.js";
-import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier } from "./postgres.js";
+import { buildPostgresPoolOptions, getSharedPostgresPool, quoteIdentifier, withPooledClient } from "./postgres.js";
 import { parsePersistenceMode } from "./persistence-mode.js";
 import { beginModelStatsReset, getMemoryChannelStats } from "./stats.js";
 import { accumulateChannelDetail, channelIdentity, channelMetric, channelTree, reconcileChannelHistory } from "./channel-statistics.js";
@@ -511,29 +511,26 @@ async function withRuntimeReadSnapshot(settings, read, { ensureTables = true } =
   const pool = getSharedPostgresPool({
     ...settings.poolOptions, max: 2, min: 0, connectionTimeoutMillis: 3000
   }, "runtime-reader");
-  const client = await pool.connect();
-  let failure;
-  try {
-    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-    await client.query("SET LOCAL statement_timeout = '5s'");
-    await client.query("SET LOCAL idle_in_transaction_session_timeout = '10s'");
-    const result = await read(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    failure = error;
+  return withPooledClient(pool, async (client) => {
     try {
-      await client.query("ROLLBACK");
-    } catch (rollbackError) {
-      appendStructuredLog("warn", {
-        source: "runtime-store", event: "runtime_store.snapshot_rollback_failed",
-        failureReason: rollbackError.message
-      });
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      await client.query("SET LOCAL statement_timeout = '5s'");
+      await client.query("SET LOCAL idle_in_transaction_session_timeout = '10s'");
+      const result = await read(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        appendStructuredLog("warn", {
+          source: "runtime-store", event: "runtime_store.snapshot_rollback_failed",
+          failureReason: rollbackError.message
+        });
+      }
+      throw error;
     }
-    throw error;
-  } finally {
-    client.release(failure);
-  }
+  });
 }
 
 function describeRuntimeTarget(settings) {
@@ -845,22 +842,21 @@ async function insertRuntimeEvents(settings, batchItems) {
   });
 
   // The shared lock excludes an in-flight rollup batch, so event IDs never commit behind the rollup cursor.
-  const client = await pool.connect();
-  let transactionError;
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock_shared(hashtext($1))", [rollupLockKey(settings)]);
-    await client.query(
-      `INSERT INTO ${schemaName}.${eventsTableName} (${columns.join(", ")}) VALUES ${rows.join(", ")}
-       ON CONFLICT (event_uid) DO NOTHING`,
-      values
-    );
-    await client.query("COMMIT");
-  } catch (error) {
-    transactionError = error;
-    await client.query("ROLLBACK").catch(() => {});
-    throw error;
-  } finally { client.release(transactionError); }
+  await withPooledClient(pool, async (client) => {
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock_shared(hashtext($1))", [rollupLockKey(settings)]);
+      await client.query(
+        `INSERT INTO ${schemaName}.${eventsTableName} (${columns.join(", ")}) VALUES ${rows.join(", ")}
+         ON CONFLICT (event_uid) DO NOTHING`,
+        values
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    }
+  });
 }
 
 function rollupLockKey(settings) {
@@ -1212,19 +1208,18 @@ async function fetchUnrolledEvents(settings, afterEventId, pool = getRuntimeStor
 }
 
 async function withRollupLock(settings, operation) {
-  const client = await getRuntimeStorePool(settings).connect();
-  let transactionError;
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [rollupLockKey(settings)]);
-    const result = await operation(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    transactionError = error;
-    await client.query("ROLLBACK").catch(() => {});
-    throw error;
-  } finally { client.release(transactionError); }
+  return withPooledClient(getRuntimeStorePool(settings), async (client) => {
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [rollupLockKey(settings)]);
+      const result = await operation(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    }
+  });
 }
 
 async function rollupRuntimeEvents(settings) {

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import { quoteIdentifier } from "./postgres.js";
+import { quoteIdentifier, withPooledClient } from "./postgres.js";
 import { fail, identifier, sanitize } from "./copilot-credential-record.js";
 
 const table = "copilot_credentials_v1";
@@ -79,20 +79,19 @@ export async function fileBackend({ directory }) {
 }
 
 async function transaction(pool, fn) {
-  const client = await pool.connect();
   let discard = false;
-  try {
-    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
-    await client.query("SET LOCAL synchronous_commit=on");
-    const result = await fn(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    try { await client.query("ROLLBACK"); } catch { discard = true; }
-    throw error;
-  } finally {
-    client.release(discard);
-  }
+  return withPooledClient(pool, async client => {
+    try {
+      await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      await client.query("SET LOCAL synchronous_commit=on");
+      const result = await fn(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      try { await client.query("ROLLBACK"); } catch { discard = true; }
+      throw error;
+    }
+  }, { discard: () => discard });
 }
 
 export async function postgresBackend({ pool, schema = "public", namespace = "default" }) {
