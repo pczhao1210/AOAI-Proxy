@@ -188,18 +188,12 @@ function replaceSseEventPayload(event, payload) {
   return dataWritten ? Buffer.from(`${lines.join(lineEnding)}${delimiter}`) : event.raw;
 }
 
-function restorePublicModelInSseEvent(event, modelId) {
-  if (!modelId || !event?.payload || event.payload === "[DONE]") return event.raw;
-
-  let payload;
-  try {
-    payload = JSON.parse(event.payload);
-  } catch {
-    return event.raw;
-  }
+// Reuses the object parsed for accounting; it may be mutated because nothing reads `.model` afterwards.
+function restorePublicModelInSseEvent(event, modelId, payload) {
+  if (!modelId || !payload || typeof payload !== "object") return event.raw;
 
   let changed = false;
-  for (const value of [payload, payload?.response, payload?.message]) {
+  for (const value of [payload, payload.response, payload.message]) {
     if (value && typeof value === "object" && typeof value.model === "string" && value.model !== modelId) {
       value.model = modelId;
       changed = true;
@@ -623,7 +617,7 @@ export async function streamPassthrough({
         }
       }
     }
-    await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(forwarded, modelId), cancellation.signal);
+    await writeWithBackpressure(reply.raw, restorePublicModelInSseEvent(forwarded, modelId, parsedPayload), cancellation.signal);
     if (responsesPayload && typeof responsesPayload === "object" && !Array.isArray(responsesPayload)
       && typeof responsesPayload.type === "string") {
       nextResponsesSequence = isResponsesSequenceNumber(responsesPayload.sequence_number)
@@ -657,6 +651,8 @@ export async function streamPassthrough({
     } catch {
       return;
     }
+    // Non-object JSON such as `null` carries no protocol state; forward it raw without accounting.
+    if (!event || typeof event !== "object" || Array.isArray(event)) return;
 
     const resolvedModel = event.model || event.response?.model || event.message?.model;
     if (typeof resolvedModel === "string" && resolvedModel) onModel?.(resolvedModel);

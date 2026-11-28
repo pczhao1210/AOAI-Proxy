@@ -324,3 +324,69 @@ test("Messages stream usage totals match JSON accounting for cache-write TTL bre
     assert.deepEqual(getUsageTotals(recorded[0]), jsonTotals);
   });
 });
+
+async function runNativePassthrough(routeKey, chunks, modelId) {
+  const raw = new EventEmitter();
+  let output = "";
+  raw.write = chunk => { output += Buffer.from(chunk).toString("utf8"); return true; };
+  const models = [];
+  const body = new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(Buffer.from(chunk)); controller.close(); } });
+  const result = await streamPassthrough({
+    upstreamResponse: { body }, reply: { raw }, modelId, routeKey, backendRouteKey: routeKey,
+    policy: { firstByteTimeoutMs: 1000, idleTimeoutMs: 1000, maxStreamDurationMs: 0 },
+    onFirstChunk() {}, onUsage() {}, onModel: model => models.push(model)
+  });
+  return { result, output, models };
+}
+
+test("native passthrough parses each event once and restores the public model after reporting the upstream model", async t => {
+  const upstream = "upstream-deployment";
+  const usage = { input_tokens: 1, output_tokens: 1, total_tokens: 2 };
+  const streams = {
+    "chat/completions": [
+      { id: "c1", object: "chat.completion.chunk", model: upstream, choices: [{ index: 0, delta: { content: "ok" }, finish_reason: null }] },
+      { id: "c1", object: "chat.completion.chunk", model: upstream, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+      "[DONE]"
+    ],
+    responses: [
+      { type: "response.created", response: { id: "r1", model: upstream, status: "in_progress", output: [] } },
+      { type: "response.output_text.delta", item_id: "m1", output_index: 0, content_index: 0, delta: "ok" },
+      { type: "response.completed", response: { id: "r1", model: upstream, status: "completed", output: [], usage } }
+    ],
+    messages: [
+      { type: "message_start", message: { id: "m1", role: "assistant", model: upstream, content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
+      { type: "message_stop" }
+    ]
+  };
+  for (const [routeKey, events] of Object.entries(streams)) await t.test(routeKey, async () => {
+    const parseCounts = new Map(events.filter(event => typeof event === "object").map(event => [JSON.stringify(event), 0]));
+    const parse = t.mock.method(JSON, "parse");
+    let run;
+    try {
+      run = await runNativePassthrough(routeKey, [events.map(encode).join("")], "public-model");
+    } finally {
+      for (const call of parse.mock.calls) {
+        if (parseCounts.has(call.arguments[0])) parseCounts.set(call.arguments[0], parseCounts.get(call.arguments[0]) + 1);
+      }
+      parse.mock.restore();
+    }
+    assert.equal(run.result.ok, true);
+    assert.deepEqual([...parseCounts.values()], events.filter(event => typeof event === "object").map(() => 1));
+    const modelEvents = events.filter(event => typeof event === "object" && (event.model || event.response?.model || event.message?.model));
+    assert.deepEqual(run.models, modelEvents.map(() => upstream), "accounting must see the upstream model before the public rewrite");
+    assert.doesNotMatch(run.output, new RegExp(upstream));
+    assert.equal(run.output.match(/"model":"public-model"/g)?.length, modelEvents.length);
+  });
+});
+
+test("native passthrough forwards non-object JSON events without treating them as protocol state", async t => {
+  const nonObjects = ["null", "123", "\"text\"", "true", "[1]"].map(encode).join("");
+  for (const routeKey of Object.keys(terminals)) await t.test(routeKey, async () => {
+    const source = nonObjects + terminals[routeKey];
+    const { result, output } = await runNativePassthrough(routeKey, [source], "test");
+    assert.equal(result.ok, true, result.error?.message);
+    assert.equal(output, source);
+  });
+});
